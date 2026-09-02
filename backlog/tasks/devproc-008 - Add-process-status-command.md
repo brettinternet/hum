@@ -4,6 +4,7 @@ title: Add process status command
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:07'
+updated_date: '2026-09-02 17:35'
 labels:
   - cli
   - process
@@ -23,20 +24,20 @@ ordinal: 800
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: after the first vertical slice is green, clients can inspect one project-scoped process without fetching logs or mutating daemon state.
+Outcome: after the lifecycle slice is green, clients can inspect one project-scoped process without fetching logs or mutating daemon state.
 
-Scope: `devproc status <name> [--json]`; application and protocol query; human output; stable JSON containing name, project root, PID, process-group ID, cwd, argv array, start time, state, and exit status when available; clear not-found and invalid-name errors.
+Scope: `devproc status <name> [--json]`; application and protocol query; human output; stable JSON containing name, project root, PID, process-group ID, cwd, argv array, start time, state, and exit status when available; clear not-found and invalid-name errors. Status never auto-starts the daemon; if unavailable it returns `Start it with devproc serve --daemon.`
 
-Non-goals: wait semantics, log content, polling, persistence, metrics, or MCP.
+Non-goals: wait semantics, log content, polling, persistence, metrics, daemon auto-start, or MCP.
 
 Modified-file contract: internal/app/, internal/protocol/, internal/cli/.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/app ./internal/protocol ./internal/cli -run Status` exits 0 and covers running, exited, signaled, invalid-name, and missing-process states.
+- [ ] #1 `go test ./internal/app ./internal/protocol ./internal/cli -run Status` exits 0 and covers running, exited, signaled, invalid-name, missing-process, and unavailable-daemon states.
 - [ ] #2 Against the integration fixture, `devproc status api --json` decodes with exact argv, PID/PGID, cwd, RFC3339 start time, running state, and nullable exit status without changing process or cursor state.
-- [ ] #3 After fixture exit, human and JSON status report the terminal state and exit status; the command exits non-zero with a clear typed error for an unknown project-scoped name.
+- [ ] #3 After fixture exit, human and JSON status report the terminal state and exit status; unknown names fail with a typed error, while an unavailable daemon fails without starting one and includes `Start it with devproc serve --daemon.`
 <!-- AC:END -->
 
 ## Definition of Done

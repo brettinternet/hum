@@ -1,9 +1,10 @@
 ---
 id: DEVPROC-006
-title: Deliver serve run list logs and stop
+title: Deliver daemon lifecycle attached runs and log following
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:06'
+updated_date: '2026-09-02 17:38'
 labels:
   - cli
   - daemon
@@ -25,21 +26,24 @@ ordinal: 600
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: humans and shell-capable agents can use the first complete CLI slice to start the daemon, supervise a named command, list processes, fetch bounded logs, and stop the full process tree.
+Outcome: the ordinary `devproc run` workflow starts the daemon when needed, leaves child ownership with the daemon, streams live output while attached, and exposes explicit detached, observation, stop, and shutdown operations.
 
-Scope: urfave/cli commands `serve`, `run <name> -- <command> [args...]`, `list [--json]`, `logs <name> [--stream stdout|stderr|both] [--tail N] [--after-cursor N] [--limit-bytes N] [--grep REGEX] [--json]`, and `stop <name>`; exact argv forwarding; current cwd/project-root context; human-readable defaults; stable JSON; log response fields process, stream, cursor, next_cursor, truncated, running, and timestamped entries. Reject missing separators/argv, invalid names/cursors/regex/stream/limits, duplicate running names, and server-limit violations with clear errors.
+Scope: urfave/cli commands `serve [--daemon]`, `run <name> [--detach] -- <command> [args...]`, `list [--json]`, `logs <name> [--stream stdout|stderr|both] [--tail N] [--after-cursor N] [--limit-bytes N] [--grep REGEX] [--follow] [--json]`, `stop <name>`, and `shutdown [--stop-processes]`. Foreground serve writes diagnostics to stderr. Detached serve creates a new session/process group with no inherited standard streams, logs to bounded/rotating `daemon.log`, waits for readiness, prints PID and socket, is idempotent, serializes concurrent starts, recovers stale PID/socket files, and reports startup failures. `run` alone auto-starts the detached daemon; all other unavailable-daemon commands fail concisely with `Start it with devproc serve --daemon.` Attached run streams stdout/stderr with raw line content where possible, forwards Ctrl+C as SIGINT to the managed group, returns its exit code, and leaves it running on connection loss. Detached run prints name and PID. Follow returns the initial bounded selection then cursor-based events; Ctrl+C cancels only the follower; `--json --follow` is NDJSON. Default shutdown refuses and names active processes; `--stop-processes` terminates every group before daemon exit. Keep exact argv forwarding, human defaults, stable JSON, bounds, and clear validation errors.
 
-Non-goals: `status`, `wait`, daemon auto-start, proactive logs, PTY, configuration files, or MCP.
+Non-goals: `status`, `wait`, PTY or arbitrary interactive input, configuration files, MCP, launchd, systemd, login startup, or OS-service installation.
 
 Modified-file contract: cmd/devproc/, internal/cli/, internal/app/, internal/protocol/.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/cli -run TestVerticalSliceCommands` exits 0 and covers parsing, exact argv preservation, no-command help, human output, JSON output, and clear invalid-input errors.
-- [ ] #2 With a temporary runtime directory, the built binary runs `serve`, `run api -- sh -c ...`, `list --json`, bounded `logs api --json`, and `stop api`; every command exits as documented and JSON decodes with the specified fields.
-- [ ] #3 `logs` with no bounds returns at most 100 lines and 16 KiB, reports truncation, and its next_cursor retrieves only subsequent output with `--after-cursor`.
-- [ ] #4 `go test ./internal/cli -run TestNoStatusOrWaitYet` confirms this vertical slice exposes neither incomplete command before its integration gate passes.
+- [ ] #1 `go test ./internal/cli -run 'TestServeModes|TestAutomaticDaemonStartup'` exits 0 and covers foreground diagnostics, detached flags/readiness output, idempotency, `run`-only auto-start, concurrent start races, stale runtime recovery, and the exact unavailable-daemon suggestion for other commands.
+- [ ] #2 `go test ./internal/cli -run 'TestAttachedRun|TestDetachedRun'` exits 0 and covers exact argv, live stdout/stderr, raw line preservation, managed exit codes, SIGINT forwarding, connection loss without termination, and detached name/PID output.
+- [ ] #3 `go test ./internal/cli -run TestLogsFollow` exits 0 and covers initial tail/cursor/stream/grep/byte-limit selection, multiple followers, bounded delivery, eviction reporting, follower cancellation without process termination, and NDJSON events for `--json --follow`.
+- [ ] #4 `go test ./internal/cli -run TestShutdown` exits 0 and proves default shutdown refuses with active process names while `--stop-processes` waits for graceful process-tree termination before daemon exit.
+- [ ] #5 With a temporary runtime directory, the built binary runs foreground `serve`, idempotent `serve --daemon`, attached and detached `run`, bounded and followed `logs`, `stop`, and both shutdown modes; every command exits as documented and all JSON/NDJSON decodes with stable fields.
+- [ ] #6 `go test ./internal/cli -run TestNoStatusOrWaitYet` confirms this vertical slice exposes neither incomplete command before its integration gate passes.
+- [ ] #7 `go test ./internal/cli -run TestDetachedDaemonLog` exits 0 and proves detached diagnostics are written only to `daemon.log` in the runtime directory and rotation or truncation keeps the configured on-disk size bounded.
 <!-- AC:END -->
 
 ## Definition of Done

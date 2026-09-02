@@ -1,9 +1,10 @@
 ---
 id: DEVPROC-007
-title: Prove the first vertical slice end to end
+title: Prove daemon lifecycle and observation end to end
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:06'
+updated_date: '2026-09-02 17:35'
 labels:
   - integration
   - tooling
@@ -24,21 +25,22 @@ ordinal: 700
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: the initial serve/run/list/logs/stop slice is exercised through the built binary before status or wait work may begin.
+Outcome: the initial lifecycle/run/log/stop/shutdown slice is exercised through the built binary before status or wait work may begin.
 
-Scope: deterministic fixture processes; daemon lifecycle harness; exact-argv launch; incremental separate stdout/stderr reads; bounded cursor continuation and truncation; regex and stream filtering; observed exit status through list data; client disconnect/reconnect; duplicate-name and malformed-input errors; stopping a child/grandchild process tree on macOS and Linux.
+Scope: deterministic fixture processes; foreground and detached daemon harnesses; readiness/PID/socket reporting; detached standard-stream/session isolation; bounded daemon log; idempotent and concurrent auto-start; stale PID/socket recovery; exact-argv attached and detached launch; live separate stdout/stderr; attached exit status and SIGINT forwarding; client disconnect/reconnect; multiple bounded followers and cancellation; NDJSON follow events; incremental cursor continuation, truncation, regex, and stream filtering; observed exit status; stop; shutdown refusal and graceful all-process tree termination on macOS and Linux.
 
-Non-goals: implementing status or wait, benchmarks, persistence, PTY, Windows, or MCP.
+Non-goals: implementing status or wait, benchmarks, persistence, PTY or arbitrary stdin, Windows, OS-service installation, or MCP.
 
 Modified-file contract: integration/, internal/testutil/, Taskfile.dist.yaml, .github/workflows/ci.yaml.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./integration -run TestVerticalSlice -count=1` exits 0 after starting a real daemon and proves run, list, incremental bounded stdout/stderr logs, exit observation, and stop.
-- [ ] #2 `go test ./integration -run TestReconnect -count=1` exits 0 and proves the daemon and managed child survive a client disconnect and accept a later client.
-- [ ] #3 `go test ./integration -run TestStopTree -count=1` exits 0 and proves no spawned child or grandchild remains after stop, including the SIGKILL fallback fixture.
-- [ ] #4 The macOS and Linux CI jobs each run `task ci` and the built-binary integration suite successfully.
+- [ ] #1 `go test ./integration -run 'TestForegroundServe|TestDetachedServe|TestAutomaticStartup' -count=1` exits 0 and proves foreground operation, detached readiness/PID/socket reporting and terminal isolation, idempotency, concurrent run startup, stale artifact recovery, and clear startup failures.
+- [ ] #2 `go test ./integration -run 'TestAttachedRun|TestDetachedRun|TestReconnect' -count=1` exits 0 and proves live stdout/stderr, managed exit codes, Ctrl+C process-group forwarding, detached name/PID output, and attached-client loss without managed-process termination.
+- [ ] #3 `go test ./integration -run 'TestLogFollowers|TestNDJSONFollow' -count=1` exits 0 and proves initial bounded filters, cursor delivery, multiple followers, eviction reporting, cancellation without process termination, and operation after the original run client disconnects.
+- [ ] #4 `go test ./integration -run 'TestStopTree|TestShutdown' -count=1` exits 0 and proves stop removes child/grandchild trees, default shutdown refuses and lists active names, and `--stop-processes` uses SIGTERM/grace/SIGKILL before daemon exit.
+- [ ] #5 The macOS and Linux CI jobs each run `task ci` and the built-binary integration suite successfully.
 <!-- AC:END -->
 
 ## Definition of Done

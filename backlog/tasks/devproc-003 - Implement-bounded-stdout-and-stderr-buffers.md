@@ -4,6 +4,7 @@ title: Implement bounded stdout and stderr buffers
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:05'
+updated_date: '2026-09-02 17:33'
 labels:
   - output
 milestone: m-0
@@ -19,11 +20,11 @@ ordinal: 300
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: the core can append timestamped stdout and stderr entries and answer deterministic bounded reads using monotonically increasing byte cursors.
+Outcome: the core can append timestamped stdout and stderr entries, answer deterministic bounded reads using monotonically increasing byte cursors, and notify concurrent followers without coupling output storage to CLI presentation.
 
-Scope: separate streams; bounded in-memory ring eviction; cursor-before-retained-data truncation; line-tail and byte limits; stream filtering; regex matching; conservative 100-line and 16 KiB defaults; next cursor and truncation metadata. Avoid avoidable copies and allocations on append/read paths.
+Scope: separate streams; bounded in-memory ring eviction; cursor-before-retained-data truncation and explicit eviction metadata; line-tail and byte limits; stream filtering; regex matching; conservative 100-line and 16 KiB defaults; next cursor and truncation metadata; multiple simultaneous append/exit subscribers; cancellation-safe subscriptions; bounded per-read delivery so a slow follower cannot cause unbounded memory growth. Avoid avoidable copies and allocations on append/read paths.
 
-Non-goals: daemon networking, process execution, disk persistence, proactive log delivery, or PTY semantics.
+Non-goals: daemon networking, process execution, disk persistence, CLI rendering, or PTY semantics.
 
 Modified-file contract: internal/output/.
 <!-- SECTION:DESCRIPTION:END -->
@@ -31,9 +32,9 @@ Modified-file contract: internal/output/.
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 `go test ./internal/output -run TestRingEviction` exits 0 and proves retained bytes stay bounded while absolute cursors only increase.
-- [ ] #2 `go test ./internal/output -run TestCursorTruncation` exits 0 and proves stale, exact-boundary, and future cursors produce the documented data or clear errors.
-- [ ] #3 `go test ./internal/output -run TestReadFilters` exits 0 and covers stdout/stderr/both, tail, byte limit, regex matches, next cursor, and truncation.
-- [ ] #4 `go test ./internal/output -bench . -benchmem` completes with stable bounded storage; implementation notes record allocations for append and bounded read.
+- [ ] #2 `go test ./internal/output -run 'TestCursorTruncation|TestFollowerEviction'` exits 0 and proves stale, exact-boundary, future, and evicted follower cursors return documented data or explicit errors/metadata.
+- [ ] #3 `go test ./internal/output -run 'TestReadFilters|TestMultipleFollowers'` exits 0 and covers stdout/stderr/both, tail, byte limit, regex matches, next cursor, multiple simultaneous followers, cancellation, and bounded slow-client delivery.
+- [ ] #4 `go test ./internal/output -bench . -benchmem` completes with stable bounded storage; implementation notes record allocations for append, bounded read, and follower notification.
 <!-- AC:END -->
 
 ## Definition of Done
