@@ -1,0 +1,12 @@
+[tools]
+go = "latest"
+gitleaks = "latest"
+lefthook = "latest"
+task = "latest"
+staticcheck = "latest"
+
+# Backlog.md is the committed work queue.
+"github:MrLesk/Backlog.md" = { version = "latest", bin = "backlog" }
+
+[settings]
+disable_backends = ["asdf"]

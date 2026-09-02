@@ -1,0 +1,13 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/evilmartians/lefthook/master/schema.json
+
+glob_matcher: doublestar
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: Check staged Go formatting
+      glob: "**/*.go"
+      run: test -z "$(mise exec go -- gofmt -l {staged_files})"
+    - name: Check for secret leaks
+      run: mise exec gitleaks -- gitleaks git --pre-commit --redact --staged --verbose --no-banner

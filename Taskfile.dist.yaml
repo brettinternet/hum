@@ -1,0 +1,46 @@
+---
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+includes:
+  setup: .taskfiles/setup.yaml
+  cli: .taskfiles/cli.yaml
+
+tasks:
+  default:
+    silent: true
+    cmd: task -l
+
+  init:
+    desc: Install toolchain, dependencies, and hooks
+    aliases: [setup]
+    deps:
+      - task: setup:init
+    cmds:
+      - task: cli:init
+
+  ci:
+    desc: The gate. Everything that must pass before a backlog task is Done.
+    cmds:
+      - task: check
+      - task: test
+
+  check:
+    desc: Run all project checks
+    deps:
+      - task: cli:check
+
+  check:staged:
+    desc: Run checks only for staged files
+    aliases: [check-staged]
+    cmd: mise exec lefthook -- lefthook run pre-commit
+
+  fix:
+    desc: Fix all project files
+    deps:
+      - task: cli:fix
+
+  test:
+    desc: Run all tests
+    deps:
+      - task: cli:test

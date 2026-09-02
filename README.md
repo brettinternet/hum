@@ -9,7 +9,7 @@ The current CLI surface is intentionally limited to help and version output. Pro
 The ordinary workflow will require no separate daemon command:
 
 ```sh
-devproc run api -- bun run dev
+devproc run api -- ./bin/api
 ```
 
 `run` will start the detached daemon if needed, ask the daemon to own the process, and remain attached to its stdout and stderr. Ctrl+C will send SIGINT to the managed process group. If the CLI disconnects without an explicit signal, the process will continue. PTY and arbitrary interactive-input support are outside the initial design.
@@ -17,7 +17,7 @@ devproc run api -- bun run dev
 Use detached process startup when no terminal should remain attached:
 
 ```sh
-devproc run api --detach -- bun run dev
+devproc run api --detach -- ./bin/api
 ```
 
 This will print the process name and PID and return immediately.
@@ -52,7 +52,7 @@ Default shutdown will refuse and list active process names. `--stop-processes` w
 
 ## Prerequisite
 
-Install [mise](https://mise.jdx.dev/) and make it available on your `PATH`. Project-managed versions of Go, Task, Lefthook, gitleaks, and Backlog.md are declared in `mise.toml`.
+Install [mise](https://mise.jdx.dev/) and make it available on your `PATH`. Project-managed versions of Go, Staticcheck, Task, Lefthook, gitleaks, and Backlog.md are declared in `mise.toml`.
 
 ## Bootstrap
 
@@ -63,7 +63,7 @@ mise install
 task init
 ```
 
-`task init` installs the project toolchain and dependencies and installs the Git hooks.
+`task init` installs the project toolchain, downloads dependencies, and installs the Git hooks.
 
 Run the project gates with:
 
@@ -73,7 +73,7 @@ task test
 task ci
 ```
 
-- `task check` runs Go formatting checks and `go vet ./...`.
+- `task check` verifies Go formatting and runs `go vet ./...` and Staticcheck.
 - `task test` runs `go test ./...`.
 - `task ci` runs both the check and test gates.
 
@@ -90,4 +90,4 @@ The build writes `bin/devproc`. The current executable supports:
 ./bin/devproc --version
 ```
 
-`--help` displays the current command usage. `--version` prints `devproc version dev` for the default development build.
+`--help` displays the current command usage. The default development build reports `devproc version dev (built unknown)`; release builds inject version and build-time metadata through Go linker flags.

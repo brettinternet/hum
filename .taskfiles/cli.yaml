@@ -1,0 +1,38 @@
+---
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+tasks:
+  init:
+    desc: Initialize CLI
+    cmd:
+      task: setup
+
+  setup:
+    desc: Download Go modules
+    cmd: mise exec go -- go mod download
+
+  setup-ci:
+    desc: Download Go modules in CI
+    cmd: mise exec go -- go mod download
+
+  build:
+    desc: Build devproc
+    cmds:
+      - mkdir -p bin
+      - mise exec go -- go build -o bin/devproc ./cmd/devproc
+
+  check:
+    desc: Run Go checks
+    cmds:
+      - test -z "$(find . \( -type d \( -name .git -o -name .worktrees -o -name bin -o -name build -o -name dist -o -name gen -o -name generated -o -name vendor \) -prune \) -o -type f -name '*.go' -exec mise exec go -- gofmt -l {} +)"
+      - mise exec go -- go vet ./...
+      - mise exec staticcheck -- staticcheck ./...
+
+  fix:
+    desc: Format Go files
+    cmd: find . \( -type d \( -name .git -o -name .worktrees -o -name bin -o -name build -o -name dist -o -name gen -o -name generated -o -name vendor \) -prune \) -o -type f -name '*.go' -exec mise exec go -- gofmt -w {} +
+
+  test:
+    desc: Run Go tests
+    cmd: mise exec go -- go test ./...
