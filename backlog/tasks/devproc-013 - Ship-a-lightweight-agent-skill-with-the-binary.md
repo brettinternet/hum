@@ -1,43 +1,43 @@
 ---
 id: DEVPROC-013
-title: Ship a lightweight agent skill with the binary
+title: Ship a manifest-first skill for shell-only agents
 status: To Do
 assignee: []
 created_date: '2026-09-02 20:13'
+updated_date: '2026-09-02 20:27'
 labels:
   - cli
   - docs
-milestone: m-0
+milestone: m-1
 dependencies:
-  - DEVPROC-008
-  - DEVPROC-009
-  - DEVPROC-012
+  - DEVPROC-015
 modified_files:
   - internal/skill/
   - internal/cli/
   - README.md
 priority: high
 type: feature
-ordinal: 975
+ordinal: 1250
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: an agent working in any project learns the hum workflow from one short, versioned skill file shipped inside the binary, without reading the design docs or the README.
+Outcome: a shell-capable coding agent learns the manifest-first hum workflow from one short, versioned skill file and can manage declared processes by name without reading project scripts or running underlying development commands.
 
-Scope: `internal/skill/SKILL.md` in the Agent Skills format (YAML frontmatter with `name: hum` and a one-sentence `description` that says when to use it, then instructions that fit on one screen) telling an agent to start processes with `run --detach`, wait for readiness with `wait --match` and branch on its exit codes, read bounded output with `logs --tail` or `logs --after-cursor --json`, `restart` after configuration changes, `stop` when done, use `list` to discover what is already running, and never run dev servers directly in its own shell; the file is embedded with `embed` from the same package and printed byte-for-byte by `hum skill`, so `hum skill > .claude/skills/hum/SKILL.md` installs it for Claude Code and the equivalent path works for other agents; a test asserts every `hum <command>` and `--flag` named in the skill exists in the root command tree; README documents installation in three lines.
+Scope: `internal/skill/SKILL.md` in the Agent Skills format, with YAML frontmatter containing `name: hum` and a one-sentence description that says when to use it, followed by instructions that fit on one screen. Teach agents to use `up --wait` for the declared stack, `start <name> --wait` for one declared process, `list` for discovery, bounded `logs --tail` or `logs --after-cursor --json`, `wait` when a later condition matters, `restart` after configuration changes, and `stop` when asked. Explicitly forbid deriving or executing the underlying `npm run dev`-style command and treat missing/invalid `hum.json` as a developer-owned project-configuration error rather than falling back to raw `run`. The file is embedded with `embed` from the same package and printed byte-for-byte by `hum skill` for installation in an agent's normal skill location. README documents this shell-only fallback separately from the primary MCP interface. A test asserts every hum command and flag named in the skill exists in the root command tree.
 
-Non-goals: MCP, per-agent installers or auto-installation, a skill marketplace, or prose beyond one screen.
+Non-goals: MCP implementation, automatic edits to third-party agent configuration, per-agent installers, a skill marketplace, manifest generation, or prose beyond one screen.
 
 Modified-file contract: internal/skill/, internal/cli/, README.md.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/skill ./internal/cli -run Skill` exits 0 and proves `hum skill` prints the embedded file byte-for-byte, the frontmatter has `name: hum` and a non-empty description, and every `hum <command>` and `--flag` mentioned in the file exists in the root command tree.
-- [ ] #2 `./bin/hum skill > "$TMP/.claude/skills/hum/SKILL.md"` exits 0 and produces a file under 80 lines that starts with YAML frontmatter and mentions `run --detach`, `wait --match`, `logs`, `restart`, `stop`, and `list`.
-- [ ] #3 `go list -deps ./internal/skill` lists only standard-library packages.
+- [ ] #1 `go test ./internal/skill ./internal/cli -run Skill` exits 0 and proves `hum skill` prints the embedded file byte-for-byte, the frontmatter has `name: hum` and a non-empty description, and every hum command and flag mentioned in the file exists in the root command tree.
+- [ ] #2 `go test ./internal/skill -run TestManifestFirstInstructions` exits 0 and proves the skill is under 80 lines, names `up --wait`, `start --wait`, `list`, bounded `logs`, `wait`, `restart`, and `stop`, and neither instructs raw `run -- <command>` nor contains package-manager development commands.
+- [ ] #3 `go list -deps ./internal/skill` succeeds and lists only standard-library packages.
+- [ ] #4 `go test ./internal/cli -run TestSkillHelp` exits 0 and proves CLI help identifies the emitted skill as the shell-only fallback and points MCP-capable agents to `hum mcp`.
 <!-- AC:END -->
 
 ## Definition of Done
