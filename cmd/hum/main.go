@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	appcli "devproc/internal/cli"
+	appcli "hum/internal/cli"
 )
 
 var (

@@ -1,4 +1,4 @@
-project_name: "devproc"
+project_name: "hum"
 default_status: "To Do"
 statuses: ["To Do", "In Progress", "Done"]
 labels: ["cli", "daemon", "process", "output", "protocol", "config", "integration", "security", "docs", "tooling", "human", "device", "credential", "blocked", "escalated", "container", "deferred"]

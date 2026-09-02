@@ -23,7 +23,7 @@ func captureWriters(t *testing.T) (*bytes.Buffer, *bytes.Buffer) {
 func TestRunNoArgsShowsHelp(t *testing.T) {
 	output, errorOutput := captureWriters(t)
 
-	err := run(context.Background(), []string{"devproc"})
+	err := run(context.Background(), []string{"hum"})
 	if err != nil {
 		t.Fatalf("run without arguments: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestRunNoArgsShowsHelp(t *testing.T) {
 	}
 
 	help := strings.ToLower(output.String())
-	for _, want := range []string{"usage:", "devproc", "local development process supervisor"} {
+	for _, want := range []string{"usage:", "hum", "local development process supervisor"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("help output missing %q: %q", want, output.String())
 		}
@@ -48,7 +48,7 @@ func TestRunVersion(t *testing.T) {
 
 	output, errorOutput := captureWriters(t)
 
-	err := run(context.Background(), []string{"devproc", "--version"})
+	err := run(context.Background(), []string{"hum", "--version"})
 	if err != nil {
 		t.Fatalf("run with --version: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestRunVersion(t *testing.T) {
 func TestRunInvalidCommandReturnsError(t *testing.T) {
 	_, _ = captureWriters(t)
 
-	err := run(context.Background(), []string{"devproc", "--not-a-command"})
+	err := run(context.Background(), []string{"hum", "--not-a-command"})
 	if err == nil {
 		t.Fatal("run with an invalid command returned nil")
 	}
@@ -77,7 +77,7 @@ func TestRunCanceledContextReturnsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := run(ctx, []string{"devproc"})
+	err := run(ctx, []string{"hum"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("run with canceled context = %v, want %v", err, context.Canceled)
 	}

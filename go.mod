@@ -1,4 +1,4 @@
-module devproc
+module hum
 
 go 1.22
 

@@ -17,10 +17,10 @@ tasks:
     cmd: mise exec go -- go mod download
 
   build:
-    desc: Build devproc
+    desc: Build hum
     cmds:
       - mkdir -p bin
-      - mise exec go -- go build -o bin/devproc ./cmd/devproc
+      - mise exec go -- go build -o bin/hum ./cmd/hum
 
   check:
     desc: Run Go checks

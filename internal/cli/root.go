@@ -7,11 +7,11 @@ import (
 	urfavecli "github.com/urfave/cli/v3"
 )
 
-// NewRootCommand builds the devproc command with the supplied build metadata
+// NewRootCommand builds the hum command with the supplied build metadata
 // and output writers.
 func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urfavecli.Command {
 	return &urfavecli.Command{
-		Name:        "devproc",
+		Name:        "hum",
 		Usage:       "A local development process supervisor",
 		Description: "Supervise development processes locally from the command line.",
 		Version:     version + " (built " + buildTime + ")",

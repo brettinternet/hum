@@ -4,7 +4,7 @@ title: Add process status command
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:07'
-updated_date: '2026-09-02 20:13'
+updated_date: '2026-09-02 20:27'
 labels:
   - cli
   - process
@@ -26,7 +26,7 @@ ordinal: 800
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: after the lifecycle slice is green, clients can inspect one project-scoped process without fetching logs or mutating daemon state, and agents can anchor later `wait` or `logs` calls on the returned cursor.
 
-Scope: `devproc status <name> [--json]`; application and protocol query; human output; stable JSON containing name, project root, PID, process-group ID, cwd, argv array, start time, state, exit status when available, restart count, and `next_cursor` (the sequence position after the newest retained entry); the recorded environment is never included; clear not-found and invalid-name errors. Status never auto-starts the daemon; if unavailable it returns `Start it with devproc serve --daemon.`
+Scope: `hum status <name> [--json]`; application and protocol query; human output; stable JSON containing name, project root, PID, process-group ID, cwd, argv array, start time, state, exit status when available, restart count, and `next_cursor` (the sequence position after the newest retained entry); the recorded environment is never included; clear not-found and invalid-name errors. Status never auto-starts the daemon; if unavailable it returns `Start it with hum serve --daemon.`
 
 Non-goals: wait semantics, log content, polling, persistence, metrics, daemon auto-start, or MCP.
 
@@ -36,8 +36,8 @@ Modified-file contract: internal/app/, internal/protocol/, internal/cli/.
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 `go test ./internal/app ./internal/protocol ./internal/cli -run Status` exits 0 and covers running, exited, signaled, invalid-name, missing-process, and unavailable-daemon states.
-- [ ] #2 Against the integration fixture, `devproc status api --json` decodes with exact argv, PID/PGID, cwd, RFC3339 start time, running state, nullable exit status, restart count, and `next_cursor`, contains no environment field, and changes neither process nor cursor state.
-- [ ] #3 After fixture exit, human and JSON status report the terminal state and exit status; unknown names fail with a typed error, while an unavailable daemon fails without starting one and includes `Start it with devproc serve --daemon.`
+- [ ] #2 Against the integration fixture, `hum status api --json` decodes with exact argv, PID/PGID, cwd, RFC3339 start time, running state, nullable exit status, restart count, and `next_cursor`, contains no environment field, and changes neither process nor cursor state.
+- [ ] #3 After fixture exit, human and JSON status report the terminal state and exit status; unknown names fail with a typed error, while an unavailable daemon fails without starting one and includes `Start it with hum serve --daemon.`
 <!-- AC:END -->
 
 ## Definition of Done

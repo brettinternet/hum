@@ -1,15 +1,15 @@
-# devproc
+# hum
 
-devproc is a local development process supervisor for humans and coding agents. This repository is currently the Go CLI bootstrap: it provides help and version output plus reproducible project tooling and gates.
+hum is a local development process supervisor for humans and coding agents. This repository is currently the Go CLI bootstrap: it provides help and version output plus reproducible project tooling and gates.
 
-The current CLI surface is intentionally limited to help and version output. Process and daemon commands (`serve`, `run`, `list`, `status`, `logs`, `wait`, `stop`, and `shutdown`) are planned. See the [devproc design](docs/design.md) for the intended behavior and delivery order.
+The current CLI surface is intentionally limited to help and version output. Process and daemon commands (`serve`, `run`, `list`, `status`, `logs`, `wait`, `stop`, and `shutdown`) are planned. See the [hum design](docs/design.md) for the intended behavior and delivery order.
 
 ## Planned lifecycle
 
 The ordinary workflow will require no separate daemon command:
 
 ```sh
-devproc run api -- ./bin/api
+hum run api -- ./bin/api
 ```
 
 `run` will start the detached daemon if needed, ask the daemon to own the process, and remain attached to its stdout and stderr. Ctrl+C will send SIGINT to the managed process group. If the CLI disconnects without an explicit signal, the process will continue. PTY and arbitrary interactive-input support are outside the initial design.
@@ -17,7 +17,7 @@ devproc run api -- ./bin/api
 Use detached process startup when no terminal should remain attached:
 
 ```sh
-devproc run api --detach -- ./bin/api
+hum run api --detach -- ./bin/api
 ```
 
 This will print the process name and PID and return immediately.
@@ -25,27 +25,27 @@ This will print the process name and PID and return immediately.
 Daemon execution is separate from process attachment:
 
 ```sh
-devproc serve           # foreground; diagnostics on stderr
-devproc serve --daemon  # detached and idempotent; prints PID and socket after readiness
+hum serve           # foreground; diagnostics on stderr
+hum serve --daemon  # detached and idempotent; prints PID and socket after readiness
 ```
 
-Detached daemon diagnostics will use a bounded or rotating `daemon.log` in the private runtime directory. Concurrent starts will produce one daemon, and verified stale PID/socket files will be recovered safely. `run` is the only command that auto-starts it. If the daemon is unavailable, `list`, `status`, `logs`, `wait`, `stop`, and `shutdown` will suggest `devproc serve --daemon` instead of starting an empty daemon.
+Detached daemon diagnostics will use a bounded or rotating `daemon.log` in the private runtime directory. Concurrent starts will produce one daemon, and verified stale PID/socket files will be recovered safely. `run` is the only command that auto-starts it. If the daemon is unavailable, `list`, `status`, `logs`, `wait`, `stop`, and `shutdown` will suggest `hum serve --daemon` instead of starting an empty daemon.
 
 Follow logs without attaching process control:
 
 ```sh
-devproc logs api --follow
-devproc logs api --stream stderr --tail 100 --limit-bytes 16000 --json
-devproc logs api --after-cursor 2941 --limit-bytes 16000 --json
+hum logs api --follow
+hum logs api --stream stderr --tail 100 --limit-bytes 16000 --json
+hum logs api --after-cursor 2941 --limit-bytes 16000 --json
 ```
 
 Following is read-only: Ctrl+C cancels only that follower, and multiple followers may observe the same process. `--json --follow` will emit newline-delimited JSON events. Reads and streaming delivery remain bounded, and a lagging follower is told when earlier output was evicted.
 
-`devproc stop api` will gracefully stop one managed process group. Daemon shutdown is distinct:
+`hum stop api` will gracefully stop one managed process group. Daemon shutdown is distinct:
 
 ```sh
-devproc shutdown
-devproc shutdown --stop-processes
+hum shutdown
+hum shutdown --stop-processes
 ```
 
 Default shutdown will refuse and list active process names. `--stop-processes` will send SIGTERM to every managed group, wait a bounded grace period, use SIGKILL only where necessary, and then stop the daemon. Launchd, systemd, login startup, and operating-system service installation are not part of this update.
@@ -105,11 +105,11 @@ Build the CLI with:
 task cli:build
 ```
 
-The build writes `bin/devproc`. The current executable supports:
+The build writes `bin/hum`. The current executable supports:
 
 ```sh
-./bin/devproc --help
-./bin/devproc --version
+./bin/hum --help
+./bin/hum --version
 ```
 
-`--help` displays the current command usage. The default development build reports `devproc version dev (built unknown)`; release builds inject version and build-time metadata through Go linker flags.
+`--help` displays the current command usage. The default development build reports `hum version dev (built unknown)`; release builds inject version and build-time metadata through Go linker flags.

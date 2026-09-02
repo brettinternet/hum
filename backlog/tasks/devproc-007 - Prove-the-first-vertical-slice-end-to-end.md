@@ -4,7 +4,7 @@ title: Prove daemon lifecycle and observation end to end
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:06'
-updated_date: '2026-09-02 20:13'
+updated_date: '2026-09-02 20:27'
 labels:
   - integration
   - tooling
@@ -28,7 +28,7 @@ ordinal: 700
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: the lifecycle/run/log/stop/shutdown slice, including detached daemon startup, is exercised through the built binary on macOS and Linux before status, wait, restart, or skill work may begin.
 
-Scope: deterministic fixture processes (including one that prints its cwd and selected environment variables and one that spawns a grandchild); foreground and detached daemon harnesses isolated through `DEVPROC_RUNTIME_DIR`; readiness/PID/socket reporting; detached standard-stream/session isolation; bounded daemon log; idempotent and concurrent auto-start; stale PID/socket recovery; version-mismatch replacement and refusal; exact-argv attached and detached launch with client cwd and environment inheritance; live separate stdout/stderr; attached exit status, SIGINT forwarding, and detach-on-SIGTERM; client disconnect/reconnect; multiple bounded followers and cancellation; NDJSON follow events; incremental cursor continuation, truncation, regex, and stream filtering; observed exit status; stop; shutdown refusal and graceful all-process tree termination.
+Scope: deterministic fixture processes (including one that prints its cwd and selected environment variables and one that spawns a grandchild); foreground and detached daemon harnesses isolated through `HUM_RUNTIME_DIR`; readiness/PID/socket reporting; detached standard-stream/session isolation; bounded daemon log; idempotent and concurrent auto-start; stale PID/socket recovery; version-mismatch replacement and refusal; exact-argv attached and detached launch with client cwd and environment inheritance; live separate stdout/stderr; attached exit status, SIGINT forwarding, and detach-on-SIGTERM; client disconnect/reconnect; multiple bounded followers and cancellation; NDJSON follow events; incremental cursor continuation, truncation, regex, and stream filtering; observed exit status; stop; shutdown refusal and graceful all-process tree termination.
 
 Non-goals: implementing status, wait, restart, or the skill, benchmarks, persistence, PTY or arbitrary stdin, Windows, OS-service installation, or MCP.
 

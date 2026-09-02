@@ -11,7 +11,7 @@ import (
 func TestRootCommandNoArgsShowsHelp(t *testing.T) {
 	var output, errorOutput bytes.Buffer
 
-	err := NewRootCommand("dev", "unknown", &output, &errorOutput).Run(context.Background(), []string{"devproc"})
+	err := NewRootCommand("dev", "unknown", &output, &errorOutput).Run(context.Background(), []string{"hum"})
 	if err != nil {
 		t.Fatalf("run without arguments: %v", err)
 	}
@@ -20,7 +20,7 @@ func TestRootCommandNoArgsShowsHelp(t *testing.T) {
 	}
 
 	help := strings.ToLower(output.String())
-	for _, want := range []string{"usage:", "devproc", "local development process supervisor"} {
+	for _, want := range []string{"usage:", "hum", "local development process supervisor"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("help output missing %q: %q", want, output.String())
 		}
@@ -30,7 +30,7 @@ func TestRootCommandNoArgsShowsHelp(t *testing.T) {
 func TestRootCommandVersion(t *testing.T) {
 	var output, errorOutput bytes.Buffer
 
-	err := NewRootCommand("build-42", "2026-09-02T12:00:00Z", &output, &errorOutput).Run(context.Background(), []string{"devproc", "--version"})
+	err := NewRootCommand("build-42", "2026-09-02T12:00:00Z", &output, &errorOutput).Run(context.Background(), []string{"hum", "--version"})
 	if err != nil {
 		t.Fatalf("run with --version: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestRootCommandCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := NewRootCommand("dev", "unknown", &output, &errorOutput).Run(ctx, []string{"devproc"})
+	err := NewRootCommand("dev", "unknown", &output, &errorOutput).Run(ctx, []string{"hum"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("run with canceled context = %v, want %v", err, context.Canceled)
 	}

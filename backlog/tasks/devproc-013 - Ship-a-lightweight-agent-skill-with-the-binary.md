@@ -24,9 +24,9 @@ ordinal: 975
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: an agent working in any project learns the devproc workflow from one short, versioned skill file shipped inside the binary, without reading the design docs or the README.
+Outcome: an agent working in any project learns the hum workflow from one short, versioned skill file shipped inside the binary, without reading the design docs or the README.
 
-Scope: `internal/skill/SKILL.md` in the Agent Skills format (YAML frontmatter with `name: devproc` and a one-sentence `description` that says when to use it, then instructions that fit on one screen) telling an agent to start processes with `run --detach`, wait for readiness with `wait --match` and branch on its exit codes, read bounded output with `logs --tail` or `logs --after-cursor --json`, `restart` after configuration changes, `stop` when done, use `list` to discover what is already running, and never run dev servers directly in its own shell; the file is embedded with `embed` from the same package and printed byte-for-byte by `devproc skill`, so `devproc skill > .claude/skills/devproc/SKILL.md` installs it for Claude Code and the equivalent path works for other agents; a test asserts every `devproc <command>` and `--flag` named in the skill exists in the root command tree; README documents installation in three lines.
+Scope: `internal/skill/SKILL.md` in the Agent Skills format (YAML frontmatter with `name: hum` and a one-sentence `description` that says when to use it, then instructions that fit on one screen) telling an agent to start processes with `run --detach`, wait for readiness with `wait --match` and branch on its exit codes, read bounded output with `logs --tail` or `logs --after-cursor --json`, `restart` after configuration changes, `stop` when done, use `list` to discover what is already running, and never run dev servers directly in its own shell; the file is embedded with `embed` from the same package and printed byte-for-byte by `hum skill`, so `hum skill > .claude/skills/hum/SKILL.md` installs it for Claude Code and the equivalent path works for other agents; a test asserts every `hum <command>` and `--flag` named in the skill exists in the root command tree; README documents installation in three lines.
 
 Non-goals: MCP, per-agent installers or auto-installation, a skill marketplace, or prose beyond one screen.
 
@@ -35,8 +35,8 @@ Modified-file contract: internal/skill/, internal/cli/, README.md.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/skill ./internal/cli -run Skill` exits 0 and proves `devproc skill` prints the embedded file byte-for-byte, the frontmatter has `name: devproc` and a non-empty description, and every `devproc <command>` and `--flag` mentioned in the file exists in the root command tree.
-- [ ] #2 `./bin/devproc skill > "$TMP/.claude/skills/devproc/SKILL.md"` exits 0 and produces a file under 80 lines that starts with YAML frontmatter and mentions `run --detach`, `wait --match`, `logs`, `restart`, `stop`, and `list`.
+- [ ] #1 `go test ./internal/skill ./internal/cli -run Skill` exits 0 and proves `hum skill` prints the embedded file byte-for-byte, the frontmatter has `name: hum` and a non-empty description, and every `hum <command>` and `--flag` mentioned in the file exists in the root command tree.
+- [ ] #2 `./bin/hum skill > "$TMP/.claude/skills/hum/SKILL.md"` exits 0 and produces a file under 80 lines that starts with YAML frontmatter and mentions `run --detach`, `wait --match`, `logs`, `restart`, `stop`, and `list`.
 - [ ] #3 `go list -deps ./internal/skill` lists only standard-library packages.
 <!-- AC:END -->
 
