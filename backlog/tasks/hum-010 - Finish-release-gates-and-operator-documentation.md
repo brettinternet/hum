@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-010
+id: HUM-010
 title: Finish release gates and operator documentation
 status: To Do
 assignee: []
@@ -11,9 +11,9 @@ labels:
   - integration
 milestone: m-0
 dependencies:
-  - DEVPROC-008
-  - DEVPROC-009
-  - DEVPROC-012
+  - HUM-008
+  - HUM-009
+  - HUM-012
 modified_files:
   - README.md
   - docs/design.md

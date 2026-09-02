@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-013
+id: HUM-013
 title: Ship a resolved-project skill for shell-only agents
 status: To Do
 assignee: []
@@ -10,7 +10,7 @@ labels:
   - docs
 milestone: m-1
 dependencies:
-  - DEVPROC-015
+  - HUM-015
 modified_files:
   - internal/skill/
   - internal/cli/

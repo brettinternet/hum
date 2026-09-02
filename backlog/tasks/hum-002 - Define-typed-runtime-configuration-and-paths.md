@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-002
+id: HUM-002
 title: Define typed runtime configuration and paths
 status: To Do
 assignee: []
@@ -10,7 +10,7 @@ labels:
   - security
 milestone: m-0
 dependencies:
-  - DEVPROC-001
+  - HUM-001
 modified_files:
   - internal/config/
 priority: high
@@ -23,7 +23,7 @@ ordinal: 200
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: hum resolves build metadata, the runtime directory, output and completed-record bounds, read defaults, and stop timing through a typed configuration boundary that application code constructs without urfave/cli objects.
 
-Scope: a `BuildOpts` struct for ldflags values (version, build time); a typed `Input` struct holding raw flag and environment values; a constructor `New(BuildOpts, Input) (Config, error)` that applies flag > environment > default precedence, validates bounds and durations, and returns typed fields; platform-aware runtime-directory resolution: `HUM_RUNTIME_DIR` when set, else `$XDG_RUNTIME_DIR/hum`, else a per-user directory below the OS temporary directory. Environment variables: `HUM_RUNTIME_DIR`, `HUM_STOP_GRACE` (default 10s), `HUM_OUTPUT_BYTES` (retained output per process, default 4 MiB, minimum 64 KiB), and `HUM_COMPLETED_RECORDS` (maximum completed process records retained across all projects, default 20, range 1-1000). Read defaults (100 entries, 16 KiB) and the maximum line length live here as typed constants. The thin adapter that copies urfave/cli flag values into `Input` belongs to internal/cli (DEVPROC-006), so this package never imports the CLI framework.
+Scope: a `BuildOpts` struct for ldflags values (version, build time); a typed `Input` struct holding raw flag and environment values; a constructor `New(BuildOpts, Input) (Config, error)` that applies flag > environment > default precedence, validates bounds and durations, and returns typed fields; platform-aware runtime-directory resolution: `HUM_RUNTIME_DIR` when set, else `$XDG_RUNTIME_DIR/hum`, else a per-user directory below the OS temporary directory. Environment variables: `HUM_RUNTIME_DIR`, `HUM_STOP_GRACE` (default 10s), `HUM_OUTPUT_BYTES` (retained output per process, default 4 MiB, minimum 64 KiB), and `HUM_COMPLETED_RECORDS` (maximum completed process records retained across all projects, default 20, range 1-1000). Read defaults (100 entries, 16 KiB) and the maximum line length live here as typed constants. The thin adapter that copies urfave/cli flag values into `Input` belongs to internal/cli (HUM-006), so this package never imports the CLI framework.
 
 Non-goals: persistent configuration files or YAML/JSON loading, secrets, authentication, remote endpoints, service-manager integration, or daemon behavior.
 

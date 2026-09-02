@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-005
+id: HUM-005
 title: Serve the private NDJSON daemon protocol
 status: To Do
 assignee: []
@@ -11,7 +11,7 @@ labels:
   - security
 milestone: m-0
 dependencies:
-  - DEVPROC-004
+  - HUM-004
 modified_files:
   - internal/protocol/
   - internal/daemon/

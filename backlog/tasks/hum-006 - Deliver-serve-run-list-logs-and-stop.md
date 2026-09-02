@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-006
+id: HUM-006
 title: 'Deliver serve, run, list, logs, stop, and shutdown commands'
 status: To Do
 assignee: []
@@ -12,7 +12,7 @@ labels:
   - output
 milestone: m-0
 dependencies:
-  - DEVPROC-005
+  - HUM-005
 modified_files:
   - cmd/hum/
   - internal/cli/
@@ -28,9 +28,9 @@ ordinal: 600
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: with a daemon running, `hum run` hands child ownership to the daemon and streams live output while attached, and the remaining commands expose detached start, listing, bounded and followed logs, stop, and shutdown, all with human defaults and stable JSON.
 
-Scope: urfave/cli commands `serve` (foreground only; diagnostics on stderr; Ctrl+C runs the stop-all sequence then exits), `run <name> [--detach] [--json] -- <command> [args...]`, `list [--all] [--json]`, `logs <name> [--stream stdout|stderr|both] [--tail N] [--after-cursor N] [--limit-bytes N] [--grep REGEX] [--follow] [--json]`, `stop <name>`, and `shutdown [--stop-processes]`; the CLI-edge adapter that reads global flags and `HUM_*` environment variables into the DEVPROC-002 typed input; `run` sends the client's cwd and full environment. Attached run streams stdout/stderr with raw line content, returns the managed exit code, forwards the first Ctrl+C as SIGINT to the group and stays attached, turns a second Ctrl+C into the graceful stop sequence, and detaches without signaling the process on SIGTERM/SIGHUP or connection loss. Detached run prints name and PID, or JSON with name, pid, and cursor. `list` shows the current project by default and every project with root paths under `--all`. Follow returns the initial bounded selection then cursor-based events; Ctrl+C cancels only the follower; `--json --follow` is NDJSON. Default shutdown refuses and lists `<project root>: <name>` for each active process; `--stop-processes` terminates every group before daemon exit. In this task every command, including `run`, fails concisely with `Start it with hum serve --daemon.` when no daemon is available; DEVPROC-011 adds automatic start for `run`. Keep exact argv forwarding, bounds, and validation errors that name the next command.
+Scope: urfave/cli commands `serve` (foreground only; diagnostics on stderr; Ctrl+C runs the stop-all sequence then exits), `run <name> [--detach] [--json] -- <command> [args...]`, `list [--all] [--json]`, `logs <name> [--stream stdout|stderr|both] [--tail N] [--after-cursor N] [--limit-bytes N] [--grep REGEX] [--follow] [--json]`, `stop <name>`, and `shutdown [--stop-processes]`; the CLI-edge adapter that reads global flags and `HUM_*` environment variables into the HUM-002 typed input; `run` sends the client's cwd and full environment. Attached run streams stdout/stderr with raw line content, returns the managed exit code, forwards the first Ctrl+C as SIGINT to the group and stays attached, turns a second Ctrl+C into the graceful stop sequence, and detaches without signaling the process on SIGTERM/SIGHUP or connection loss. Detached run prints name and PID, or JSON with name, pid, and cursor. `list` shows the current project by default and every project with root paths under `--all`. Follow returns the initial bounded selection then cursor-based events; Ctrl+C cancels only the follower; `--json --follow` is NDJSON. Default shutdown refuses and lists `<project root>: <name>` for each active process; `--stop-processes` terminates every group before daemon exit. In this task every command, including `run`, fails concisely with `Start it with hum serve --daemon.` when no daemon is available; HUM-011 adds automatic start for `run`. Keep exact argv forwarding, bounds, and validation errors that name the next command.
 
-Non-goals: `serve --daemon`, automatic daemon start, startup locking, stale recovery, and `daemon.log` (all DEVPROC-011); `status`, `wait`, and `restart`; PTY or arbitrary interactive input; configuration files; MCP; launchd, systemd, login startup, or OS-service installation.
+Non-goals: `serve --daemon`, automatic daemon start, startup locking, stale recovery, and `daemon.log` (all HUM-011); `status`, `wait`, and `restart`; PTY or arbitrary interactive input; configuration files; MCP; launchd, systemd, login startup, or OS-service installation.
 
 Modified-file contract: cmd/hum/, internal/cli/, internal/app/, internal/protocol/.
 <!-- SECTION:DESCRIPTION:END -->

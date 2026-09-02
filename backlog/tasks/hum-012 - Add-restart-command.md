@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-012
+id: HUM-012
 title: Add restart command
 status: To Do
 assignee: []
@@ -12,7 +12,7 @@ labels:
   - protocol
 milestone: m-0
 dependencies:
-  - DEVPROC-007
+  - HUM-007
 modified_files:
   - internal/output/
   - internal/app/

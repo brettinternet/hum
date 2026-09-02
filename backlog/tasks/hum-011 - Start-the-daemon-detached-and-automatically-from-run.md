@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-011
+id: HUM-011
 title: Start the daemon detached and automatically from run
 status: To Do
 assignee: []
@@ -11,7 +11,7 @@ labels:
   - security
 milestone: m-0
 dependencies:
-  - DEVPROC-006
+  - HUM-006
 modified_files:
   - cmd/hum/
   - internal/cli/

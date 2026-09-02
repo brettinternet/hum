@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-003
+id: HUM-003
 title: Implement bounded stdout and stderr buffers
 status: To Do
 assignee: []
@@ -9,7 +9,7 @@ labels:
   - output
 milestone: m-0
 dependencies:
-  - DEVPROC-001
+  - HUM-001
 modified_files:
   - internal/output/
 priority: high

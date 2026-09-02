@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-014
+id: HUM-014
 title: Declare project processes in a canonical YAML manifest
 status: To Do
 assignee: []
@@ -11,7 +11,7 @@ labels:
   - docs
 milestone: m-1
 dependencies:
-  - DEVPROC-010
+  - HUM-010
 modified_files:
   - internal/project/
   - internal/app/
@@ -33,7 +33,7 @@ ordinal: 1100
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: a project can commit one canonical, versioned YAML manifest of named development processes, so humans and agents can idempotently bring up precise project definitions and wait for current-incarnation readiness without knowing, retyping, or reverse-engineering underlying commands.
 
-Scope: one strict YAML document in `hum.yaml` at the nearest Git project root, with top-level `version: 1` and a `processes` mapping keyed by safe process name. Each entry has a non-empty `argv` string sequence and may have a root-relative `cwd` plus `ready: { match: <regex>, timeout: <duration> }`; the readiness timeout defaults to 30s. Reject unknown or duplicate keys, aliases and merge keys, multiple documents, unsupported versions, shell text, empty or non-string argv elements, invalid names/regexes/durations, absolute cwd values, lexical traversal, missing cwd directories at launch, and symlink-resolved cwd values outside the project root, with errors naming the file and entry. Do not accept JSON, TOML, `.yml`, or alternate manifest filenames. Implement parsing and source-tagged normalized process definitions in `internal/project`; DEVPROC-016 extends the same model with non-manifest sources.
+Scope: one strict YAML document in `hum.yaml` at the nearest Git project root, with top-level `version: 1` and a `processes` mapping keyed by safe process name. Each entry has a non-empty `argv` string sequence and may have a root-relative `cwd` plus `ready: { match: <regex>, timeout: <duration> }`; the readiness timeout defaults to 30s. Reject unknown or duplicate keys, aliases and merge keys, multiple documents, unsupported versions, shell text, empty or non-string argv elements, invalid names/regexes/durations, absolute cwd values, lexical traversal, missing cwd directories at launch, and symlink-resolved cwd values outside the project root, with errors naming the file and entry. Do not accept JSON, TOML, `.yml`, or alternate manifest filenames. Implement parsing and source-tagged normalized process definitions in `internal/project`; HUM-016 extends the same model with non-manifest sources.
 
 Add `hum start <name> [--wait] [--timeout DURATION] [--json]` and `hum up [--wait] [--timeout DURATION] [--json]`. Both auto-start or version-replace the daemon exactly like `run`. `start` is an idempotent ensure-running operation: concurrent calls produce one child; an already-running manifest launch returns `already_running` without replacement; a stopped or never-started entry launches detached from the current manifest with the requesting client's full environment and returns `started`. `up` processes names lexically, leaves running manifest launches alone, attempts every stopped entry despite individual launch failures, and returns one stable result per declared name. A running ad hoc record whose name later becomes declared is a conflict, not `already_running`.
 
@@ -41,7 +41,7 @@ Every manifest launch records its readiness expression, launch cursor, and first
 
 `run <name>` without argv uses the manifest command while retaining attached-run semantics; raw `run <name> -- <argv>` is rejected when the manifest declares that name and remains available only for undeclared ad hoc names. Without a daemon, `list` reads `hum.yaml` locally and reports every declaration as stopped without creating runtime state; with a daemon it merges declared and ad hoc records. `restart` prefers the current manifest argv/cwd/readiness definition and the requesting client's current environment, returns the new launch cursor, and retains the existing output cursor sequence. Names are scoped to the existing nearest-Git-root rules. README.md and docs/design.md document that cwd does not activate shell hooks and projects needing deterministic MCP execution should encode environment activation in argv through a committed tool runner.
 
-Non-goals: zero-config discovery (DEVPROC-016), runtime settings in the manifest, shell-text commands, dependency ordering, ports or HTTP health checks, automatic crash restart/backoff, environment literals or files, or arbitrary-command MCP tools.
+Non-goals: zero-config discovery (HUM-016), runtime settings in the manifest, shell-text commands, dependency ordering, ports or HTTP health checks, automatic crash restart/backoff, environment literals or files, or arbitrary-command MCP tools.
 
 Modified-file contract: internal/project/, internal/app/, internal/protocol/, internal/cli/, integration/, internal/testutil/, go.mod, go.sum, README.md, docs/design.md.
 <!-- SECTION:DESCRIPTION:END -->

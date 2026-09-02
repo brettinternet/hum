@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-008
+id: HUM-008
 title: Add process status command
 status: To Do
 assignee: []
@@ -11,7 +11,7 @@ labels:
   - protocol
 milestone: m-0
 dependencies:
-  - DEVPROC-007
+  - HUM-007
 modified_files:
   - internal/app/
   - internal/protocol/

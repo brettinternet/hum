@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-004
+id: HUM-004
 title: Supervise project-scoped process trees
 status: To Do
 assignee: []
@@ -10,8 +10,8 @@ labels:
   - output
 milestone: m-0
 dependencies:
-  - DEVPROC-002
-  - DEVPROC-003
+  - HUM-002
+  - HUM-003
 modified_files:
   - internal/app/
   - internal/process/
@@ -25,9 +25,9 @@ ordinal: 400
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: application services start, inspect, signal, stop, and retire named processes while the daemon, not any client connection, owns their lifecycle; every child runs with the requesting client's cwd and environment, and completed records cannot retain output or secret-bearing environments without bound.
 
-Scope: narrow `internal/app` services over `internal/process`; project-root discovery walking up to the nearest `.git` directory or `.git` file (linked worktree) with cwd fallback; names unique within a project root; safe-name validation; direct argv execution without shell reconstruction; the child inherits exactly the cwd and environment supplied by the client (never the daemon's) with stdin attached to /dev/null; separate stdout/stderr capture appended into the process's DEVPROC-003 output sequence; a launch record with project root, PID, process-group ID, cwd, argv, environment, start time, launch cursor, state, exit status, and restart count, where the environment is retained only for relaunch and excluded from every read model; SIGINT forwarding to a process group; single-process stop and all-process shutdown using SIGTERM, a bounded grace period, then SIGKILL only when necessary; duplicate-running-name rejection that names the running PID; concurrency-safe state transitions. A client disconnect without an explicit signal does not terminate its managed process. Active records are never evicted. After each terminal transition, evict the oldest completed records above `HUM_COMPLETED_RECORDS` across all project roots, clear their stored environments, and release their output buffers.
+Scope: narrow `internal/app` services over `internal/process`; project-root discovery walking up to the nearest `.git` directory or `.git` file (linked worktree) with cwd fallback; names unique within a project root; safe-name validation; direct argv execution without shell reconstruction; the child inherits exactly the cwd and environment supplied by the client (never the daemon's) with stdin attached to /dev/null; separate stdout/stderr capture appended into the process's HUM-003 output sequence; a launch record with project root, PID, process-group ID, cwd, argv, environment, start time, launch cursor, state, exit status, and restart count, where the environment is retained only for relaunch and excluded from every read model; SIGINT forwarding to a process group; single-process stop and all-process shutdown using SIGTERM, a bounded grace period, then SIGKILL only when necessary; duplicate-running-name rejection that names the running PID; concurrency-safe state transitions. A client disconnect without an explicit signal does not terminate its managed process. Active records are never evicted. After each terminal transition, evict the oldest completed records above `HUM_COMPLETED_RECORDS` across all project roots, clear their stored environments, and release their output buffers.
 
-Non-goals: sockets, protocol encoding, CLI rendering, restart (DEVPROC-012), persistence across daemon restart, PTY or arbitrary stdin forwarding, Windows, retries, or plugins.
+Non-goals: sockets, protocol encoding, CLI rendering, restart (HUM-012), persistence across daemon restart, PTY or arbitrary stdin forwarding, Windows, retries, or plugins.
 
 Modified-file contract: internal/app/, internal/process/.
 <!-- SECTION:DESCRIPTION:END -->

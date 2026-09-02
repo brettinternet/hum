@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-007
+id: HUM-007
 title: Prove daemon lifecycle and observation end to end
 status: To Do
 assignee: []
@@ -11,8 +11,8 @@ labels:
   - security
 milestone: m-0
 dependencies:
-  - DEVPROC-006
-  - DEVPROC-011
+  - HUM-006
+  - HUM-011
 modified_files:
   - integration/
   - internal/testutil/

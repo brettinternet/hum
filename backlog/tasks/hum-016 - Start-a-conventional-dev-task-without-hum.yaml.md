@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-016
+id: HUM-016
 title: Start a conventional dev task without hum.yaml
 status: To Do
 assignee: []
@@ -11,7 +11,7 @@ labels:
   - docs
 milestone: m-1
 dependencies:
-  - DEVPROC-014
+  - HUM-014
 modified_files:
   - internal/project/
   - internal/cli/

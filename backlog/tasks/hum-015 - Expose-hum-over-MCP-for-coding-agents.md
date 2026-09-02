@@ -1,5 +1,5 @@
 ---
-id: DEVPROC-015
+id: HUM-015
 title: Expose the resolved process lifecycle over MCP
 status: To Do
 assignee: []
@@ -11,7 +11,7 @@ labels:
   - docs
 milestone: m-1
 dependencies:
-  - DEVPROC-016
+  - HUM-016
 modified_files:
   - internal/mcp/
   - internal/cli/
