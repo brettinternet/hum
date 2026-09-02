@@ -23,14 +23,9 @@
 
 ## Git and GitHub
 
+- Only use a worktree/branch when directed to do so.
 - Agent-created branches MUST be created as worktrees under `.worktrees/`; do not create branches in the primary checkout.
-- Create a worktree with `git worktree add -b <branch> .worktrees/<branch>` from the repository root.
 - Run any documented worktree setup from inside the new worktree before making changes.
-- Do not start shared services from a worktree unless the project explicitly supports it.
 - After a merged worktree branch is no longer needed, remove the worktree, delete the branch, and prune stale worktree metadata before handoff.
 - Use `gh` for GitHub operations; do not construct raw API calls or open GitHub URLs in a browser.
 - Do not push or open a pull request without explicit instruction.
-
-## Scope
-
-- Do not edit files outside the current task scope.
