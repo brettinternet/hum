@@ -4,7 +4,7 @@ title: Add cursor-based wait command
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:07'
-updated_date: '2026-09-02 17:35'
+updated_date: '2026-09-02 20:05'
 labels:
   - cli
   - output
@@ -50,5 +50,4 @@ Modified-file contract: internal/output/, internal/app/, internal/protocol/, int
 - [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
-- [ ] #7 Committed on main with the task ID in the commit subject and a Task: trailer
 <!-- DOD:END -->

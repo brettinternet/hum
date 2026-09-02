@@ -77,6 +77,28 @@ task ci
 - `task test` runs `go test ./...`.
 - `task ci` runs both the check and test gates.
 
+## Commit messages
+
+Commits use [Conventional Commits](https://www.conventionalcommits.org/):
+
+```text
+<type>(<optional scope>)<optional !>: <description>
+```
+
+Use `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, or `chore` for
+most changes. `perf`, `revert`, and `style` are also accepted when they describe
+the change precisely. Keep the scope lowercase and omit it when it adds no
+information. Describe breaking changes with `!` or a `BREAKING CHANGE:` trailer.
+Commit messages do not need task IDs or ticket references.
+
+Examples:
+
+```text
+feat(cli): add process status command
+fix(daemon): preserve buffered stderr on exit
+docs: explain runtime configuration
+```
+
 Build the CLI with:
 
 ```sh
