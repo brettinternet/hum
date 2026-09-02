@@ -4,6 +4,7 @@ version: "3"
 
 includes:
   setup: .taskfiles/setup.yaml
+  backlog: .taskfiles/backlog.yaml
   cli: .taskfiles/cli.yaml
 
 tasks:

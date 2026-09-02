@@ -1,0 +1,55 @@
+---
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+tasks:
+  next:
+    desc: Show the next available backlog task
+    dir: "{{.ROOT_DIR}}"
+    silent: true
+    env:
+      HUM_ROOT_DIR: "{{.ROOT_DIR}}"
+    cmd: |
+      python3 - <<'PY'
+      import json
+      import os
+      from pathlib import Path
+      import subprocess
+      import sys
+
+      unavailable_labels = {"blocked", "deferred", "escalated"}
+      root_dir = Path(os.environ["HUM_ROOT_DIR"])
+
+      def run(command, *, cwd):
+          result = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+          if result.returncode:
+              sys.stderr.write(result.stderr)
+              raise SystemExit(result.returncode)
+          return result.stdout
+
+      worktrees = run(["git", "worktree", "list", "--porcelain"], cwd=root_dir)
+      control_root = Path(worktrees.splitlines()[0].removeprefix("worktree "))
+      output = run(
+          [
+              "mise",
+              "exec",
+              "--",
+              "backlog",
+              "task",
+              "list",
+              "--ready",
+              "--status",
+              "To Do",
+              "--json",
+          ],
+          cwd=control_root,
+      )
+
+      for task in json.loads(output)["tasks"]:
+          labels = {label.casefold() for label in task["labels"]}
+          if not labels & unavailable_labels:
+              print(f'{task["id"]} - {task["title"]}')
+              break
+      else:
+          print("No available To Do tasks.")
+      PY
