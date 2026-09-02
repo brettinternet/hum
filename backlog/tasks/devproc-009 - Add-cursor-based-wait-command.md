@@ -4,7 +4,7 @@ title: Add cursor-based wait command
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:07'
-updated_date: '2026-09-02 20:05'
+updated_date: '2026-09-02 20:13'
 labels:
   - cli
   - output
@@ -25,9 +25,9 @@ ordinal: 900
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: after the lifecycle slice is green, clients can wait efficiently for existing or new matching output, process exit, or a deadline without receiving unsolicited logs.
+Outcome: after the lifecycle slice is green, clients can wait efficiently for existing or new matching output, process exit, or a deadline without receiving unsolicited logs, and scripts can branch on the exit code.
 
-Scope: `devproc wait <name> --after-cursor N [--match REGEX] [--timeout DURATION] [--json]`; check retained output before blocking; subscribe internally to append/exit transitions without polling races; return a new cursor and distinguish matched, exited, and timed_out outcomes in human and stable JSON output; release waiters on cancellation/disconnection; validate cursors, regexes, durations, names, and server bounds. Wait never auto-starts the daemon; if unavailable it returns `Start it with devproc serve --daemon.`
+Scope: `devproc wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]`; `--after-cursor` defaults to 0 so retained output is searched first; subscribe internally to append/exit transitions without polling races; return a new cursor and distinguish matched, exited, and timed_out outcomes in human and stable JSON output; exit codes 0 when the awaited condition happened (a match when `--match` is given, otherwise exit), 2 on timeout, 3 when the process exited before matching, and 1 for errors; release waiters on cancellation/disconnection; validate cursors, regexes, durations, names, and server bounds. Wait never auto-starts the daemon; if unavailable it returns `Start it with devproc serve --daemon.`
 
 Non-goals: streaming output (`logs --follow` owns that behavior), shell retries, persistence, daemon auto-start, or MCP.
 
@@ -36,9 +36,9 @@ Modified-file contract: internal/output/, internal/app/, internal/protocol/, int
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/output ./internal/app -run Wait` exits 0 and proves buffered-first matching, no missed append race, exit wakeup, timeout, cancellation, and monotonic returned cursors.
-- [ ] #2 `go test ./internal/protocol ./internal/cli -run Wait` exits 0 and covers required after-cursor, optional regex/timeout, stable matched/exited/timed_out JSON, human output, validation errors, and unavailable-daemon guidance without auto-start.
-- [ ] #3 The built-binary integration scenario proves one wait returns immediately for buffered matching output, one blocks until new matching output, one returns exited, one returns timed_out with a new cursor, and an unavailable daemon returns `Start it with devproc serve --daemon.` without creating runtime state.
+- [ ] #1 `go test ./internal/output ./internal/app -run Wait` exits 0 and proves buffered-first matching from cursor 0 by default, no missed append race, exit wakeup, timeout, cancellation, and monotonic returned cursors.
+- [ ] #2 `go test ./internal/protocol ./internal/cli -run Wait` exits 0 and covers optional after-cursor, optional regex/timeout, stable matched/exited/timed_out JSON, human output, exit codes 0/2/3/1, validation errors, and unavailable-daemon guidance without auto-start.
+- [ ] #3 The built-binary integration scenario proves one wait returns 0 immediately for buffered matching output, one blocks until new matching output then returns 0, one returns exited with code 3 when matching, one without `--match` returns 0 on exit, one returns timed_out with code 2 and a new cursor, and an unavailable daemon returns `Start it with devproc serve --daemon.` without creating runtime state.
 - [ ] #4 `go test -race ./internal/output ./internal/app ./internal/daemon` exits 0 with concurrent append, exit, timeout, disconnect, log followers, and multiple waiters.
 <!-- AC:END -->
 

@@ -4,7 +4,7 @@ title: Supervise project-scoped process trees
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:05'
-updated_date: '2026-09-02 20:05'
+updated_date: '2026-09-02 20:13'
 labels:
   - process
   - output
@@ -23,21 +23,22 @@ ordinal: 400
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: application services start, inspect, signal, and stop named processes while the daemon—not any client connection—owns their lifecycle.
+Outcome: application services start, inspect, signal, and stop named processes while the daemon, not any client connection, owns their lifecycle, and every child runs with the requesting client's cwd and environment.
 
-Scope: narrow `internal/app` services over `internal/process`; nearest Git-root discovery with cwd fallback; names unique within a project root; safe-name validation; direct argv execution without shell reconstruction; separate stdout/stderr capture; recorded PID, process-group ID, cwd, argv, start time, state, and exit status; SIGINT forwarding to an attached process group; single-process stop and all-process shutdown using SIGTERM, a bounded grace period, then SIGKILL only when necessary; concurrency-safe state transitions. A client disconnect without an explicit signal does not terminate its managed process.
+Scope: narrow `internal/app` services over `internal/process`; project-root discovery walking up to the nearest `.git` directory or `.git` file (linked worktree) with cwd fallback; names unique within a project root; safe-name validation; direct argv execution without shell reconstruction; the child inherits exactly the cwd and environment supplied by the client (never the daemon's) with stdin attached to /dev/null; separate stdout/stderr capture appended into the process's DEVPROC-003 output sequence; a launch record with project root, PID, process-group ID, cwd, argv, environment, start time, state, exit status, and restart count, where the environment is retained only for relaunch and excluded from every read model; SIGINT forwarding to a process group; single-process stop and all-process shutdown using SIGTERM, a bounded grace period, then SIGKILL only when necessary; duplicate-running-name rejection that names the running PID; concurrency-safe state transitions. A client disconnect without an explicit signal does not terminate its managed process.
 
-Non-goals: sockets, protocol encoding, CLI rendering, persistence across daemon restart, PTY or arbitrary stdin forwarding, Windows, retries, or plugins.
+Non-goals: sockets, protocol encoding, CLI rendering, restart (DEVPROC-012), persistence across daemon restart, PTY or arbitrary stdin forwarding, Windows, retries, or plugins.
 
 Modified-file contract: internal/app/, internal/process/.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/process` exits 0 and proves exact argv/cwd execution, separate stream capture, exit status, process-group creation, and SIGINT group forwarding.
-- [ ] #2 `go test ./internal/app -run TestProjectScopedNames` exits 0 and proves nearest Git-root scoping, cwd fallback, safe-name rejection, duplicate-running-name rejection, and same-name isolation across project roots.
+- [ ] #1 `go test ./internal/process` exits 0 and proves exact argv execution, that the child observes the supplied cwd and environment rather than the test process's, /dev/null stdin, separate stream capture, exit status, process-group creation, and SIGINT group forwarding.
+- [ ] #2 `go test ./internal/app -run TestProjectScopedNames` exits 0 and proves nearest Git-root scoping for both `.git` directories and `.git` worktree files, cwd fallback, safe-name rejection, duplicate-running-name rejection naming the PID, and same-name isolation across project roots.
 - [ ] #3 `go test ./internal/app -run 'TestStopProcessTree|TestShutdownProcessTrees'` exits 0 and proves SIGTERM targets each full group, the grace period is bounded, SIGKILL is used only when necessary, and all processes reach terminal state before daemon shutdown.
-- [ ] #4 `go test -race ./internal/app ./internal/process` exits 0 during concurrent start, output, signal, disconnect, exit, list, stop, and shutdown transitions.
+- [ ] #4 `go test ./internal/app -run TestReadModelsExcludeEnvironment` exits 0 and proves no list or inspect result exposes the recorded environment.
+- [ ] #5 `go test -race ./internal/app ./internal/process` exits 0 during concurrent start, output, signal, disconnect, exit, list, stop, and shutdown transitions.
 <!-- AC:END -->
 
 ## Definition of Done
