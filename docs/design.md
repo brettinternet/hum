@@ -4,9 +4,9 @@
 
 `hum` is a local process supervisor for humans and coding agents that need shared, bounded access to long-running development processes and their output. The problem it solves: a developer starts `npm run dev` in a terminal and an agent working in the same repository cannot see that output, cannot tell whether the server is up, and cannot restart it, so the agent starts its own copy or asks the developer to paste logs. hum gives both parties one supervised set of named processes per project, with reads bounded for agent context windows.
 
-The product contract is a committed `hum.json` manifest of named development processes. Humans use one small CLI and coding agents use typed MCP tools or a short shell skill; both operate on the same names. A long-running local daemon remains the only process owner, and every client communicates with it over a user-private Unix domain socket. macOS and Linux are the initial platforms.
+The product contract is a resolved set of named development processes. Conventional projects need no hum-specific file: hum can discover one root `dev` task. Projects that need multiple processes, readiness, or explicit working directories commit one canonical `hum.yaml` manifest. Humans use one small CLI and coding agents use typed MCP tools or a short shell skill; both operate on the same resolved names. A long-running local daemon remains the only process owner, and every client communicates with it over a user-private Unix domain socket. macOS and Linux are the initial platforms.
 
-Build the process-supervision foundation as a tested vertical slice: a foreground daemon, attached and detached `run`, `list`, bounded and followed `logs`, `stop`, and daemon `shutdown`; then detached daemon startup, `status`, `wait`, and `restart`. The first seamless product workflow follows immediately: add the project manifest, then expose its name-based operations through MCP and a shell-only agent skill. The raw `run -- <command>` form is an escape hatch, not the agent workflow.
+Build the process-supervision foundation as a tested vertical slice: a foreground daemon, attached and detached `run`, `list`, bounded and followed `logs`, `stop`, and daemon `shutdown`; then detached daemon startup, `status`, `wait`, and `restart`. The first seamless product workflow follows immediately: add the YAML manifest and conservative default discovery, then expose their shared name-based operations through MCP and a shell-only agent skill. The raw `run -- <command>` form is an escape hatch, not the agent workflow.
 
 ## Planned CLI
 
@@ -44,7 +44,7 @@ The child runs with the `run` client's working directory and full environment, n
 
 Each child starts in its own Unix process group with stdin attached to `/dev/null`, so `npm run dev` and the tools it spawns can be signaled together and nothing blocks waiting for terminal input.
 
-`run` is attached by default. The daemon owns the child while the CLI streams its stdout and stderr, preserving raw line content wherever possible. If the process exits while attached, the CLI returns its exit code. `run --detach` prints the process name and PID (or JSON) and returns immediately. Neither mode provides a PTY or arbitrary interactive stdin. Without a PTY most tools disable colors, which keeps captured logs clean for agents; humans who want colors while attached can set `FORCE_COLOR=1` in their shell. Starting a name that is already running fails and names the running PID. Once a manifest declares a name, raw `run <name> -- <command>` is rejected so an ad hoc process cannot impersonate the declared contract; `run <name>` without argv remains valid and uses the manifest.
+`run` is attached by default. The daemon owns the child while the CLI streams its stdout and stderr, preserving raw line content wherever possible. If the process exits while attached, the CLI returns its exit code. `run --detach` prints the process name and PID (or JSON) and returns immediately. Neither mode provides a PTY or arbitrary interactive stdin. Without a PTY most tools disable colors, which keeps captured logs clean for agents; humans who want colors while attached can set `FORCE_COLOR=1` in their shell. Starting a name that is already running fails and names the running PID. Once project resolution defines a name, raw `run <name> -- <command>` is rejected so an ad hoc process cannot impersonate that contract; `run <name>` without argv remains valid and uses the resolved definition.
 
 ## Output model
 
@@ -60,7 +60,7 @@ Retained output is bounded per process by total bytes; the oldest entries are ev
 
 Detached startup is idempotent. A startup lock prevents concurrent `serve --daemon` or automatic-start attempts from creating multiple daemons. Startup verifies live ownership before recovering stale PID or socket files and reports readiness failures to the original caller.
 
-Commands that launch declared or ad hoc processes (`run`, `start`, and `up`) automatically start the detached daemon when none is available, including when clients race. Read-only and control commands never start an empty daemon. Without a daemon, manifest-aware `list` still reports declared processes as stopped; `status`, `logs`, `wait`, `restart`, `stop`, and `shutdown` fail concisely with `Start it with hum serve --daemon.`
+Commands that launch resolved or ad hoc processes (`run`, `start`, and `up`) automatically start the detached daemon when none is available, including when clients race. Read-only and control commands never start an empty daemon. Without a daemon, project-aware `list` still reports resolved processes as stopped; `status`, `logs`, `wait`, `restart`, `stop`, and `shutdown` fail concisely with `Start it with hum serve --daemon.`
 
 Every connection begins with a hello that carries the protocol version. The hello and shutdown message shapes are frozen so a newer client can always retire an idle older daemon. After a binary upgrade an older daemon may still be running: a mismatched client fails with the daemon's version and the shutdown command to run, except that launch commands (`run`, `start`, and `up`) replace a mismatched daemon automatically when it has no managed processes.
 
@@ -79,21 +79,44 @@ Managed processes survive ordinary client and follower disconnection.
 
 ## Agent interfaces
 
-The primary agent interface is `hum mcp`, a stdio MCP server registered once with an agent. Its typed `start`, `up`, `list`, `status`, `logs`, `wait`, `restart`, and `stop` tools require an absolute existing directory and resolve it with the same nearest-Git-root rules as the CLI, so one server can safely serve multiple workspaces without relying on its startup directory. `start` and `up` operate only on manifest entries and auto-start the daemon. The MCP adapter uses the same daemon protocol client as the CLI; it never creates an in-process supervisor or bypasses daemon ownership. Tool responses preserve the CLI's bounds, cursors, outcomes, and errors.
+The primary agent interface is `hum mcp`, a stdio MCP server registered once with an agent. Its typed `start`, `up`, `list`, `status`, `logs`, `wait`, `restart`, and `stop` tools require an absolute existing directory and resolve it with the same nearest-Git-root rules as the CLI, so one server can safely serve multiple workspaces without relying on its startup directory. `start` and `up` operate only on explicit or discovered project definitions and auto-start the daemon. The MCP adapter uses the same daemon protocol client as the CLI; it never creates an in-process supervisor or bypasses daemon ownership. Tool responses preserve the CLI's bounds, cursors, outcomes, source metadata, and errors.
 
-For shell-only agents, the binary embeds a one-screen skill file in the Agent Skills format. `hum skill` prints it for installation in the agent's normal skill location. The skill teaches the same manifest-first workflow: use `start` or `up`, inspect bounded logs, wait, restart, and stop by name. It never asks the agent to derive or execute the underlying `npm run dev`-style command. A test keeps every command and flag named in the skill synchronized with the command tree.
+For shell-only agents, the binary embeds a one-screen skill file in the Agent Skills format. `hum skill` prints it for installation in the agent's normal skill location. The skill teaches the same resolved-project workflow: try `up` without inventing a command, use `list` to inspect the explicit or discovered definitions, then inspect bounded logs, wait, restart, and stop by name. Missing `hum.yaml` is not an error when conventional discovery succeeds. The skill never asks the agent to derive or execute the underlying `npm run dev`-style command. A test keeps every command and flag named in the skill synchronized with the command tree.
 
 ## Configuration direction
 
 Runtime settings are typed and resolved once at the CLI boundary: build metadata injected through ldflags, then command-line flags, then environment variables, then defaults. Construction is testable without CLI framework objects: a typed input struct feeds a constructor that validates and returns the configuration, and only the thin flag-reading adapter in `internal/cli` touches `urfave/cli`. Platform-aware path helpers choose the runtime directory. The environment variables are `HUM_RUNTIME_DIR` (overrides the runtime directory; integration tests use it for isolation), `HUM_STOP_GRACE` (SIGTERM-to-SIGKILL grace period, default 10s), `HUM_OUTPUT_BYTES` (retained output per process, default 4 MiB), and `HUM_COMPLETED_RECORDS` (completed records retained across projects, default 20).
 
-Persistent configuration files for runtime settings are explicitly outside the initial scope. Do not add YAML loading for them or allow CLI framework types to leak into application services. A committed per-project process manifest is different: it is project data, not tool configuration.
+Persistent configuration files for runtime settings are explicitly outside the initial scope. Do not allow CLI framework types to leak into application services. A committed per-project process manifest is different: it is project data, not tool configuration.
 
-The manifest is a versioned JSON file named `hum.json` at the discovered project root. Version 1 contains a `processes` object keyed by safe process name. Each entry has a non-empty `argv` string array and may have a root-relative `cwd` and a `ready` object containing a required `match` regular expression plus an optional `timeout`; shell text, unknown fields, duplicate keys, absolute working directories, and paths that escape the project root are rejected. Names are processed in lexical order for deterministic output.
+The only supported manifest is a single YAML document named `hum.yaml` at the discovered project root. Version 1 contains `version: 1` and a `processes` mapping keyed by safe process name. Each entry has a non-empty `argv` string sequence and may have a root-relative `cwd` and a `ready` mapping containing a required `match` regular expression plus an optional `timeout`. Parsing is strict: reject unknown or duplicate keys, aliases and merge keys, multiple documents, unsupported versions, shell text, empty argv elements, non-string command values, absolute working directories, and paths that escape the project root. Names are processed lexically for deterministic output. Do not also support JSON, TOML, `.yml`, or alternate manifest filenames.
 
-Manifest commands inherit the launching CLI or MCP server environment. Changing `cwd` does not activate per-directory shell hooks such as direnv, and a globally registered MCP server may have a different environment from an interactive terminal. Projects that require deterministic activation encode it in argv through their committed tool runner (for example, `mise exec -- ...`); version 1 deliberately does not commit secret environment values or shell text.
+```yaml
+version: 1
+processes:
+  web:
+    argv: [bun, run, dev]
+    cwd: web
+    ready:
+      match: "Local:"
+      timeout: 30s
+```
 
-`start` is an idempotent ensure-running operation: an already-running manifest launch is reported without replacement, while a stopped or never-started entry launches from the current manifest and caller environment. A running ad hoc record that collides with a newly declared name is a conflict, not `already_running`. `up` applies that behavior to every entry, continues after individual failures, and returns one stable result per name. With `--wait`, every requested running incarnation is checked against its retained per-incarnation readiness state and then new output, so an already-running process still converges on readiness while stale output from an earlier incarnation cannot match; entries without a readiness expression succeed once spawned. Waits use an explicit CLI timeout, then the manifest timeout, then a bounded default. `up --wait` starts entries in lexical order, waits concurrently, and reports aggregate failure without stopping successful processes. Manifest-driven restart refreshes argv, cwd, and the requesting client's environment.
+Resolved commands inherit the launching CLI or MCP server environment. Changing `cwd` does not activate per-directory shell hooks such as direnv, and a globally registered MCP server may have a different environment from an interactive terminal. Projects that require deterministic activation encode it in argv through their committed tool runner (for example, `mise exec -- ...`); version 1 deliberately does not commit secret environment values or shell text.
+
+## Project definition resolution
+
+Explicit configuration always wins. If `hum.yaml` exists, it is authoritative: invalid YAML fails visibly, and an empty `processes` mapping means the project defines no processes. Hum never falls back from a present manifest to inferred commands.
+
+Without `hum.yaml`, hum conservatively looks for exactly one root `dev` task and normalizes it to the same internal process definition as YAML, named `dev`:
+
+1. Discover project-level candidates through available task runners' native introspection: an exact local mise task named `dev` (`mise tasks --local --json`, run at the project root) and an exact Task task named `dev` (`task --dir <root> --list-all --json`). Skip a runner that is not installed. If exactly one candidate exists, use `mise run dev` or `task dev`. If both exist, return an ambiguity error listing both.
+2. Only when no project-level candidate exists, use `package.json#scripts.dev`. Honor its `packageManager` field first. Otherwise select bun, pnpm, Yarn, or npm from exactly one supported lockfile family; conflicting lockfiles are an error, and no lockfile defaults to npm. Invoke it as runner argv such as `[bun, run, dev]`; never parse or execute the script body directly.
+3. If no candidate exists, fail with an actionable suggestion to add `hum.yaml` or use ad hoc `hum run`. Never infer `start`, arbitrary package scripts, ports, readiness expressions, monorepo packages, or multiple processes.
+
+`hum up` and `hum start dev` use the inferred definition; other names require `hum.yaml`. `list` reports the source as `manifest`, `mise`, `task`, or `package_json`. `restart` resolves the definition again so edits to the selected source take effect. A discovered definition has no readiness contract: `--wait` succeeds after spawn with the explicit outcome `running_unverified`, never `ready`. Malformed detector output, source ambiguity, and no candidate are typed configuration errors with candidate-specific guidance, not invitations for an agent to guess.
+
+`start` is an idempotent ensure-running operation: an already-running resolved launch is reported without replacement, while a stopped or never-started entry launches from the current definition and caller environment. A running ad hoc record that collides with a newly resolved name is a conflict, not `already_running`. `up` applies that behavior to every entry, continues after individual failures, and returns one stable result per name. With `--wait`, every requested running incarnation with readiness configuration is checked against its retained per-incarnation readiness state and then new output, so an already-running process still converges on readiness while stale output from an earlier incarnation cannot match. Definitions without readiness configuration return `running_unverified` after spawn. Waits use an explicit CLI timeout, then the manifest timeout, then a bounded default. `up --wait` starts entries in lexical order, waits concurrently, and reports aggregate failure without stopping successful processes. Restart refreshes the resolved argv, cwd, and requesting client's environment.
 
 ## Security and lifecycle
 
@@ -117,8 +140,9 @@ Unit tests cover ring eviction, cursor boundaries, truncation, stream filtering,
 6. Built-binary integration suite on macOS and Linux.
 7. `status`, `wait`, and `restart`, each gated on the integration suite.
 8. Release gates and operator documentation for the supervisor foundation.
-9. The committed manifest and idempotent `start`/`up` workflow.
-10. The MCP adapter and shell-only agent skill over manifest process names.
+9. The committed YAML manifest and idempotent `start`/`up` workflow.
+10. Conservative zero-config discovery normalized into the same process definitions.
+11. The MCP adapter and shell-only agent skill over resolved process names.
 
 ## Initial limitations
 
@@ -126,6 +150,6 @@ No PTY or arbitrary interactive input, Windows support, authentication, remote a
 
 ## Next milestone: seamless project processes and agent adapters
 
-The vertical slice still asks a human to type `hum run web -- npm run dev` and asks an agent to reverse-engineer that command from `package.json`. The committed `hum.json` manifest removes both barriers: it declares exact argv, working directory, and readiness once. `hum start web --wait` and `hum up --wait` converge the declared processes without a separate daemon step; manifest-aware `list` works even before the daemon exists; and restart picks up manifest and caller-environment changes. The manifest is not a Procfile of shell text.
+The vertical slice still asks a human to type `hum run web -- npm run dev` and asks an agent to reverse-engineer that command from `package.json`. Conservative discovery removes that barrier for conventional repositories: `hum up` finds one unambiguous root `dev` task and reports it as running but unverified. Projects add `hum.yaml` only when they need named processes, readiness, or working-directory control. The manifest declares exact argv, working directory, and readiness once; it is not a Procfile of shell text.
 
-A stdio MCP server exposes manifest-only `start` and `up` plus `list`, `status`, `logs`, `wait`, `restart`, and `stop`. It uses the same daemon protocol client as the CLI and adds only transport translation, schemas, and MCP-specific error mapping. Every tool names its absolute project root; launch tools carry the MCP server's environment to the daemon and perform the same automatic startup and version handling as the CLI. Arbitrary-command `run`, daemon `serve`, and daemon `shutdown` are deliberately absent. A future Streamable HTTP transport may expose the same tools, but no MCP dependency or server package belongs in the supervisor-foundation milestone.
+A stdio MCP server exposes resolved-definition `start` and `up` plus `list`, `status`, `logs`, `wait`, `restart`, and `stop`. It uses the same daemon protocol client as the CLI and adds only transport translation, schemas, and MCP-specific error mapping. Every tool names its absolute project root; launch tools carry the MCP server's environment to the daemon and perform the same resolution, automatic startup, and version handling as the CLI. Arbitrary-command `run`, daemon `serve`, and daemon `shutdown` are deliberately absent. A future Streamable HTTP transport may expose the same tools, but no MCP dependency or server package belongs in the supervisor-foundation milestone.
