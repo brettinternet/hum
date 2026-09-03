@@ -59,6 +59,16 @@ func (s *Store) Append(stream Stream, at time.Time, text string) (Cursor, error)
 	return cursor, nil
 }
 
+// NextCursor returns the one-past-newest cursor in the output sequence. It
+// reports zero before the first successful append and remains monotonic even
+// when older entries have been evicted. The ring is read under the store lock
+// without reading or copying retained entries.
+func (s *Store) NextCursor() Cursor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ring.next
+}
+
 // Read performs a bounded read while holding the store lock, so its metadata
 // and retained entries are a single view of the ring.
 func (s *Store) Read(opts ReadOptions) (ReadResult, error) {

@@ -196,6 +196,9 @@ func (c *Client) Get(ctx context.Context, req GetRequest) (app.Process, error) {
 	if response.Process == nil {
 		return app.Process{}, errors.New("daemon get response omitted process")
 	}
+	if response.Process.NextCursor == nil {
+		return app.Process{}, errors.New("daemon get response omitted next_cursor")
+	}
 	return appProcessFromWire(*response.Process), nil
 }
 
@@ -560,6 +563,9 @@ func appProcessFromWire(item wireProcess) app.Process {
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: output.Cursor(item.LaunchCursor), State: app.State(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
+	}
+	if item.NextCursor != nil {
+		result.NextCursor = output.Cursor(*item.NextCursor)
 	}
 	if item.Exit != nil {
 		exitCode := item.Exit.Code

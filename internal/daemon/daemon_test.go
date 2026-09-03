@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -332,6 +333,171 @@ func TestClientDisconnect(t *testing.T) {
 			t.Fatal("fake server did not observe client connection close")
 		}
 	})
+}
+
+func TestStatusGetTransportsNextCursorAndTypedErrors(t *testing.T) {
+	root := t.TempDir()
+	var store *output.Store
+	supervisor, err := app.New(app.Options{
+		StartProcess: func(spec process.Spec) (app.Child, error) {
+			store = spec.Output
+			return &daemonTestChild{pid: 9001, done: make(chan struct{})}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := testServer(t, Config{Supervisor: supervisor})
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if _, err := supervisor.Start(app.StartRequest{Name: "status", Cwd: root, Argv: []string{"fake"}}); err != nil {
+		t.Fatal(err)
+	}
+	if store == nil {
+		t.Fatal("fake process did not expose output store")
+	}
+	empty, err := client.Get(context.Background(), protocol.NewGetRequest("status", root))
+	if err != nil {
+		t.Fatalf("empty status get: %v", err)
+	}
+	if empty.NextCursor != 0 {
+		t.Fatalf("empty status next cursor = %d, want 0", empty.NextCursor)
+	}
+	for _, text := range []string{"first\n", "second\n"} {
+		if _, err := store.Append(output.Stdout, time.Unix(1, 0), text); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := client.Get(context.Background(), protocol.NewGetRequest("status", root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NextCursor != output.Cursor(2) {
+		t.Fatalf("status next cursor = %d, want 2", got.NextCursor)
+	}
+
+	_, err = client.Get(context.Background(), protocol.NewGetRequest("bad/name", root))
+	var wireErr *protocol.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != protocol.ErrorInvalidRequest {
+		t.Fatalf("invalid status name error = %v, want typed invalid request", err)
+	}
+
+	_, err = client.Get(context.Background(), protocol.NewGetRequest("missing", root))
+	wireErr = nil
+	if !errors.As(err, &wireErr) || wireErr.Code != protocol.ErrorNotFound {
+		t.Fatalf("missing status process error = %v, want typed not found", err)
+	}
+}
+
+func TestStatusResponseShapes(t *testing.T) {
+	initialCursor := uint64(19)
+	item := wireProcess{
+		Name:       "status",
+		Root:       "/work/project",
+		PID:        42,
+		PGID:       42,
+		Cwd:        "/work/project",
+		Argv:       []string{"tool"},
+		NextCursor: &initialCursor,
+	}
+	encode := func(t *testing.T, response wireResponse) []byte {
+		t.Helper()
+		var sink strings.Builder
+		if err := writeProtocolResponse(protocol.NewEncoder(&sink), response); err != nil {
+			t.Fatalf("write %s response: %v", response.Op, err)
+		}
+		return []byte(sink.String())
+	}
+	assertOmitted := func(t *testing.T, response wireResponse) {
+		t.Helper()
+		if encoded := string(encode(t, response)); strings.Contains(encoded, `"next_cursor"`) {
+			t.Fatalf("%s response unexpectedly includes next_cursor: %s", response.Op, encoded)
+		}
+	}
+
+	t.Run("start omits next cursor", func(t *testing.T) {
+		assertOmitted(t, wireResponse{Op: "start", OK: true, Process: &item})
+	})
+	t.Run("list omits next cursor", func(t *testing.T) {
+		assertOmitted(t, wireResponse{Op: "list", OK: true, Processes: []wireProcess{item}})
+	})
+	t.Run("stop omits next cursor", func(t *testing.T) {
+		assertOmitted(t, wireResponse{Op: "stop", OK: true, Process: &item})
+	})
+	for _, test := range []struct {
+		name   string
+		cursor uint64
+	}{
+		{name: "nonzero", cursor: 19},
+		{name: "zero", cursor: 0},
+	} {
+		t.Run("get includes exact next cursor "+test.name, func(t *testing.T) {
+			nextCursor := test.cursor
+			item.NextCursor = &nextCursor
+			encoded := encode(t, wireResponse{Op: "get", OK: true, Process: &item})
+			var got protocol.GetResponse
+			if err := json.Unmarshal(encoded, &got); err != nil {
+				t.Fatalf("decode get response: %v", err)
+			}
+			if got.Process == nil || got.Process.NextCursor == nil {
+				t.Fatalf("get response next_cursor = %#v, want pointer to %d", got.Process, test.cursor)
+			}
+			if got := uint64(*got.Process.NextCursor); got != test.cursor {
+				t.Fatalf("get response next_cursor = %d, want %d", got, test.cursor)
+			}
+		})
+	}
+}
+
+func TestStatusGetRejectsOmittedNextCursor(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	client := NewClient(clientConn)
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = serverConn.Close()
+	})
+
+	serverDone := make(chan error, 1)
+	go func() {
+		decoder := protocol.NewDecoder(serverConn)
+		request, err := decoder.DecodeRequest()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if request.Op != protocol.OpGet {
+			serverDone <- errors.New("fake server received non-get request")
+			return
+		}
+		process := protocol.Process{
+			Name: "status", Root: "/work/project", PID: 42, PGID: 42,
+			Cwd: "/work/project", Argv: []string{"tool"}, State: string(app.StateRunning),
+		}
+		serverDone <- protocol.NewEncoder(serverConn).EncodeResponse(protocol.GetResponse{
+			Op: protocol.OpGet, OK: true, Process: &process,
+		})
+	}()
+
+	got, err := client.Get(context.Background(), protocol.NewGetRequest("status", "/work/project"))
+	if err == nil || err.Error() != "daemon get response omitted next_cursor" {
+		t.Fatalf("legacy get response error = %v, want omitted next_cursor response-shape error", err)
+	}
+	if got.Name != "" || got.Root != "" || got.PID != 0 || got.Argv != nil || got.NextCursor != 0 || got.Exit != nil {
+		t.Fatalf("legacy get returned successful process data: %#v", got)
+	}
+	select {
+	case serverErr := <-serverDone:
+		if serverErr != nil {
+			t.Fatalf("fake legacy server: %v", serverErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fake legacy server did not send get response")
+	}
 }
 
 func TestMultipleFollowers(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestNoStatusWaitOrRestartYet(t *testing.T) {
+func TestStatusWithoutWaitOrRestartYet(t *testing.T) {
 	var output, errorOutput bytes.Buffer
 	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
 
@@ -13,6 +13,7 @@ func TestNoStatusWaitOrRestartYet(t *testing.T) {
 		"serve":    true,
 		"run":      true,
 		"list":     true,
+		"status":   true,
 		"logs":     true,
 		"stop":     true,
 		"shutdown": true,
@@ -32,7 +33,7 @@ func TestNoStatusWaitOrRestartYet(t *testing.T) {
 			t.Errorf("root command is missing %q", name)
 		}
 	}
-	for _, name := range []string{"status", "wait", "restart", "down"} {
+	for _, name := range []string{"wait", "restart", "down"} {
 		if root.Command(name) != nil {
 			t.Errorf("root command unexpectedly exposes %q", name)
 		}

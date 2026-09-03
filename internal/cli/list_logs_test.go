@@ -431,7 +431,7 @@ func hum006ListLogsStartDaemon(t *testing.T, runtimeDir string, retainedBytes in
 	t.Helper()
 	server, err := daemon.NewServer(daemon.Config{
 		RuntimeDir: runtimeDir,
-		Version:    "1",
+		Version:    strconv.Itoa(protocol.Version),
 		StopGrace:  20 * time.Millisecond,
 		OutputLimits: output.Limits{
 			RetainedBytes:      retainedBytes,

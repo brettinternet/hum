@@ -460,6 +460,215 @@ func TestShutdownCompletesAfterCanceledContext(t *testing.T) {
 	}
 }
 
+func TestStatusRunningSnapshotMetadataAndCursor(t *testing.T) {
+	root := makeProject(t, false)
+	startedAt := time.Unix(10, 20)
+	child := &timedChild{
+		pid:  4101,
+		done: make(chan struct{}),
+		result: process.Result{
+			ExitCode: 0,
+			ExitedAt: time.Unix(11, 0),
+		},
+	}
+	s := testSupervisor(t, Options{
+		Now: func() time.Time { return startedAt },
+		StartProcess: func(spec process.Spec) (Child, error) {
+			_, err := spec.Output.Append(output.Stdout, startedAt, "ready\n")
+			return child, err
+		},
+	})
+
+	got, err := s.Start(StartRequest{
+		Name: "running",
+		Cwd:  root,
+		Argv: []string{"/bin/test", "--ready"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "running" || got.Root != root || got.PID != 4101 || got.PGID != 4101 || got.Cwd != root {
+		t.Fatalf("running identity = %#v, want name/root/pid/pgid/cwd %q/%q/4101/4101/%q", got, "running", root, root)
+	}
+	if len(got.Argv) != 2 || got.Argv[0] != "/bin/test" || got.Argv[1] != "--ready" {
+		t.Fatalf("running argv = %#v, want [/bin/test --ready]", got.Argv)
+	}
+	if !got.Start.Equal(startedAt) {
+		t.Fatalf("running start = %v, want %v", got.Start, startedAt)
+	}
+	if got.LaunchCursor != 0 || got.NextCursor != 1 {
+		t.Fatalf("running cursors = launch %d, next %d; want 0, 1", got.LaunchCursor, got.NextCursor)
+	}
+	if got.State != StateRunning || got.Exit != nil || got.ExitCode != 0 || !got.ExitedAt.IsZero() || got.RestartCount != 0 {
+		t.Fatalf("running lifecycle metadata = %#v", got)
+	}
+}
+
+func TestStatusOutputAdvancesCursorWithoutMutatingSnapshotState(t *testing.T) {
+	root := makeProject(t, false)
+	child := &timedChild{pid: 4102, done: make(chan struct{}), result: process.Result{ExitCode: 0}}
+	s := testSupervisor(t, Options{
+		StartProcess: func(process.Spec) (Child, error) {
+			return child, nil
+		},
+	})
+	before, err := s.Start(StartRequest{
+		Name: "output",
+		Cwd:  root,
+		Argv: []string{"/bin/test", "output"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := s.Output(root, "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(output.Stdout, time.Unix(1, 0), "one\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(output.Stderr, time.Unix(2, 0), "two\n"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.Get(root, "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.NextCursor != 0 || after.NextCursor != 2 {
+		t.Fatalf("status cursors before/after output = %d/%d; want 0/2", before.NextCursor, after.NextCursor)
+	}
+	if after.Name != before.Name || after.Root != before.Root || after.PID != before.PID ||
+		after.PGID != before.PGID || after.Cwd != before.Cwd || !after.Start.Equal(before.Start) ||
+		after.State != StateRunning || after.Exit != nil || after.RestartCount != before.RestartCount {
+		t.Fatalf("status metadata changed after output = before %#v, after %#v", before, after)
+	}
+}
+
+func TestStatusExitedSnapshotIncludesTerminalResult(t *testing.T) {
+	root := makeProject(t, false)
+	exitAt := time.Unix(21, 0)
+	child := &timedChild{
+		pid:  4103,
+		done: make(chan struct{}),
+		result: process.Result{
+			ExitCode: 7,
+			ExitedAt: exitAt,
+		},
+	}
+	s := testSupervisor(t, Options{
+		StartProcess: func(process.Spec) (Child, error) {
+			return child, nil
+		},
+	})
+	if _, err := s.Start(StartRequest{Name: "exited", Cwd: root, Argv: []string{"/bin/test", "exited"}}); err != nil {
+		t.Fatal(err)
+	}
+	done := recordDone(t, s, root, "exited")
+	child.release()
+	waitSubscriptionSignal(t, done, "exited process")
+
+	got, err := s.Get(root, "exited")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateExited || got.Exit == nil || got.Exit.ExitCode != 7 || got.ExitCode != 7 ||
+		!got.Exit.ExitedAt.Equal(exitAt) || !got.ExitedAt.Equal(exitAt) || got.NextCursor != 0 {
+		t.Fatalf("exited status = %#v, want terminal code 7 at %v", got, exitAt)
+	}
+}
+
+func TestStatusSignaledSnapshotIncludesTerminalResult(t *testing.T) {
+	root := makeProject(t, false)
+	exitAt := time.Unix(22, 0)
+	child := &timedChild{
+		pid:  4104,
+		done: make(chan struct{}),
+		result: process.Result{
+			ExitCode: -1,
+			ExitedAt: exitAt,
+		},
+	}
+	s := testSupervisor(t, Options{
+		StartProcess: func(process.Spec) (Child, error) {
+			return child, nil
+		},
+	})
+	if _, err := s.Start(StartRequest{Name: "signaled", Cwd: root, Argv: []string{"/bin/test", "signaled"}}); err != nil {
+		t.Fatal(err)
+	}
+	done := recordDone(t, s, root, "signaled")
+	child.release()
+	waitSubscriptionSignal(t, done, "signaled process")
+
+	got, err := s.Get(root, "signaled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateExited || got.Exit == nil || got.Exit.ExitCode != -1 || got.ExitCode != -1 ||
+		!got.Exit.ExitedAt.Equal(exitAt) || !got.ExitedAt.Equal(exitAt) {
+		t.Fatalf("signaled status = %#v, want terminal code -1 at %v", got, exitAt)
+	}
+}
+
+func TestStatusInvalidNameErrorIsTyped(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{})
+	_, err := s.Get(root, "bad/name")
+	var invalid *InvalidNameError
+	if !errors.As(err, &invalid) || !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("invalid status name error = %v, want typed InvalidNameError", err)
+	}
+}
+
+func TestStatusMissingProcessErrorIsTyped(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{})
+	_, err := s.Get(root, "missing")
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) || !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("missing status process error = %v, want typed NotFoundError", err)
+	}
+	if notFound.Root != root || notFound.Name != "missing" {
+		t.Fatalf("missing status process details = %#v, want root/name %q/%q", notFound, root, "missing")
+	}
+}
+
+func TestStatusReturnedArgvIsImmutable(t *testing.T) {
+	root := makeProject(t, false)
+	child := &timedChild{pid: 4105, done: make(chan struct{}), result: process.Result{ExitCode: 0}}
+	s := testSupervisor(t, Options{
+		StartProcess: func(process.Spec) (Child, error) {
+			return child, nil
+		},
+	})
+	argv := []string{"/bin/test", "--mode", "watch"}
+	model, err := s.Start(StartRequest{Name: "argv", Cwd: root, Argv: argv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv[1] = "request-mutated"
+	if model.Argv[1] != "--mode" {
+		t.Fatalf("start status argv changed through request mutation = %#v", model.Argv)
+	}
+	model.Argv[1] = "model-mutated"
+
+	got, err := s.Get(root, "argv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Argv) != 3 || got.Argv[0] != "/bin/test" || got.Argv[1] != "--mode" || got.Argv[2] != "watch" {
+		t.Fatalf("status argv after returned-slice mutation = %#v, want original argv", got.Argv)
+	}
+	got.Argv[2] = "get-mutated"
+	again, err := s.Get(root, "argv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Argv) != 3 || again.Argv[0] != "/bin/test" || again.Argv[1] != "--mode" || again.Argv[2] != "watch" {
+		t.Fatalf("status argv after second returned-slice mutation = %#v, want original argv", again.Argv)
+	}
+}
+
 func TestReadModelsExcludeEnvironment(t *testing.T) {
 	root := makeProject(t, false)
 	s := testSupervisor(t, Options{StopGrace: 10 * time.Millisecond})

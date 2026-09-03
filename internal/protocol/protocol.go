@@ -11,7 +11,7 @@ import (
 
 // Version is the current private protocol version. The hello exchange carries
 // this value on every connection.
-const Version = 1
+const Version = 2
 
 // CurrentVersion is an explicit alias for Version for callers that prefer a
 // descriptive name.
@@ -538,6 +538,7 @@ type Process struct {
 	Argv         []string   `json:"argv"`
 	Start        time.Time  `json:"start"`
 	LaunchCursor Cursor     `json:"launch_cursor"`
+	NextCursor   *Cursor    `json:"next_cursor,omitempty"`
 	State        string     `json:"state"`
 	Exit         *Exit      `json:"exit,omitempty"`
 	ExitCode     int        `json:"exit_code,omitempty"`
