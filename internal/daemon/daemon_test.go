@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"hum/internal/app"
+	"hum/internal/output"
 	"hum/internal/process"
 	"hum/internal/protocol"
 )
@@ -491,6 +493,180 @@ func TestMultipleFollowers(t *testing.T) {
 			t.Fatal("follower Next remained blocked after concurrent Close")
 		}
 	})
+}
+
+func TestFollowRetainsOutputAfterCompletedEviction(t *testing.T) {
+	root := t.TempDir()
+	aReady := make(chan struct{})
+	var aStore *output.Store
+	var aChild *daemonTestChild
+
+	supervisor, err := app.New(app.Options{
+		CompletedLimit: 1,
+		Now:            func() time.Time { return time.Unix(0, 0) },
+		StartProcess: func(spec process.Spec) (app.Child, error) {
+			if len(spec.Argv) < 2 {
+				return nil, errors.New("fake process missing name")
+			}
+			child := &daemonTestChild{pid: 1000, done: make(chan struct{})}
+			switch spec.Argv[1] {
+			case "A":
+				aStore = spec.Output
+				aChild = child
+				close(aReady)
+			case "B":
+				spec.Output.NotifyExit(output.Exit{Code: -1, Time: time.Unix(2, 0)})
+				child.once.Do(func() { close(child.done) })
+			default:
+				return nil, errors.New("unexpected fake process")
+			}
+			return child, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := testServer(t, Config{Supervisor: supervisor})
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	startCtx, cancelStart := context.WithTimeout(context.Background(), 3*time.Second)
+	_, err = client.Start(startCtx, testStartRequest(root, "A", "fake", "A"))
+	cancelStart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-aReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("fake process A did not reach its start barrier")
+	}
+	if aStore == nil || aChild == nil {
+		t.Fatal("fake process A did not expose output and child")
+	}
+	if _, err := aStore.Append(output.Stdout, time.Unix(1, 0), "A first\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aStore.Append(output.Stdout, time.Unix(1, 1), "A second\n"); err != nil {
+		t.Fatal(err)
+	}
+	aStore.NotifyExit(output.Exit{Code: -1, Time: time.Unix(1, 2)})
+	aChild.once.Do(func() { close(aChild.done) })
+	waitForDaemonTest(t, 3*time.Second, "process A to exit", func() bool {
+		got, err := server.Supervisor().Get(root, "A")
+		return err == nil && got.State == app.StateExited
+	})
+
+	followRequest := protocol.NewFollowRequest("A", root)
+	followRequest.MaxEntries = 1
+	followCtx, cancelFollow := context.WithTimeout(context.Background(), 3*time.Second)
+	follower, err := client.Follow(followCtx, followRequest)
+	cancelFollow()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer follower.Close()
+
+	firstCtx, cancelFirst := context.WithTimeout(context.Background(), 3*time.Second)
+	first, err := follower.Next(firstCtx)
+	cancelFirst()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Read == nil || len(first.Read.Entries) != 1 || first.Read.Entries[0].Text != "A first\n" {
+		t.Fatalf("first retained output event = %#v, want A first", first)
+	}
+
+	startCtx, cancelStart = context.WithTimeout(context.Background(), 3*time.Second)
+	_, err = client.Start(startCtx, testStartRequest(root, "B", "fake", "B"))
+	cancelStart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForDaemonTest(t, 3*time.Second, "process B to evict process A", func() bool {
+		b, bErr := server.Supervisor().Get(root, "B")
+		_, aErr := server.Supervisor().Get(root, "A")
+		return bErr == nil && b.State == app.StateExited && errors.Is(aErr, app.ErrProcessNotFound)
+	})
+
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelDrain()
+	gotSecond, exits := false, 0
+	for exits == 0 {
+		event, err := follower.Next(drainCtx)
+		if err != nil {
+			t.Fatalf("draining follower after eviction: %v", err)
+		}
+		if event.Exit != nil {
+			exits++
+			continue
+		}
+		if event.Read == nil {
+			t.Fatalf("follower returned empty event after eviction: %#v", event)
+		}
+		for _, entry := range event.Read.Entries {
+			gotSecond = gotSecond || entry.Text == "A second\n"
+		}
+	}
+	if !gotSecond {
+		t.Fatal("follower missed retained output after process A was evicted")
+	}
+	extraCtx, cancelExtra := context.WithTimeout(context.Background(), time.Second)
+	extra, err := follower.Next(extraCtx)
+	cancelExtra()
+	if err == nil {
+		t.Fatalf("follower returned a second terminal event: %#v", extra)
+	}
+	if !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) {
+		t.Fatalf("follower after terminal exit = %v, want closed stream", err)
+	}
+}
+
+func TestRepeatedCompletedProcessFollow(t *testing.T) {
+	server := testServer(t, Config{CompletedLimit: 1})
+	root := t.TempDir()
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	shell := testShell(t)
+
+	const repetitions = 8
+	for i := range repetitions {
+		name := "completed-" + strconv.Itoa(i)
+		if _, err := client.Start(context.Background(), testStartRequest(root, name, shell, "-c", "printf 'done\\n'")); err != nil {
+			t.Fatalf("start %s: %v", name, err)
+		}
+		waitForDaemonTest(t, 3*time.Second, name+" to exit", func() bool {
+			process, err := client.Get(context.Background(), protocol.NewGetRequest(name, root))
+			return err == nil && process.State == app.StateExited
+		})
+
+		followCtx, cancelFollow := context.WithTimeout(context.Background(), 3*time.Second)
+		follower, err := client.Follow(followCtx, protocol.NewFollowRequest(name, root))
+		cancelFollow()
+		if err != nil {
+			t.Fatalf("follow %s: %v", name, err)
+		}
+		nextCtx, cancelNext := context.WithTimeout(context.Background(), 3*time.Second)
+		for {
+			event, err := follower.Next(nextCtx)
+			if err != nil {
+				cancelNext()
+				_ = follower.Close()
+				t.Fatalf("follow %s did not return after exit: %v", name, err)
+			}
+			if event.Exit != nil {
+				break
+			}
+		}
+		cancelNext()
+		_ = follower.Close()
+	}
 }
 
 func TestSocketOwnership(t *testing.T) {

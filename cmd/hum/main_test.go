@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	urfavecli "github.com/urfave/cli/v3"
 )
 
 func captureWriters(t *testing.T) (*bytes.Buffer, *bytes.Buffer) {
@@ -69,6 +71,18 @@ func TestRunInvalidCommandReturnsError(t *testing.T) {
 	err := run(context.Background(), []string{"hum", "--not-a-command"})
 	if err == nil {
 		t.Fatal("run with an invalid command returned nil")
+	}
+}
+
+func TestExitCodePreservesExitCoder(t *testing.T) {
+	if got := exitCode(urfavecli.Exit("", 7)); got != 7 {
+		t.Fatalf("exitCode(urfavecli.Exit(\"\", 7)) = %d, want 7", got)
+	}
+}
+
+func TestExitCodeOrdinaryError(t *testing.T) {
+	if got := exitCode(errors.New("ordinary error")); got != 1 {
+		t.Fatalf("exitCode(ordinary error) = %d, want 1", got)
 	}
 }
 

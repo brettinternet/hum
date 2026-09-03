@@ -546,17 +546,17 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 }
 
 func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *protocol.Encoder, req wireRequest) {
-	store, err := s.supervisor.Output(req.Cwd, req.Name)
-	if err != nil {
-		_ = writeProtocolError(encoder, protocol.OpFollow, err)
-		return
-	}
 	options, err := readOptionsFromWire(req)
 	if err != nil {
 		_ = writeProtocolError(encoder, protocol.OpFollow, err)
 		return
 	}
-	sub := store.Subscribe(options)
+	sub, err := s.supervisor.Subscribe(req.Cwd, req.Name, options)
+	if err != nil {
+		_ = writeProtocolError(encoder, protocol.OpFollow, err)
+		return
+	}
+	defer sub.Close()
 	followCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {

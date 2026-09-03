@@ -93,17 +93,265 @@ func TestFollowerExitWatermarkBoundsTail(t *testing.T) {
 	}
 }
 
-func TestExitRecordsDiscardedWithoutFollowers(t *testing.T) {
+func TestExitRecordsRetainedWithoutFollowers(t *testing.T) {
 	store, err := NewStore(Limits{RetainedBytes: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range 128 {
-		store.NotifyExit(Exit{Code: i})
-		if len(store.exits) != 0 {
-			t.Fatalf("exit history after notification %d = %d, want empty", i, len(store.exits))
+	const total = 128
+	for code := range total {
+		exit := Exit{Code: code, Time: time.Unix(int64(code), 0)}
+		store.NotifyExit(exit)
+		if got := len(store.exits); got != 1 {
+			t.Fatalf("exit history after notification %d = %d, want one latest record", code, got)
+		}
+		if got := store.exits[0].exit; got != exit {
+			t.Fatalf("retained exit after notification %d = %#v, want %#v", code, got, exit)
+		}
+		if got := cap(store.exits); got > maxExitHistory {
+			t.Fatalf("exit history capacity after notification %d = %d, want at most %d", code, got, maxExitHistory)
 		}
 	}
+}
+
+func TestSubscribeSkipsRetainedExit(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 1024, DefaultReadEntries: 100, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Append(Stdout, time.Unix(1, 0), "before\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.NotifyExit(Exit{Code: 7, Time: time.Unix(2, 0)})
+
+	afterSub := store.Subscribe(ReadOptions{After: &before})
+	after, err := store.Append(Stdout, time.Unix(3, 0), "after\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := nextStoreEvent(t, afterSub)
+	if event.Exit != nil || event.Read == nil || len(event.Read.Entries) != 1 || event.Read.Entries[0].Cursor != after {
+		t.Fatalf("new subscription event = %#v, want post-subscribe read without retained exit", event)
+	}
+}
+
+func TestReplayLatestExitDrainsWatermarkedOutput(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 1024, DefaultReadEntries: 100, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Append(Stdout, time.Unix(1, 0), "before\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exit := Exit{Code: 11, Time: time.Unix(2, 0)}
+	store.NotifyExit(exit)
+	after, err := store.Append(Stderr, time.Unix(3, 0), "after\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sub := store.Subscribe(ReadOptions{})
+	if !sub.ReplayLatestExit() {
+		t.Fatal("ReplayLatestExit() = false, want true for retained pre-subscribe exit")
+	}
+
+	event := nextStoreEvent(t, sub)
+	if event.Exit != nil || event.Read == nil || len(event.Read.Entries) != 1 || event.Read.Entries[0].Cursor != before {
+		t.Fatalf("replayed output event = %#v, want output through retained watermark", event)
+	}
+	event = nextStoreEvent(t, sub)
+	if event.Read != nil || event.Exit == nil || *event.Exit != exit {
+		t.Fatalf("replayed exit event = %#v, want exact exit %#v", event, exit)
+	}
+	event = nextStoreEvent(t, sub)
+	if event.Exit != nil || event.Read == nil || len(event.Read.Entries) != 1 || event.Read.Entries[0].Cursor != after {
+		t.Fatalf("post-exit output event = %#v, want output after exact exit", event)
+	}
+}
+
+func TestReplayLatestExitSinceReplaysExitBeforeDone(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exit := Exit{Code: 11, Time: time.Unix(101, 0)}
+	processStart := exit.Time
+	store.NotifyExit(exit)
+
+	sub := store.Subscribe(ReadOptions{})
+	defer sub.Close()
+	if !sub.ReplayLatestExitSince(processStart) {
+		t.Fatalf("ReplayLatestExitSince(%v) = false, want true for retained exit after process start", processStart)
+	}
+	event := nextStoreEvent(t, sub)
+	if event.Read != nil || event.Exit == nil || *event.Exit != exit {
+		t.Fatalf("replayed exit event = %#v, want exact exit %#v", event, exit)
+	}
+}
+
+func TestReplayLatestExitSinceSkipsHistoricalExit(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 1024, DefaultReadEntries: 100, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.NotifyExit(Exit{Code: 7, Time: time.Unix(99, 0)})
+	processStart := time.Unix(100, 0)
+
+	sub := store.Subscribe(ReadOptions{})
+	defer sub.Close()
+	if sub.ReplayLatestExitSince(processStart) {
+		t.Fatalf("ReplayLatestExitSince(%v) = true, want false for historical exit", processStart)
+	}
+	if _, err := store.Append(Stdout, time.Unix(101, 0), "current\n"); err != nil {
+		t.Fatal(err)
+	}
+	event := nextStoreEvent(t, sub)
+	if event.Exit != nil || event.Read == nil || len(event.Read.Entries) != 1 || event.Read.Entries[0].Text != "current\n" {
+		t.Fatalf("event after historical exit = %#v, want current output without replay", event)
+	}
+}
+
+func TestReplayLatestExitSinceDoesNotDuplicatePostSubscribeExit(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 1024, DefaultReadEntries: 100, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	processStart := time.Unix(100, 0)
+	sub := store.Subscribe(ReadOptions{})
+	defer sub.Close()
+	exit := Exit{Code: 13, Time: time.Unix(101, 0)}
+	store.NotifyExit(exit)
+
+	if sub.ReplayLatestExitSince(processStart) {
+		t.Fatalf("ReplayLatestExitSince(%v) = true, want false for exit appended after Subscribe", processStart)
+	}
+	event := nextStoreEvent(t, sub)
+	if event.Read != nil || event.Exit == nil || *event.Exit != exit {
+		t.Fatalf("post-subscribe exit event = %#v, want exact exit %#v", event, exit)
+	}
+}
+
+func TestSubscriptionCloseIsIdempotentAndWakesNext(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := store.Subscribe(ReadOptions{})
+	nextResult := make(chan error, 1)
+	go func() {
+		_, err := sub.Next(context.Background())
+		nextResult <- err
+	}()
+
+	registered := time.NewTimer(time.Second)
+	defer registered.Stop()
+	for {
+		store.mu.Lock()
+		live := len(store.subscriptions)
+		store.mu.Unlock()
+		if live == 1 {
+			break
+		}
+		select {
+		case <-registered.C:
+			t.Fatal("subscription was not registered before Close")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	sub.Close()
+	sub.Close()
+	select {
+	case err := <-nextResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("closed subscription Next = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscription Next remained blocked after Close")
+	}
+
+	if len(store.subscriptions) != 0 {
+		t.Fatalf("live subscriptions after repeated Close = %d, want 0", len(store.subscriptions))
+	}
+	for code := range maxExitHistory * 2 {
+		store.NotifyExit(Exit{Code: code, Time: time.Unix(int64(code), 0)})
+	}
+	if len(store.subscriptions) != 0 {
+		t.Fatalf("live subscriptions after retained exits = %d, want 0", len(store.subscriptions))
+	}
+	if len(store.exits) != 1 || store.exits[0].exit.Code != maxExitHistory*2-1 {
+		t.Fatalf("exit history after repeated Close = %#v, want latest exit only", store.exits)
+	}
+}
+
+func TestReplayLatestExitDoesNotDuplicatePostSubscribeExit(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 1024, DefaultReadEntries: 100, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := store.Subscribe(ReadOptions{})
+	exit := Exit{Code: 13, Time: time.Unix(4, 0)}
+	store.NotifyExit(exit)
+	if sub.ReplayLatestExit() {
+		t.Fatal("ReplayLatestExit() = true, want false for exit appended after Subscribe")
+	}
+
+	event := nextStoreEvent(t, sub)
+	if event.Read != nil || event.Exit == nil || *event.Exit != exit {
+		t.Fatalf("post-subscribe exit event = %#v, want exact exit %#v", event, exit)
+	}
+	if _, err := store.Append(Stdout, time.Unix(5, 0), "after\n"); err != nil {
+		t.Fatal(err)
+	}
+	event = nextStoreEvent(t, sub)
+	if event.Exit != nil || event.Read == nil || len(event.Read.Entries) != 1 || event.Read.Entries[0].Text != "after\n" {
+		t.Fatalf("event after post-subscribe exit = %#v, want one read without duplicate exit", event)
+	}
+}
+
+func TestClosedSubscriptionCompactsToLatestExit(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := store.Subscribe(ReadOptions{})
+	const total = maxExitHistory*3 + 7
+	for code := range total {
+		store.NotifyExit(Exit{Code: code, Time: time.Unix(int64(code), 0)})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = sub.Next(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("closed subscription Next = %v, want context.Canceled", err)
+	}
+	if len(store.subscriptions) != 0 {
+		t.Fatalf("live subscriptions after close = %d, want 0", len(store.subscriptions))
+	}
+	if len(store.exits) != 1 {
+		t.Fatalf("exit history after close = %d, want latest record only", len(store.exits))
+	}
+	if got, want := store.exits[0].exit.Code, total-1; got != want {
+		t.Fatalf("retained exit after close = %d, want latest code %d", got, want)
+	}
+	if got := cap(store.exits); got > maxExitHistory {
+		t.Fatalf("exit history capacity after close = %d, want at most %d", got, maxExitHistory)
+	}
+}
+
+func nextStoreEvent(t *testing.T, sub *Subscription) Event {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	event, err := sub.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return event
 }
 
 func TestIdleFollowerExitHistoryBounded(t *testing.T) {
@@ -138,7 +386,7 @@ func TestIdleFollowerExitHistoryBounded(t *testing.T) {
 		}
 	}
 }
-func TestCanceledFollowerReclaimsExits(t *testing.T) {
+func TestCanceledFollowerCompactsExits(t *testing.T) {
 	store, err := NewStore(Limits{RetainedBytes: 1024})
 	if err != nil {
 		t.Fatal(err)
@@ -151,8 +399,8 @@ func TestCanceledFollowerReclaimsExits(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled follower Next = %v, want context.Canceled", err)
 	}
-	if len(store.exits) != 0 {
-		t.Fatalf("exit history after canceled follower = %d, want 0", len(store.exits))
+	if len(store.exits) != 1 || store.exits[0].exit.Code != 1 {
+		t.Fatalf("exit history after canceled follower = %#v, want latest exit code 1", store.exits)
 	}
 	if len(store.subscriptions) != 0 {
 		t.Fatalf("live subscriptions after cancellation = %d, want 0", len(store.subscriptions))
@@ -161,8 +409,8 @@ func TestCanceledFollowerReclaimsExits(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("repeated canceled follower Next = %v, want context.Canceled", err)
 	}
-	if len(store.exits) != 0 || len(store.subscriptions) != 0 {
-		t.Fatalf("store state after repeated cancellation = exits %d, subscriptions %d; want 0, 0", len(store.exits), len(store.subscriptions))
+	if len(store.exits) != 1 || store.exits[0].exit.Code != 1 || len(store.subscriptions) != 0 {
+		t.Fatalf("store state after repeated cancellation = exits %#v, subscriptions %d; want one code 1 and 0 subscriptions", store.exits, len(store.subscriptions))
 	}
 }
 
@@ -183,8 +431,8 @@ func TestFollowerReadErrorUnregisters(t *testing.T) {
 	if !errors.As(err, &futureErr) {
 		t.Fatalf("follower read error = %v, want FutureCursorError", err)
 	}
-	if len(store.exits) != 0 || len(store.subscriptions) != 0 {
-		t.Fatalf("store state after follower read error = exits %d, subscriptions %d; want 0, 0", len(store.exits), len(store.subscriptions))
+	if len(store.exits) != 1 || store.exits[0].exit.Code != 9 || len(store.subscriptions) != 0 {
+		t.Fatalf("store state after follower read error = exits %#v, subscriptions %d; want one code 9 and 0 subscriptions", store.exits, len(store.subscriptions))
 	}
 }
 
@@ -224,8 +472,8 @@ func testSlowFollowerExitCompaction(t *testing.T) {
 		t.Fatalf("exit history after both consumed first = %d, want 1", len(store.exits))
 	}
 	readExit(second, 2)
-	if len(store.exits) != 0 {
-		t.Fatalf("exit history after all followers consumed = %d, want 0", len(store.exits))
+	if len(store.exits) != 1 || store.exits[0].exit.Code != 2 {
+		t.Fatalf("exit history after all followers consumed = %#v, want latest exit code 2", store.exits)
 	}
 }
 
@@ -326,8 +574,8 @@ func TestMultipleFollowers(t *testing.T) {
 			t.Fatalf("exit event = %#v", event)
 		}
 	}
-	if len(store.exits) != 0 {
-		t.Fatalf("exit history after both followers consumed = %d, want 0", len(store.exits))
+	if len(store.exits) != 1 || store.exits[0].exit.Code != 7 {
+		t.Fatalf("exit history after both followers consumed = %#v, want latest exit code 7", store.exits)
 	}
 
 	if _, err := store.Append(System, time.Unix(5, 0), "still-open\n"); err != nil {

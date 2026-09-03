@@ -6,29 +6,29 @@ import (
 	"time"
 )
 
-// maxExitHistory bounds the best-effort exit notification history. Exit
-// notifications are wakeups rather than durable lifecycle history; the
-// output ring and cursor remain authoritative when older exits are dropped.
+// maxExitHistory bounds retained exit notification history. The newest exit
+// remains available for an explicit late-subscriber replay.
 const maxExitHistory = 64
 
 // Store owns the process output ring and the generation used to wake pull
 // subscribers. The ring and all subscriber state are protected by mu.
 type Store struct {
-	mu         sync.Mutex
-	ring       *ring
-	generation chan struct{}
-	latest     Cursor
-	hasLatest  bool
+	mu               sync.Mutex
+	ring             *ring
+	generation       chan struct{}
+	latest           Cursor
+	hasLatest        bool
+	nextExitSequence uint64
 	// exits is bounded so an idle subscriber cannot retain unbounded
 	// notification history.
 	exits         []storedExit
 	subscriptions map[*Subscription]struct{}
 }
-
 type storedExit struct {
 	exit       Exit
 	through    Cursor
 	hasThrough bool
+	sequence   uint64
 }
 
 // NewStore constructs a bounded output store.
@@ -78,6 +78,10 @@ func (s *Store) Subscribe(opts ReadOptions) *Subscription {
 		exitIndex: len(s.exits),
 		firstRead: true,
 	}
+	if len(s.exits) != 0 {
+		sub.replaySequence = s.exits[len(s.exits)-1].sequence
+		sub.canReplay = true
+	}
 	if opts.After != nil {
 		sub.after = *opts.After
 		sub.hasAfter = true
@@ -98,11 +102,17 @@ func (s *Store) NotifyExit(exit Exit) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	record := storedExit{
+		exit:       exit,
+		through:    s.latest,
+		hasThrough: s.hasLatest,
+		sequence:   s.nextExitSequence,
+	}
+	s.nextExitSequence++
 	if len(s.subscriptions) == 0 {
-		s.exits = nil
+		s.retainLatestExitLocked(record)
 		return
 	}
-	record := storedExit{exit: exit, through: s.latest, hasThrough: s.hasLatest}
 	s.appendExitLocked(record)
 	s.broadcastLocked()
 }
@@ -126,6 +136,20 @@ func (s *Store) appendExitLocked(record storedExit) {
 	s.exits = append(s.exits, record)
 }
 
+// retainLatestExitLocked drops every retained exit except record. The backing
+// slice stays bounded by maxExitHistory and is reused when possible.
+func (s *Store) retainLatestExitLocked(record storedExit) {
+	if cap(s.exits) == 0 {
+		s.exits = make([]storedExit, 1)
+	} else {
+		for i := 1; i < len(s.exits); i++ {
+			s.exits[i] = storedExit{}
+		}
+		s.exits = s.exits[:1]
+	}
+	s.exits[0] = record
+}
+
 func (s *Store) broadcastLocked() {
 	close(s.generation)
 	s.generation = make(chan struct{})
@@ -141,6 +165,7 @@ func (s *Store) unregisterLocked(sub *Subscription) {
 	if len(s.subscriptions) == 0 {
 		s.subscriptions = nil
 	}
+	s.broadcastLocked()
 }
 
 func (s *Store) compactExitsLocked() {
@@ -148,7 +173,7 @@ func (s *Store) compactExitsLocked() {
 		return
 	}
 	if len(s.subscriptions) == 0 {
-		s.exits = nil
+		s.retainLatestExitLocked(s.exits[len(s.exits)-1])
 		return
 	}
 
@@ -162,9 +187,9 @@ func (s *Store) compactExitsLocked() {
 		return
 	}
 	if consumed == len(s.exits) {
-		s.exits = nil
+		s.retainLatestExitLocked(s.exits[len(s.exits)-1])
 		for sub := range s.subscriptions {
-			sub.exitIndex = 0
+			sub.exitIndex = 1
 		}
 		return
 	}
@@ -189,17 +214,54 @@ func (s *Store) discardSubscription(sub *Subscription) {
 // expected to be serialized by the consumer; all state is nevertheless read
 // and advanced under Store.mu, avoiding per-subscriber locks and queues.
 type Subscription struct {
-	store     *Store
-	options   ReadOptions
-	after     Cursor
-	hasAfter  bool
-	exitIndex int
-	firstRead bool
-	closed    bool
+	store          *Store
+	options        ReadOptions
+	after          Cursor
+	hasAfter       bool
+	exitIndex      int
+	replaySequence uint64
+	canReplay      bool
+	firstRead      bool
+	closed         bool
 }
 
 func (sub *Subscription) discardSubscription() {
 	sub.store.discardSubscription(sub)
+}
+
+// Close unregisters the subscription. It is safe to call more than once.
+func (sub *Subscription) Close() {
+	sub.store.discardSubscription(sub)
+}
+
+// ReplayLatestExit requests delivery of the latest exit retained when this
+// subscription was created. It rewinds only an otherwise caught-up
+// subscription, and never rewinds over an exit appended after Subscribe.
+func (sub *Subscription) ReplayLatestExit() bool {
+	return sub.ReplayLatestExitSince(time.Time{})
+}
+
+// ReplayLatestExitSince requests delivery of the latest exit retained when
+// this subscription was created when its timestamp is at or after since. A
+// zero since omits the timestamp lower bound. It rewinds only an otherwise
+// caught-up subscription, and never rewinds over an exit appended after
+// Subscribe.
+func (sub *Subscription) ReplayLatestExitSince(since time.Time) bool {
+	s := sub.store
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if sub.closed || !sub.canReplay || len(s.exits) == 0 || sub.exitIndex != len(s.exits) {
+		return false
+	}
+	latest := s.exits[len(s.exits)-1]
+	if latest.sequence != sub.replaySequence || (!since.IsZero() && latest.exit.Time.Before(since)) {
+		return false
+	}
+	sub.exitIndex = len(s.exits) - 1
+	sub.canReplay = false
+	s.broadcastLocked()
+	return true
 }
 
 // Next waits for the next bounded read result or exit event. Cancellation is

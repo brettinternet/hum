@@ -568,13 +568,31 @@ func (s *Supervisor) Output(cwd, name string) (*output.Store, error) {
 	return rec.store, nil
 }
 
-// Subscribe is a convenience output-access surface for pull clients.
+// Subscribe is a convenience output-access surface for pull clients. It
+// snapshots the current record's store and start time before registering the
+// subscription, then replays a terminal notification published before that
+// registration when it belongs to this process incarnation.
 func (s *Supervisor) Subscribe(cwd, name string, opts output.ReadOptions) (*output.Subscription, error) {
-	store, err := s.Output(cwd, name)
+	rec, err := s.lookup(cwd, name)
 	if err != nil {
 		return nil, err
 	}
-	return store.Subscribe(opts), nil
+
+	// Capture the store and process start under the registry lock. A terminal
+	// record may be evicted after this lock is released, but the subscription
+	// keeps the captured store alive independently.
+	s.mu.RLock()
+	if s.records[rec.key] != rec || rec.store == nil {
+		root, processName := rec.root, rec.name
+		s.mu.RUnlock()
+		return nil, &NotFoundError{Root: root, Name: processName}
+	}
+	store, start := rec.store, rec.start
+	s.mu.RUnlock()
+
+	sub := store.Subscribe(opts)
+	sub.ReplayLatestExitSince(start)
+	return sub, nil
 }
 
 // Signal forwards sig to the process group. Client cancellation is not
