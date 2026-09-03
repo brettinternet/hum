@@ -25,6 +25,8 @@ tasks:
     cmds:
       - task: check
       - task: test
+      - task: race
+      - task: smoke
 
   check:
     desc: Run all project checks
@@ -45,3 +47,13 @@ tasks:
     desc: Run all tests
     deps:
       - task: cli:test
+
+  race:
+    desc: Run race-sensitive package tests
+    cmd: mise exec go -- go test -race ./internal/output ./internal/process ./internal/app ./internal/daemon
+
+  smoke:
+    desc: Build hum and run built-binary smoke coverage
+    deps:
+      - task: cli:build
+    cmd: mise exec go -- go test ./cmd/hum -run TestBuiltBinaryIntegration -count=1

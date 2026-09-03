@@ -696,6 +696,30 @@ func TestAttachedRun(t *testing.T) {
 			t.Fatalf("stderr lost raw line content: %q", client.stderr())
 		}
 	})
+	t.Run("json attached run streams raw child output", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		cliServeRunStartDaemon(t, runtimeDir)
+
+		client := cliServeRunStartClient(t, cliServeRunWithFixtureArgs([]string{"run", "attached-json", "--json"}, "inspect")...)
+		if err := client.wait(5 * time.Second); cliServeRunExitCode(err) != 23 {
+			t.Fatalf("attached JSON run exit = %v (code %d), want managed code 23; stdout=%q stderr=%q", err, cliServeRunExitCode(err), client.stdout(), client.stderr())
+		}
+
+		stdout, stderr := client.stdout(), client.stderr()
+		if !strings.Contains(stdout, "SNAPSHOT ") || !strings.Contains(stdout, "stdout:raw with spaces \r\n") || !strings.Contains(stdout, "stdout:partial") {
+			t.Fatalf("attached --json stdout = %q, want raw child stdout", stdout)
+		}
+		if !strings.Contains(stderr, "stderr:raw with spaces \r\n") || !strings.Contains(stderr, "stderr:partial") {
+			t.Fatalf("attached --json stderr = %q, want raw child stderr", stderr)
+		}
+		for _, line := range strings.Split(stdout, "\n") {
+			var result runResult
+			if err := json.Unmarshal([]byte(line), &result); err == nil && result.Name == "attached-json" {
+				t.Fatalf("attached --json emitted a JSON start result: %q", line)
+			}
+		}
+	})
 
 	t.Run("already-exited child returns managed code without hanging", func(t *testing.T) {
 		runtimeDir := cliServeRunRuntimeDir(t)

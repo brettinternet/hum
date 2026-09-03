@@ -204,6 +204,7 @@ func TestWaitCLIValidation(t *testing.T) {
 		{name: "too many names", args: []string{"wait", "one", "two"}, want: "wait accepts exactly one process name"},
 		{name: "invalid cursor", args: []string{"wait", "api", "--after-cursor", "-1"}, want: "after-cursor", frameworkParse: true},
 		{name: "invalid regex", args: []string{"wait", "api", "--match", "["}, want: "regular expression"},
+		{name: "empty regex", args: []string{"wait", "api", "--match", ""}, want: "match must not be empty"},
 		{name: "invalid duration", args: []string{"wait", "api", "--timeout", "later"}, want: "valid duration"},
 		{name: "non-positive duration", args: []string{"wait", "api", "--timeout", "0s"}, want: "positive"},
 		{name: "sub-millisecond duration", args: []string{"wait", "api", "--timeout", "1ns"}, want: "at least 1ms"},

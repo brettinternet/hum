@@ -25,10 +25,12 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 	return []*urfavecli.Command{
 		{
 			Name:      "serve",
-			Usage:     "run the hum daemon in the foreground",
+			Usage:     "run the hum daemon in the foreground or detached",
 			ArgsUsage: "",
+			Description: "By default, hum serve stays attached in the foreground and writes daemon diagnostics to stderr. " +
+				"hum serve --daemon starts a detached daemon, waits for readiness, and reports its PID and socket before returning.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "daemon", Usage: "run the hum daemon detached"},
+				&urfavecli.BoolFlag{Name: "daemon", Usage: "start the daemon detached, wait for readiness, and print its PID and socket"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return serveCommand(ctx, cmd, version, buildTime, errWriter)
@@ -36,12 +38,15 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:         "run",
-			Usage:        "start a named process",
+			Usage:        "start a named process (attached by default)",
 			ArgsUsage:    "NAME -- COMMAND [ARGS...]",
 			StopOnNthArg: &runStopOnNthArg,
+			Description: "hum run automatically starts a detached daemon when none is available. " +
+				"Without --detach, it stays attached and streams the managed process stdout and stderr until exit. " +
+				"With --detach, it starts the process, prints its name and PID (or JSON), and returns immediately; the daemon keeps owning it.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "detach", Usage: "start the process without attaching"},
-				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+				&urfavecli.BoolFlag{Name: "detach", Usage: "start the process detached and return without attaching"},
+				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON for detached runs; attached runs stream raw child output"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return runCommand(ctx, cmd, version, buildTime, writer, errWriter)
@@ -49,8 +54,10 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:      "list",
-			Usage:     "list supervised processes",
+			Usage:     "list supervised processes (current project by default)",
 			ArgsUsage: "",
+			Description: "List is read-only and does not start an empty daemon. " +
+				"Use --all to include processes from every project; when nothing is running, it reports that state.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "all", Usage: "list processes from every project"},
 				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
@@ -61,8 +68,10 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:      "status",
-			Usage:     "show one supervised process",
+			Usage:     "show one supervised process (read-only)",
 			ArgsUsage: "NAME",
+			Description: "Status only reads one named process and never starts a daemon. " +
+				"If no daemon is available, it reports Nothing is running and points to hum run <name> -- <command> as the launch command.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
 			},
@@ -72,8 +81,11 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:      "logs",
-			Usage:     "read retained process output",
+			Usage:     "read retained process output (read-only)",
 			ArgsUsage: "NAME",
+			Description: "Logs reads bounded retained output without changing process state. " +
+				"--follow first reads retained entries and then streams new entries; following is read-only, so Ctrl+C cancels only the follower and never signals the managed process. " +
+				"If no daemon is available, it reports Nothing is running and points to hum run <name> -- <command> as the launch command.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.StringFlag{Name: "stream", Value: "both", Usage: "select stdout, stderr, or both"},
 				&urfavecli.IntFlag{Name: "tail", Usage: "select the final N entries"},
@@ -88,13 +100,16 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 		},
 		{
-			Name:        "wait",
-			Usage:       "wait for matching output or process exit",
-			ArgsUsage:   "NAME",
-			Description: "Wait without --match returns when the process exits; waiting for declared readiness uses hum start <name>.",
+			Name:      "wait",
+			Usage:     "wait for matching output or process exit (30s default)",
+			ArgsUsage: "NAME",
+			Description: "Without --match, wait returns when the process exits; with --match, it returns when output matches or the process exits. " +
+				"It searches from the current incarnation's launch cursor by default and waits at most 30s unless --timeout is set. " +
+				"Exit code is 0 for a match or an exit without --match, 3 when --match sees process exit first, and 2 on timeout. " +
+				"Current processes can use wait --match for output matching; declared readiness belongs to future resolved-process commands only. If no daemon is available, it points to hum run <name> -- <command> instead of starting one.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.Uint64Flag{Name: "after-cursor", Usage: "search entries after this cursor"},
-				&urfavecli.StringFlag{Name: "match", Usage: "wait for output matching this regular expression"},
+				&urfavecli.Uint64Flag{Name: "after-cursor", DefaultText: "current launch cursor", Usage: "search entries after this cursor"},
+				&urfavecli.StringFlag{Name: "match", Usage: "wait for output matching this non-empty regular expression"},
 				&urfavecli.StringFlag{Name: "timeout", Usage: "maximum wait duration (default 30s)"},
 				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
 			},
@@ -104,8 +119,12 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:      "restart",
-			Usage:     "restart one or more supervised processes",
+			Usage:     "restart one or more processes by name",
 			ArgsUsage: "NAME...",
+			Description: "Restart applies the graceful stop sequence and attempts to relaunch requested names with each one's recorded command, working directory, and environment. " +
+				"Names are attempted in order; the first error stops the remaining restarts, so it reports only successful attempts; each result includes the new PID and launch cursor. " +
+				"It restarts processes, not the daemon. " +
+				"If no daemon is available, it reports Nothing is running and points to hum run <name> -- <command> as the launch command.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
 			},
@@ -115,8 +134,11 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:      "stop",
-			Usage:     "stop one or more supervised processes",
+			Usage:     "stop one or more named processes (idempotent)",
 			ArgsUsage: "NAME...",
+			Description: "Stop accepts multiple names and applies the graceful process-group stop sequence to each one, returning one result per name. " +
+				"Stopping an already-stopped or unknown name succeeds as not running, so stop is idempotent. " +
+				"Stop affects managed processes only and does not shut down the daemon; with no daemon, it reports Nothing is running.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
 			},
@@ -128,8 +150,11 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:      "shutdown",
 			Usage:     "shut down the hum daemon",
 			ArgsUsage: "",
+			Description: "Shutdown controls daemon lifetime rather than one named process. " +
+				"By default it refuses while managed processes are active and lists their names, leaving them running. " +
+				"Use --stop-processes to gracefully stop every managed process before the daemon exits; if no daemon is running, shutdown succeeds with No hum daemon is running.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "stop-processes", Usage: "stop managed processes before shutdown"},
+				&urfavecli.BoolFlag{Name: "stop-processes", Usage: "stop all managed processes before shutting down; default refuses when any are active"},
 				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -549,6 +574,9 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 
 	match := cmd.String("match")
 	if cmd.IsSet("match") {
+		if match == "" {
+			return errors.New("match must not be empty")
+		}
 		if _, err := regexp.Compile(match); err != nil {
 			return fmt.Errorf("match must be a valid regular expression: %w", err)
 		}
