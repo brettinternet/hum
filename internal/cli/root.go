@@ -17,6 +17,13 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		Version:     version + " (built " + buildTime + ")",
 		Writer:      writer,
 		ErrWriter:   errWriter,
+		Flags: []urfavecli.Flag{
+			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon"},
+			&urfavecli.StringFlag{Name: "stop-grace", Usage: "grace period before killing a process"},
+			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained output bytes per process"},
+			&urfavecli.StringFlag{Name: "completed-records", Usage: "completed process records to retain"},
+		},
+		Commands: newCLICommands(version, buildTime, writer, errWriter),
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 			if err := ctx.Err(); err != nil {
 				return err

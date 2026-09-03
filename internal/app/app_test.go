@@ -149,6 +149,135 @@ func (c *timedChild) Signal(os.Signal) error {
 	return os.ErrProcessDone
 }
 
+type subscriptionChild struct {
+	pid    int
+	done   chan struct{}
+	once   sync.Once
+	result process.Result
+	text   string
+	store  *output.Store
+
+	doneObserved   chan struct{}
+	allowDoneCheck chan struct{}
+	allowDoneOnce  sync.Once
+	observeOnce    sync.Once
+}
+
+func newSubscriptionChild(pid, code int, at time.Time, text string) *subscriptionChild {
+	return &subscriptionChild{
+		pid:    pid,
+		done:   make(chan struct{}),
+		result: process.Result{ExitCode: code, ExitedAt: at},
+		text:   text,
+	}
+}
+
+func (c *subscriptionChild) PID() int  { return c.pid }
+func (c *subscriptionChild) PGID() int { return c.pid }
+func (c *subscriptionChild) Done() <-chan struct{} {
+	if c.doneObserved != nil {
+		c.observeOnce.Do(func() {
+			close(c.doneObserved)
+			<-c.allowDoneCheck
+		})
+	}
+	return c.done
+}
+func (c *subscriptionChild) Wait() process.Result {
+	<-c.done
+	return c.result
+}
+func (c *subscriptionChild) release() {
+	c.once.Do(func() {
+		if c.store != nil {
+			c.store.NotifyExit(output.Exit{
+				Code: c.result.ExitCode,
+				Time: c.result.ExitedAt,
+			})
+		}
+		close(c.done)
+	})
+}
+func (c *subscriptionChild) Signal(os.Signal) error {
+	c.release()
+	return os.ErrProcessDone
+}
+func (c *subscriptionChild) releaseDoneCheck() {
+	if c.allowDoneCheck != nil {
+		c.allowDoneOnce.Do(func() { close(c.allowDoneCheck) })
+	}
+}
+
+func subscriptionStarter(children map[string]*subscriptionChild) func(process.Spec) (Child, error) {
+	return func(spec process.Spec) (Child, error) {
+		name := spec.Argv[len(spec.Argv)-1]
+		child := children[name]
+		if child == nil {
+			return nil, fmt.Errorf("unknown test child %q", name)
+		}
+		child.store = spec.Output
+		if child.text != "" {
+			if _, err := spec.Output.Append(output.Stdout, child.result.ExitedAt, child.text); err != nil {
+				return nil, err
+			}
+		}
+		return child, nil
+	}
+}
+
+type subscriptionResult struct {
+	sub *output.Subscription
+	err error
+}
+
+func waitSubscriptionSignal(t *testing.T, signal <-chan struct{}, what string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	select {
+	case <-signal:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func nextSubscriptionEvent(t *testing.T, sub *output.Subscription) output.Event {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	event, err := sub.Next(ctx)
+	if err != nil {
+		t.Fatalf("next subscription event: %v", err)
+	}
+	return event
+}
+
+func assertSubscriptionOutput(t *testing.T, sub *output.Subscription, text string) {
+	t.Helper()
+	event := nextSubscriptionEvent(t, sub)
+	if event.Read == nil || event.Exit != nil || len(event.Read.Entries) != 1 || event.Read.Entries[0].Text != text {
+		t.Fatalf("subscription output event = %#v, want one %q read", event, text)
+	}
+}
+
+func assertSubscriptionExit(t *testing.T, sub *output.Subscription, code int) {
+	t.Helper()
+	event := nextSubscriptionEvent(t, sub)
+	if event.Exit == nil || event.Read != nil || event.Exit.Code != code {
+		t.Fatalf("subscription exit event = %#v, want code %d", event, code)
+	}
+}
+
+func assertNoSubscriptionEvent(t *testing.T, sub *output.Subscription) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	event, err := sub.Next(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unexpected subscription event = %#v, err %v; want bounded timeout", event, err)
+	}
+}
+
 func TestProjectScopedNames(t *testing.T) {
 	rootA := makeProject(t, false)
 	rootB := makeProject(t, true)
@@ -568,6 +697,194 @@ func TestCompletedRetentionUsesExitTime(t *testing.T) {
 			t.Fatalf("retained %s = %#v, err %v", launch.name, model, err)
 		}
 	}
+}
+
+func TestSubscribeAfterProcessExit(t *testing.T) {
+	root := makeProject(t, false)
+	child := newSubscriptionChild(3101, 7, time.Unix(1, 0), "late-output\n")
+	s := testSupervisor(t, Options{
+		CompletedLimit: 2,
+		Now:            func() time.Time { return time.Unix(0, 0) },
+		OutputLimits: output.Limits{
+			RetainedBytes:      1024,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   1024,
+		},
+		StartProcess: subscriptionStarter(map[string]*subscriptionChild{"late": child}),
+	})
+	if _, err := s.Start(StartRequest{
+		Name: "late",
+		Cwd:  root,
+		Argv: []string{"/bin/fake", "late"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := recordDone(t, s, root, "late")
+	child.release()
+	waitSubscriptionSignal(t, done, "late process exit")
+
+	sub, err := s.Subscribe(root, "late", output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSubscriptionOutput(t, sub, "late-output\n")
+	assertSubscriptionExit(t, sub, 7)
+	assertNoSubscriptionEvent(t, sub)
+}
+
+func TestSubscribeDoesNotWaitForChildDone(t *testing.T) {
+	root := makeProject(t, false)
+	child := newSubscriptionChild(3102, 13, time.Unix(2, 0), "raced-output\n")
+	child.doneObserved = make(chan struct{})
+	child.allowDoneCheck = make(chan struct{})
+	defer child.releaseDoneCheck()
+	s := testSupervisor(t, Options{
+		CompletedLimit: 2,
+		Now:            func() time.Time { return time.Unix(1, 0) },
+		OutputLimits: output.Limits{
+			RetainedBytes:      1024,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   1024,
+		},
+		StartProcess: subscriptionStarter(map[string]*subscriptionChild{"raced": child}),
+	})
+	if _, err := s.Start(StartRequest{
+		Name: "raced",
+		Cwd:  root,
+		Argv: []string{"/bin/fake", "raced"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := recordDone(t, s, root, "raced")
+
+	result := make(chan subscriptionResult, 1)
+	go func() {
+		sub, err := s.Subscribe(root, "raced", output.ReadOptions{})
+		result <- subscriptionResult{sub: sub, err: err}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var got subscriptionResult
+	select {
+	case got = <-result:
+	case <-ctx.Done():
+		t.Fatal("Subscribe waited for child Done")
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if got.sub == nil {
+		t.Fatal("Subscribe returned a nil subscription")
+	}
+	select {
+	case <-child.done:
+		t.Fatal("child exited before the NotifyExit-before-Done check")
+	default:
+	}
+	select {
+	case <-child.doneObserved:
+		t.Fatal("Subscribe inspected child Done")
+	default:
+	}
+
+	child.release()
+	waitSubscriptionSignal(t, done, "raced process exit")
+	assertSubscriptionOutput(t, got.sub, "raced-output\n")
+	assertSubscriptionExit(t, got.sub, 13)
+	assertNoSubscriptionEvent(t, got.sub)
+}
+
+func TestSubscribeRunningProcessSkipsHistoricalExitAndDoesNotDuplicateCurrent(t *testing.T) {
+	root := makeProject(t, false)
+	child := newSubscriptionChild(3103, 17, time.Unix(6, 0), "running-output\n")
+	s := testSupervisor(t, Options{
+		CompletedLimit: 2,
+		Now:            func() time.Time { return time.Unix(5, 0) },
+		OutputLimits: output.Limits{
+			RetainedBytes:      1024,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   1024,
+		},
+		StartProcess: subscriptionStarter(map[string]*subscriptionChild{"running": child}),
+	})
+	if _, err := s.Start(StartRequest{
+		Name: "running",
+		Cwd:  root,
+		Argv: []string{"/bin/fake", "running"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := recordDone(t, s, root, "running")
+	if child.store == nil {
+		t.Fatal("running child did not receive an output store")
+	}
+	child.store.NotifyExit(output.Exit{Code: 99, Time: time.Unix(4, 0)})
+
+	sub, err := s.Subscribe(root, "running", output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSubscriptionOutput(t, sub, "running-output\n")
+
+	child.release()
+	waitSubscriptionSignal(t, done, "running process exit")
+	assertSubscriptionExit(t, sub, 17)
+	assertNoSubscriptionEvent(t, sub)
+}
+
+func TestSubscribeSurvivesCompletedLimitEviction(t *testing.T) {
+	root := makeProject(t, false)
+	first := newSubscriptionChild(3104, 21, time.Unix(5, 0), "first-output\n")
+	second := newSubscriptionChild(3105, 22, time.Unix(6, 0), "second-output\n")
+	s := testSupervisor(t, Options{
+		CompletedLimit: 1,
+		Now:            func() time.Time { return time.Unix(0, 0) },
+		OutputLimits: output.Limits{
+			RetainedBytes:      1024,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   1024,
+		},
+		StartProcess: subscriptionStarter(map[string]*subscriptionChild{
+			"first":  first,
+			"second": second,
+		}),
+	})
+	if _, err := s.Start(StartRequest{
+		Name: "first",
+		Cwd:  root,
+		Argv: []string{"/bin/fake", "first"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstDone := recordDone(t, s, root, "first")
+	first.release()
+	waitSubscriptionSignal(t, firstDone, "first process exit")
+
+	sub, err := s.Subscribe(root, "first", output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(StartRequest{
+		Name: "second",
+		Cwd:  root,
+		Argv: []string{"/bin/fake", "second"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondDone := recordDone(t, s, root, "second")
+	second.release()
+	waitSubscriptionSignal(t, secondDone, "second process exit and eviction")
+
+	if _, err := s.Get(root, "first"); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("evicted first lookup error = %v, want ErrProcessNotFound", err)
+	}
+	if _, err := s.Output(root, "first"); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("evicted first output lookup error = %v, want ErrProcessNotFound", err)
+	}
+	assertSubscriptionOutput(t, sub, "first-output\n")
+	assertSubscriptionExit(t, sub, 21)
+	assertNoSubscriptionEvent(t, sub)
 }
 
 func TestSignalForwardsInterrupt(t *testing.T) {
