@@ -16,6 +16,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 		"run":      true,
 		"start":    true,
 		"up":       true,
+		"down":     true,
 		"list":     true,
 		"status":   true,
 		"logs":     true,
@@ -37,11 +38,6 @@ func TestStatusAndWaitSurface(t *testing.T) {
 	for name := range want {
 		if !got[name] {
 			t.Errorf("root command is missing %q", name)
-		}
-	}
-	for _, name := range []string{"down"} {
-		if root.Command(name) != nil {
-			t.Errorf("root command unexpectedly exposes %q", name)
 		}
 	}
 }
@@ -130,6 +126,22 @@ func TestLifecycleHelp(t *testing.T) {
 				"concurrently",
 				"--no-wait",
 				"--timeout",
+				"--json",
+			},
+		},
+		{
+			name: "down",
+			args: []string{"hum", "down", "--help"},
+			want: []string{
+				"every process",
+				"current project",
+				"resolved manifest",
+				"ad-hoc",
+				"concurrently",
+				"not running",
+				"idempotent",
+				"never starts",
+				"shuts down the daemon",
 				"--json",
 			},
 		},

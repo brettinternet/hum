@@ -377,6 +377,28 @@ func renderStopHuman(w io.Writer, result stopResult) error {
 	}
 }
 
+func renderDownResults(w io.Writer, results []stopResult, jsonOutput bool) error {
+	if len(results) == 0 {
+		if jsonOutput {
+			return nil
+		}
+		_, err := fmt.Fprintln(w, "Nothing is running in this project.")
+		return err
+	}
+	for _, result := range results {
+		if jsonOutput {
+			if err := encodeJSON(w, result); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := renderStopHuman(w, result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func renderRestartHuman(w io.Writer, result restartResult) error {
 	line := fmt.Sprintf("%s restarted pid=%d restarts=%d launch_cursor=%d", result.Name, result.PID, result.Restarts, result.LaunchCursor)
 	if result.Source != "" {

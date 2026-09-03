@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -79,6 +80,20 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return upCommand(ctx, cmd, version, buildTime, writer)
+			},
+		},
+		{
+			Name:      "down",
+			Usage:     "stop every process in the current project",
+			ArgsUsage: "",
+			Description: "Down lists every active process in the current project, including resolved manifest and ad-hoc processes, and applies the graceful process-group stop sequence to each concurrently. " +
+				"Declared manifest names with no running record are reported as not running; down emits one stable result per name and is idempotent. " +
+				"Down never starts or shuts down the daemon, and when no work exists it reports Nothing is running in this project.",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "json", Usage: "write one stable JSON object per name"},
+			},
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return downCommand(ctx, cmd, version, buildTime, writer)
 			},
 		},
 		{
@@ -851,6 +866,120 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		}
 	}
 	return firstErr
+}
+
+func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	if err := requireNoArgs(cmd, "down"); err != nil {
+		return err
+	}
+	ctx = nonNilContext(ctx)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, cfg)
+	if err != nil {
+		if client != nil {
+			_ = client.Close()
+		}
+		if daemonUnavailable(err) {
+			return renderDownResults(writer, nil, cmd.Bool("json"))
+		}
+		return err
+	}
+	defer client.Close()
+	processes, err := client.List(ctx, daemon.ListRequest{Cwd: cwd})
+	if err != nil {
+		if daemonUnavailable(err) {
+			return renderDownResults(writer, nil, cmd.Bool("json"))
+		}
+		return err
+	}
+	manifest, err := loadManifestOrEmpty(cwd)
+	if err != nil {
+		return err
+	}
+	processes = mergeManifestProcesses(manifest, processes)
+	byName := make(map[string]app.Process, len(processes))
+	for _, process := range processes {
+		existing, ok := byName[process.Name]
+		if !ok || (existing.State != app.StateRunning && process.State == app.StateRunning) {
+			byName[process.Name] = process
+		}
+	}
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return renderDownResults(writer, nil, cmd.Bool("json"))
+	}
+
+	type workerResult struct {
+		index  int
+		result stopResult
+		err    error
+	}
+	workers := make(chan workerResult, len(names))
+	var waitGroup sync.WaitGroup
+	for index, name := range names {
+		if byName[name].State != app.StateRunning {
+			continue
+		}
+		waitGroup.Add(1)
+		go func(index int, name string) {
+			defer waitGroup.Done()
+			result := stopResult{Name: name}
+			worker, stopErr := daemonClient(context.Background(), cfg)
+			if worker != nil {
+				defer worker.Close()
+			}
+			if stopErr == nil {
+				if worker == nil {
+					stopErr = errors.New("daemon connection returned nil client")
+				} else {
+					stopErr = worker.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: cwd})
+				}
+			}
+			switch {
+			case stopErr == nil:
+				result.Status = "stopped"
+			case isNotFound(stopErr):
+				result.Status = "not_running"
+			default:
+				result.Status = "error"
+				result.Message = stopErr.Error()
+			}
+			workers <- workerResult{index: index, result: result, err: stopErr}
+		}(index, name)
+	}
+	waitGroup.Wait()
+	close(workers)
+	stopErrors := make([]error, len(names))
+	results := make([]stopResult, len(names))
+	for index, name := range names {
+		results[index] = stopResult{Name: name, Status: "not_running"}
+	}
+	for worker := range workers {
+		results[worker.index] = worker.result
+		if worker.result.Status == "error" {
+			stopErrors[worker.index] = worker.err
+		}
+	}
+	if err := renderDownResults(writer, results, cmd.Bool("json")); err != nil {
+		return err
+	}
+	for _, stopErr := range stopErrors {
+		if stopErr != nil {
+			return stopErr
+		}
+	}
+	return nil
 }
 
 func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {

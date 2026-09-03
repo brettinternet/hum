@@ -40,6 +40,7 @@ mise exec go -- go build \
 hum serve [--daemon]
 hum start NAME... [--no-wait] [--timeout DURATION] [--json]
 hum up [--no-wait] [--timeout DURATION] [--json]
+hum down [--json]
 hum run NAME [--detach] [--json] [-- COMMAND [ARGS...]]
 hum list [--all] [--json]
 hum status NAME [--json]
@@ -70,6 +71,20 @@ readiness expression, including every discovered definition, reports
 `running_unverified` and is never reported ready. Up attempts every resolved
 definition even when one fails. Its aggregate exit status is 1 for a request
 error, 3 for an exit before readiness, 2 for a timeout, and 0 otherwise.
+`down` is the project-scoped inverse of `up`: it lists active resolved and ad hoc
+records in the current project, includes declared manifest names with no runtime
+record as `not_running` when a daemon is available, and applies the existing
+named `stop` operation concurrently to every running name. It never starts a
+daemon, shuts one down, touches another project, or removes runtime records.
+Results are name-sorted and contain exactly one `stopped`, `not_running`, or
+`error` result per name; errors include a message. Human output is one
+`<name> stopped`, `<name> not running`, or `<name> error: <message>` line per
+result, while `--json` emits the existing newline-delimited `stopResult` objects.
+A real stop error makes exit status 1; otherwise exit status is 0. Without a
+daemon, `down` succeeds without creating runtime state and human output is exactly
+`Nothing is running in this project.` When a daemon has no runtime records and no
+declarations, it returns the same message; declarations without runtime records
+are emitted as `not_running`.
 
 `run NAME` without a command uses the current resolved project definition when
 `NAME` resolves (including discovered `dev`) and retains attached-run streaming
@@ -220,6 +235,8 @@ cd "$project_dir"
 # client's environment. The output cursor sequence remains monotonic.
 
 "$HUM" stop web worker
+"$HUM" down --json
+# Stops every active process in this project and leaves the daemon running.
 "$HUM" shutdown --stop-processes
 ```
 
@@ -290,10 +307,10 @@ current working directory is the project root. A duplicate name in one project
 is rejected, while the same name may be used by separate projects.
 
 Each child has its own Unix process group and stdin connected to `/dev/null`.
-`stop` sends SIGTERM to the group, waits the bounded grace period, and then
-sends SIGKILL if needed. Clients and log followers may disconnect without
-orphaning or stopping a managed process. `shutdown` refuses while processes are
-active unless `--stop-processes` is supplied.
+`stop` and `down` send SIGTERM to the group, wait the bounded graceful-stop
+period, and send SIGKILL if needed. Clients and log followers may disconnect
+without orphaning or stopping a managed process. `shutdown` refuses while
+processes are active unless `--stop-processes` is supplied.
 
 Captured stdout and stderr share one monotonically increasing cursor sequence
 per process record. Retention is bounded per process; stale cursors return
@@ -325,8 +342,12 @@ language-level guesses such as bare `go run` or `cargo run`, framework launch
 commands other than a confirmed `mix phx.server`, Docker Compose inference,
 scanning workspace packages or nested manifests, combining several inferred
 processes, inferring ports, readiness, or dependencies, or executing candidate
-commands to see which succeeds. It also does not include `down`, manifest
-generation (`init`), a shell-only skill, an MCP server, automatic crash
-restart/backoff, environment literals/files, or arbitrary-command MCP tools.
-Use `hum stop NAME...` for named process groups and `hum shutdown` for daemon
-lifetime control.
+commands to see which succeeds. It also does not include manifest generation
+(`init`), a shell-only skill, an MCP server, automatic crash restart/backoff,
+environment literals/files, or arbitrary-command MCP tools.
+`hum down` is the project-scoped inverse of `hum up`: it stops every active
+resolved or ad hoc process in the current project, preserves the daemon and
+runtime records, and leaves other projects untouched. Use `hum stop NAME...` for
+selected named groups. Use `hum shutdown` for daemon lifetime control; ordinary
+shutdown refuses while processes are active, while `hum shutdown --stop-processes`
+stops all managed groups before the daemon exits.

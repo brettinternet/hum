@@ -21,6 +21,7 @@ project root.
 hum serve [--daemon]
 hum start <name>... [--no-wait] [--timeout DURATION] [--json]
 hum up [--no-wait] [--timeout DURATION] [--json]
+hum down [--json]
 hum run <name> [--detach] [--json] [-- <command> [args...]]
 hum list [--all] [--json]
 hum status <name> [--json]
@@ -53,6 +54,35 @@ the daemon for an ad hoc run; malformed, ambiguous, or introspection errors stil
 propagate before startup. A resolved name cannot be occupied by a conflicting
 raw run. `restart` uses the current resolved definition when one exists; it is
 not a copy of an old command line.
+
+### Project-scoped `down`
+
+`down` is the project-scoped inverse of `up`. It resolves the caller's current
+project root, uses the existing project-scoped `List` operation to collect active
+resolved and ad hoc records, and, when a daemon is available, loads current
+manifest declarations so each declared name without a runtime record is included
+as `not_running`. It then applies the existing named `Stop` operation concurrently
+to every running name, with an independent daemon connection per stop because a
+single `Client` serializes round trips.
+
+`down` never autostarts or shuts down the daemon, never signals a process outside
+the current project, and leaves runtime records intact. The daemon remains
+available for later commands. Results are deterministic and name-sorted, with
+exactly one result per name and status `stopped`, `not_running`, or `error`;
+errors include `message`. Human output is one `<name> stopped`, `<name> not
+running`, or `<name> error: <message>` line per result. `--json` emits the
+existing newline-delimited `stopResult` objects. Any real stop error sets exit
+status 1; otherwise exit status is 0.
+
+`down` is successful and does not create runtime state when no daemon is
+available; its human output is exactly `Nothing is running in this project.`.
+When a daemon is available but there are no runtime records and no declarations,
+it returns the same message. If declarations exist without runtime records, each
+declared name is emitted as `not_running`. This differs from `stop <name>...`,
+which targets only explicitly named groups, and from `shutdown`, which controls
+daemon lifetime: ordinary `shutdown` refuses while any process is active, while
+`shutdown --stop-processes` stops all managed groups across projects before
+terminating the daemon. Neither shutdown mode is used by `down`.
 
 ## Canonical strict manifest
 
@@ -209,8 +239,8 @@ children remain supervised.
 
 The daemon starts the exact argv array directly. It never parses shell text or
 uses a shell as an implicit command interpreter. Each child has its own Unix
-process group and stdin attached to `/dev/null`; `stop` sends SIGTERM to the
-group, waits a bounded grace period, and then sends SIGKILL if necessary.
+process group and stdin attached to `/dev/null`; `stop` and `down` send SIGTERM
+to the group, wait the bounded grace period, and then send SIGKILL if necessary.
 Clients and log followers may disconnect without stopping the managed process.
 
 Each process has one ordered output sequence shared by stdout and stderr. A
@@ -230,8 +260,9 @@ resolution happens before automatic daemon startup; those resolution errors
 never start a daemon. Explicit-argv ad-hoc `run NAME -- ...` may start after
 `NoCandidate` is treated as no local definition, while malformed, ambiguous, or
 introspection errors still abort before startup. Read-only commands do not start
-an empty daemon. A foreground daemon or `shutdown --stop-processes` stops
-its managed groups; ordinary shutdown refuses while any process remains active.
+an empty daemon. `stop` and `down` preserve daemon lifetime and only stop their
+selected processes. A foreground daemon or `shutdown --stop-processes` stops its
+managed groups; ordinary shutdown refuses while any process remains active.
 
 ## Working directory and deterministic environments
 
@@ -264,11 +295,12 @@ language-level guesses such as bare `go run` or `cargo run`, framework launch
 commands other than a confirmed `mix phx.server`, Docker Compose inference,
 scanning workspace packages or nested manifests, combining several inferred
 processes, inferring ports, readiness, or dependencies, or executing candidate
-commands to see which succeeds. It also does not include `down`, manifest
-generation (`init`), a shell-only skill, an MCP server, automatic crash
-restart/backoff, environment literals/files, or arbitrary-command MCP tools.
-These remain separate surfaces and must reuse the daemon boundary and exact
-argv model.
+commands to see which succeeds. It also does not include manifest generation
+(`init`), a shell-only skill, an MCP server, automatic crash restart/backoff,
+environment literals/files, or arbitrary-command MCP tools.
+`down` is part of the current CLI surface, not a discovery feature; it reuses the
+daemon boundary and exact argv model described above rather than defining another
+supervisor.
 
 The foundation also intentionally has no PTY, arbitrary interactive input,
 remote transport, authentication, web UI, persistent process history, plugin
