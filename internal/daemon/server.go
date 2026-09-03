@@ -51,11 +51,12 @@ type Server struct {
 	readyErrMu sync.Mutex
 	readyErr   error
 
-	shutdownMu      sync.Mutex // lifecycle admission gate
-	shutdownStarted bool
-	shutdownDone    chan struct{}
-	shutdownErr     error
-	closing         chan struct{}
+	shutdownMu        sync.Mutex // lifecycle admission gate
+	shutdownStarted   bool
+	shutdownDone      chan struct{}
+	shutdownErr       error
+	shutdownResponses sync.WaitGroup
+	closing           chan struct{}
 }
 
 // NewServer creates a listener, claims runtime ownership, and constructs the
@@ -193,6 +194,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		if err != nil {
 			if signalCtx.Err() != nil || s.isShutdown() {
 				<-s.shutdownDone
+				s.shutdownResponses.Wait()
 				s.shutdownMu.Lock()
 				shutdownErr := s.shutdownErr
 				s.shutdownMu.Unlock()
@@ -229,6 +231,18 @@ func (s *Server) isShutdown() bool {
 	started := s.shutdownStarted
 	s.shutdownMu.Unlock()
 	return started
+}
+
+func (s *Server) registerShutdownResponse() bool {
+	s.shutdownMu.Lock()
+	defer s.shutdownMu.Unlock()
+	select {
+	case <-s.shutdownDone:
+		return false
+	default:
+		s.shutdownResponses.Add(1)
+		return true
+	}
 }
 
 // WaitReady waits until the listening socket has accepted at least one
@@ -451,12 +465,20 @@ func (s *Server) serveConn(conn net.Conn) {
 			_ = writeProtocolError(encoder, protocolReq.Op, err)
 			continue
 		}
+		shutdownResponseRegistered := false
+		if req.Op == "shutdown" {
+			shutdownResponseRegistered = s.registerShutdownResponse()
+		}
 		if req.Op == "follow" {
 			s.handleFollow(ctx, conn, encoder, req)
 			return
 		}
 		resp, terminal := s.dispatch(req)
-		if err := writeProtocolResponse(encoder, resp); err != nil {
+		writeErr := writeProtocolResponse(encoder, resp)
+		if shutdownResponseRegistered {
+			s.shutdownResponses.Done()
+		}
+		if writeErr != nil {
 			return
 		}
 		if terminal {

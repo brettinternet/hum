@@ -8,9 +8,22 @@ on:
     branches: [main]
 
 jobs:
-  ci:
-    name: Go CI
+  linux:
+    name: Go CI (Linux)
     runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      - name: Run CI
+        run: task ci
+
+  macos:
+    name: Go CI (macOS)
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
