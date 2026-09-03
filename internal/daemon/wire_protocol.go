@@ -91,7 +91,7 @@ func writeProtocolResponse(encoder *protocol.Encoder, response wireResponse) err
 	case "list":
 		return encoder.EncodeResponse(protocol.ListResponse{Op: protocol.OpList, OK: response.OK, Processes: protocolProcessesFromWire(response.Processes)})
 	case "get":
-		return encoder.EncodeResponse(protocol.GetResponse{Op: protocol.OpGet, OK: response.OK, Process: optionalProtocolProcess(response.Process)})
+		return encoder.EncodeResponse(protocol.GetResponse{Op: protocol.OpGet, OK: response.OK, Process: optionalProtocolGetProcess(response.Process)})
 	case "output":
 		return encoder.EncodeResponse(protocol.OutputResponse{Op: protocol.OpOutput, OK: response.OK, Entries: protocolEntriesFromWire(response.Entries), Next: protocolCursorFromUint64(response.Next), Oldest: protocolCursorFromUint64(response.Oldest), Latest: protocolCursorFromUint64(response.Latest), EvictedThrough: protocolCursorFromUint64(response.EvictedThrough), Truncated: response.Truncated, More: response.More})
 	case "signal":
@@ -136,6 +136,23 @@ func protocolProcessFromWire(item wireProcess) protocol.Process {
 		result.Exit = &protocol.Exit{Code: exitCode, Time: item.Exit.Time, Error: item.Exit.Error}
 	}
 	return result
+}
+
+func protocolGetProcessFromWire(item wireProcess) protocol.Process {
+	result := protocolProcessFromWire(item)
+	if item.NextCursor != nil {
+		nextCursor := protocol.Cursor(*item.NextCursor)
+		result.NextCursor = &nextCursor
+	}
+	return result
+}
+
+func optionalProtocolGetProcess(item *wireProcess) *protocol.Process {
+	if item == nil {
+		return nil
+	}
+	result := protocolGetProcessFromWire(*item)
+	return &result
 }
 
 func optionalProtocolProcess(item *wireProcess) *protocol.Process {

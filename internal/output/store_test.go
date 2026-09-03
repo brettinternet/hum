@@ -9,6 +9,57 @@ import (
 	"time"
 )
 
+func TestStatusNextCursorTracksSequenceWithoutMutatingRing(t *testing.T) {
+	store, err := NewStore(Limits{
+		RetainedBytes:      4,
+		DefaultReadEntries: 16,
+		DefaultReadBytes:   16,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.NextCursor(); got != 0 {
+		t.Fatalf("empty store next cursor = %d, want 0", got)
+	}
+	for _, text := range []string{"aa", "bb", "cc"} {
+		if _, err := store.Append(Stdout, time.Unix(1, 0), text); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store.mu.Lock()
+	beforeHead := store.ring.head
+	beforeCount := store.ring.count
+	beforeBytes := store.ring.bytes
+	beforeOldest := store.ring.entries[store.ring.head]
+	beforeNewest := store.ring.entries[(store.ring.head+store.ring.count-1)%len(store.ring.entries)]
+	store.mu.Unlock()
+
+	if got := store.NextCursor(); got != 3 {
+		t.Fatalf("next cursor after eviction = %d, want 3", got)
+	}
+
+	store.mu.Lock()
+	if store.ring.head != beforeHead || store.ring.count != beforeCount || store.ring.bytes != beforeBytes {
+		t.Fatalf("next cursor mutated ring metadata: before head/count/bytes = %d/%d/%d, after = %d/%d/%d",
+			beforeHead, beforeCount, beforeBytes, store.ring.head, store.ring.count, store.ring.bytes)
+	}
+	oldest := store.ring.entries[store.ring.head]
+	newest := store.ring.entries[(store.ring.head+store.ring.count-1)%len(store.ring.entries)]
+	store.mu.Unlock()
+	if oldest != beforeOldest || newest != beforeNewest {
+		t.Fatalf("next cursor mutated retained entries: before oldest/newest = %#v/%#v, after = %#v/%#v",
+			beforeOldest, beforeNewest, oldest, newest)
+	}
+
+	if _, err := store.Append(Stdout, time.Unix(1, 0), ""); err == nil {
+		t.Fatal("empty append unexpectedly succeeded")
+	}
+	if got := store.NextCursor(); got != 3 {
+		t.Fatalf("next cursor after failed append = %d, want 3", got)
+	}
+}
+
 func TestFollowerEviction(t *testing.T) {
 	store, err := NewStore(Limits{RetainedBytes: 4, DefaultReadEntries: 100, DefaultReadBytes: 100})
 	if err != nil {

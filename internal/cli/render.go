@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"hum/internal/app"
 	"hum/internal/output"
@@ -13,6 +14,46 @@ import (
 
 type listJSON struct {
 	Processes []protocol.Process `json:"processes"`
+}
+
+// statusJSON is the stable, response-safe representation used by status.
+// Keep this type separate from protocol.Process so status output does not
+// expose protocol-only fields.
+type statusJSON struct {
+	Name         string          `json:"name"`
+	ProjectRoot  string          `json:"project_root"`
+	PID          int             `json:"pid"`
+	PGID         int             `json:"pgid"`
+	Cwd          string          `json:"cwd"`
+	Argv         []string        `json:"argv"`
+	StartedAt    string          `json:"started_at"`
+	State        string          `json:"state"`
+	ExitStatus   *int            `json:"exit_status"`
+	RestartCount int             `json:"restart_count"`
+	NextCursor   protocol.Cursor `json:"next_cursor"`
+}
+
+func statusJSONFor(process app.Process) statusJSON {
+	result := statusJSON{
+		Name:         process.Name,
+		ProjectRoot:  process.Root,
+		PID:          process.PID,
+		PGID:         process.PGID,
+		Cwd:          process.Cwd,
+		Argv:         append([]string(nil), process.Argv...),
+		StartedAt:    process.Start.Format(time.RFC3339Nano),
+		State:        string(process.State),
+		RestartCount: process.RestartCount,
+		NextCursor:   protocol.Cursor(process.NextCursor),
+	}
+	if result.Argv == nil {
+		result.Argv = []string{}
+	}
+	if process.State == app.StateExited || process.Exit != nil {
+		exitStatus := process.ExitCode
+		result.ExitStatus = &exitStatus
+	}
+	return result
 }
 
 type runResult struct {
@@ -209,4 +250,24 @@ func renderStopHuman(w io.Writer, result stopResult) error {
 		_, err := fmt.Fprintf(w, "%s error: %s\n", result.Name, result.Message)
 		return err
 	}
+}
+
+func renderStatusHuman(w io.Writer, process app.Process) error {
+	status := statusJSONFor(process)
+	if _, err := fmt.Fprintf(w,
+		"name: %s\nproject_root: %s\npid: %d\npgid: %d\ncwd: %s\nargv: %s\nstarted_at: %s\nstate: %s\n",
+		status.Name, status.ProjectRoot, status.PID, status.PGID, status.Cwd,
+		strings.Join(status.Argv, " "), status.StartedAt, status.State,
+	); err != nil {
+		return err
+	}
+	if status.ExitStatus == nil {
+		if _, err := fmt.Fprintln(w, "exit_status: null"); err != nil {
+			return err
+		}
+	} else if _, err := fmt.Fprintf(w, "exit_status: %d\n", *status.ExitStatus); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(w, "restart_count: %d\nnext_cursor: %d\n", status.RestartCount, status.NextCursor)
+	return err
 }

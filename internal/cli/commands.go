@@ -58,6 +58,17 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 		},
 		{
+			Name:      "status",
+			Usage:     "show one supervised process",
+			ArgsUsage: "NAME",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+			},
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return statusCommand(ctx, cmd, version, buildTime, writer)
+			},
+		},
+		{
 			Name:      "logs",
 			Usage:     "read retained process output",
 			ArgsUsage: "NAME",
@@ -355,6 +366,45 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return encodeJSON(writer, listJSON{Processes: items})
 	}
 	return renderListHuman(writer, processes, cmd.Bool("all"))
+}
+
+func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	args := cmd.Args().Slice()
+	if len(args) == 0 {
+		return errors.New("status requires a process name")
+	}
+	if len(args) != 1 {
+		return errors.New("status accepts exactly one process name")
+	}
+	name := args[0]
+	ctx = nonNilContext(ctx)
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, cfg)
+	if err != nil {
+		if client != nil {
+			_ = client.Close()
+		}
+		if daemonUnavailable(err) {
+			return newUserFacingError(logsUnavailableMessage)
+		}
+		return err
+	}
+	defer client.Close()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
+	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd})
+	if err != nil {
+		return err
+	}
+	if cmd.Bool("json") {
+		return encodeJSON(writer, statusJSONFor(process))
+	}
+	return renderStatusHuman(writer, process)
 }
 
 func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {

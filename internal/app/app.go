@@ -47,6 +47,7 @@ type Process struct {
 	Argv         []string
 	Start        time.Time
 	LaunchCursor output.Cursor
+	NextCursor   output.Cursor
 	State        State
 	Exit         *process.Result
 	ExitCode     int
@@ -796,6 +797,9 @@ func (r *record) snapshotLocked() Process {
 		LaunchCursor: r.cursor,
 		State:        r.state,
 		RestartCount: r.restartCount,
+	}
+	if r.store != nil {
+		model.NextCursor = r.store.NextCursor()
 	}
 	if r.terminal {
 		result := r.result

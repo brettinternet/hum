@@ -16,7 +16,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":1}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":2}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -131,6 +131,100 @@ func TestOperationRequestsRoundTripThroughDecoder(t *testing.T) {
 	}
 }
 
+func TestStatusGetRequestResponseRoundTrip(t *testing.T) {
+	request := NewGetRequest("api", "/work/project")
+	requestLine, err := MarshalLine(request, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(requestLine), `{"op":"get","name":"api","cwd":"/work/project"}`+"\n"; got != want {
+		t.Fatalf("get request JSON = %s, want %s", got, want)
+	}
+	decodedRequest, err := NewDecoder(bytes.NewReader(requestLine), 4096).DecodeRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decodedRequest.Op != OpGet || decodedRequest.Get == nil || *decodedRequest.Get != request {
+		t.Fatalf("decoded get request = %#v, want %#v", decodedRequest.Get, request)
+	}
+
+	startedAt := time.Date(2026, time.September, 3, 11, 22, 33, 0, time.UTC)
+	nextCursor := Cursor(19)
+	process := Process{
+		Name:         "api",
+		Root:         "/work/project",
+		PID:          4321,
+		PGID:         4321,
+		Cwd:          "/work/project",
+		Argv:         []string{"tool", "--message", "hello world", ""},
+		Start:        startedAt,
+		LaunchCursor: 7,
+		NextCursor:   &nextCursor,
+		State:        "running",
+		RestartCount: 2,
+	}
+	responseLine, err := MarshalLine(NewGetResponse(process), 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","root":"/work/project","pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2}}`+"\n"; got != want {
+		t.Fatalf("get response JSON = %s, want %s", got, want)
+	}
+
+	var decodedResponse GetResponse
+	if err := NewDecoder(bytes.NewReader(responseLine), 4096).Decode(&decodedResponse); err != nil {
+		t.Fatal(err)
+	}
+	if decodedResponse.Op != OpGet || !decodedResponse.OK || decodedResponse.Process == nil {
+		t.Fatalf("decoded get response = %#v", decodedResponse)
+	}
+	if got := decodedResponse.Process; got.Name != process.Name || got.Root != process.Root ||
+		got.PID != process.PID || got.PGID != process.PGID || got.Cwd != process.Cwd ||
+		!reflect.DeepEqual(got.Argv, process.Argv) || !got.Start.Equal(process.Start) ||
+		got.LaunchCursor != process.LaunchCursor || got.NextCursor == nil ||
+		*got.NextCursor != *process.NextCursor || got.State != process.State ||
+		got.RestartCount != process.RestartCount {
+		t.Fatalf("decoded process = %#v, want %#v", got, process)
+	}
+	if decodedResponse.Process.Exit != nil {
+		t.Fatalf("running process exit = %#v, want nil", decodedResponse.Process.Exit)
+	}
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(responseLine), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var processFields map[string]json.RawMessage
+	if err := json.Unmarshal(envelope["process"], &processFields); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(processFields["start"]), `"2026-09-03T11:22:33Z"`; got != want {
+		t.Fatalf("start JSON = %s, want RFC3339 %s", got, want)
+	}
+	if got, want := string(processFields["next_cursor"]), "19"; got != want {
+		t.Fatalf("next_cursor JSON = %s, want %s", got, want)
+	}
+	for _, name := range []string{"env", "environment"} {
+		if _, ok := processFields[name]; ok {
+			t.Fatalf("status response leaked %q: %s", name, responseLine)
+		}
+	}
+}
+
+func TestStatusGetResponseNullableExit(t *testing.T) {
+	wire := []byte(`{"op":"get","ok":true,"process":{"name":"api","root":"/work/project","pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool"],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exit":null}}`)
+	var response GetResponse
+	if err := json.Unmarshal(wire, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Process == nil {
+		t.Fatal("nullable-exit response omitted process")
+	}
+	if response.Process.Exit != nil {
+		t.Fatalf("nullable exit decoded as %#v, want nil", response.Process.Exit)
+	}
+}
+
 func TestStableFieldNamesAndResponseEnvironmentIsolation(t *testing.T) {
 	request := NewStartRequest("api", []string{"sleep", "1"}, "/work", []string{"SECRET=do-not-echo"})
 	line, err := json.Marshal(request)
@@ -227,7 +321,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":1}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":2}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError

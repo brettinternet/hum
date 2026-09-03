@@ -530,6 +530,8 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		}
 		s.trackProcess(p)
 		process := wireProcessFromApp(p)
+		nextCursor := uint64(p.NextCursor)
+		process.NextCursor = &nextCursor
 		return wireResponse{Op: req.Op, OK: true, Process: &process}, false
 	case "output":
 		store, err := s.supervisor.Output(req.Cwd, req.Name)
@@ -719,6 +721,7 @@ type wireProcess struct {
 	Argv         []string         `json:"argv"`
 	Start        time.Time        `json:"start"`
 	LaunchCursor uint64           `json:"launch_cursor"`
+	NextCursor   *uint64          `json:"next_cursor,omitempty"`
 	State        string           `json:"state"`
 	Exit         *wireProcessExit `json:"exit,omitempty"`
 	ExitCode     int              `json:"exit_code,omitempty"`
