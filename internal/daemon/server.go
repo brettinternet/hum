@@ -579,11 +579,18 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		}
 		return wireResponse{Op: req.Op, OK: true, Process: process}, false
 	case "restart":
+		s.shutdownMu.Lock()
+		if s.shutdownStarted {
+			s.shutdownMu.Unlock()
+			return dispatchError(req.Op, app.ErrSupervisorClosed), false
+		}
 		process, err := s.supervisor.Restart(context.Background(), req.Cwd, req.Name)
 		if err != nil {
+			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
 		}
 		s.trackProcess(process)
+		s.shutdownMu.Unlock()
 		value := wireProcessFromApp(process)
 		return wireResponse{Op: req.Op, OK: true, Process: &value}, false
 	case "shutdown":
@@ -692,14 +699,8 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 			}
 			return
 		}
-		if event.Exit != nil {
-			restarted := s.supervisor.Restarting(req.Cwd, req.Name)
-			if current, getErr := s.supervisor.Get(req.Cwd, req.Name); getErr == nil && current.Start.After(event.Exit.Time) {
-				restarted = true
-			}
-			if restarted {
-				continue
-			}
+		if event.Exit != nil && s.supervisor.FollowContinuesAfter(req.Cwd, req.Name, event.Exit.Time) {
+			continue
 		}
 		if err := encoder.EncodeResponse(protocolStreamEventFromOutput(req.Name, event)); err != nil {
 			return
