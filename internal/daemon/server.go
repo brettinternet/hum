@@ -154,6 +154,15 @@ func (s *Server) PID() int           { return s.owner.pid }
 func (s *Server) RuntimeDir() string { return s.paths.Dir }
 func (s *Server) ReadyPath() string  { return s.paths.Ready }
 
+// Logf writes a bounded diagnostic record to the daemon runtime log.
+// Detached command paths use this instead of a caller-owned stream.
+func (s *Server) Logf(format string, args ...any) {
+	if s == nil || s.log == nil {
+		return
+	}
+	s.log.Printf(format, args...)
+}
+
 // Serve accepts independent request connections until shutdown or ctx
 // cancellation. It is safe for request handlers to outlive the accept loop.
 func (s *Server) Serve(ctx context.Context) error {

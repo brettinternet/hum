@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -23,6 +24,7 @@ import (
 	"hum/internal/app"
 	"hum/internal/daemon"
 	"hum/internal/process"
+	"hum/internal/protocol"
 )
 
 const (
@@ -32,9 +34,13 @@ const (
 
 // TestMain lets the acceptance tests use this test binary as a real child
 // process without the testing package writing PASS/FAIL banners into managed
-// stdout and stderr. The helper is selected by an argv marker, not an
-// environment variable, so a run request still forwards os.Environ exactly.
+// stdout and stderr. Detached daemon children carry an internal environment
+// marker and execute the real CLI directly; fixture/client helpers use the
+// argv marker below.
 func TestMain(m *testing.M) {
+	if os.Getenv("HUM_DAEMON_CHILD") == "1" {
+		os.Exit(cliServeRunClient(os.Args[1:]))
+	}
 	mode, args, ok := cliServeRunHelperArgs()
 	if ok {
 		var code int
@@ -259,12 +265,16 @@ func TestForegroundServe(t *testing.T) {
 }
 
 func TestDaemonUnavailable(t *testing.T) {
+	testDaemonUnavailable(t)
+}
+
+func testDaemonUnavailable(t *testing.T) {
+	t.Helper()
 	runtimeDir := cliServeRunRuntimeDir(t)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 
 	const (
 		logsError      = "Nothing is running. Start a process with hum run <name> -- <command>."
-		runError       = "No hum daemon is running. Start it with hum serve --daemon."
 		nothingOutput  = "Nothing is running.\n"
 		shutdownOutput = "No hum daemon is running.\n"
 	)
@@ -274,8 +284,8 @@ func TestDaemonUnavailable(t *testing.T) {
 		wantErr string
 		wantOut string
 	}{
+		{name: "list", args: []string{"list"}, wantOut: nothingOutput},
 		{name: "logs", args: []string{"logs", "missing"}, wantErr: logsError},
-		{name: "run", args: []string{"run", "missing", "--", "/bin/true"}, wantErr: runError},
 		{name: "stop", args: []string{"stop", "missing"}, wantOut: nothingOutput},
 		{name: "shutdown", args: []string{"shutdown"}, wantOut: shutdownOutput},
 	}
@@ -305,6 +315,324 @@ func TestDaemonUnavailable(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestServeDaemon(t *testing.T) {
+	t.Run("other commands preserve no-daemon messages", testDaemonUnavailable)
+	runtimeDir := cliServeRunRuntimeDir(t)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	t.Cleanup(func() {
+		_, _, _ = cliServeRunInvokeForTest("shutdown", "--stop-processes")
+	})
+	paths := daemon.NewRuntimePaths(runtimeDir)
+
+	stdout, stderr, err := cliServeRunInvokeForTest("serve", "--daemon")
+	if err != nil {
+		t.Fatalf("first detached serve: %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("detached serve stdout = %q, want empty", stdout)
+	}
+	pid := cliServeRunPID(stderr)
+	if pid <= 0 {
+		t.Fatalf("detached serve stderr = %q, want PID", stderr)
+	}
+	want := fmt.Sprintf("hum serve: listening on %s (PID %d)\n", paths.Socket, pid)
+	if stderr != want {
+		t.Fatalf("detached serve stderr = %q, want %q", stderr, want)
+	}
+	if err := cliServeRunWaitForDaemon(paths.Socket); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, err = cliServeRunInvokeForTest("serve", "--daemon")
+	if err != nil {
+		t.Fatalf("idempotent detached serve: %v", err)
+	}
+	if stdout != "" || stderr != want {
+		t.Fatalf("idempotent serve output = stdout %q stderr %q, want empty/%q", stdout, stderr, want)
+	}
+
+	const racers = 6
+	results := make(chan struct {
+		stderr string
+		err    error
+	}, racers)
+	for range racers {
+		go func() {
+			_, raceStderr, raceErr := cliServeRunInvokeForTest("serve", "--daemon")
+			results <- struct {
+				stderr string
+				err    error
+			}{raceStderr, raceErr}
+		}()
+	}
+	for range racers {
+		result := <-results
+		if result.err != nil || result.stderr != want {
+			t.Fatalf("racing detached serve = stderr %q err %v, want %q", result.stderr, result.err, want)
+		}
+	}
+
+	if _, _, err := cliServeRunInvokeForTest("shutdown", "--stop-processes"); err != nil {
+		t.Fatalf("shutdown before stale recovery: %v", err)
+	}
+	if err := cliServeRunWaitForCondition(func() bool {
+		_, socketErr := os.Stat(paths.Socket)
+		return errors.Is(socketErr, os.ErrNotExist)
+	}); err != nil {
+		t.Fatalf("wait for daemon shutdown: %v", err)
+	}
+	if err := os.WriteFile(paths.PID, []byte("999999\n"), 0o600); err != nil {
+		t.Fatalf("write stale pid: %v", err)
+	}
+	if err := os.WriteFile(paths.Ready, []byte("999999\n"), 0o600); err != nil {
+		t.Fatalf("write stale readiness: %v", err)
+	}
+	if err := os.WriteFile(paths.Socket, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write stale socket: %v", err)
+	}
+	_, recoveredStderr, err := cliServeRunInvokeForTest("serve", "--daemon")
+	if err != nil {
+		t.Fatalf("recover stale runtime: %v", err)
+	}
+	if recoveredPID := cliServeRunPID(recoveredStderr); recoveredPID <= 0 || recoveredPID == 999999 {
+		t.Fatalf("recovered detached serve stderr = %q", recoveredStderr)
+	}
+
+	badRuntime := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(badRuntime, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUM_RUNTIME_DIR", badRuntime)
+	_, _, err = cliServeRunInvokeForTest("serve", "--daemon")
+	if err == nil || !strings.Contains(err.Error(), "daemon startup failed") || !strings.Contains(err.Error(), "daemon.log") {
+		t.Fatalf("startup failure = %v, want caller-visible daemon.log guidance", err)
+	}
+}
+
+func TestAutomaticDaemonStartup(t *testing.T) {
+	t.Run("attached and detached run", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		t.Cleanup(func() {
+			_, _, _ = cliServeRunInvokeForTest("shutdown", "--stop-processes")
+		})
+
+		stdout, stderr, err := cliServeRunInvokeForTest("run", "automatic-attached", "--", "/bin/sh", "-c", "printf attached")
+		if err != nil {
+			t.Fatalf("attached automatic run: %v", err)
+		}
+		if stdout != "attached" || stderr != "" {
+			t.Fatalf("attached automatic output = stdout %q stderr %q", stdout, stderr)
+		}
+
+		stdout, stderr, err = cliServeRunInvokeForTest("run", "automatic-detached", "--detach", "--", "/bin/sh", "-c", "sleep 30")
+		if err != nil {
+			t.Fatalf("detached automatic run: %v", err)
+		}
+		if stderr != "" || !strings.Contains(stdout, "started automatic-detached (PID ") {
+			t.Fatalf("detached automatic output = stdout %q stderr %q", stdout, stderr)
+		}
+		if err := cliServeRunStop(t, "automatic-detached"); err != nil {
+			t.Fatalf("stop automatic detached process: %v", err)
+		}
+	})
+
+	t.Run("concurrent run clients select one daemon", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		t.Cleanup(func() {
+			_, _, _ = cliServeRunInvokeForTest("shutdown", "--stop-processes")
+		})
+		const racers = 6
+		errs := make(chan error, racers)
+		for i := range racers {
+			name := fmt.Sprintf("race-%d", i)
+			go func() {
+				_, stderr, err := cliServeRunInvokeForTest("run", name, "--detach", "--", "/bin/sh", "-c", "exit 0")
+				if err == nil && stderr != "" {
+					err = fmt.Errorf("stderr = %q", stderr)
+				}
+				errs <- err
+			}()
+		}
+		for range racers {
+			if err := <-errs; err != nil {
+				t.Fatalf("racing automatic run: %v", err)
+			}
+		}
+		paths := daemon.NewRuntimePaths(runtimeDir)
+		pid, err := readDaemonPID(paths)
+		if err != nil {
+			t.Fatalf("read selected daemon PID: %v", err)
+		}
+		if pid <= 0 {
+			t.Fatalf("selected daemon PID = %d", pid)
+		}
+	})
+}
+
+func TestDetachedDaemonLog(t *testing.T) {
+	runtimeDir := cliServeRunRuntimeDir(t)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	t.Cleanup(func() {
+		_, _, _ = cliServeRunInvokeForTest("shutdown", "--stop-processes")
+	})
+	paths := daemon.NewRuntimePaths(runtimeDir)
+	stdout, stderr, err := cliServeRunInvokeForTest("serve", "--daemon")
+	if err != nil {
+		t.Fatalf("start detached daemon: %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("detached daemon leaked stdout: %q", stdout)
+	}
+	if err := cliServeRunWaitForText(paths.Log, "hum serve: listening on "); err != nil {
+		t.Fatalf("detached daemon log: %v; command stderr=%q", err, stderr)
+	}
+	info, err := os.Stat(paths.Log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > 1<<20 {
+		t.Fatalf("detached daemon log size = %d, want <= %d", info.Size(), 1<<20)
+	}
+
+	boundedRuntime := cliServeRunRuntimeDir(t)
+	server, err := daemon.NewServer(daemon.Config{RuntimeDir: boundedRuntime, LogBytes: 64})
+	if err != nil {
+		t.Fatalf("new bounded-log server: %v", err)
+	}
+	server.Logf("%s", strings.Repeat("diagnostic", 100))
+	if err := server.Close(); err != nil {
+		t.Fatalf("close bounded-log server: %v", err)
+	}
+	boundedInfo, err := os.Stat(daemon.NewRuntimePaths(boundedRuntime).Log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if boundedInfo.Size() > 64 {
+		t.Fatalf("configured daemon log size = %d, want <= 64", boundedInfo.Size())
+	}
+}
+
+func TestVersionMismatch(t *testing.T) {
+	startMismatch := func(t *testing.T, runtimeDir string, supervisor *app.Supervisor) (*daemon.Server, chan error) {
+		t.Helper()
+		server, err := daemon.NewServer(daemon.Config{
+			RuntimeDir: runtimeDir,
+			Version:    "999",
+			StopGrace:  100 * time.Millisecond,
+			Supervisor: supervisor,
+		})
+		if err != nil {
+			t.Fatalf("new mismatched daemon: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- server.Serve(context.Background()) }()
+		if err := cliServeRunWaitForCondition(func() bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			client, dialErr := daemon.Dial(ctx, server.Paths().Socket)
+			cancel()
+			if client != nil {
+				_ = client.Close()
+			}
+			var mismatch *daemon.VersionMismatchError
+			return errors.As(dialErr, &mismatch)
+		}); err != nil {
+			_ = server.Close()
+			t.Fatalf("mismatched daemon readiness: %v", err)
+		}
+		return server, done
+	}
+
+	t.Run("replaces idle daemon", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		server, done := startMismatch(t, runtimeDir, nil)
+		oldPID := server.PID()
+		t.Cleanup(func() {
+			_, _, _ = cliServeRunInvokeForTest("shutdown", "--stop-processes")
+			_ = server.Close()
+		})
+
+		stdout, stderr, err := cliServeRunInvokeForTest("run", "replacement", "--detach", "--", "/bin/sh", "-c", "exit 0")
+		if err != nil {
+			t.Fatalf("run replaces idle mismatch: %v", err)
+		}
+		if stderr != "" || !strings.Contains(stdout, "started replacement (PID ") {
+			t.Fatalf("replacement output = stdout %q stderr %q", stdout, stderr)
+		}
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("mismatched daemon did not shut down")
+		}
+		newPID, err := readDaemonPID(daemon.NewRuntimePaths(runtimeDir))
+		if err != nil || newPID == oldPID {
+			t.Fatalf("replacement daemon PID = %d err %v, old PID %d", newPID, err, oldPID)
+		}
+	})
+
+	t.Run("refuses active daemon", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		socket := daemon.NewRuntimePaths(runtimeDir).Socket
+		listener, err := net.Listen("unix", socket)
+		if err != nil {
+			t.Fatalf("listen for mismatched daemon: %v", err)
+		}
+		t.Cleanup(func() { _ = listener.Close() })
+		served := make(chan error, 1)
+		go func() {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				served <- acceptErr
+				return
+			}
+			defer conn.Close()
+			decoder := protocol.NewDecoder(conn)
+			encoder := protocol.NewEncoder(conn)
+			request, decodeErr := decoder.DecodeRequest()
+			if decodeErr != nil {
+				served <- decodeErr
+				return
+			}
+			if request.Op != protocol.OpHello {
+				served <- fmt.Errorf("first operation = %q, want hello", request.Op)
+				return
+			}
+			if encodeErr := encoder.EncodeResponse(protocol.Hello{Op: protocol.OpHello, Version: 999}); encodeErr != nil {
+				served <- encodeErr
+				return
+			}
+			request, decodeErr = decoder.DecodeRequest()
+			if decodeErr != nil {
+				served <- decodeErr
+				return
+			}
+			if request.Op != protocol.OpShutdown {
+				served <- fmt.Errorf("second operation = %q, want shutdown", request.Op)
+				return
+			}
+			served <- encoder.EncodeResponse(protocol.ErrorResponse{
+				Op: protocol.OpShutdown,
+				Error: protocol.NewWireError(
+					protocol.ErrorActiveProcesses,
+					"active supervised processes prevent daemon shutdown: active",
+					[]string{"active"},
+				),
+			})
+		}()
+
+		_, _, err = cliServeRunInvokeForTest("run", "blocked", "--detach", "--", "/bin/sh", "-c", "exit 0")
+		if err == nil || !strings.Contains(err.Error(), "daemon version 999") || !strings.Contains(err.Error(), "hum shutdown --stop-processes") {
+			t.Fatalf("active mismatch refusal = %v", err)
+		}
+		if serveErr := <-served; serveErr != nil {
+			t.Fatalf("mismatched daemon protocol: %v", serveErr)
+		}
+	})
 }
 
 func TestAttachedRun(t *testing.T) {

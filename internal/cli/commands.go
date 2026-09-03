@@ -25,6 +25,9 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:      "serve",
 			Usage:     "run the hum daemon in the foreground",
 			ArgsUsage: "",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "daemon", Usage: "run the hum daemon detached"},
+			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return serveCommand(ctx, cmd, version, buildTime, errWriter)
 			},
@@ -110,6 +113,14 @@ func serveCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	if err != nil {
 		return err
 	}
+	if cmd.Bool("daemon") {
+		pid, err := ensureDaemon(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(errWriter, "hum serve: listening on %s (PID %d)\n", daemon.NewRuntimePaths(cfg.RuntimeDir).Socket, pid)
+		return err
+	}
 	server, err := daemon.NewServer(dcfg)
 	if err != nil {
 		return err
@@ -131,9 +142,16 @@ func serveCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 		serveDone <- server.Serve(serveCtx)
 	}()
 	if err := server.WaitReady(serveCtx); err != nil {
+		if isDaemonChild() {
+			server.Logf("hum serve: readiness failed: %v\n", err)
+		}
 		_ = server.Close()
 		<-serveDone
 		return err
+	}
+	if isDaemonChild() {
+		server.Logf("hum serve: listening on %s (PID %d)\n", server.SocketPath(), server.PID())
+		return <-serveDone
 	}
 	if _, err := fmt.Fprintf(errWriter, "hum serve: listening on %s (PID %d)\n", server.SocketPath(), server.PID()); err != nil {
 		_ = server.Close()
@@ -218,11 +236,8 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
-	client, err := daemonClient(ctx, cfg)
+	client, err := runDaemonClient(ctx, cfg)
 	if err != nil {
-		if daemonUnavailable(err) {
-			return newUserFacingError(runUnavailableMessage)
-		}
 		return err
 	}
 	defer client.Close()

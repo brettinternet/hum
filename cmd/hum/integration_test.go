@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -125,6 +126,79 @@ func TestBuiltBinaryIntegration(t *testing.T) {
 	if buildErr != nil {
 		t.Fatalf("build hum binary: %v\n%s", buildErr, buildOutput)
 	}
+	t.Run("daemon autostart", func(t *testing.T) {
+		autostartRuntimeDir, err := os.MkdirTemp("", "hum-autostart-")
+		if err != nil {
+			t.Fatalf("create short daemon runtime directory: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(autostartRuntimeDir) })
+		t.Setenv("HUM_RUNTIME_DIR", autostartRuntimeDir)
+		t.Cleanup(func() {
+			integrationForceShutdown(binary, cwd)
+		})
+
+		run := integrationRunBinary(binary, cwd, "run", "demo", "--detach", "--", "sleep", "30")
+		if run.code != 0 {
+			t.Fatalf("autostart run exit code = %d: stdout=%q stderr=%q err=%v", run.code, run.stdout, run.stderr, run.err)
+		}
+		if run.stderr != "" {
+			t.Fatalf("autostart run leaked daemon diagnostics to stderr: %q", run.stderr)
+		}
+		demoPID, err := integrationStartedProcessPID(run.stdout, "demo")
+		if err != nil {
+			t.Fatalf("decode autostart run output: %v (stdout=%q)", err, run.stdout)
+		}
+		if err := integrationAssertProcessAlive(demoPID); err != nil {
+			t.Fatalf("demo process after autostart run: %v", err)
+		}
+
+		socket := filepath.Join(autostartRuntimeDir, "hum.sock")
+		integrationWaitForRuntimeFile(t, socket, "autostart daemon socket")
+		serveStatus := integrationRunBinary(binary, cwd, "serve", "--daemon")
+		if serveStatus.code != 0 {
+			t.Fatalf("first daemon serve exit code = %d: stdout=%q stderr=%q err=%v", serveStatus.code, serveStatus.stdout, serveStatus.stderr, serveStatus.err)
+		}
+		if serveStatus.stdout != "" {
+			t.Fatalf("first daemon serve wrote diagnostics to stdout: %q", serveStatus.stdout)
+		}
+		serveSocket, daemonPID, err := integrationDaemonStatus(serveStatus.stderr)
+		if err != nil {
+			t.Fatalf("decode first daemon serve status: %v (stderr=%q)", err, serveStatus.stderr)
+		}
+		if serveSocket != socket {
+			t.Fatalf("first daemon serve socket = %q, want %q", serveSocket, socket)
+		}
+		wantServeStatus := fmt.Sprintf("hum serve: listening on %s (PID %d)\n", socket, daemonPID)
+		if serveStatus.stderr != wantServeStatus {
+			t.Fatalf("first daemon serve stderr = %q, want exact status %q", serveStatus.stderr, wantServeStatus)
+		}
+		if err := integrationAssertProcessAlive(daemonPID); err != nil {
+			t.Fatalf("daemon after first daemon serve exits: %v", err)
+		}
+		integrationWaitForRuntimeFile(t, filepath.Join(autostartRuntimeDir, "daemon.log"), "autostart daemon log")
+
+		serveAgain := integrationRunBinary(binary, cwd, "serve", "--daemon")
+		if serveAgain.code != 0 {
+			t.Fatalf("second daemon serve exit code = %d: stdout=%q stderr=%q err=%v", serveAgain.code, serveAgain.stdout, serveAgain.stderr, serveAgain.err)
+		}
+		if serveAgain.stdout != "" {
+			t.Fatalf("second daemon serve wrote diagnostics to stdout: %q", serveAgain.stdout)
+		}
+		serveAgainSocket, serveAgainPID, err := integrationDaemonStatus(serveAgain.stderr)
+		if err != nil {
+			t.Fatalf("decode second daemon serve status: %v (stderr=%q)", err, serveAgain.stderr)
+		}
+		if serveAgainSocket != socket || serveAgainPID != daemonPID {
+			t.Fatalf("second daemon serve status = socket %q PID %d, want socket %q PID %d", serveAgainSocket, serveAgainPID, socket, daemonPID)
+		}
+		wantServeAgainStatus := fmt.Sprintf("hum serve: listening on %s (PID %d)\n", socket, daemonPID)
+		if serveAgain.stderr != wantServeAgainStatus {
+			t.Fatalf("second daemon serve stderr = %q, want exact status %q", serveAgain.stderr, wantServeAgainStatus)
+		}
+		if err := integrationAssertProcessAlive(daemonPID); err != nil {
+			t.Fatalf("daemon after second daemon serve exits: %v", err)
+		}
+	})
 
 	serveStdout, serveStderr := new(bytes.Buffer), new(bytes.Buffer)
 	serve := exec.Command(binary, "serve")
@@ -579,6 +653,86 @@ func integrationRequireOutputTexts(entries []integrationOutputEntry, want map[st
 		}
 	}
 	return nil
+}
+
+func integrationStartedProcessPID(raw, name string) (int, error) {
+	if name == "" {
+		return 0, errors.New("empty process name")
+	}
+	if !strings.HasSuffix(raw, "\n") {
+		return 0, errors.New("started process output omitted trailing newline")
+	}
+	line := strings.TrimSuffix(raw, "\n")
+	if strings.Contains(line, "\n") {
+		return 0, errors.New("started process output contains multiple lines")
+	}
+	prefix := fmt.Sprintf("started %s (PID ", name)
+	if !strings.HasPrefix(line, prefix) {
+		return 0, fmt.Errorf("started process output has prefix %q, want %q", line, prefix)
+	}
+	cursorMarker := ", cursor "
+	cursorOffset := strings.LastIndex(line, cursorMarker)
+	if cursorOffset <= len(prefix) || !strings.HasSuffix(line, ")") {
+		return 0, fmt.Errorf("started process output has malformed cursor: %q", line)
+	}
+	pid, err := strconv.Atoi(line[len(prefix):cursorOffset])
+	if err != nil || pid <= 0 {
+		if err == nil {
+			err = errors.New("PID is not positive")
+		}
+		return 0, fmt.Errorf("started process output has invalid PID: %w", err)
+	}
+	cursor := line[cursorOffset+len(cursorMarker) : len(line)-1]
+	if _, err := strconv.ParseUint(cursor, 10, 64); err != nil {
+		return 0, fmt.Errorf("started process output has invalid cursor %q: %w", cursor, err)
+	}
+	return pid, nil
+}
+
+func integrationDaemonStatus(raw string) (string, int, error) {
+	const prefix = "hum serve: listening on "
+	if !strings.HasSuffix(raw, "\n") {
+		return "", 0, errors.New("daemon status omitted trailing newline")
+	}
+	line := strings.TrimSuffix(raw, "\n")
+	if strings.Contains(line, "\n") {
+		return "", 0, errors.New("daemon status contains multiple lines")
+	}
+	if !strings.HasPrefix(line, prefix) {
+		return "", 0, fmt.Errorf("daemon status = %q, want prefix %q", line, prefix)
+	}
+	rest := strings.TrimPrefix(line, prefix)
+	pidMarker := " (PID "
+	pidOffset := strings.LastIndex(rest, pidMarker)
+	if pidOffset <= 0 || !strings.HasSuffix(rest, ")") {
+		return "", 0, fmt.Errorf("daemon status has malformed PID: %q", line)
+	}
+	socket := rest[:pidOffset]
+	pid, err := strconv.Atoi(rest[pidOffset+len(pidMarker) : len(rest)-1])
+	if err != nil || pid <= 0 {
+		if err == nil {
+			err = errors.New("PID is not positive")
+		}
+		return "", 0, fmt.Errorf("daemon status has invalid PID: %w", err)
+	}
+	return socket, pid, nil
+}
+
+func integrationWaitForRuntimeFile(t *testing.T, path, description string) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	var lastErr error
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not appear at %q: %v", description, path, lastErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func integrationWaitForSocket(t *testing.T, serve *exec.Cmd, socket string) {
