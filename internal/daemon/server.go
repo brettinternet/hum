@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	wireVersion        = protocol.Version
-	defaultWireMaxLine = protocol.DefaultMaxLineBytes
+	wireVersion              = protocol.Version
+	defaultWireMaxLine       = protocol.DefaultMaxLineBytes
+	maxWaitTimeoutMS   int64 = (1<<63 - 1) / int64(time.Millisecond)
 )
 
 // Server owns one app.Supervisor and exposes it over one private Unix socket.
@@ -473,6 +474,10 @@ func (s *Server) serveConn(conn net.Conn) {
 			s.handleFollow(ctx, conn, encoder, req)
 			return
 		}
+		if req.Op == "wait" {
+			s.handleWait(ctx, conn, encoder, req)
+			return
+		}
 		resp, terminal := s.dispatch(req)
 		writeErr := writeProtocolResponse(encoder, resp)
 		if shutdownResponseRegistered {
@@ -547,6 +552,12 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 			return dispatchError(req.Op, err), false
 		}
 		return wireResponseFromRead(req.Op, result), false
+	case "wait":
+		response, err := s.executeWait(context.Background(), req)
+		if err != nil {
+			return dispatchError(req.Op, err), false
+		}
+		return response, false
 	case "signal":
 		sig, err := parseSignal(req.Signal)
 		if err != nil {
@@ -576,6 +587,74 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 	default:
 		return wireResponse{Error: &wireError{Code: "unknown_operation", Message: fmt.Sprintf("unknown operation %q", req.Op)}}, false
 	}
+}
+
+func (s *Server) executeWait(ctx context.Context, req wireRequest) (wireResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	options, timeout, err := waitOptionsFromWire(req)
+	if err != nil {
+		return wireResponse{}, err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result, err := s.supervisor.Wait(waitCtx, req.Cwd, req.Name, options)
+	if err != nil {
+		return wireResponse{}, err
+	}
+	return wireResponseFromWait(result), nil
+}
+
+func (s *Server) handleWait(ctx context.Context, conn net.Conn, encoder *protocol.Encoder, req wireRequest) {
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	disconnected := make(chan struct{})
+	go func() {
+		var one [1]byte
+		_, _ = conn.Read(one[:])
+		close(disconnected)
+		cancel()
+	}()
+
+	response, err := s.executeWait(waitCtx, req)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			select {
+			case <-disconnected:
+				return
+			default:
+			}
+		}
+		_ = writeProtocolError(encoder, protocol.OpWait, err)
+		return
+	}
+	_ = writeProtocolResponse(encoder, response)
+}
+
+func waitOptionsFromWire(req wireRequest) (app.WaitOptions, time.Duration, error) {
+	if req.Name == "" {
+		return app.WaitOptions{}, 0, fmt.Errorf("%w: wait name is required", app.ErrInvalidRequest)
+	}
+	if req.TimeoutMS <= 0 {
+		return app.WaitOptions{}, 0, fmt.Errorf("%w: wait timeout must be positive", app.ErrInvalidRequest)
+	}
+	if req.TimeoutMS > maxWaitTimeoutMS {
+		return app.WaitOptions{}, 0, fmt.Errorf("%w: wait timeout exceeds server maximum", app.ErrInvalidRequest)
+	}
+	options := app.WaitOptions{}
+	if req.After != nil {
+		cursor := output.Cursor(*req.After)
+		options.After = &cursor
+	}
+	if req.Match != "" {
+		match, err := regexp.Compile(req.Match)
+		if err != nil {
+			return app.WaitOptions{}, 0, fmt.Errorf("%w: invalid match expression: %v", app.ErrInvalidRequest, err)
+		}
+		options.Match = match
+	}
+	return options, time.Duration(req.TimeoutMS) * time.Millisecond, nil
 }
 
 func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *protocol.Encoder, req wireRequest) {
@@ -677,6 +756,7 @@ type wireRequest struct {
 	Tail             int      `json:"tail,omitempty"`
 	Stream           string   `json:"stream,omitempty"`
 	Match            string   `json:"match,omitempty"`
+	TimeoutMS        int64    `json:"timeout_ms,omitempty"`
 	MaxEntries       int      `json:"max_entries,omitempty"`
 	MaxBytes         int      `json:"max_bytes,omitempty"`
 	Signal           string   `json:"signal,omitempty"`
@@ -698,6 +778,7 @@ type wireResponse struct {
 	Truncated      bool          `json:"truncated,omitempty"`
 	More           bool          `json:"more,omitempty"`
 	Type           string        `json:"type,omitempty"`
+	Outcome        string        `json:"outcome,omitempty"`
 	Cursor         *uint64       `json:"cursor,omitempty"`
 	Ready          bool          `json:"ready,omitempty"`
 	Exit           *wireExit     `json:"exit,omitempty"`
@@ -753,8 +834,9 @@ type wireEntry struct {
 }
 
 type wireExit struct {
-	Code int       `json:"code"`
-	Time time.Time `json:"time"`
+	Code  int       `json:"code"`
+	Error string    `json:"error,omitempty"`
+	Time  time.Time `json:"time"`
 }
 
 func protocolWireError(err error) *wireError {

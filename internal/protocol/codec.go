@@ -169,6 +169,7 @@ type Request struct {
 	Get      *GetRequest      `json:"-"`
 	Output   *OutputRequest   `json:"-"`
 	Follow   *FollowRequest   `json:"-"`
+	Wait     *WaitRequest     `json:"-"`
 	Signal   *SignalRequest   `json:"-"`
 	Stop     *StopRequest     `json:"-"`
 	Shutdown *ShutdownRequest `json:"-"`
@@ -193,7 +194,8 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	r.Op, r.ID = header.Op, header.ID
 	r.Raw = append(r.Raw[:0], data...)
 	r.Payload = append(r.Payload[:0], data...)
-	r.Hello, r.Start, r.List, r.Get, r.Output, r.Follow, r.Signal, r.Stop, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil
+	r.Version = 0
+	r.Hello, r.Start, r.List, r.Get, r.Output, r.Follow, r.Wait, r.Signal, r.Stop, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 
 	var err error
 	switch header.Op {
@@ -216,6 +218,9 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	case OpFollow:
 		r.Follow = new(FollowRequest)
 		err = json.Unmarshal(data, r.Follow)
+	case OpWait:
+		r.Wait = new(WaitRequest)
+		err = json.Unmarshal(data, r.Wait)
 	case OpSignal:
 		r.Signal = new(SignalRequest)
 		err = json.Unmarshal(data, r.Signal)
@@ -268,6 +273,9 @@ func (r Request) MarshalJSON() ([]byte, error) {
 	}
 	if r.Follow != nil {
 		return json.Marshal(r.Follow)
+	}
+	if r.Wait != nil {
+		return json.Marshal(r.Wait)
 	}
 	if r.Signal != nil {
 		return json.Marshal(r.Signal)

@@ -11,7 +11,7 @@ import (
 
 // Version is the current private protocol version. The hello exchange carries
 // this value on every connection.
-const Version = 2
+const Version = 3
 
 // CurrentVersion is an explicit alias for Version for callers that prefer a
 // descriptive name.
@@ -36,6 +36,8 @@ const (
 	OpOutput Operation = "output"
 	// OpFollow follows bounded output and lifecycle events.
 	OpFollow Operation = "follow"
+	// OpWait waits for matching output or process exit.
+	OpWait Operation = "wait"
 	// OpSignal forwards a signal to one supervised process group.
 	OpSignal Operation = "signal"
 	// OpStop stops one supervised process group.
@@ -53,15 +55,28 @@ const (
 	OperationGet      = OpGet
 	OperationOutput   = OpOutput
 	OperationFollow   = OpFollow
+	OperationWait     = OpWait
 	OperationSignal   = OpSignal
 	OperationStop     = OpStop
 	OperationShutdown = OpShutdown
 	OperationEvent    = OpEvent
 )
 
+// WaitOutcome identifies the terminal condition returned by a wait request.
+type WaitOutcome string
+
+const (
+	// WaitMatched reports that a matching output entry was observed.
+	WaitMatched WaitOutcome = "matched"
+	// WaitExited reports that the process exited before a matching entry.
+	WaitExited WaitOutcome = "exited"
+	// WaitTimedOut reports that the wait deadline elapsed first.
+	WaitTimedOut WaitOutcome = "timed_out"
+)
+
 var knownOperations = map[Operation]struct{}{
 	OpHello: {}, OpStart: {}, OpList: {}, OpGet: {}, OpOutput: {},
-	OpFollow: {}, OpSignal: {}, OpStop: {}, OpShutdown: {},
+	OpFollow: {}, OpWait: {}, OpSignal: {}, OpStop: {}, OpShutdown: {},
 }
 
 // IsKnown reports whether op is one of the protocol operations.
@@ -278,6 +293,59 @@ func (r *GetRequest) UnmarshalJSON(data []byte) error {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
 	r.Op, r.Name, r.Cwd = OpGet, wire.Name, wire.Cwd
+	return nil
+}
+
+// WaitRequest asks the daemon to wait for matching output or process exit.
+// After is a strict-exclusive cursor filter; a nil pointer means the caller
+// did not provide an explicit cursor. TimeoutMS is always carried in
+// milliseconds and is validated by the daemon against its bounds.
+type WaitRequest struct {
+	Op        Operation `json:"op"`
+	Name      string    `json:"name"`
+	Cwd       string    `json:"cwd"`
+	After     *Cursor   `json:"after,omitempty"`
+	Match     string    `json:"match,omitempty"`
+	TimeoutMS int64     `json:"timeout_ms"`
+}
+
+// NewWaitRequest builds a wait request with a timeout in milliseconds.
+func NewWaitRequest(name, cwd string, timeoutMS int64) WaitRequest {
+	return WaitRequest{Op: OpWait, Name: name, Cwd: cwd, TimeoutMS: timeoutMS}
+}
+
+// MarshalJSON writes a wait request with its stable operation and field
+// ordering.
+func (r WaitRequest) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Op        Operation `json:"op"`
+		Name      string    `json:"name"`
+		Cwd       string    `json:"cwd"`
+		After     *Cursor   `json:"after,omitempty"`
+		Match     string    `json:"match,omitempty"`
+		TimeoutMS int64     `json:"timeout_ms"`
+	}{Op: OpWait, Name: r.Name, Cwd: r.Cwd, After: r.After, Match: r.Match, TimeoutMS: r.TimeoutMS})
+}
+
+// UnmarshalJSON decodes a wait request and validates its operation when
+// present.
+func (r *WaitRequest) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Op        Operation `json:"op"`
+		Name      string    `json:"name"`
+		Cwd       string    `json:"cwd"`
+		After     *Cursor   `json:"after"`
+		Match     string    `json:"match"`
+		TimeoutMS int64     `json:"timeout_ms"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.Op != "" && wire.Op != OpWait {
+		return &UnknownOperationError{Operation: wire.Op}
+	}
+	r.Op, r.Name, r.Cwd = OpWait, wire.Name, wire.Cwd
+	r.After, r.Match, r.TimeoutMS = wire.After, wire.Match, wire.TimeoutMS
 	return nil
 }
 
@@ -588,6 +656,61 @@ type GetResponse struct {
 // NewGetResponse builds a successful get response.
 func NewGetResponse(process Process) GetResponse {
 	return GetResponse{Op: OpGet, OK: true, Process: &process}
+}
+
+// WaitResponse reports the terminal condition for a wait request. Cursor is
+// always serialized so callers can resume from the consumed output watermark.
+type WaitResponse struct {
+	Op      Operation   `json:"op"`
+	OK      bool        `json:"ok"`
+	Outcome WaitOutcome `json:"outcome,omitempty"`
+	Cursor  Cursor      `json:"cursor"`
+	Exit    *Exit       `json:"exit,omitempty"`
+	Error   *WireError  `json:"error,omitempty"`
+}
+
+// NewWaitResponse builds a successful wait response.
+func NewWaitResponse(outcome WaitOutcome, cursor Cursor, exit *Exit) WaitResponse {
+	return WaitResponse{Op: OpWait, OK: true, Outcome: outcome, Cursor: cursor, Exit: exit}
+}
+
+// MarshalJSON writes a wait response with its stable operation and field
+// ordering.
+func (r WaitResponse) MarshalJSON() ([]byte, error) {
+	var outcome *WaitOutcome
+	if r.OK {
+		outcome = &r.Outcome
+	}
+	return json.Marshal(struct {
+		Op      Operation    `json:"op"`
+		OK      bool         `json:"ok"`
+		Outcome *WaitOutcome `json:"outcome,omitempty"`
+		Cursor  Cursor       `json:"cursor"`
+		Exit    *Exit        `json:"exit,omitempty"`
+		Error   *WireError   `json:"error,omitempty"`
+	}{Op: OpWait, OK: r.OK, Outcome: outcome, Cursor: r.Cursor, Exit: r.Exit, Error: r.Error})
+}
+
+// UnmarshalJSON decodes a wait response and validates its operation when
+// present.
+func (r *WaitResponse) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Op      Operation   `json:"op"`
+		OK      bool        `json:"ok"`
+		Outcome WaitOutcome `json:"outcome"`
+		Cursor  Cursor      `json:"cursor"`
+		Exit    *Exit       `json:"exit"`
+		Error   *WireError  `json:"error"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.Op != "" && wire.Op != OpWait {
+		return &UnknownOperationError{Operation: wire.Op}
+	}
+	r.Op, r.OK, r.Outcome, r.Cursor = OpWait, wire.OK, wire.Outcome, wire.Cursor
+	r.Exit, r.Error = wire.Exit, wire.Error
+	return nil
 }
 
 // OutputResponse reports one bounded output read.

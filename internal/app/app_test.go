@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1126,5 +1127,317 @@ func TestSignalForwardsInterrupt(t *testing.T) {
 	}
 	if model.ExitCode != 17 {
 		t.Fatalf("SIGINT exit code = %d, want 17", model.ExitCode)
+	}
+}
+
+type waitCallResult struct {
+	result WaitResult
+	err    error
+}
+
+func awaitWaitResult(t *testing.T, result <-chan waitCallResult) waitCallResult {
+	t.Helper()
+	select {
+	case got := <-result:
+		return got
+	case <-time.After(time.Second):
+		t.Fatal("wait did not return")
+		return waitCallResult{}
+	}
+}
+
+func TestWaitBufferedDefaultAndExplicitCursorZero(t *testing.T) {
+	root := makeProject(t, false)
+	child := newSubscriptionChild(5001, 0, time.Unix(11, 0), "buffered-ready\n")
+	s := testSupervisor(t, Options{
+		Now: func() time.Time { return time.Unix(10, 0) },
+		OutputLimits: output.Limits{
+			RetainedBytes:      1024,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   1024,
+		},
+		StartProcess: subscriptionStarter(map[string]*subscriptionChild{"buffered": child}),
+	})
+	if _, err := s.Start(StartRequest{Name: "buffered", Cwd: root, Argv: []string{"/bin/fake", "buffered"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := s.Wait(ctx, root, "buffered", WaitOptions{Match: regexp.MustCompile(`buffered-ready`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != WaitMatched || got.Cursor != 0 || got.Exit != nil {
+		t.Fatalf("default launch wait = %#v, want matched cursor 0 without exit", got)
+	}
+
+	zero := output.Cursor(0)
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer timeoutCancel()
+	got, err = s.Wait(timeoutCtx, root, "buffered", WaitOptions{
+		After: &zero,
+		Match: regexp.MustCompile(`buffered-ready`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != WaitTimedOut || got.Cursor != 0 {
+		t.Fatalf("explicit cursor-zero wait = %#v, want timed_out cursor 0", got)
+	}
+}
+
+func TestWaitBufferedAndNewMatchCoexistWithFollower(t *testing.T) {
+	root := makeProject(t, false)
+	child := newSubscriptionChild(5002, 0, time.Unix(21, 0), "before\n")
+	s := testSupervisor(t, Options{
+		Now: func() time.Time { return time.Unix(20, 0) },
+		OutputLimits: output.Limits{
+			RetainedBytes:      1024,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   1024,
+		},
+		StartProcess: subscriptionStarter(map[string]*subscriptionChild{"new-match": child}),
+	})
+	if _, err := s.Start(StartRequest{Name: "new-match", Cwd: root, Argv: []string{"/bin/fake", "new-match"}}); err != nil {
+		t.Fatal(err)
+	}
+	store := child.store
+	if store == nil {
+		t.Fatal("wait test child did not receive output store")
+	}
+	follower := store.Subscribe(output.ReadOptions{})
+	defer follower.Close()
+
+	result := make(chan waitCallResult, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() {
+		waitResult, waitErr := s.Wait(ctx, root, "new-match", WaitOptions{Match: regexp.MustCompile(`ready`)})
+		result <- waitCallResult{result: waitResult, err: waitErr}
+	}()
+
+	if _, err := store.Append(output.Stdout, time.Unix(22, 0), "ready\n"); err != nil {
+		t.Fatal(err)
+	}
+	got := awaitWaitResult(t, result)
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if got.result.Outcome != WaitMatched || got.result.Cursor != 1 {
+		t.Fatalf("new matching output wait = %#v, want matched cursor 1", got.result)
+	}
+
+	followerEvent := nextSubscriptionEvent(t, follower)
+	if followerEvent.Read == nil || len(followerEvent.Read.Entries) != 2 ||
+		followerEvent.Read.Entries[0].Cursor != 0 || followerEvent.Read.Entries[1].Cursor != 1 {
+		t.Fatalf("coexisting follower event = %#v, want both buffered and appended entries", followerEvent)
+	}
+}
+
+func TestWaitExitWakeupWithAndWithoutMatch(t *testing.T) {
+	root := makeProject(t, false)
+	tests := []struct {
+		name  string
+		match *regexp.Regexp
+		code  int
+		at    time.Time
+	}{
+		{name: "exit-match", match: regexp.MustCompile(`never`), code: 3, at: time.Unix(31, 0)},
+		{name: "exit-any", code: 0, at: time.Unix(32, 0)},
+	}
+	children := make(map[string]*subscriptionChild, len(tests))
+	for _, test := range tests {
+		children[test.name] = newSubscriptionChild(5100+test.code, test.code, test.at, "noise\n")
+	}
+	s := testSupervisor(t, Options{
+		Now: func() time.Time { return time.Unix(30, 0) },
+		OutputLimits: output.Limits{
+			RetainedBytes:      1024,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   1024,
+		},
+		StartProcess: subscriptionStarter(children),
+	})
+	for _, test := range tests {
+		if _, err := s.Start(StartRequest{Name: test.name, Cwd: root, Argv: []string{"/bin/fake", test.name}}); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		result := make(chan waitCallResult, 1)
+		go func(test struct {
+			name  string
+			match *regexp.Regexp
+			code  int
+			at    time.Time
+		}) {
+			waitResult, waitErr := s.Wait(ctx, root, test.name, WaitOptions{Match: test.match})
+			result <- waitCallResult{result: waitResult, err: waitErr}
+		}(test)
+		children[test.name].release()
+		got := awaitWaitResult(t, result)
+		cancel()
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.result.Outcome != WaitExited || got.result.Cursor != 0 || got.result.Exit == nil ||
+			got.result.Exit.ExitCode != test.code || !got.result.Exit.ExitedAt.Equal(test.at) {
+			t.Fatalf("exit wait %q = %#v, want exited code %d at %v", test.name, got.result, test.code, test.at)
+		}
+	}
+}
+
+func TestWaitTimeoutCursorCancellationAndConcurrentWaiters(t *testing.T) {
+	root := makeProject(t, false)
+	children := map[string]*subscriptionChild{
+		"timeout": newSubscriptionChild(5201, 0, time.Unix(41, 0), ""),
+		"cancel":  newSubscriptionChild(5202, 0, time.Unix(42, 0), ""),
+		"many":    newSubscriptionChild(5203, 0, time.Unix(43, 0), "prefix\n"),
+	}
+	s := testSupervisor(t, Options{
+		Now: func() time.Time { return time.Unix(40, 0) },
+		OutputLimits: output.Limits{
+			RetainedBytes:      1024,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   1024,
+		},
+		StartProcess: subscriptionStarter(children),
+	})
+	for name := range children {
+		if _, err := s.Start(StartRequest{Name: name, Cwd: root, Argv: []string{"/bin/fake", name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := children["timeout"].store.Append(output.Stdout, time.Unix(44, 0), "ignored-one\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := children["timeout"].store.Append(output.Stdout, time.Unix(45, 0), "ignored-two\n"); err != nil {
+		t.Fatal(err)
+	}
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	timeoutResult := make(chan waitCallResult, 1)
+	go func() {
+		waitResult, waitErr := s.Wait(timeoutCtx, root, "timeout", WaitOptions{Match: regexp.MustCompile(`never`)})
+		timeoutResult <- waitCallResult{result: waitResult, err: waitErr}
+	}()
+	got := awaitWaitResult(t, timeoutResult)
+	timeoutCancel()
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if got.result.Outcome != WaitTimedOut || got.result.Cursor != 1 {
+		t.Fatalf("timeout wait = %#v, want timed_out cursor 1", got.result)
+	}
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancelResult := make(chan waitCallResult, 1)
+	go func() {
+		waitResult, waitErr := s.Wait(cancelCtx, root, "cancel", WaitOptions{Match: regexp.MustCompile(`never`)})
+		cancelResult <- waitCallResult{result: waitResult, err: waitErr}
+	}()
+	cancel()
+	canceled := awaitWaitResult(t, cancelResult)
+	if !errors.Is(canceled.err, context.Canceled) {
+		t.Fatalf("canceled wait error = %v, want context.Canceled", canceled.err)
+	}
+	if _, err := children["cancel"].store.Append(output.Stdout, time.Unix(46, 0), "after-cancel\n"); err != nil {
+		t.Fatal(err)
+	}
+	postCancelCtx, postCancel := context.WithTimeout(context.Background(), time.Second)
+	defer postCancel()
+	postCancelResult, err := s.Wait(postCancelCtx, root, "cancel", WaitOptions{Match: regexp.MustCompile(`after-cancel`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if postCancelResult.Outcome != WaitMatched || postCancelResult.Cursor != 0 {
+		t.Fatalf("wait after canceled wait = %#v, want matched cursor 0", postCancelResult)
+	}
+
+	const waiters = 2
+	results := make(chan waitCallResult, waiters)
+	ctx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	for range waiters {
+		go func() {
+			waitResult, waitErr := s.Wait(ctx, root, "many", WaitOptions{Match: regexp.MustCompile(`ready`)})
+			results <- waitCallResult{result: waitResult, err: waitErr}
+		}()
+	}
+	if _, err := children["many"].store.Append(output.Stdout, time.Unix(46, 0), "ready\n"); err != nil {
+		t.Fatal(err)
+	}
+	var cursors []output.Cursor
+	for range waiters {
+		waited := awaitWaitResult(t, results)
+		if waited.err != nil {
+			t.Fatal(waited.err)
+		}
+		if waited.result.Outcome != WaitMatched {
+			t.Fatalf("concurrent wait result = %#v, want matched", waited.result)
+		}
+		cursors = append(cursors, waited.result.Cursor)
+	}
+	if len(cursors) != waiters || cursors[0] != 1 || cursors[1] != 1 {
+		t.Fatalf("concurrent wait cursors = %#v, want two monotonic cursor 1 results", cursors)
+	}
+}
+
+func TestWaitMatchesLineWithinSupervisorMaxLineBytes(t *testing.T) {
+	root := makeProject(t, false)
+	largeLine := strings.Repeat("x", output.DefaultReadBytes) + "needle\n"
+	child := newSubscriptionChild(5301, 0, time.Unix(51, 0), largeLine)
+	s := testSupervisor(t, Options{
+		MaxLineBytes: len(largeLine),
+		OutputLimits: output.Limits{
+			RetainedBytes:      len(largeLine) * 2,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   output.DefaultReadBytes,
+		},
+		StartProcess: subscriptionStarter(map[string]*subscriptionChild{"large-match": child}),
+	})
+	if _, err := s.Start(StartRequest{Name: "large-match", Cwd: root, Argv: []string{"/bin/fake", "large-match"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := s.Wait(ctx, root, "large-match", WaitOptions{Match: regexp.MustCompile(`needle`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != WaitMatched || got.Cursor != 0 || got.Exit != nil {
+		t.Fatalf("large-line match wait = %#v, want matched cursor 0 without exit", got)
+	}
+}
+
+func TestWaitReachesExitAfterLineWithinSupervisorMaxLineBytes(t *testing.T) {
+	root := makeProject(t, false)
+	largeLine := strings.Repeat("x", output.DefaultReadBytes) + "\n"
+	child := newSubscriptionChild(5302, 7, time.Unix(52, 0), largeLine)
+	s := testSupervisor(t, Options{
+		Now:          func() time.Time { return time.Unix(51, 0) },
+		MaxLineBytes: len(largeLine),
+		OutputLimits: output.Limits{
+			RetainedBytes:      len(largeLine) * 2,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   output.DefaultReadBytes,
+		},
+		StartProcess: subscriptionStarter(map[string]*subscriptionChild{"large-exit": child}),
+	})
+	if _, err := s.Start(StartRequest{Name: "large-exit", Cwd: root, Argv: []string{"/bin/fake", "large-exit"}}); err != nil {
+		t.Fatal(err)
+	}
+	child.release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := s.Wait(ctx, root, "large-exit", WaitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != WaitExited || got.Cursor != 0 || got.Exit == nil || got.Exit.ExitCode != 7 ||
+		!got.Exit.ExitedAt.Equal(child.result.ExitedAt) {
+		t.Fatalf("large-line exit wait = %#v, want exited code 7 at %v", got, child.result.ExitedAt)
 	}
 }

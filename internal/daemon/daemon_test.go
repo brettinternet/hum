@@ -1300,43 +1300,45 @@ func TestHelloVersion(t *testing.T) {
 		}
 	})
 
-	t.Run("newer client to older daemon permits frozen shutdown", func(t *testing.T) {
-		server := testServer(t, Config{Version: strconv.Itoa(protocol.Version)})
+	t.Run("v3 client to v2 daemon rejects wait during hello but permits frozen shutdown", func(t *testing.T) {
+		const oldDaemonVersion = 2
+		server := testServer(t, Config{Version: strconv.Itoa(oldDaemonVersion)})
 		conn, err := net.Dial("unix", server.Paths().Socket)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer conn.Close()
-		encoder := protocol.NewEncoder(conn)
-		decoder := protocol.NewDecoder(conn)
-		if err := encoder.EncodeRequest(protocol.Hello{Op: protocol.OpHello, Version: protocol.Version + 1}); err != nil {
-			t.Fatal(err)
+		recordingConn := &daemonTestWriteConn{Conn: conn}
+		client := NewClient(recordingConn)
+		t.Cleanup(func() { _ = client.Close() })
+
+		helloCtx, cancelHello := context.WithTimeout(context.Background(), time.Second)
+		err = client.Hello(helloCtx)
+		cancelHello()
+		var mismatch *VersionMismatchError
+		if !errors.As(err, &mismatch) || mismatch == nil {
+			t.Fatalf("old-daemon hello error = %v, want version mismatch", err)
 		}
-		var mismatch daemonTestResponse
-		if err := decoder.Decode(&mismatch); err != nil {
-			t.Fatal(err)
+		if mismatch.ClientVersion != protocol.Version || mismatch.DaemonVersion != oldDaemonVersion {
+			t.Fatalf("old-daemon mismatch versions = client %d daemon %d, want client %d daemon %d", mismatch.ClientVersion, mismatch.DaemonVersion, protocol.Version, oldDaemonVersion)
 		}
-		if mismatch.Op != protocol.OpHello || mismatch.Error == nil || mismatch.Error.Code != protocol.ErrorVersionMismatch {
-			t.Fatalf("newer-client hello response = %+v, want version_mismatch", mismatch)
+
+		helloWrites := recordingConn.writeCalls.Load()
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+		_, waitErr := client.Wait(waitCtx, daemonWaitRequest("wait", t.TempDir(), "", time.Second))
+		cancelWait()
+		var waitMismatch *VersionMismatchError
+		if !errors.As(waitErr, &waitMismatch) || waitMismatch == nil {
+			t.Fatalf("wait after old-daemon hello mismatch = %v, want version mismatch", waitErr)
 		}
-		details, ok := mismatch.Error.Details.(map[string]any)
-		if !ok {
-			t.Fatalf("version mismatch details = %T, want object", mismatch.Error.Details)
+		if got := recordingConn.writeCalls.Load(); got != helloWrites {
+			t.Fatalf("wait after old-daemon hello mismatch made additional writes: got %d, want %d", got, helloWrites)
 		}
-		clientVersion, clientOK := details["client"].(float64)
-		daemonVersion, daemonOK := details["daemon"].(float64)
-		if !clientOK || int(clientVersion) != protocol.Version+1 || !daemonOK || int(daemonVersion) != protocol.Version {
-			t.Fatalf("version mismatch direction = %#v, want client %d daemon %d", details, protocol.Version+1, protocol.Version)
+
+		if err := client.Shutdown(context.Background(), protocol.NewShutdownRequest(false)); err != nil {
+			t.Fatalf("frozen shutdown after version mismatch: %v", err)
 		}
-		if err := encoder.EncodeRequest(protocol.NewShutdownRequest(false)); err != nil {
-			t.Fatal(err)
-		}
-		var shutdown daemonTestResponse
-		if err := decoder.Decode(&shutdown); err != nil {
-			t.Fatal(err)
-		}
-		if shutdown.Op != protocol.OpShutdown || !shutdown.OK || shutdown.Error != nil {
-			t.Fatalf("frozen shutdown response = %+v, want successful shutdown", shutdown)
+		if got := recordingConn.writeCalls.Load(); got != helloWrites+1 {
+			t.Fatalf("shutdown after wait rejection writes = %d, want %d", got, helloWrites+1)
 		}
 		if err := server.Wait(); err != nil {
 			t.Fatalf("daemon Serve after frozen shutdown: %v", err)
@@ -1435,4 +1437,344 @@ func TestProtocolSurfaceUsesNoEnvironment(t *testing.T) {
 	if sink.Len() != 0 {
 		t.Fatalf("environment response wrote %d bytes", sink.Len())
 	}
+}
+
+func daemonWaitFixture(t *testing.T) (*Server, *Client, string, *output.Store) {
+	t.Helper()
+	root := t.TempDir()
+	var store *output.Store
+	child := &daemonTestChild{pid: 9301, done: make(chan struct{})}
+	supervisor, err := app.New(app.Options{
+		StartProcess: func(spec process.Spec) (app.Child, error) {
+			store = spec.Output
+			return child, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := testServer(t, Config{Supervisor: supervisor})
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := supervisor.Start(app.StartRequest{Name: "wait", Cwd: root, Argv: []string{"fake"}}); err != nil {
+		t.Fatal(err)
+	}
+	if store == nil {
+		t.Fatal("wait fixture did not expose output store")
+	}
+	return server, client, root, store
+}
+
+func daemonWaitRequest(name, cwd, match string, timeout time.Duration) protocol.WaitRequest {
+	return protocol.WaitRequest{Op: protocol.OpWait, Name: name, Cwd: cwd, Match: match, TimeoutMS: int64(timeout / time.Millisecond)}
+}
+
+func TestWaitRequestConversion(t *testing.T) {
+	after := protocol.Cursor(0)
+	request := protocol.Request{
+		Op: protocol.OpWait,
+		Wait: &protocol.WaitRequest{
+			Op: protocol.OpWait, Name: "wait", Cwd: "/work/project",
+			After: &after, Match: "ready", TimeoutMS: 1234,
+		},
+	}
+	wire, err := wireRequestFromProtocol(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.Op != string(protocol.OpWait) || wire.Name != "wait" || wire.Cwd != "/work/project" || wire.Match != "ready" || wire.TimeoutMS != 1234 || wire.After == nil || *wire.After != 0 {
+		t.Fatalf("wire wait request = %#v", wire)
+	}
+	var sink strings.Builder
+	if err := writeProtocolRequest(protocol.NewEncoder(&sink), wire); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := protocol.NewDecoder(strings.NewReader(sink.String())).DecodeRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Wait == nil || decoded.Wait.After == nil || *decoded.Wait.After != 0 || decoded.Wait.TimeoutMS != 1234 || decoded.Wait.Match != "ready" {
+		t.Fatalf("decoded wait request = %#v", decoded.Wait)
+	}
+}
+
+func TestWaitResponseShape(t *testing.T) {
+	exitTime := time.Unix(3, 0)
+	cases := []app.WaitResult{
+		{Outcome: app.WaitMatched, Cursor: 0},
+		{Outcome: app.WaitExited, Cursor: 4, Exit: &process.Result{ExitCode: 7, Err: errors.New("boom"), ExitedAt: exitTime}},
+		{Outcome: app.WaitTimedOut, Cursor: 9},
+	}
+	for _, result := range cases {
+		t.Run(string(result.Outcome), func(t *testing.T) {
+			var sink strings.Builder
+			if err := writeProtocolResponse(protocol.NewEncoder(&sink), wireResponseFromWait(result)); err != nil {
+				t.Fatalf("encode wait response: %v", err)
+			}
+			encoded := sink.String()
+			if !strings.Contains(encoded, `"op":"wait"`) || !strings.Contains(encoded, `"ok":true`) {
+				t.Fatalf("wait response envelope = %s", encoded)
+			}
+			if !strings.Contains(encoded, `"outcome":"`+string(result.Outcome)+`"`) {
+				t.Fatalf("wait response outcome = %s", encoded)
+			}
+			if !strings.Contains(encoded, `"cursor":`+strconv.FormatUint(uint64(result.Cursor), 10)) {
+				t.Fatalf("wait response cursor = %s", encoded)
+			}
+			var decoded protocol.WaitResponse
+			if err := json.Unmarshal([]byte(encoded), &decoded); err != nil {
+				t.Fatalf("decode wait response: %v", err)
+			}
+			if decoded.Op != protocol.OpWait || decoded.Outcome != protocol.WaitOutcome(result.Outcome) || decoded.Cursor != protocol.Cursor(result.Cursor) {
+				t.Fatalf("decoded wait response = %#v", decoded)
+			}
+		})
+	}
+}
+
+func TestWaitDaemonBridge(t *testing.T) {
+	t.Run("buffered match", func(t *testing.T) {
+		_, client, root, store := daemonWaitFixture(t)
+		cursor, err := store.Append(output.Stdout, time.Unix(1, 0), "ready\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := client.Wait(context.Background(), daemonWaitRequest("wait", root, "ready", time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Outcome != app.WaitMatched || result.Cursor != cursor {
+			t.Fatalf("buffered wait result = %#v, want matched at %d", result, cursor)
+		}
+	})
+
+	t.Run("new matching output", func(t *testing.T) {
+		_, client, root, store := daemonWaitFixture(t)
+		type waitCall struct {
+			result app.WaitResult
+			err    error
+		}
+		done := make(chan waitCall, 1)
+		go func() {
+			result, err := client.Wait(context.Background(), daemonWaitRequest("wait", root, "later", time.Second))
+			done <- waitCall{result: result, err: err}
+		}()
+		time.Sleep(10 * time.Millisecond)
+		cursor, err := store.Append(output.Stdout, time.Unix(1, 0), "later\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case call := <-done:
+			if call.err != nil {
+				t.Fatal(call.err)
+			}
+			if call.result.Outcome != app.WaitMatched || call.result.Cursor != cursor {
+				t.Fatalf("new-output wait result = %#v, want matched at %d", call.result, cursor)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("new-output wait did not return")
+		}
+	})
+
+	t.Run("exit before match", func(t *testing.T) {
+		_, client, root, store := daemonWaitFixture(t)
+		type waitCall struct {
+			result app.WaitResult
+			err    error
+		}
+		done := make(chan waitCall, 1)
+		go func() {
+			result, err := client.Wait(context.Background(), daemonWaitRequest("wait", root, "ready", time.Second))
+			done <- waitCall{result: result, err: err}
+		}()
+		time.Sleep(10 * time.Millisecond)
+		exitTime := time.Unix(2, 0)
+		store.NotifyExit(output.Exit{Code: 7, Time: exitTime})
+		select {
+		case call := <-done:
+			if call.err != nil {
+				t.Fatal(call.err)
+			}
+			if call.result.Outcome != app.WaitExited || call.result.Exit == nil || call.result.Exit.ExitCode != 7 {
+				t.Fatalf("exit wait result = %#v, want exited code 7", call.result)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("exit wait did not return")
+		}
+	})
+
+	t.Run("exit without match", func(t *testing.T) {
+		_, client, root, store := daemonWaitFixture(t)
+		store.NotifyExit(output.Exit{Code: 0, Time: time.Now()})
+		result, err := client.Wait(context.Background(), daemonWaitRequest("wait", root, "", time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Outcome != app.WaitExited || result.Exit == nil || result.Exit.ExitCode != 0 {
+			t.Fatalf("exit-without-match wait result = %#v, want exited code 0", result)
+		}
+	})
+
+	t.Run("timeout returns consumed cursor", func(t *testing.T) {
+		_, client, root, _ := daemonWaitFixture(t)
+		result, err := client.Wait(context.Background(), daemonWaitRequest("wait", root, "never", 25*time.Millisecond))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Outcome != app.WaitTimedOut || result.Cursor != 0 {
+			t.Fatalf("timeout wait result = %#v, want timed_out at cursor 0", result)
+		}
+	})
+
+	t.Run("invalid request and server bound", func(t *testing.T) {
+		_, client, root, _ := daemonWaitFixture(t)
+		tooLarge := protocol.WaitRequest{Op: protocol.OpWait, Name: "wait", Cwd: root, TimeoutMS: maxWaitTimeoutMS + 1}
+		cases := []protocol.WaitRequest{
+			{Op: protocol.OpWait, Cwd: root, TimeoutMS: 1000},
+			daemonWaitRequest("wait", root, "[", time.Second),
+			daemonWaitRequest("wait", root, "", 0),
+			daemonWaitRequest("wait", root, "", -time.Millisecond),
+			tooLarge,
+		}
+		for i, request := range cases {
+			_, err := client.Wait(context.Background(), request)
+			var wireErr *protocol.WireError
+			if !errors.As(err, &wireErr) || wireErr.Code != protocol.ErrorInvalidRequest {
+				t.Errorf("case %d wait error = %v, want invalid_request", i, err)
+			}
+		}
+	})
+
+	t.Run("future cursor is rejected by output", func(t *testing.T) {
+		_, client, root, _ := daemonWaitFixture(t)
+		after := protocol.Cursor(99)
+		request := daemonWaitRequest("wait", root, "", time.Second)
+		request.After = &after
+		_, err := client.Wait(context.Background(), request)
+		var wireErr *protocol.WireError
+		if !errors.As(err, &wireErr) || wireErr.Code != protocol.ErrorOutput {
+			t.Fatalf("future cursor wait error = %v, want output_error", err)
+		}
+	})
+
+	t.Run("disconnect releases waiter", func(t *testing.T) {
+		_, client, root, store := daemonWaitFixture(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := client.Wait(ctx, daemonWaitRequest("wait", root, "reconnect", 10*time.Second))
+			done <- err
+		}()
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("disconnected wait error = %v, want context canceled", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("disconnected wait did not return")
+		}
+		if _, err := store.Append(output.Stdout, time.Unix(1, 0), "reconnect\n"); err != nil {
+			t.Fatal(err)
+		}
+		result, err := client.Wait(context.Background(), daemonWaitRequest("wait", root, "reconnect", time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Outcome != app.WaitMatched {
+			t.Fatalf("post-disconnect wait result = %#v, want matched", result)
+		}
+	})
+
+	t.Run("concurrent waiters", func(t *testing.T) {
+		_, client, root, store := daemonWaitFixture(t)
+		type waitCall struct {
+			result app.WaitResult
+			err    error
+		}
+		done := make(chan waitCall, 2)
+		for _, match := range []string{"one", "two"} {
+			go func(match string) {
+				result, err := client.Wait(context.Background(), daemonWaitRequest("wait", root, match, time.Second))
+				done <- waitCall{result: result, err: err}
+			}(match)
+		}
+		time.Sleep(10 * time.Millisecond)
+		if _, err := store.Append(output.Stdout, time.Unix(1, 0), "one\n"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Append(output.Stdout, time.Unix(1, 0), "two\n"); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			select {
+			case call := <-done:
+				if call.err != nil {
+					t.Fatal(call.err)
+				}
+				if call.result.Outcome != app.WaitMatched {
+					t.Fatalf("concurrent wait result = %#v, want matched", call.result)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("concurrent waiter did not return")
+			}
+		}
+	})
+
+	t.Run("coexists with follower", func(t *testing.T) {
+		_, client, root, store := daemonWaitFixture(t)
+		follower, err := client.Follow(context.Background(), protocol.NewFollowRequest("wait", root))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer follower.Close()
+		followerDone := make(chan struct {
+			event output.Event
+			err   error
+		}, 1)
+		go func() {
+			event, err := follower.Next(context.Background())
+			followerDone <- struct {
+				event output.Event
+				err   error
+			}{event: event, err: err}
+		}()
+		waitDone := make(chan struct {
+			result app.WaitResult
+			err    error
+		}, 1)
+		go func() {
+			result, err := client.Wait(context.Background(), daemonWaitRequest("wait", root, "shared", time.Second))
+			waitDone <- struct {
+				result app.WaitResult
+				err    error
+			}{result: result, err: err}
+		}()
+		time.Sleep(10 * time.Millisecond)
+		cursor, err := store.Append(output.Stdout, time.Unix(1, 0), "shared\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case got := <-waitDone:
+			if got.err != nil || got.result.Outcome != app.WaitMatched || got.result.Cursor != cursor {
+				t.Fatalf("wait alongside follower = %#v, err %v", got.result, got.err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("wait alongside follower did not return")
+		}
+		select {
+		case got := <-followerDone:
+			if got.err != nil || got.event.Read == nil || len(got.event.Read.Entries) != 1 || got.event.Read.Entries[0].Text != "shared\n" {
+				t.Fatalf("follower alongside wait = %#v, err %v", got.event, got.err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("follower alongside wait did not return")
+		}
+	})
 }

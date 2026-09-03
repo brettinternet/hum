@@ -2,10 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"strings"
 	"testing"
 )
 
-func TestStatusWithoutWaitOrRestartYet(t *testing.T) {
+func TestStatusAndWaitSurface(t *testing.T) {
 	var output, errorOutput bytes.Buffer
 	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
 
@@ -15,6 +17,7 @@ func TestStatusWithoutWaitOrRestartYet(t *testing.T) {
 		"list":     true,
 		"status":   true,
 		"logs":     true,
+		"wait":     true,
 		"stop":     true,
 		"shutdown": true,
 	}
@@ -33,9 +36,24 @@ func TestStatusWithoutWaitOrRestartYet(t *testing.T) {
 			t.Errorf("root command is missing %q", name)
 		}
 	}
-	for _, name := range []string{"wait", "restart", "down"} {
+	for _, name := range []string{"restart", "down"} {
 		if root.Command(name) != nil {
 			t.Errorf("root command unexpectedly exposes %q", name)
+		}
+	}
+}
+
+func TestWaitHelpDescribesExitAndReadiness(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+
+	if err := root.Run(context.Background(), []string{"hum", "wait", "--help"}); err != nil {
+		t.Fatalf("wait help: %v", err)
+	}
+	help := strings.ToLower(output.String())
+	for _, want := range []string{"without --match", "exit", "hum start <name>", "--after-cursor", "--match", "--timeout", "--json"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("wait help missing %q: %q", want, output.String())
 		}
 	}
 }

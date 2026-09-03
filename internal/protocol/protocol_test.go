@@ -16,7 +16,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":2}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":3}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -89,6 +89,16 @@ func TestOperationRequestsRoundTripThroughDecoder(t *testing.T) {
 				t.Fatalf("follow request = %#v", req.Follow)
 			}
 		}},
+		{name: "wait", value: func() WaitRequest {
+			r := NewWaitRequest("api", "/tmp/project", 1500)
+			r.After, r.Match = &after, "ready"
+			return r
+		}(), op: OpWait, check: func(t *testing.T, req Request) {
+			if req.Wait == nil || req.Wait.After == nil || *req.Wait.After != after ||
+				req.Wait.Match != "ready" || req.Wait.TimeoutMS != 1500 {
+				t.Fatalf("wait request = %#v", req.Wait)
+			}
+		}},
 		{name: "signal", value: NewSignalRequest("api", "/tmp/project", "SIGINT"), op: OpSignal, check: func(t *testing.T, req Request) {
 			if req.Signal == nil || req.Signal.Signal != "SIGINT" {
 				t.Fatalf("signal request = %#v", req.Signal)
@@ -128,6 +138,143 @@ func TestOperationRequestsRoundTripThroughDecoder(t *testing.T) {
 			}
 			tc.check(t, req)
 		})
+	}
+}
+
+func TestWaitRequestAndResponseShapes(t *testing.T) {
+	request := NewWaitRequest("api", "/work/project", 1500)
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(encoded), `{"op":"wait","name":"api","cwd":"/work/project","timeout_ms":1500}`; got != want {
+		t.Fatalf("wait request JSON = %s, want %s", got, want)
+	}
+	var decodedRequest WaitRequest
+	if err := json.Unmarshal(encoded, &decodedRequest); err != nil {
+		t.Fatal(err)
+	}
+	if decodedRequest.Op != OpWait || decodedRequest.Name != request.Name ||
+		decodedRequest.Cwd != request.Cwd || decodedRequest.TimeoutMS != request.TimeoutMS ||
+		decodedRequest.After != nil || decodedRequest.Match != "" {
+		t.Fatalf("decoded wait request = %#v", decodedRequest)
+	}
+
+	zero := Cursor(0)
+	request.After, request.Match = &zero, "ready"
+	encoded, err = json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(encoded), `{"op":"wait","name":"api","cwd":"/work/project","after":0,"match":"ready","timeout_ms":1500}`; got != want {
+		t.Fatalf("wait request with filters JSON = %s, want %s", got, want)
+	}
+	var decodedFiltered WaitRequest
+	if err := json.Unmarshal(encoded, &decodedFiltered); err != nil {
+		t.Fatal(err)
+	}
+	if decodedFiltered.After == nil || *decodedFiltered.After != 0 || decodedFiltered.Match != "ready" {
+		t.Fatalf("decoded filtered wait request = %#v", decodedFiltered)
+	}
+
+	var union Request
+	if err := json.Unmarshal(encoded, &union); err != nil {
+		t.Fatal(err)
+	}
+	if union.Op != OpWait || union.Wait == nil || union.Wait.After == nil || *union.Wait.After != 0 {
+		t.Fatalf("wait request union = %#v", union)
+	}
+	if err := json.Unmarshal([]byte(`{"op":"start","name":"api","argv":["true"],"cwd":"/work/project","env":[]}`), &union); err != nil {
+		t.Fatal(err)
+	}
+	if union.Wait != nil || union.Start == nil {
+		t.Fatalf("request union retained stale wait = %#v", union)
+	}
+
+	at := time.Date(2026, time.September, 3, 11, 22, 33, 0, time.UTC)
+	responseCases := []struct {
+		name  string
+		value WaitResponse
+		want  string
+	}{
+		{
+			name:  "matched",
+			value: NewWaitResponse(WaitMatched, 7, nil),
+			want:  `{"op":"wait","ok":true,"outcome":"matched","cursor":7}`,
+		},
+		{
+			name:  "exited",
+			value: NewWaitResponse(WaitExited, 9, &Exit{Code: 17, Time: at}),
+			want:  `{"op":"wait","ok":true,"outcome":"exited","cursor":9,"exit":{"code":17,"time":"2026-09-03T11:22:33Z"}}`,
+		},
+		{
+			name:  "timed out",
+			value: NewWaitResponse(WaitTimedOut, 11, nil),
+			want:  `{"op":"wait","ok":true,"outcome":"timed_out","cursor":11}`,
+		},
+	}
+	for _, tc := range responseCases {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded, err := json.Marshal(tc.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(encoded); got != tc.want {
+				t.Fatalf("wait response JSON = %s, want %s", got, tc.want)
+			}
+			var decoded WaitResponse
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Op != OpWait || !decoded.OK || decoded.Outcome != tc.value.Outcome ||
+				decoded.Cursor != tc.value.Cursor {
+				t.Fatalf("decoded wait response = %#v, want %#v", decoded, tc.value)
+			}
+			if !reflect.DeepEqual(decoded.Exit, tc.value.Exit) {
+				t.Fatalf("decoded wait exit = %#v, want %#v", decoded.Exit, tc.value.Exit)
+			}
+		})
+	}
+
+	errorResponse := WaitResponse{
+		Op:     OpWait,
+		OK:     false,
+		Cursor: 12,
+		Error:  NewWireError(ErrorInternal, "wait failed", nil),
+	}
+	encoded, err = json.Marshal(errorResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(encoded), `{"op":"wait","ok":false,"cursor":12,"error":{"code":"internal","message":"wait failed"}}`; got != want {
+		t.Fatalf("wait error JSON = %s, want %s", got, want)
+	}
+	var decodedError WaitResponse
+	if err := json.Unmarshal(encoded, &decodedError); err != nil {
+		t.Fatal(err)
+	}
+	if decodedError.OK || decodedError.Cursor != errorResponse.Cursor || decodedError.Error == nil ||
+		decodedError.Error.Code != ErrorInternal {
+		t.Fatalf("decoded wait error = %#v", decodedError)
+	}
+
+	var invalidRequest WaitRequest
+	if err := json.Unmarshal([]byte(`{"op":"get","name":"api","cwd":"/work/project","timeout_ms":1500}`), &invalidRequest); err == nil {
+		t.Fatal("wait request with another operation unexpectedly decoded")
+	} else {
+		var unknown *UnknownOperationError
+		if !errors.As(err, &unknown) || unknown.Operation != OpGet {
+			t.Fatalf("wait request rejection = %v", err)
+		}
+	}
+	var invalidResponse WaitResponse
+	if err := json.Unmarshal([]byte(`{"op":"get","ok":true,"cursor":1}`), &invalidResponse); err == nil {
+		t.Fatal("wait response with another operation unexpectedly decoded")
+	} else {
+		var unknown *UnknownOperationError
+		if !errors.As(err, &unknown) || unknown.Operation != OpGet {
+			t.Fatalf("wait response rejection = %v", err)
+		}
 	}
 }
 
@@ -321,7 +468,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":2}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":3}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError

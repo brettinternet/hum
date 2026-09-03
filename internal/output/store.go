@@ -244,6 +244,19 @@ func (sub *Subscription) Close() {
 	sub.store.discardSubscription(sub)
 }
 
+// Cursor returns the highest output cursor consumed by this subscription.
+// It is safe to call concurrently with Next and Close. A subscription that
+// has not consumed any output reports the initial cursor zero.
+func (sub *Subscription) Cursor() Cursor {
+	s := sub.store
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !sub.hasAfter {
+		return 0
+	}
+	return sub.after
+}
+
 // ReplayLatestExit requests delivery of the latest exit retained when this
 // subscription was created. It rewinds only an otherwise caught-up
 // subscription, and never rewinds over an exit appended after Subscribe.
@@ -413,6 +426,12 @@ func (sub *Subscription) advanceFromResult(result ReadResult) bool {
 		hasNext = true
 	} else if len(result.Entries) != 0 {
 		next = result.Entries[len(result.Entries)-1].Cursor
+		hasNext = true
+	} else if result.EvictedThrough != nil {
+		// An empty ring can report a stale read without a Next cursor. The
+		// evicted watermark is nevertheless consumed and is the only safe
+		// cursor to expose to callers.
+		next = *result.EvictedThrough
 		hasNext = true
 	}
 	if !hasNext {

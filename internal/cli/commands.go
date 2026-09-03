@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	"hum/internal/app"
 	"hum/internal/daemon"
@@ -83,6 +85,21 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return logsCommand(ctx, cmd, version, buildTime, writer, errWriter)
+			},
+		},
+		{
+			Name:        "wait",
+			Usage:       "wait for matching output or process exit",
+			ArgsUsage:   "NAME",
+			Description: "Wait without --match returns when the process exits; waiting for declared readiness uses hum start <name>.",
+			Flags: []urfavecli.Flag{
+				&urfavecli.Uint64Flag{Name: "after-cursor", Usage: "search entries after this cursor"},
+				&urfavecli.StringFlag{Name: "match", Usage: "wait for output matching this regular expression"},
+				&urfavecli.StringFlag{Name: "timeout", Usage: "maximum wait duration (default 30s)"},
+				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+			},
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return waitCommand(ctx, cmd, version, buildTime, writer)
 			},
 		},
 		{
@@ -499,6 +516,103 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	return writeCursorTrailer(errWriter, result)
+}
+
+const defaultWaitTimeout = 30 * time.Second
+
+func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	args := cmd.Args().Slice()
+	if len(args) == 0 {
+		return errors.New("wait requires a process name")
+	}
+	if len(args) != 1 {
+		return errors.New("wait accepts exactly one process name")
+	}
+	name := args[0]
+
+	var after *protocol.Cursor
+	if cmd.IsSet("after-cursor") {
+		cursor := protocol.Cursor(cmd.Uint64("after-cursor"))
+		after = &cursor
+	}
+
+	match := cmd.String("match")
+	if cmd.IsSet("match") {
+		if _, err := regexp.Compile(match); err != nil {
+			return fmt.Errorf("match must be a valid regular expression: %w", err)
+		}
+	}
+
+	timeout := defaultWaitTimeout
+	if cmd.IsSet("timeout") {
+		parsed, err := time.ParseDuration(cmd.String("timeout"))
+		if err != nil {
+			return fmt.Errorf("timeout must be a valid duration: %w", err)
+		}
+		if parsed <= 0 {
+			return errors.New("timeout must be positive")
+		}
+		timeout = parsed
+	}
+	timeoutMS := int64(timeout / time.Millisecond)
+	if timeoutMS <= 0 {
+		return errors.New("timeout must be at least 1ms")
+	}
+
+	ctx = nonNilContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, cfg)
+	if err != nil {
+		if client != nil {
+			_ = client.Close()
+		}
+		if daemonUnavailable(err) {
+			return newUserFacingError(logsUnavailableMessage)
+		}
+		return err
+	}
+	defer client.Close()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
+	result, err := client.Wait(ctx, daemon.WaitRequest{
+		Name:      name,
+		Cwd:       cwd,
+		After:     after,
+		Match:     match,
+		TimeoutMS: timeoutMS,
+	})
+	if err != nil {
+		return err
+	}
+	if cmd.Bool("json") {
+		if err := encodeJSON(writer, waitJSONFor(result)); err != nil {
+			return err
+		}
+	} else if err := renderWaitHuman(writer, result); err != nil {
+		return err
+	}
+
+	switch result.Outcome {
+	case app.WaitMatched:
+		return nil
+	case app.WaitExited:
+		if cmd.IsSet("match") {
+			return urfavecli.Exit("", 3)
+		}
+		return nil
+	case app.WaitTimedOut:
+		return urfavecli.Exit("", 2)
+	default:
+		return fmt.Errorf("wait returned unknown outcome %q", result.Outcome)
+	}
 }
 
 func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {

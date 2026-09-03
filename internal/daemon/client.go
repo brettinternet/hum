@@ -38,6 +38,7 @@ type ListRequest = protocol.ListRequest
 type GetRequest = protocol.GetRequest
 type OutputRequest = protocol.OutputRequest
 type FollowRequest = protocol.FollowRequest
+type WaitRequest = protocol.WaitRequest
 type SignalRequest = protocol.SignalRequest
 type StopRequest = protocol.StopRequest
 type ShutdownRequest = protocol.ShutdownRequest
@@ -208,6 +209,44 @@ func (c *Client) Output(ctx context.Context, req OutputRequest) (output.ReadResu
 		return output.ReadResult{}, err
 	}
 	return outputResultFromWire(response), nil
+}
+
+// Wait opens a fresh connection when this client was dialed from a socket, so
+// independent waits do not block control requests or one another.
+func (c *Client) Wait(ctx context.Context, req WaitRequest) (app.WaitResult, error) {
+	if c.socket != "" {
+		waiter, err := Dial(ctx, c.socket)
+		if err != nil {
+			if waiter != nil {
+				_ = waiter.Close()
+			}
+			return app.WaitResult{}, err
+		}
+		defer waiter.Close()
+		return waiter.wait(ctx, req)
+	}
+	return c.wait(ctx, req)
+}
+
+func (c *Client) wait(ctx context.Context, req WaitRequest) (app.WaitResult, error) {
+	response, err := c.roundTrip(ctx, wireRequestFromProtocolWait(&req))
+	if err != nil {
+		return app.WaitResult{}, err
+	}
+	if response.Cursor == nil {
+		return app.WaitResult{}, errors.New("daemon wait response omitted cursor")
+	}
+	outcome := app.WaitOutcome(response.Outcome)
+	switch outcome {
+	case app.WaitMatched, app.WaitExited, app.WaitTimedOut:
+	default:
+		return app.WaitResult{}, fmt.Errorf("daemon wait response has unknown outcome %q", response.Outcome)
+	}
+	result := app.WaitResult{Outcome: outcome, Cursor: output.Cursor(*response.Cursor)}
+	if response.Exit != nil {
+		result.Exit = &processResult{ExitCode: response.Exit.Code, Err: errorFromString(response.Exit.Error), ExitedAt: response.Exit.Time}
+	}
+	return result, nil
 }
 
 // Follow opens a fresh connection, preserving independent follower cursors
@@ -437,6 +476,8 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 		value = protocol.OutputRequest{Op: protocol.OpOutput, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	case "follow":
 		value = protocol.FollowRequest{Op: protocol.OpFollow, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+	case "wait":
+		value = protocol.WaitRequest{Op: protocol.OpWait, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), Match: req.Match, TimeoutMS: req.TimeoutMS}
 	case "signal":
 		value = protocol.SignalRequest{Op: protocol.OpSignal, Name: req.Name, Cwd: req.Cwd, Signal: req.Signal}
 	case "stop":

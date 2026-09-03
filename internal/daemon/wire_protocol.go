@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"hum/internal/app"
 	"hum/internal/output"
 	"hum/internal/protocol"
 )
@@ -41,6 +42,11 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 			return wireRequest{}, errors.New("follow request is missing payload")
 		}
 		wire = wireRequestFromProtocolOutput(string(req.Op), req.Follow.Name, req.Follow.Cwd, req.Follow.After, req.Follow.Tail, req.Follow.Stream, req.Follow.Match, req.Follow.MaxEntries, req.Follow.MaxBytes)
+	case protocol.OpWait:
+		if req.Wait == nil {
+			return wireRequest{}, errors.New("wait request is missing payload")
+		}
+		wire = wireRequestFromProtocolWait(req.Wait)
 	case protocol.OpSignal:
 		if req.Signal == nil {
 			return wireRequest{}, errors.New("signal request is missing payload")
@@ -66,6 +72,15 @@ func wireRequestFromProtocolOutput(op, name, cwd string, after *protocol.Cursor,
 	wire := wireRequest{Op: op, Name: name, Cwd: cwd, Tail: tail, Stream: string(stream), Match: match, MaxEntries: maxEntries, MaxBytes: maxBytes}
 	if after != nil {
 		value := uint64(*after)
+		wire.After = &value
+	}
+	return wire
+}
+
+func wireRequestFromProtocolWait(req *protocol.WaitRequest) wireRequest {
+	wire := wireRequest{Op: string(protocol.OpWait), Name: req.Name, Cwd: req.Cwd, Match: req.Match, TimeoutMS: req.TimeoutMS}
+	if req.After != nil {
+		value := uint64(*req.After)
 		wire.After = &value
 	}
 	return wire
@@ -98,6 +113,8 @@ func writeProtocolResponse(encoder *protocol.Encoder, response wireResponse) err
 		return encoder.EncodeResponse(protocol.SignalResponse{Op: protocol.OpSignal, OK: response.OK})
 	case "stop":
 		return encoder.EncodeResponse(protocol.StopResponse{Op: protocol.OpStop, OK: response.OK, Process: optionalProtocolProcess(response.Process)})
+	case "wait":
+		return encoder.EncodeResponse(protocolWaitResponseFromWire(response))
 	case "shutdown":
 		return encoder.EncodeResponse(protocol.ShutdownResponse{Op: protocol.OpShutdown, OK: response.OK, Processes: protocolProcessesFromWire(response.Processes)})
 	case "event":
@@ -216,13 +233,34 @@ func protocolCursorFromUint64(value *uint64) *protocol.Cursor {
 func protocolStreamEventFromWire(response wireResponse) protocol.StreamEvent {
 	event := protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventType(response.Type), Name: response.Name, Entries: protocolEntriesFromWire(response.Entries), Next: protocolCursorFromUint64(response.Next), Oldest: protocolCursorFromUint64(response.Oldest), Latest: protocolCursorFromUint64(response.Latest), EvictedThrough: protocolCursorFromUint64(response.EvictedThrough), Truncated: response.Truncated, More: response.More, Cursor: protocolCursorFromUint64(response.Cursor), Ready: response.Ready}
 	if response.Exit != nil {
-		event.Exit = &protocol.Exit{Code: response.Exit.Code, Time: response.Exit.Time}
+		event.Exit = &protocol.Exit{Code: response.Exit.Code, Time: response.Exit.Time, Error: response.Exit.Error}
 		event.Time = response.Exit.Time
 	}
 	if response.Error != nil {
 		event.Error = wireErrorToProtocol(response.Error)
 	}
 	return event
+}
+
+func protocolWaitResponseFromWire(response wireResponse) protocol.WaitResponse {
+	var cursor protocol.Cursor
+	if response.Cursor != nil {
+		cursor = protocol.Cursor(*response.Cursor)
+	}
+	var exit *protocol.Exit
+	if response.Exit != nil {
+		exit = &protocol.Exit{Code: response.Exit.Code, Time: response.Exit.Time, Error: response.Exit.Error}
+	}
+	return protocol.WaitResponse{Op: protocol.OpWait, OK: response.OK, Outcome: protocol.WaitOutcome(response.Outcome), Cursor: cursor, Exit: exit, Error: wireErrorToProtocol(response.Error)}
+}
+
+func wireResponseFromWait(result app.WaitResult) wireResponse {
+	cursor := uint64(result.Cursor)
+	response := wireResponse{Op: string(protocol.OpWait), OK: true, Outcome: string(result.Outcome), Cursor: &cursor}
+	if result.Exit != nil {
+		response.Exit = &wireExit{Code: result.Exit.ExitCode, Error: errorString(result.Exit.Err), Time: result.Exit.ExitedAt}
+	}
+	return response
 }
 
 func wireResponseFromRead(op string, result output.ReadResult) wireResponse {

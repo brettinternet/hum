@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -53,6 +54,32 @@ type Process struct {
 	ExitCode     int
 	ExitedAt     time.Time
 	RestartCount int
+}
+
+// WaitOutcome describes the terminal state observed by Wait.
+type WaitOutcome string
+
+const (
+	WaitMatched  WaitOutcome = "matched"
+	WaitExited   WaitOutcome = "exited"
+	WaitTimedOut WaitOutcome = "timed_out"
+)
+
+// WaitOptions controls the output and lifecycle condition observed by Wait.
+// After is strict-exclusive. A nil After starts at the process launch cursor,
+// with launch cursor zero retaining the initial-cursor rule that includes
+// output cursor zero.
+type WaitOptions struct {
+	After *output.Cursor
+	Match *regexp.Regexp
+}
+
+// WaitResult is the stable result of a Wait call. Exit is populated when the
+// process exits before a matching entry is observed.
+type WaitResult struct {
+	Outcome WaitOutcome
+	Cursor  output.Cursor
+	Exit    *process.Result
 }
 
 // Options configures a Supervisor. A zero OutputLimits value delegates to the
@@ -594,6 +621,79 @@ func (s *Supervisor) Subscribe(cwd, name string, opts output.ReadOptions) (*outp
 	sub := store.Subscribe(opts)
 	sub.ReplayLatestExitSince(start)
 	return sub, nil
+}
+
+// Wait blocks until output matching opts.Match is observed, the process exits,
+// or ctx reaches its deadline. It consumes a private subscription from the
+// process launch cursor by default, so concurrent waiters do not interfere.
+// A nil Match waits for process exit after draining output through its exit
+// watermark.
+func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOptions) (WaitResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	rec, err := s.lookup(cwd, name)
+	if err != nil {
+		return WaitResult{}, err
+	}
+
+	// Capture one process incarnation under the registry lock. The record may
+	// be evicted or replaced after this point; retaining its store and launch
+	// metadata keeps this wait tied to the looked-up incarnation.
+	s.mu.RLock()
+	if s.records[rec.key] != rec || rec.store == nil {
+		root, processName := rec.root, rec.name
+		s.mu.RUnlock()
+		return WaitResult{}, &NotFoundError{Root: root, Name: processName}
+	}
+	store, start, launchCursor := rec.store, rec.start, rec.cursor
+	s.mu.RUnlock()
+
+	after := opts.After
+	if after == nil && launchCursor != 0 {
+		after = &launchCursor
+	}
+	sub := store.Subscribe(output.ReadOptions{After: after, Match: opts.Match, MaxBytes: s.maxLineBytes})
+	sub.ReplayLatestExitSince(start)
+	defer sub.Close()
+
+	for {
+		event, err := sub.Next(ctx)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return WaitResult{Outcome: WaitTimedOut, Cursor: sub.Cursor()}, nil
+			}
+			return WaitResult{}, err
+		}
+		if event.Read != nil {
+			// A filtered read can consume metadata and nonmatching entries
+			// without yielding an entry. Only an actual matching entry ends
+			// the wait.
+			if opts.Match != nil && len(event.Read.Entries) != 0 {
+				return WaitResult{Outcome: WaitMatched, Cursor: sub.Cursor()}, nil
+			}
+			continue
+		}
+		if event.Exit == nil {
+			continue
+		}
+
+		// NotifyExit wakes the subscription before Supervisor.reconcile closes
+		// rec.done. Prefer the reconciled result when it is already available,
+		// and otherwise preserve the exact exit code/time from the event.
+		exitResult := process.Result{ExitCode: event.Exit.Code, ExitedAt: event.Exit.Time}
+		s.mu.RLock()
+		if rec.terminal {
+			exitResult = rec.result
+		}
+		s.mu.RUnlock()
+		return WaitResult{
+			Outcome: WaitExited,
+			Cursor:  sub.Cursor(),
+			Exit:    &exitResult,
+		}, nil
+	}
 }
 
 // Signal forwards sig to the process group. Client cancellation is not

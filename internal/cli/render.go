@@ -73,6 +73,26 @@ type shutdownResult struct {
 	Status string `json:"status"`
 }
 
+func waitJSONFor(result app.WaitResult) protocol.WaitResponse {
+	response := protocol.WaitResponse{
+		Op:      protocol.OpWait,
+		OK:      true,
+		Outcome: protocol.WaitOutcome(result.Outcome),
+		Cursor:  protocol.Cursor(result.Cursor),
+	}
+	if result.Exit != nil {
+		exit := protocol.Exit{
+			Code: result.Exit.ExitCode,
+			Time: result.Exit.ExitedAt,
+		}
+		if result.Exit.Err != nil {
+			exit.Error = result.Exit.Err.Error()
+		}
+		response.Exit = &exit
+	}
+	return response
+}
+
 func encodeJSON(w io.Writer, value any) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetEscapeHTML(false)
@@ -231,6 +251,7 @@ func renderListHuman(w io.Writer, processes []app.Process, all bool) error {
 			}
 			continue
 		}
+
 		if _, err := fmt.Fprintf(w, "%s\t%s\tPID %d\t%s\n", process.Name, process.State, process.PID, argv); err != nil {
 			return err
 		}
@@ -250,6 +271,17 @@ func renderStopHuman(w io.Writer, result stopResult) error {
 		_, err := fmt.Fprintf(w, "%s error: %s\n", result.Name, result.Message)
 		return err
 	}
+}
+
+func renderWaitHuman(w io.Writer, result app.WaitResult) error {
+	if _, err := fmt.Fprintf(w, "outcome: %s\ncursor: %d\n", result.Outcome, result.Cursor); err != nil {
+		return err
+	}
+	if result.Exit == nil {
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "exit_code: %d\n", result.Exit.ExitCode)
+	return err
 }
 
 func renderStatusHuman(w io.Writer, process app.Process) error {

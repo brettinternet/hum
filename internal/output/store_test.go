@@ -59,6 +59,50 @@ func TestStatusNextCursorTracksSequenceWithoutMutatingRing(t *testing.T) {
 		t.Fatalf("next cursor after failed append = %d, want 3", got)
 	}
 }
+func TestSubscriptionCursorTracksConsumedOutputWait(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 1024, DefaultReadEntries: 16, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := store.Subscribe(ReadOptions{})
+	defer sub.Close()
+
+	if got := sub.Cursor(); got != 0 {
+		t.Fatalf("initial subscription cursor = %d, want 0", got)
+	}
+	if _, err := store.Append(Stdout, time.Unix(1, 0), "first\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(Stdout, time.Unix(2, 0), "second\n"); err != nil {
+		t.Fatal(err)
+	}
+	event := nextStoreEvent(t, sub)
+	if event.Read == nil || len(event.Read.Entries) != 2 {
+		t.Fatalf("subscription output event = %#v, want two entries", event)
+	}
+	if got := sub.Cursor(); got != 1 {
+		t.Fatalf("subscription cursor after read = %d, want 1", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	nextDone := make(chan struct{})
+	go func() {
+		_, _ = sub.Next(ctx)
+		close(nextDone)
+	}()
+	if _, err := store.Append(Stderr, time.Unix(3, 0), "third\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-nextDone:
+	case <-time.After(time.Second):
+		t.Fatal("subscription did not consume appended output")
+	}
+	if got := sub.Cursor(); got != 2 {
+		t.Fatalf("concurrent cursor observation = %d, want 2", got)
+	}
+}
 
 func TestFollowerEviction(t *testing.T) {
 	store, err := NewStore(Limits{RetainedBytes: 4, DefaultReadEntries: 100, DefaultReadBytes: 100})
