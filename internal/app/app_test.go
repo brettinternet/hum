@@ -1,0 +1,604 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"hum/internal/output"
+	"hum/internal/process"
+)
+
+func testSupervisor(t *testing.T, opts Options) *Supervisor {
+	t.Helper()
+	s, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = s.Shutdown(ctx)
+	})
+	return s
+}
+
+func makeProject(t *testing.T, gitFile bool) string {
+	t.Helper()
+	root := t.TempDir()
+	if gitFile {
+		if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: ../.git/worktree\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func startShell(s *Supervisor, root, name, script string) (Process, error) {
+	return s.Start(StartRequest{
+		Name: name,
+		Cwd:  root,
+		Argv: []string{"/bin/sh", "-c", script},
+		Env:  []string{"HUM_PRIVATE=secret", "PATH=/usr/bin:/bin"},
+	})
+}
+
+type esrchChild struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *esrchChild) PID() int  { return 1234 }
+func (c *esrchChild) PGID() int { return 1234 }
+func (c *esrchChild) Done() <-chan struct{} {
+	return c.done
+}
+func (c *esrchChild) Wait() process.Result {
+	<-c.done
+	return process.Result{ExitCode: -1, ExitedAt: time.Now()}
+}
+func (c *esrchChild) exit() {
+	c.once.Do(func() { close(c.done) })
+}
+func (c *esrchChild) Signal(os.Signal) error {
+	c.exit()
+	return syscall.ESRCH
+}
+
+func waitExited(t *testing.T, s *Supervisor, cwd, name string) Process {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		model, err := s.Get(cwd, name)
+		if err == nil && model.State == StateExited {
+			return model
+		}
+		time.Sleep(time.Millisecond)
+	}
+	model, err := s.Get(cwd, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("process %q remained %s", name, model.State)
+	return Process{}
+}
+
+func recordDone(t *testing.T, s *Supervisor, root, name string) <-chan struct{} {
+	t.Helper()
+	s.mu.RLock()
+	rec := s.records[keyFor(root, name)]
+	s.mu.RUnlock()
+	if rec == nil {
+		t.Fatalf("record %s/%s missing", root, name)
+	}
+	return rec.done
+}
+
+func waitForOutput(t *testing.T, subscription *output.Subscription, text string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for {
+		event, err := subscription.Next(ctx)
+		if err != nil {
+			t.Fatalf("wait for output %q: %v", text, err)
+		}
+		if event.Exit != nil {
+			t.Fatalf("process exited before output %q", text)
+		}
+		for _, entry := range event.Read.Entries {
+			if strings.Contains(entry.Text, text) {
+				return
+			}
+		}
+	}
+}
+
+type timedChild struct {
+	pid    int
+	done   chan struct{}
+	once   sync.Once
+	result process.Result
+}
+
+func (c *timedChild) PID() int  { return c.pid }
+func (c *timedChild) PGID() int { return c.pid }
+func (c *timedChild) Done() <-chan struct{} {
+	return c.done
+}
+func (c *timedChild) Wait() process.Result {
+	<-c.done
+	return c.result
+}
+func (c *timedChild) release() {
+	c.once.Do(func() { close(c.done) })
+}
+func (c *timedChild) Signal(os.Signal) error {
+	c.release()
+	return os.ErrProcessDone
+}
+
+func TestProjectScopedNames(t *testing.T) {
+	rootA := makeProject(t, false)
+	rootB := makeProject(t, true)
+	nested := filepath.Join(rootA, "nested", "leaf")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gotRoot, err := DiscoverProjectRoot(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != rootA {
+		t.Fatalf("nearest git directory root = %q, want %q", gotRoot, rootA)
+	}
+	gotRoot, err = DiscoverProjectRoot(filepath.Join(rootB, "child"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != rootB {
+		t.Fatalf("git worktree file root = %q, want %q", gotRoot, rootB)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(rootA, alias); err != nil {
+		t.Fatal(err)
+	}
+	gotRoot, err = DiscoverProjectRoot(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != filepath.Clean(alias) {
+		t.Fatalf("symlinked project root = %q, want cleaned lexical path %q", gotRoot, filepath.Clean(alias))
+	}
+
+	fallback := t.TempDir()
+	fallbackCwd := filepath.Join(fallback, "nested")
+	if err := os.Mkdir(fallbackCwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gotRoot, err = DiscoverProjectRoot(filepath.Join(fallbackCwd, "."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != fallbackCwd {
+		t.Fatalf("cwd fallback root = %q, want %q", gotRoot, fallbackCwd)
+	}
+
+	s := testSupervisor(t, Options{StopGrace: 20 * time.Millisecond})
+	first, err := startShell(s, rootA, "api", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = startShell(s, nested, "api", "sleep 30")
+	if !errors.Is(err, ErrNameInUse) {
+		t.Fatalf("same-root duplicate error = %v, want ErrNameInUse", err)
+	}
+	if _, err = startShell(s, rootB, "api", "sleep 30"); err != nil {
+		t.Fatalf("same name in isolated root: %v", err)
+	}
+	if first.Root != rootA || first.PID <= 0 || first.PGID != first.PID {
+		t.Fatalf("first process identity = %#v", first)
+	}
+	_, err = startShell(s, rootA, "api", "true")
+	if err == nil {
+		t.Fatal("duplicate running name unexpectedly succeeded")
+	}
+	var duplicate *DuplicateError
+	if !errors.As(err, &duplicate) {
+		t.Fatalf("duplicate error = %v, want DuplicateError", err)
+	}
+	if duplicate.PID != first.PID || !strings.Contains(err.Error(), strconv.Itoa(first.PID)) {
+		t.Fatalf("duplicate error = %v, want PID %d", err, first.PID)
+	}
+	for _, unsafe := range []string{"", ".api", "-api", "api/name", "api name", strings.Repeat("a", 65)} {
+		if _, err := startShell(s, rootA, unsafe, "true"); !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("name %q error = %v, want ErrInvalidName", unsafe, err)
+		}
+	}
+}
+
+func TestStopProcessTree(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StopGrace: 25 * time.Millisecond})
+	model, err := startShell(s, root, "tree", "trap '' TERM; sleep 30 & wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if err := s.Stop(context.Background(), root, "tree"); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("bounded stop took %s", elapsed)
+	}
+	stopped, err := s.Get(root, "tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.State != StateExited || stopped.Exit == nil {
+		t.Fatalf("stopped model = %#v", stopped)
+	}
+	if stopped.ExitCode != -1 {
+		t.Fatalf("stopped exit code = %d, want signal status -1 (started as %d)", stopped.ExitCode, model.PID)
+	}
+}
+
+func TestStopTreatsESRCHAsExited(t *testing.T) {
+	root := makeProject(t, false)
+	child := &esrchChild{done: make(chan struct{})}
+	s := testSupervisor(t, Options{
+		StartProcess: func(process.Spec) (Child, error) {
+			return child, nil
+		},
+	})
+	if _, err := s.Start(StartRequest{
+		Name: "gone",
+		Cwd:  root,
+		Argv: []string{"/bin/true"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(context.Background(), root, "gone"); err != nil {
+		t.Fatalf("stop after ESRCH = %v, want nil", err)
+	}
+	model, err := s.Get(root, "gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.State != StateExited {
+		t.Fatalf("ESRCH model state = %s, want exited", model.State)
+	}
+}
+
+func TestShutdownProcessTrees(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StopGrace: 25 * time.Millisecond})
+	for _, name := range []string{"one", "two", "three"} {
+		if _, err := startShell(s, root, name, "trap '' TERM; sleep 30 & wait"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.List(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("shutdown list length = %d, want 3", len(items))
+	}
+	for _, item := range items {
+		if item.State != StateExited {
+			t.Errorf("%s state = %s, want exited", item.Name, item.State)
+		}
+	}
+}
+
+func TestShutdownCompletesAfterCanceledContext(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StopGrace: 10 * time.Millisecond})
+	if _, err := startShell(s, root, "stubborn", "trap '' TERM; sleep 30 & wait"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.Shutdown(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled shutdown error = %v, want context.Canceled after cleanup", err)
+	}
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("subsequent shutdown after canceled cleanup = %v, want nil", err)
+	}
+	items, err := s.List(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Name != "stubborn" || items[0].State != StateExited {
+		t.Fatalf("canceled shutdown records = %#v, want one exited record", items)
+	}
+}
+
+func TestReadModelsExcludeEnvironment(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StopGrace: 10 * time.Millisecond})
+	request := StartRequest{
+		Name: "secret",
+		Cwd:  root,
+		Argv: []string{"/bin/sh", "-c", "sleep 30"},
+		Env:  []string{"TOKEN=do-not-return"},
+	}
+	model, err := s.Start(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Env[0] = "TOKEN=mutated"
+	request.Argv[2] = "true"
+	if model.Argv[2] != "sleep 30" {
+		t.Fatalf("start model argv changed through request mutation: %#v", model.Argv)
+	}
+	model.Argv[2] = "changed externally"
+	got, err := s.Get(root, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Argv[2] != "sleep 30" {
+		t.Fatalf("stored argv changed through read-model mutation: %#v", got.Argv)
+	}
+	typ := reflect.TypeOf(Process{})
+	for _, field := range []string{"Env", "Environment", "Output", "Store"} {
+		if _, ok := typ.FieldByName(field); ok {
+			t.Fatalf("read model exposes private field %s", field)
+		}
+	}
+	if _, err := s.Output(root, "secret"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEmptyEnvironmentPassedToChild(t *testing.T) {
+	root := makeProject(t, false)
+	type observation struct {
+		nilEnv bool
+		length int
+	}
+	var observed []observation
+	s := testSupervisor(t, Options{
+		StartProcess: func(spec process.Spec) (Child, error) {
+			observed = append(observed, observation{nilEnv: spec.Env == nil, length: len(spec.Env)})
+			child := &esrchChild{done: make(chan struct{})}
+			child.exit()
+			return child, nil
+		},
+	})
+	for _, item := range []struct {
+		name string
+		env  []string
+	}{
+		{name: "nil-env", env: nil},
+		{name: "empty-env", env: []string{}},
+	} {
+		if _, err := s.Start(StartRequest{
+			Name: item.name,
+			Cwd:  root,
+			Argv: []string{"/bin/true"},
+			Env:  item.env,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(observed) != 2 {
+		t.Fatalf("child launch observations = %d, want 2", len(observed))
+	}
+	for i, got := range observed {
+		if got.nilEnv || got.length != 0 {
+			t.Errorf("child launch %d env = %#v, want non-nil empty environment", i, got)
+		}
+	}
+}
+
+func TestCompletedRecordRetention(t *testing.T) {
+	root := makeProject(t, false)
+	otherRoot := makeProject(t, false)
+	s := testSupervisor(t, Options{
+		CompletedLimit: 2,
+		StopGrace:      10 * time.Millisecond,
+		OutputLimits: output.Limits{
+			RetainedBytes:      1024,
+			DefaultReadEntries: 16,
+			DefaultReadBytes:   1024,
+		},
+	})
+	active, err := startShell(s, root, "active", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var oldest *record
+	var oldestStore *output.Store
+	for i, text := range []string{"first", "second", "third"} {
+		name := fmt.Sprintf("done%d", i)
+		launchRoot := root
+		if i == 1 {
+			launchRoot = otherRoot
+		}
+		if _, err := startShell(s, launchRoot, name, "printf '"+text+"'"); err != nil {
+			t.Fatal(err)
+		}
+		waitExited(t, s, launchRoot, name)
+		if i != 0 {
+			continue
+		}
+		key := keyFor(launchRoot, name)
+		s.mu.RLock()
+		oldest = s.records[key]
+		if oldest == nil || len(oldest.env) == 0 || oldest.store == nil {
+			s.mu.RUnlock()
+			t.Fatalf("completed record before eviction = %#v, want environment and output retained", oldest)
+		}
+		s.mu.RUnlock()
+		oldestStore, err = s.Output(launchRoot, name)
+		if err != nil {
+			t.Fatalf("completed output before eviction: %v", err)
+		}
+		result, err := oldestStore.Read(output.ReadOptions{})
+		if err != nil || len(result.Entries) == 0 {
+			t.Fatalf("completed output before eviction = %#v, err %v", result, err)
+		}
+	}
+	if _, err := s.Get(root, "done0"); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("oldest completed lookup error = %v, want ErrProcessNotFound", err)
+	}
+	if _, err := s.Output(root, "done0"); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("evicted output lookup error = %v, want ErrProcessNotFound", err)
+	}
+	for _, item := range []struct {
+		root string
+		name string
+	}{
+		{root: otherRoot, name: "done1"},
+		{root: root, name: "done2"},
+	} {
+		model, err := s.Get(item.root, item.name)
+		if err != nil || model.State != StateExited {
+			t.Fatalf("retained %s = %#v, err %v", item.name, model, err)
+		}
+	}
+	if got, err := s.Get(root, "active"); err != nil || got.State != StateRunning {
+		t.Fatalf("active record after completed eviction = %#v, err %v", got, err)
+	}
+	if activeModel, err := s.Get(root, "active"); err != nil || activeModel.PID != active.PID {
+		t.Fatalf("active identity after eviction = %#v, err %v", activeModel, err)
+	}
+	s.mu.RLock()
+	evicted := s.records[keyFor(root, "done0")]
+	clearedEnv := oldest != nil && oldest.env == nil
+	clearedStore := oldest != nil && oldest.store == nil
+	s.mu.RUnlock()
+	if evicted != nil {
+		t.Fatalf("evicted record still registered: %#v", evicted)
+	}
+	if !clearedEnv || !clearedStore {
+		t.Fatalf("evicted record references: env-cleared=%t store-cleared=%t", clearedEnv, clearedStore)
+	}
+}
+
+func TestCompletedRetentionUsesExitTime(t *testing.T) {
+	roots := []string{
+		makeProject(t, false),
+		makeProject(t, false),
+		makeProject(t, false),
+	}
+	children := map[string]*timedChild{
+		"older": {
+			pid:    2001,
+			done:   make(chan struct{}),
+			result: process.Result{ExitCode: 0, ExitedAt: time.Unix(1, 0)},
+		},
+		"newer": {
+			pid:    2002,
+			done:   make(chan struct{}),
+			result: process.Result{ExitCode: 0, ExitedAt: time.Unix(3, 0)},
+		},
+		"kept": {
+			pid:    2003,
+			done:   make(chan struct{}),
+			result: process.Result{ExitCode: 0, ExitedAt: time.Unix(2, 0)},
+		},
+	}
+	s := testSupervisor(t, Options{
+		CompletedLimit: 2,
+		StartProcess: func(spec process.Spec) (Child, error) {
+			name := spec.Argv[1]
+			child := children[name]
+			if child == nil {
+				return nil, fmt.Errorf("unknown test child %q", name)
+			}
+			return child, nil
+		},
+	})
+	launches := []struct {
+		root string
+		name string
+	}{
+		{root: roots[0], name: "older"},
+		{root: roots[1], name: "newer"},
+		{root: roots[2], name: "kept"},
+	}
+	done := make(map[string]<-chan struct{}, len(launches))
+	for _, launch := range launches {
+		if _, err := s.Start(StartRequest{
+			Name: launch.name,
+			Cwd:  launch.root,
+			Argv: []string{"/bin/true", launch.name},
+			Env:  []string{"TOKEN=retained"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		done[launch.name] = recordDone(t, s, launch.root, launch.name)
+	}
+	children["newer"].release()
+	<-done["newer"]
+	children["kept"].release()
+	<-done["kept"]
+	children["older"].release()
+	<-done["older"]
+
+	s.mu.RLock()
+	_, oldPresent := s.records[keyFor(roots[0], "older")]
+	s.mu.RUnlock()
+	if oldPresent {
+		t.Fatal("completed record with oldest exit time was retained")
+	}
+	for _, launch := range launches[1:] {
+		model, err := s.Get(launch.root, launch.name)
+		if err != nil || model.State != StateExited {
+			t.Fatalf("retained %s = %#v, err %v", launch.name, model, err)
+		}
+	}
+}
+
+func TestSignalForwardsInterrupt(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StopGrace: 20 * time.Millisecond})
+	if _, err := startShell(s, root, "interrupt", "trap 'exit 17' INT; printf 'interrupt-ready\\n'; while :; do :; done"); err != nil {
+		t.Fatal(err)
+	}
+	done := recordDone(t, s, root, "interrupt")
+
+	store, err := s.Output(root, "interrupt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := store.Subscribe(output.ReadOptions{})
+	waitForOutput(t, subscription, "interrupt-ready\n")
+	if err := s.Signal(root, "interrupt", syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("process remained running after SIGINT")
+	}
+	model, err := s.Get(root, "interrupt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.ExitCode != 17 {
+		t.Fatalf("SIGINT exit code = %d, want 17", model.ExitCode)
+	}
+}
