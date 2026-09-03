@@ -1,10 +1,11 @@
 ---
 id: HUM-016
 title: Discover a conventional dev entrypoint without hum.yaml
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-02 20:42'
-updated_date: '2026-09-03 03:18'
+updated_date: '2026-09-03 23:11'
 labels:
   - cli
   - config
@@ -44,20 +45,50 @@ Modified-file contract: internal/project/, internal/cli/, integration/, internal
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/project -run TestResolveExplicit -count=1` exits 0 and proves valid, empty, and invalid `hum.yaml` are authoritative and never fall back to discovery.
-- [ ] #2 `go test ./internal/project -run TestDiscoverTaskRunnerDev -count=1` exits 0 and proves exact root Mise, Task, Just, and conservative literal Make `dev` declarations normalize to their documented argv and source metadata without executing recipe bodies; unavailable command-backed runners are skipped and malformed introspection fails visibly.
-- [ ] #3 `go test ./internal/project -run TestDiscoverEcosystemDev -count=1` exits 0 and proves exact package, Deno, and Composer `dev` entries, executable `bin/dev`, and confirmed Mix `phx.server` normalize to documented argv; package-manager selection honors `packageManager`, recognizes every supported lockfile family, rejects conflicts, and no detector starts a development command.
-- [ ] #4 `go test ./internal/project -run TestDiscoveryAmbiguity -count=1` exits 0 and proves all supported sources are collected before selection, exactly one candidate succeeds, multiple candidates fail while naming every source, and no candidate fails while naming `hum.yaml` plus the supported conventions.
-- [ ] #5 `go test ./integration -run TestZeroConfigDiscovery -count=1` exits 0 across representative task-runner, package, Mix/Phoenix, and executable `bin/dev` fixtures and proves one unambiguous root entrypoint starts exactly once, remains idempotent across start/run/restart/list, and exposes no underlying-command requirement to the caller.
-- [ ] #6 `go test ./internal/cli -run 'TestDiscoveredUp|TestDiscoveredStart|TestDiscoveredList|TestDiscoveryErrors' -count=1` exits 0 and proves up/start/run-without-argv/restart/list consume the same inferred `dev` definition, report `running_unverified` immediately under the default wait, echo source and argv on launch and in list, never report readiness, and do not start a daemon for resolution errors.
+- [x] #1 `go test ./internal/project -run TestResolveExplicit -count=1` exits 0 and proves valid, empty, and invalid `hum.yaml` are authoritative and never fall back to discovery.
+- [x] #2 `go test ./internal/project -run TestDiscoverTaskRunnerDev -count=1` exits 0 and proves exact root Mise, Task, Just, and conservative literal Make `dev` declarations normalize to their documented argv and source metadata without executing recipe bodies; unavailable command-backed runners are skipped and malformed introspection fails visibly.
+- [x] #3 `go test ./internal/project -run TestDiscoverEcosystemDev -count=1` exits 0 and proves exact package, Deno, and Composer `dev` entries, executable `bin/dev`, and confirmed Mix `phx.server` normalize to documented argv; package-manager selection honors `packageManager`, recognizes every supported lockfile family, rejects conflicts, and no detector starts a development command.
+- [x] #4 `go test ./internal/project -run TestDiscoveryAmbiguity -count=1` exits 0 and proves all supported sources are collected before selection, exactly one candidate succeeds, multiple candidates fail while naming every source, and no candidate fails while naming `hum.yaml` plus the supported conventions.
+- [x] #5 `go test ./integration -run TestZeroConfigDiscovery -count=1` exits 0 across representative task-runner, package, Mix/Phoenix, and executable `bin/dev` fixtures and proves one unambiguous root entrypoint starts exactly once, remains idempotent across start/run/restart/list, and exposes no underlying-command requirement to the caller.
+- [x] #6 `go test ./internal/cli -run 'TestDiscoveredUp|TestDiscoveredStart|TestDiscoveredList|TestDiscoveryErrors' -count=1` exits 0 and proves up/start/run-without-argv/restart/list consume the same inferred `dev` definition, report `running_unverified` immediately under the default wait, echo source and argv on launch and in list, never report readiness, and do not start a daemon for resolution errors.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC#1 PASS — `go test ./internal/project -run TestResolveExplicit -count=1` exited 0 (independent verifier: 0.426s).
+AC#2 PASS — `go test ./internal/project -run TestDiscoverTaskRunnerDev -count=1` exited 0 (independent verifier: 0.249s).
+AC#3 PASS — `go test ./internal/project -run TestDiscoverEcosystemDev -count=1` exited 0 (independent verifier: 0.235s).
+AC#4 PASS — `go test ./internal/project -run TestDiscoveryAmbiguity -count=1` exited 0 (independent verifier: 0.241s).
+AC#5 PASS — `go test ./integration -run TestZeroConfigDiscovery -count=1` exited 0 (independent verifier: 3.760s).
+AC#6 PASS — `go test ./internal/cli -run 'TestDiscoveredUp|TestDiscoveredStart|TestDiscoveredList|TestDiscoveryErrors' -count=1` exited 0 (independent verifier: 1.685s).
+CI PASS — `task ci` passed on final commit c6f3821, including formatting, vet, staticcheck, all tests, race tests, build, and binary smoke test.
+Independent verifier returned PASS for AC1–AC6, scope, protected files, and test integrity. Final adversarial review returned PASS after all findings were fixed.
+Scope: only internal/project/, internal/cli/, integration/, README.md, and docs/design.md changed. No test was deleted, skipped, or weakened. No protected gate file changed.
+Implementation commit: c6f3821.
+<!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-03 20:59
+---
+Claimed for implementation in an isolated worktree.
+---
+<!-- COMMENTS:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented authoritative hum.yaml resolution and deterministic zero-config discovery for Mise, Task, Just, Make, package.json, Deno, Composer, bin/dev, and Mix. Integrated discovered definitions across up/start/argv-free run/restart/list/status with source/argv metadata and running_unverified readiness, added typed actionable errors, comprehensive unit/integration coverage, and documentation. Final commit c6f3821; task ci and independent AC1–AC6 verification passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
