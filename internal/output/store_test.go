@@ -761,3 +761,40 @@ func testFollowerAppendDoesNotBlock(t *testing.T) {
 		t.Fatalf("slow follower metadata = %#v, want truncation and eviction", event.Read)
 	}
 }
+
+func TestSystemEntryRestartMarkerIsMonotonicAndVisible(t *testing.T) {
+	store, err := NewStore(Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Append(Stdout, time.Unix(1, 0), "before\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	follower := store.Subscribe(ReadOptions{After: &first})
+	defer follower.Close()
+
+	marker, err := store.Append(System, time.Unix(2, 0), "api restarted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marker <= first {
+		t.Fatalf("marker cursor = %d, want after %d", marker, first)
+	}
+	bounded, err := store.Read(ReadOptions{After: &first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bounded.Entries) != 1 || bounded.Entries[0].Cursor != marker || bounded.Entries[0].Stream != System {
+		t.Fatalf("bounded restart entries = %#v", bounded.Entries)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	event, err := follower.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Read == nil || len(event.Read.Entries) != 1 || event.Read.Entries[0].Cursor != marker || event.Read.Entries[0].Stream != System {
+		t.Fatalf("follower restart event = %#v", event)
+	}
+}

@@ -18,6 +18,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 		"status":   true,
 		"logs":     true,
 		"wait":     true,
+		"restart":  true,
 		"stop":     true,
 		"shutdown": true,
 	}
@@ -36,7 +37,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 			t.Errorf("root command is missing %q", name)
 		}
 	}
-	for _, name := range []string{"restart", "down"} {
+	for _, name := range []string{"down"} {
 		if root.Command(name) != nil {
 			t.Errorf("root command unexpectedly exposes %q", name)
 		}

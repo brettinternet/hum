@@ -16,7 +16,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":3}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":4}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -468,7 +468,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":3}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":4}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError
@@ -612,5 +612,38 @@ func TestBoundedEncoderAndResponseEnvironmentRejection(t *testing.T) {
 	}
 	if line, err := MarshalLine(NewHello(), 4); err == nil || !errors.Is(err, ErrOversized) || line != nil {
 		t.Fatalf("oversized marshal = %q, err %v", line, err)
+	}
+}
+
+func TestRestartProtocolRoundTrip(t *testing.T) {
+	request := NewRestartRequest("api", "/project")
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(raw), `{"op":"restart","name":"api","cwd":"/project"}`; got != want {
+		t.Fatalf("restart request = %s, want %s", got, want)
+	}
+	decoded, err := NewDecoder(bytes.NewReader(append(raw, '\n'))).DecodeRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Restart == nil || *decoded.Restart != request {
+		t.Fatalf("decoded restart = %#v", decoded.Restart)
+	}
+
+	process := &Process{Name: "api", PID: 42, LaunchCursor: 7, RestartCount: 2}
+	response := NewRestartResponse(process)
+	raw, err = json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decodedResponse RestartResponse
+	if err := json.Unmarshal(raw, &decodedResponse); err != nil {
+		t.Fatal(err)
+	}
+	if decodedResponse.Op != OpRestart || !decodedResponse.OK || decodedResponse.Process == nil ||
+		decodedResponse.Process.PID != 42 || decodedResponse.Process.LaunchCursor != 7 || decodedResponse.Process.RestartCount != 2 {
+		t.Fatalf("decoded response = %#v", decodedResponse)
 	}
 }

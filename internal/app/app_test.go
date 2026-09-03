@@ -203,6 +203,45 @@ func (c *subscriptionChild) Signal(os.Signal) error {
 	c.release()
 	return os.ErrProcessDone
 }
+
+type delayedExitChild struct {
+	pid       int
+	done      chan struct{}
+	published chan struct{}
+	store     *output.Store
+	result    process.Result
+	publish   sync.Once
+	doneOnce  sync.Once
+}
+
+func newDelayedExitChild(pid, code int, at time.Time) *delayedExitChild {
+	return &delayedExitChild{
+		pid:       pid,
+		done:      make(chan struct{}),
+		published: make(chan struct{}),
+		result:    process.Result{ExitCode: code, ExitedAt: at},
+	}
+}
+
+func (c *delayedExitChild) PID() int  { return c.pid }
+func (c *delayedExitChild) PGID() int { return c.pid }
+func (c *delayedExitChild) Done() <-chan struct{} {
+	return c.done
+}
+func (c *delayedExitChild) Wait() process.Result {
+	<-c.done
+	return c.result
+}
+func (c *delayedExitChild) Signal(os.Signal) error {
+	c.publish.Do(func() {
+		c.store.NotifyExit(output.Exit{Code: c.result.ExitCode, Time: c.result.ExitedAt})
+		close(c.published)
+	})
+	return os.ErrProcessDone
+}
+func (c *delayedExitChild) releaseDone() {
+	c.doneOnce.Do(func() { close(c.done) })
+}
 func (c *subscriptionChild) releaseDoneCheck() {
 	if c.allowDoneCheck != nil {
 		c.allowDoneOnce.Do(func() { close(c.allowDoneCheck) })
@@ -1439,5 +1478,514 @@ func TestWaitReachesExitAfterLineWithinSupervisorMaxLineBytes(t *testing.T) {
 	if got.Outcome != WaitExited || got.Cursor != 0 || got.Exit == nil || got.Exit.ExitCode != 7 ||
 		!got.Exit.ExitedAt.Equal(child.result.ExitedAt) {
 		t.Fatalf("large-line exit wait = %#v, want exited code 7 at %v", got, child.result.ExitedAt)
+	}
+}
+
+func TestRestartPreservesLaunchAndOutputState(t *testing.T) {
+	root := makeProject(t, false)
+	children := []*timedChild{
+		{pid: 4101, done: make(chan struct{}), result: process.Result{ExitCode: 0, ExitedAt: time.Now()}},
+		{pid: 4102, done: make(chan struct{}), result: process.Result{ExitCode: 0, ExitedAt: time.Now().Add(time.Second)}},
+		{pid: 4103, done: make(chan struct{}), result: process.Result{ExitCode: 0, ExitedAt: time.Now().Add(2 * time.Second)}},
+	}
+	var (
+		mu      sync.Mutex
+		specs   []process.Spec
+		calls   int
+		entered = make(chan struct{})
+		release = make(chan struct{})
+	)
+	s := testSupervisor(t, Options{StartProcess: func(spec process.Spec) (Child, error) {
+		mu.Lock()
+		index := calls
+		calls++
+		specs = append(specs, process.Spec{
+			Dir: spec.Dir, Argv: append([]string(nil), spec.Argv...),
+			Env: append([]string(nil), spec.Env...), Output: spec.Output,
+			MaxLineBytes: spec.MaxLineBytes, Now: spec.Now,
+		})
+		mu.Unlock()
+		if index == 1 {
+			close(entered)
+			<-release
+		}
+		return children[index], nil
+	}})
+	request := StartRequest{
+		Name: "api", Cwd: root,
+		Argv: []string{"/bin/sh", "-c", "printf launch"},
+		Env:  []string{"TOKEN=secret", "PATH=/usr/bin:/bin"},
+	}
+	first, err := s.Start(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := s.Output(root, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCursor, err := store.Append(output.Stdout, time.Now(), "old-only\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type restartResult struct {
+		process Process
+		err     error
+	}
+	resultCh := make(chan restartResult, 1)
+	go func() {
+		restarted, restartErr := s.Restart(context.Background(), root, "api")
+		resultCh <- restartResult{process: restarted, err: restartErr}
+	}()
+	<-entered
+	if !s.Restarting(root, "api") {
+		t.Fatal("restart state was not visible while relaunch was blocked")
+	}
+	if _, err := s.Start(request); !errors.Is(err, ErrNameInUse) {
+		t.Fatalf("start during restart error = %v, want ErrNameInUse", err)
+	}
+	close(release)
+	result := <-resultCh
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	second := result.process
+	if second.PID == first.PID || second.RestartCount != 1 {
+		t.Fatalf("restarted process = %#v, want new PID and restart count 1", second)
+	}
+	if second.LaunchCursor <= oldCursor {
+		t.Fatalf("launch cursor = %d, want after old cursor %d", second.LaunchCursor, oldCursor)
+	}
+	sameStore, err := s.Output(root, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameStore != store {
+		t.Fatal("restart replaced the output store")
+	}
+	read, err := store.Read(output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundMarker := false
+	for _, entry := range read.Entries {
+		if entry.Cursor == second.LaunchCursor && entry.Stream == output.System && strings.Contains(entry.Text, "restarted") {
+			foundMarker = true
+		}
+	}
+	if !foundMarker {
+		t.Fatalf("restart marker missing from %#v", read.Entries)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	waited, err := s.Wait(ctx, root, "api", WaitOptions{Match: regexp.MustCompile("old-only")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited.Outcome != WaitTimedOut {
+		t.Fatalf("wait outcome = %q, want %q", waited.Outcome, WaitTimedOut)
+	}
+
+	mu.Lock()
+	if len(specs) != 2 {
+		t.Fatalf("start specs = %d, want 2", len(specs))
+	}
+	if specs[0].Dir != specs[1].Dir || !reflect.DeepEqual(specs[0].Argv, specs[1].Argv) || !reflect.DeepEqual(specs[0].Env, specs[1].Env) || specs[0].Output != specs[1].Output {
+		t.Fatalf("restart changed launch spec: first=%#v second=%#v", specs[0], specs[1])
+	}
+	mu.Unlock()
+
+	children[1].release()
+	waitExited(t, s, root, "api")
+	third, err := s.Restart(context.Background(), root, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.PID != 4103 || third.RestartCount != 2 {
+		t.Fatalf("restart of exited process = %#v", third)
+	}
+}
+
+func TestRestartRejectsInvalidAndMissingNames(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{})
+	if _, err := s.Restart(context.Background(), root, "not valid"); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("invalid-name error = %v", err)
+	}
+	if _, err := s.Restart(context.Background(), root, "missing"); err == nil {
+		t.Fatal("missing process restart succeeded")
+	}
+}
+
+func TestRestartOrdinaryStartReplacementUsesInitialWaitCursor(t *testing.T) {
+	root := makeProject(t, false)
+	first := newSubscriptionChild(5401, 0, time.Unix(61, 0), "")
+	replacement := newSubscriptionChild(5402, 0, time.Unix(62, 0), "replacement-ready\n")
+	s := testSupervisor(t, Options{
+		StartProcess: subscriptionStarter(map[string]*subscriptionChild{
+			"ordinary-first":  first,
+			"ordinary-second": replacement,
+		}),
+	})
+	request := StartRequest{Name: "ordinary", Cwd: root, Argv: []string{"/bin/fake", "ordinary-first"}}
+	if _, err := s.Start(request); err != nil {
+		t.Fatal(err)
+	}
+	first.release()
+	firstExit := waitExited(t, s, root, "ordinary")
+	if firstExit.Exit == nil {
+		t.Fatal("ordinary replacement test did not retain first exit")
+	}
+	request.Argv = []string{"/bin/fake", "ordinary-second"}
+	replaced, err := s.Start(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.RestartCount != 1 || replaced.LaunchCursor != 0 {
+		t.Fatalf("ordinary replacement metadata = %#v, want restart count 1 and cursor 0", replaced)
+	}
+	if s.FollowContinuesAfter(root, "ordinary", firstExit.ExitedAt) {
+		t.Fatal("ordinary Start replacement incorrectly continues a follower")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := s.Wait(ctx, root, "ordinary", WaitOptions{Match: regexp.MustCompile(`replacement-ready`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != WaitMatched || got.Cursor != 0 || got.Exit != nil {
+		t.Fatalf("ordinary replacement wait = %#v, want matched cursor 0 without exit", got)
+	}
+}
+
+func TestRestartFailureClearsContinuationAndRepublishesExit(t *testing.T) {
+	root := makeProject(t, false)
+	exitAt := time.Unix(71, 0)
+	first := newSubscriptionChild(5501, 23, exitAt, "")
+	replacement := newSubscriptionChild(5502, 0, time.Unix(72, 0), "")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	s := testSupervisor(t, Options{
+		StartProcess: func(spec process.Spec) (Child, error) {
+			mu.Lock()
+			index := calls
+			calls++
+			mu.Unlock()
+			switch index {
+			case 0:
+				first.store = spec.Output
+				return first, nil
+			case 1:
+				close(entered)
+				<-release
+				return nil, errors.New("restart launch failed")
+			case 2:
+				replacement.store = spec.Output
+				return replacement, nil
+			default:
+				return nil, errors.New("unexpected launch")
+			}
+		},
+	})
+	if _, err := s.Start(StartRequest{Name: "failed", Cwd: root, Argv: []string{"/bin/fake", "failed"}}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := s.Output(root, "failed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	follower := store.Subscribe(output.ReadOptions{})
+	defer follower.Close()
+
+	type restartResult struct {
+		err error
+	}
+	restartResultCh := make(chan restartResult, 1)
+	go func() {
+		_, restartErr := s.Restart(context.Background(), root, "failed")
+		restartResultCh <- restartResult{err: restartErr}
+	}()
+	<-entered
+	firstEvent := nextSubscriptionEvent(t, follower)
+	if firstEvent.Exit == nil || firstEvent.Exit.Code != 23 || !firstEvent.Exit.Time.Equal(exitAt) {
+		t.Fatalf("first restart exit event = %#v, want code 23 at %v", firstEvent, exitAt)
+	}
+	if !s.FollowContinuesAfter(root, "failed", exitAt) {
+		t.Fatal("failed restart stopped continuing before relaunch failed")
+	}
+
+	close(release)
+	result := <-restartResultCh
+	if result.err == nil {
+		t.Fatal("failed restart succeeded")
+	}
+	if s.FollowContinuesAfter(root, "failed", exitAt) {
+		t.Fatal("failed restart left continuation enabled")
+	}
+
+	var republished *output.Exit
+	for republished == nil {
+		event := nextSubscriptionEvent(t, follower)
+		if event.Exit != nil {
+			republished = event.Exit
+		}
+	}
+	if republished.Code != 23 || !republished.Time.Equal(exitAt) {
+		t.Fatalf("republished restart exit = %#v, want code 23 at %v", republished, exitAt)
+	}
+
+	if _, err := s.Start(StartRequest{Name: "failed", Cwd: root, Argv: []string{"/bin/fake", "recovered"}}); err != nil {
+		t.Fatalf("start after failed restart = %v, want cleared name reservation", err)
+	}
+}
+
+func TestRestartCanceledAfterPublishedExitRepublishesAfterReconcile(t *testing.T) {
+	root := makeProject(t, false)
+	exitAt := time.Unix(81, 0)
+	child := newDelayedExitChild(5601, 29, exitAt)
+	s := testSupervisor(t, Options{
+		StartProcess: func(spec process.Spec) (Child, error) {
+			child.store = spec.Output
+			return child, nil
+		},
+	})
+	if _, err := s.Start(StartRequest{Name: "pending", Cwd: root, Argv: []string{"/bin/fake", "pending"}}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := s.Output(root, "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	follower := store.Subscribe(output.ReadOptions{})
+	defer follower.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	restartResultCh := make(chan error, 1)
+	go func() {
+		_, restartErr := s.Restart(ctx, root, "pending")
+		restartResultCh <- restartErr
+	}()
+	waitSubscriptionSignal(t, child.published, "restart child to publish its exit")
+	firstEvent := nextSubscriptionEvent(t, follower)
+	if firstEvent.Exit == nil || firstEvent.Exit.Code != 29 || !firstEvent.Exit.Time.Equal(exitAt) {
+		t.Fatalf("first canceled-restart exit event = %#v, want code 29 at %v", firstEvent, exitAt)
+	}
+	if !s.FollowContinuesAfter(root, "pending", exitAt) {
+		t.Fatal("canceled restart stopped continuing before cancellation")
+	}
+
+	cancel()
+	if err := <-restartResultCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled restart error = %v, want context.Canceled", err)
+	}
+	if s.FollowContinuesAfter(root, "pending", exitAt) {
+		t.Fatal("canceled restart left continuation enabled")
+	}
+
+	child.releaseDone()
+	republished := nextSubscriptionEvent(t, follower)
+	if republished.Exit == nil || republished.Read != nil ||
+		republished.Exit.Code != 29 || !republished.Exit.Time.Equal(exitAt) {
+		t.Fatalf("reconciled canceled-restart exit event = %#v, want code 29 at %v", republished, exitAt)
+	}
+}
+
+func TestRestartEvictionSkipsReservedRecordsAndReevictsAfterFailure(t *testing.T) {
+	root := makeProject(t, false)
+	a := newSubscriptionChild(5701, 0, time.Unix(91, 0), "")
+	b := newSubscriptionChild(5702, 0, time.Unix(92, 0), "")
+	bReplacement := newSubscriptionChild(5703, 0, time.Unix(93, 0), "")
+	bStartEntered := make(chan struct{})
+	allowBStart := make(chan struct{})
+	aRestartEntered := make(chan struct{})
+	allowARestart := make(chan struct{})
+	var (
+		mu     sync.Mutex
+		aCalls int
+	)
+	s := testSupervisor(t, Options{
+		CompletedLimit: 1,
+		StartProcess: func(spec process.Spec) (Child, error) {
+			name := spec.Argv[len(spec.Argv)-1]
+			switch name {
+			case "a":
+				mu.Lock()
+				aCalls++
+				call := aCalls
+				mu.Unlock()
+				if call == 1 {
+					a.store = spec.Output
+					return a, nil
+				}
+				close(aRestartEntered)
+				<-allowARestart
+				return nil, errors.New("a relaunch failed")
+			case "b":
+				b.store = spec.Output
+				return b, nil
+			case "b-replacement":
+				close(bStartEntered)
+				<-allowBStart
+				bReplacement.store = spec.Output
+				return bReplacement, nil
+			default:
+				return nil, fmt.Errorf("unexpected launch %q", name)
+			}
+		},
+	})
+	if _, err := s.Start(StartRequest{Name: "a", Cwd: root, Argv: []string{"/bin/fake", "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(StartRequest{Name: "b", Cwd: root, Argv: []string{"/bin/fake", "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	bDone := recordDone(t, s, root, "b")
+	b.release()
+	waitSubscriptionSignal(t, bDone, "B terminal reconciliation")
+
+	bStartResultCh := make(chan error, 1)
+	go func() {
+		_, startErr := s.Start(StartRequest{Name: "b", Cwd: root, Argv: []string{"/bin/fake", "b-replacement"}})
+		bStartResultCh <- startErr
+	}()
+	waitSubscriptionSignal(t, bStartEntered, "replacement start reservation")
+
+	aRestartResultCh := make(chan error, 1)
+	go func() {
+		_, restartErr := s.Restart(context.Background(), root, "a")
+		aRestartResultCh <- restartErr
+	}()
+	waitSubscriptionSignal(t, aRestartEntered, "restart relaunch reservation")
+
+	s.mu.RLock()
+	complete := len(s.complete)
+	s.mu.RUnlock()
+	if complete != 2 {
+		t.Fatalf("completed records while both names are reserved = %d, want temporary overflow of 2", complete)
+	}
+	if _, err := s.Get(root, "a"); err != nil {
+		t.Fatalf("reserved restarting record was evicted: %v", err)
+	}
+	if got, err := s.Get(root, "b"); err != nil || got.State != StateExited {
+		t.Fatalf("reserved starting record = %#v, err %v; want retained exited record", got, err)
+	}
+
+	close(allowARestart)
+	if err := <-aRestartResultCh; err == nil {
+		t.Fatal("failed restart succeeded")
+	}
+	if _, err := s.Get(root, "a"); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("failed restart record lookup = %v, want eviction after reservation release", err)
+	}
+	if _, err := s.Get(root, "b"); err != nil {
+		t.Fatalf("other reserved record was evicted after failed restart: %v", err)
+	}
+
+	close(allowBStart)
+	if err := <-bStartResultCh; err != nil {
+		t.Fatalf("replacement start = %v", err)
+	}
+}
+
+func TestRestartFailedStartReleasesReservationAndReevicts(t *testing.T) {
+	root := makeProject(t, false)
+	a := newSubscriptionChild(5801, 0, time.Unix(102, 0), "")
+	aReplacement := newSubscriptionChild(5802, 0, time.Unix(103, 0), "")
+	b := newSubscriptionChild(5803, 0, time.Unix(101, 0), "")
+	bStartEntered := make(chan struct{})
+	allowBStart := make(chan struct{})
+	aRestartEntered := make(chan struct{})
+	allowARestart := make(chan struct{})
+	var (
+		mu     sync.Mutex
+		aCalls int
+	)
+	s := testSupervisor(t, Options{
+		CompletedLimit: 1,
+		StartProcess: func(spec process.Spec) (Child, error) {
+			name := spec.Argv[len(spec.Argv)-1]
+			switch name {
+			case "a":
+				mu.Lock()
+				aCalls++
+				call := aCalls
+				mu.Unlock()
+				if call == 1 {
+					a.store = spec.Output
+					return a, nil
+				}
+				close(aRestartEntered)
+				<-allowARestart
+				aReplacement.store = spec.Output
+				return aReplacement, nil
+			case "b":
+				b.store = spec.Output
+				return b, nil
+			case "b-replacement":
+				close(bStartEntered)
+				<-allowBStart
+				return nil, errors.New("ordinary start failed")
+			default:
+				return nil, fmt.Errorf("unexpected launch %q", name)
+			}
+		},
+	})
+	if _, err := s.Start(StartRequest{Name: "a", Cwd: root, Argv: []string{"/bin/fake", "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(StartRequest{Name: "b", Cwd: root, Argv: []string{"/bin/fake", "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	bDone := recordDone(t, s, root, "b")
+	b.release()
+	waitSubscriptionSignal(t, bDone, "B terminal reconciliation")
+
+	bStartResultCh := make(chan error, 1)
+	go func() {
+		_, startErr := s.Start(StartRequest{Name: "b", Cwd: root, Argv: []string{"/bin/fake", "b-replacement"}})
+		bStartResultCh <- startErr
+	}()
+	waitSubscriptionSignal(t, bStartEntered, "ordinary start reservation")
+
+	aRestartResultCh := make(chan error, 1)
+	go func() {
+		_, restartErr := s.Restart(context.Background(), root, "a")
+		aRestartResultCh <- restartErr
+	}()
+	waitSubscriptionSignal(t, aRestartEntered, "restart reservation")
+
+	s.mu.RLock()
+	complete := len(s.complete)
+	s.mu.RUnlock()
+	if complete != 2 {
+		t.Fatalf("completed records while reservations overlap = %d, want temporary overflow of 2", complete)
+	}
+	if !s.Restarting(root, "a") {
+		t.Fatal("restart reservation ended before ordinary start failure")
+	}
+
+	close(allowBStart)
+	if err := <-bStartResultCh; err == nil {
+		t.Fatal("failed ordinary start succeeded")
+	}
+	if _, err := s.Get(root, "b"); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("failed ordinary start record lookup = %v, want immediate eviction", err)
+	}
+	if _, err := s.Get(root, "a"); err != nil {
+		t.Fatalf("restart-reserved record was evicted after ordinary start failure: %v", err)
+	}
+	if !s.Restarting(root, "a") {
+		t.Fatal("restart reservation ended after ordinary start failure")
+	}
+
+	close(allowARestart)
+	if err := <-aRestartResultCh; err != nil {
+		t.Fatalf("restart after ordinary start failure = %v", err)
 	}
 }

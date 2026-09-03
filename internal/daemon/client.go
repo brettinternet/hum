@@ -41,6 +41,7 @@ type FollowRequest = protocol.FollowRequest
 type WaitRequest = protocol.WaitRequest
 type SignalRequest = protocol.SignalRequest
 type StopRequest = protocol.StopRequest
+type RestartRequest = protocol.RestartRequest
 type ShutdownRequest = protocol.ShutdownRequest
 
 // Dial connects to a socket, performs the mandatory hello, and returns the
@@ -315,6 +316,17 @@ func (c *Client) Stop(ctx context.Context, req StopRequest) error {
 	return err
 }
 
+func (c *Client) Restart(ctx context.Context, req RestartRequest) (app.Process, error) {
+	response, err := c.roundTrip(ctx, wireRequest{Op: "restart", Name: req.Name, Cwd: req.Cwd})
+	if err != nil {
+		return app.Process{}, err
+	}
+	if response.Process == nil {
+		return app.Process{}, errors.New("daemon restart response omitted process")
+	}
+	return appProcessFromWire(*response.Process), nil
+}
+
 // Shutdown remains legal on a Client returned alongside VersionMismatchError.
 func (c *Client) Shutdown(ctx context.Context, req ShutdownRequest) error {
 	_, err := c.roundTrip(ctx, wireRequest{Op: "shutdown", Force: req.Force})
@@ -482,6 +494,8 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 		value = protocol.SignalRequest{Op: protocol.OpSignal, Name: req.Name, Cwd: req.Cwd, Signal: req.Signal}
 	case "stop":
 		value = protocol.StopRequest{Op: protocol.OpStop, Name: req.Name, Cwd: req.Cwd}
+	case "restart":
+		value = protocol.RestartRequest{Op: protocol.OpRestart, Name: req.Name, Cwd: req.Cwd}
 	case "shutdown":
 		value = protocol.ShutdownRequest{Op: protocol.OpShutdown, Force: req.Force}
 	default:

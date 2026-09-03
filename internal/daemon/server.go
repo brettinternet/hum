@@ -578,6 +578,21 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 			process = &value
 		}
 		return wireResponse{Op: req.Op, OK: true, Process: process}, false
+	case "restart":
+		s.shutdownMu.Lock()
+		if s.shutdownStarted {
+			s.shutdownMu.Unlock()
+			return dispatchError(req.Op, app.ErrSupervisorClosed), false
+		}
+		process, err := s.supervisor.Restart(context.Background(), req.Cwd, req.Name)
+		if err != nil {
+			s.shutdownMu.Unlock()
+			return dispatchError(req.Op, err), false
+		}
+		s.trackProcess(process)
+		s.shutdownMu.Unlock()
+		value := wireProcessFromApp(process)
+		return wireResponse{Op: req.Op, OK: true, Process: &value}, false
 	case "shutdown":
 		err := s.shutdown(req.Force)
 		if err != nil {
@@ -684,6 +699,9 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 			}
 			return
 		}
+		if event.Exit != nil && s.supervisor.FollowContinuesAfter(req.Cwd, req.Name, event.Exit.Time) {
+			continue
+		}
 		if err := encoder.EncodeResponse(protocolStreamEventFromOutput(req.Name, event)); err != nil {
 			return
 		}
@@ -719,7 +737,7 @@ func streamMask(stream string) output.StreamMask {
 	case "system":
 		return output.SystemMask
 	case "both", "stdout+stderr", "stdout,stderr":
-		return output.BothStreams
+		return output.AllStreams
 	default:
 		return output.AllStreams
 	}

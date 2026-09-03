@@ -11,7 +11,7 @@ import (
 
 // Version is the current private protocol version. The hello exchange carries
 // this value on every connection.
-const Version = 3
+const Version = 4
 
 // CurrentVersion is an explicit alias for Version for callers that prefer a
 // descriptive name.
@@ -42,6 +42,8 @@ const (
 	OpSignal Operation = "signal"
 	// OpStop stops one supervised process group.
 	OpStop Operation = "stop"
+	// OpRestart stops and relaunches one supervised process.
+	OpRestart Operation = "restart"
 	// OpShutdown retires the daemon.
 	OpShutdown Operation = "shutdown"
 	// OpEvent marks a streaming event response. It is not a client request.
@@ -58,6 +60,7 @@ const (
 	OperationWait     = OpWait
 	OperationSignal   = OpSignal
 	OperationStop     = OpStop
+	OperationRestart  = OpRestart
 	OperationShutdown = OpShutdown
 	OperationEvent    = OpEvent
 )
@@ -76,7 +79,7 @@ const (
 
 var knownOperations = map[Operation]struct{}{
 	OpHello: {}, OpStart: {}, OpList: {}, OpGet: {}, OpOutput: {},
-	OpFollow: {}, OpWait: {}, OpSignal: {}, OpStop: {}, OpShutdown: {},
+	OpFollow: {}, OpWait: {}, OpSignal: {}, OpStop: {}, OpRestart: {}, OpShutdown: {},
 }
 
 // IsKnown reports whether op is one of the protocol operations.
@@ -552,6 +555,45 @@ func (r *StopRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// RestartRequest asks the daemon to restart one process with its recorded
+// launch specification.
+type RestartRequest struct {
+	Op   Operation `json:"op"`
+	Name string    `json:"name"`
+	Cwd  string    `json:"cwd"`
+}
+
+// NewRestartRequest builds a restart request.
+func NewRestartRequest(name, cwd string) RestartRequest {
+	return RestartRequest{Op: OpRestart, Name: name, Cwd: cwd}
+}
+
+// MarshalJSON writes a restart request with its stable operation.
+func (r RestartRequest) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Op   Operation `json:"op"`
+		Name string    `json:"name"`
+		Cwd  string    `json:"cwd"`
+	}{Op: OpRestart, Name: r.Name, Cwd: r.Cwd})
+}
+
+// UnmarshalJSON decodes a restart request.
+func (r *RestartRequest) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Op   Operation `json:"op"`
+		Name string    `json:"name"`
+		Cwd  string    `json:"cwd"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.Op != "" && wire.Op != OpRestart {
+		return &UnknownOperationError{Operation: wire.Op}
+	}
+	r.Op, r.Name, r.Cwd = OpRestart, wire.Name, wire.Cwd
+	return nil
+}
+
 // OutputEntry is one bounded output record carried over the wire.
 type OutputEntry struct {
 	Cursor Cursor    `json:"cursor"`
@@ -807,6 +849,19 @@ type StopResponse struct {
 // NewStopResponse builds a successful stop response.
 func NewStopResponse(process *Process) StopResponse {
 	return StopResponse{Op: OpStop, OK: true, Process: process}
+}
+
+// RestartResponse reports a successful relaunch and its new process snapshot.
+type RestartResponse struct {
+	Op      Operation  `json:"op"`
+	OK      bool       `json:"ok"`
+	Process *Process   `json:"process,omitempty"`
+	Error   *WireError `json:"error,omitempty"`
+}
+
+// NewRestartResponse builds a successful restart response.
+func NewRestartResponse(process *Process) RestartResponse {
+	return RestartResponse{Op: OpRestart, OK: true, Process: process}
 }
 
 // ShutdownResponse reports a successful daemon shutdown or its refusal.

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -145,6 +146,31 @@ type daemonTestReadConn struct {
 func (c *daemonTestReadConn) Read(p []byte) (int, error) {
 	c.once.Do(func() { close(c.entered) })
 	return c.Conn.Read(p)
+}
+
+type daemonTestGateWriter struct {
+	release <-chan struct{}
+	entered chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	data    []byte
+}
+
+func (w *daemonTestGateWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.entered)
+		<-w.release
+	})
+	w.mu.Lock()
+	w.data = append(w.data, p...)
+	w.mu.Unlock()
+	return len(p), nil
+}
+
+func (w *daemonTestGateWriter) bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.data...)
 }
 
 type daemonTestWriteConn struct {
@@ -661,6 +687,112 @@ func TestMultipleFollowers(t *testing.T) {
 	})
 }
 
+func TestRestartFollowerClosesAfterOrdinaryStartReplacement(t *testing.T) {
+	root := t.TempDir()
+	oldChild := &daemonTestChild{pid: 9401, done: make(chan struct{})}
+	newChild := &daemonTestChild{pid: 9402, done: make(chan struct{})}
+	var oldStore, newStore *output.Store
+	starts := 0
+	supervisor, err := app.New(app.Options{
+		StartProcess: func(spec process.Spec) (app.Child, error) {
+			starts++
+			switch starts {
+			case 1:
+				oldStore = spec.Output
+				return oldChild, nil
+			case 2:
+				newStore = spec.Output
+				return newChild, nil
+			default:
+				return nil, errors.New("unexpected extra process start")
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{supervisor: supervisor, projects: make(map[string]struct{})}
+	serverConn, followerConn := net.Pipe()
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	writer := &daemonTestGateWriter{release: release, entered: make(chan struct{})}
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		_ = serverConn.Close()
+		_ = followerConn.Close()
+		_ = supervisor.Shutdown(context.Background())
+	})
+
+	if _, err := supervisor.Start(app.StartRequest{Name: "restart", Cwd: root, Argv: []string{"fake", "old"}}); err != nil {
+		t.Fatal(err)
+	}
+	if oldStore == nil {
+		t.Fatal("initial start did not expose output store")
+	}
+	if _, err := oldStore.Append(output.Stdout, time.Unix(1, 0), "old output\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	followDone := make(chan struct{})
+	go func() {
+		defer close(followDone)
+		defer serverConn.Close()
+		server.handleFollow(context.Background(), serverConn, protocol.NewEncoder(writer), wireRequest{Cwd: root, Name: "restart"})
+	}()
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("follower did not begin writing retained output")
+	}
+
+	exitTime := time.Unix(2, 0)
+	oldStore.NotifyExit(output.Exit{Code: 17, Time: exitTime})
+	oldChild.once.Do(func() { close(oldChild.done) })
+	waitForDaemonTest(t, time.Second, "old process to exit", func() bool {
+		process, getErr := supervisor.Get(root, "restart")
+		return getErr == nil && process.State == app.StateExited
+	})
+
+	replacement, _ := server.dispatch(wireRequest{
+		Op:   string(protocol.OpStart),
+		Name: "restart",
+		Cwd:  root,
+		Argv: []string{"fake", "new"},
+	})
+	if replacement.Error != nil || replacement.Process == nil {
+		t.Fatalf("ordinary start replacement = %+v", replacement)
+	}
+	if newStore == nil || newStore == oldStore {
+		t.Fatal("ordinary start did not install a new output store")
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-followDone:
+	case <-time.After(time.Second):
+		t.Fatal("old follower remained open after ordinary name reuse")
+	}
+
+	decoder := protocol.NewDecoder(bytes.NewReader(writer.bytes()))
+	var outputEvent, exitEvent protocol.StreamEvent
+	if err := decoder.Decode(&outputEvent); err != nil {
+		t.Fatalf("decode retained output event: %v", err)
+	}
+	if outputEvent.Type != protocol.EventOutput {
+		t.Fatalf("retained output event type = %q, want output", outputEvent.Type)
+	}
+	if err := decoder.Decode(&exitEvent); err != nil {
+		t.Fatalf("decode final exit event: %v", err)
+	}
+	if exitEvent.Type != protocol.EventExit || exitEvent.Exit == nil || exitEvent.Exit.Code != 17 || !exitEvent.Exit.Time.Equal(exitTime) {
+		t.Fatalf("final follower exit event = %#v, want code 17 at %v", exitEvent, exitTime)
+	}
+	var extra protocol.StreamEvent
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		t.Fatalf("follower after final exit = %v, want EOF", err)
+	}
+}
+
 func TestFollowRetainsOutputAfterCompletedEviction(t *testing.T) {
 	root := t.TempDir()
 	aReady := make(chan struct{})
@@ -976,6 +1108,88 @@ func TestConcurrentStartup(t *testing.T) {
 			}
 		default:
 			t.Fatalf("unexpected start response during concurrent shutdown: %+v", startResponse)
+		}
+	})
+	t.Run("Restart and Shutdown(false) admission", func(t *testing.T) {
+		runtimeDir := shortRuntimeDir(t)
+		root := t.TempDir()
+		restartEntered := make(chan struct{})
+		releaseRestart := make(chan struct{})
+		var releaseOnce sync.Once
+		firstChild := &daemonTestChild{pid: 424243, done: make(chan struct{})}
+		secondChild := &daemonTestChild{pid: 424244, done: make(chan struct{})}
+		var starts atomic.Int32
+		supervisor, err := app.New(app.Options{
+			StopGrace: time.Millisecond,
+			StartProcess: func(process.Spec) (app.Child, error) {
+				switch starts.Add(1) {
+				case 1:
+					return firstChild, nil
+				case 2:
+					close(restartEntered)
+					<-releaseRestart
+					return secondChild, nil
+				default:
+					return nil, errors.New("unexpected extra process start")
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server, err := NewServer(Config{RuntimeDir: runtimeDir, Supervisor: supervisor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			releaseOnce.Do(func() { close(releaseRestart) })
+			_ = server.Close()
+		})
+
+		startResponse, _ := server.dispatch(wireRequest{
+			Op:   string(protocol.OpStart),
+			Name: "race",
+			Cwd:  root,
+			Argv: []string{"fake", "race"},
+		})
+		if startResponse.Error != nil || startResponse.Process == nil {
+			t.Fatalf("initial process start = %+v", startResponse)
+		}
+
+		restartDone := make(chan wireResponse, 1)
+		go func() {
+			response, _ := server.dispatch(wireRequest{Op: string(protocol.OpRestart), Cwd: root, Name: "race"})
+			restartDone <- response
+		}()
+		select {
+		case <-restartEntered:
+		case <-time.After(time.Second):
+			t.Fatal("restart did not reach the relaunch admission barrier")
+		}
+
+		shutdownDone := make(chan wireResponse, 1)
+		go func() {
+			response, _ := server.dispatch(wireRequest{Op: string(protocol.OpShutdown), Force: false})
+			shutdownDone <- response
+		}()
+		releaseOnce.Do(func() { close(releaseRestart) })
+
+		var restartResponse, shutdownResponse wireResponse
+		select {
+		case restartResponse = <-restartDone:
+		case <-time.After(time.Second):
+			t.Fatal("restart remained blocked after relaunch barrier release")
+		}
+		select {
+		case shutdownResponse = <-shutdownDone:
+		case <-time.After(time.Second):
+			t.Fatal("non-forced shutdown remained blocked after restart admission")
+		}
+		if restartResponse.Error != nil || restartResponse.Process == nil || restartResponse.Process.RestartCount != 1 {
+			t.Fatalf("restart response during concurrent shutdown = %+v", restartResponse)
+		}
+		if shutdownResponse.Error == nil || shutdownResponse.Error.Code != string(protocol.ErrorActiveProcesses) {
+			t.Fatalf("restart admitted without shutdown refusal: shutdown response = %+v", shutdownResponse)
 		}
 	})
 }

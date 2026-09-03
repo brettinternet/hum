@@ -69,6 +69,13 @@ type stopResult struct {
 	Message string            `json:"message,omitempty"`
 }
 
+type restartResult struct {
+	Name         string          `json:"name"`
+	PID          int             `json:"pid"`
+	Restarts     int             `json:"restarts"`
+	LaunchCursor protocol.Cursor `json:"launch_cursor"`
+}
+
 type shutdownResult struct {
 	Status string `json:"status"`
 }
@@ -271,6 +278,11 @@ func renderStopHuman(w io.Writer, result stopResult) error {
 		_, err := fmt.Fprintf(w, "%s error: %s\n", result.Name, result.Message)
 		return err
 	}
+}
+
+func renderRestartHuman(w io.Writer, result restartResult) error {
+	_, err := fmt.Fprintf(w, "%s restarted pid=%d restarts=%d launch_cursor=%d\n", result.Name, result.PID, result.Restarts, result.LaunchCursor)
+	return err
 }
 
 func renderWaitHuman(w io.Writer, result app.WaitResult) error {

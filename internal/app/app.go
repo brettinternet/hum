@@ -66,9 +66,9 @@ const (
 )
 
 // WaitOptions controls the output and lifecycle condition observed by Wait.
-// After is strict-exclusive. A nil After starts at the process launch cursor,
-// with launch cursor zero retaining the initial-cursor rule that includes
-// output cursor zero.
+// After is strict-exclusive. A nil After starts at the current launch
+// boundary for an explicit same-store restart; fresh launches use the
+// initial-cursor rule, which includes output cursor zero.
 type WaitOptions struct {
 	After *output.Cursor
 	Match *regexp.Regexp
@@ -202,6 +202,14 @@ type record struct {
 	start        time.Time
 	cursor       output.Cursor
 	restartCount int
+	// launchBoundary identifies a successful same-store Restart. It is
+	// deliberately independent of restartCount because ordinary Start
+	// replacement creates a fresh output sequence.
+	launchBoundary bool
+	restarting     bool
+	// pendingExit covers an exit published before a failed restart's child
+	// reconciliation completed.
+	pendingExit bool
 
 	state      State
 	result     process.Result
@@ -387,6 +395,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if err != nil {
 		s.mu.Lock()
 		delete(s.starting, key)
+		s.evictLocked()
 		s.mu.Unlock()
 		return Process{}, fmt.Errorf("output store: %w", err)
 	}
@@ -404,12 +413,14 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if err != nil {
 		s.mu.Lock()
 		delete(s.starting, key)
+		s.evictLocked()
 		s.mu.Unlock()
 		return Process{}, err
 	}
 	if child == nil {
 		s.mu.Lock()
 		delete(s.starting, key)
+		s.evictLocked()
 		s.mu.Unlock()
 		return Process{}, fmt.Errorf("%w: process starter returned nil child", ErrInvalidRequest)
 	}
@@ -418,6 +429,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	s.mu.Lock()
 	delete(s.starting, key)
 	if s.closed {
+		s.evictLocked()
 		s.mu.Unlock()
 		// Shutdown won the launch race. Kill this unregistered child and wait
 		// without holding the registry lock so it cannot be orphaned.
@@ -435,21 +447,22 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		previous.child = nil
 	}
 	rec := &record{
-		key:          key,
-		name:         req.Name,
-		root:         root,
-		cwd:          cwd,
-		argv:         argv,
-		env:          env,
-		child:        child,
-		pid:          pid,
-		pgid:         pgid,
-		store:        store,
-		start:        startedAt,
-		cursor:       0,
-		restartCount: restartCount,
-		state:        StateRunning,
-		done:         make(chan struct{}),
+		key:            key,
+		name:           req.Name,
+		root:           root,
+		cwd:            cwd,
+		argv:           argv,
+		env:            env,
+		child:          child,
+		pid:            pid,
+		pgid:           pgid,
+		store:          store,
+		start:          startedAt,
+		cursor:         0,
+		restartCount:   restartCount,
+		launchBoundary: false,
+		state:          StateRunning,
+		done:           make(chan struct{}),
 	}
 	s.records[key] = rec
 	initial := rec.snapshotLocked()
@@ -459,23 +472,190 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	return initial, nil
 }
 
+// Restart stops and relaunches one retained process with its original launch
+// specification. The process name and output sequence remain reserved for the
+// entire operation.
+func (s *Supervisor) Restart(ctx context.Context, cwd, name string) (Process, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rec, err := s.lookup(cwd, name)
+	if err != nil {
+		return Process{}, err
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return Process{}, ErrSupervisorClosed
+	}
+	if s.records[rec.key] != rec || rec.store == nil {
+		s.mu.Unlock()
+		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
+	}
+	if _, ok := s.starting[rec.key]; ok {
+		s.mu.Unlock()
+		return Process{}, fmt.Errorf("%w: %q is being started", ErrNameInUse, rec.name)
+	}
+	restartStore := rec.store
+	s.starting[rec.key] = struct{}{}
+	rec.restarting = true
+	s.launches.Add(1)
+	s.mu.Unlock()
+	restartSucceeded := false
+	defer func() {
+		s.mu.Lock()
+		delete(s.starting, rec.key)
+		rec.restarting = false
+		terminal := rec.terminal
+		result := rec.result
+		if !restartSucceeded && !terminal {
+			rec.pendingExit = true
+		}
+		if !restartSucceeded {
+			s.evictLocked()
+		}
+		s.mu.Unlock()
+		if !restartSucceeded && terminal {
+			// A follower may have consumed and suppressed the original exit
+			// while the restart was in progress. Re-publish it only after the
+			// continuation state is cleared so the follower can terminate.
+			restartStore.NotifyExit(output.Exit{
+				Code: result.ExitCode,
+				Time: result.ExitedAt,
+			})
+		}
+		s.launches.Done()
+	}()
+
+	rec.stopMu.Lock()
+	defer rec.stopMu.Unlock()
+	if err := s.stopRecord(ctx, rec); err != nil {
+		return Process{}, err
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return Process{}, ErrSupervisorClosed
+	}
+	if s.records[rec.key] != rec || rec.store == nil {
+		s.mu.Unlock()
+		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
+	}
+	store := rec.store
+	argv := append([]string(nil), rec.argv...)
+	env := append([]string(nil), rec.env...)
+	launchCwd := rec.cwd
+	s.mu.Unlock()
+
+	launchCursor, err := store.Append(output.System, s.now(), fmt.Sprintf("%s restarted\n", rec.name))
+	if err != nil {
+		return Process{}, fmt.Errorf("restart marker: %w", err)
+	}
+	startedAt := s.now()
+	child, err := s.startProcess(process.Spec{
+		Dir:          launchCwd,
+		Argv:         append([]string(nil), argv...),
+		Env:          append([]string(nil), env...),
+		Output:       store,
+		MaxLineBytes: s.maxLineBytes,
+		Now:          s.now,
+	})
+	if err != nil {
+		return Process{}, err
+	}
+	if child == nil {
+		return Process{}, fmt.Errorf("%w: process starter returned nil child", ErrInvalidRequest)
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = child.Signal(syscall.SIGKILL)
+		<-child.Done()
+		_ = child.Wait()
+		return Process{}, ErrSupervisorClosed
+	}
+	if s.records[rec.key] != rec {
+		s.mu.Unlock()
+		_ = child.Signal(syscall.SIGKILL)
+		<-child.Done()
+		_ = child.Wait()
+		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
+	}
+	s.removeCompletedLocked(rec)
+	rec.child = child
+	rec.pid = child.PID()
+	rec.pgid = child.PGID()
+	rec.start = startedAt
+	rec.cursor = launchCursor
+	rec.restartCount++
+	rec.launchBoundary = true
+	rec.state = StateRunning
+	rec.result = process.Result{}
+	rec.terminalAt = time.Time{}
+	rec.terminal = false
+	rec.done = make(chan struct{})
+	restarted := rec.snapshotLocked()
+	restartSucceeded = true
+	s.mu.Unlock()
+
+	go s.reconcile(rec)
+	return restarted, nil
+}
+
+// Restarting reports whether name is between its stop and relaunch phases.
+func (s *Supervisor) Restarting(cwd, name string) bool {
+	rec, err := s.lookup(cwd, name)
+	if err != nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.records[rec.key] == rec && rec.restarting
+}
+
+// FollowContinuesAfter reports whether a follower should suppress an exit
+// notification because this name is still being explicitly restarted or has
+// already crossed into a successful same-store restart.
+func (s *Supervisor) FollowContinuesAfter(cwd, name string, exitedAt time.Time) bool {
+	rec, err := s.lookup(cwd, name)
+	if err != nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.records[rec.key] != rec {
+		return false
+	}
+	return rec.restarting || (rec.launchBoundary && rec.start.After(exitedAt))
+}
+
 func (s *Supervisor) reconcile(rec *record) {
 	result := rec.child.Wait()
 	if result.ExitedAt.IsZero() {
 		result.ExitedAt = s.now()
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if rec.terminal || s.records[rec.key] != rec {
+		s.mu.Unlock()
 		return
 	}
 	rec.result = result
 	rec.terminalAt = result.ExitedAt
 	rec.terminal = true
 	rec.state = StateExited
+	store := rec.store
+	republish := rec.pendingExit
+	rec.pendingExit = false
 	s.insertCompletedLocked(rec)
 	close(rec.done)
 	s.evictLocked()
+	s.mu.Unlock()
+	if republish && store != nil {
+		store.NotifyExit(output.Exit{Code: result.ExitCode, Time: result.ExitedAt})
+	}
 }
 
 func (s *Supervisor) insertCompletedLocked(rec *record) {
@@ -505,8 +685,26 @@ func (s *Supervisor) removeCompletedLocked(rec *record) {
 
 func (s *Supervisor) evictLocked() {
 	for len(s.complete) > s.completedLimit {
-		rec := s.complete[0]
-		copy(s.complete, s.complete[1:])
+		index := -1
+		for i, rec := range s.complete {
+			if rec == nil || !rec.terminal || s.records[rec.key] != rec {
+				index = i
+				break
+			}
+			if rec.restarting {
+				continue
+			}
+			if _, reserved := s.starting[rec.key]; reserved {
+				continue
+			}
+			index = i
+			break
+		}
+		if index < 0 {
+			return
+		}
+		rec := s.complete[index]
+		copy(s.complete[index:], s.complete[index+1:])
 		s.complete[len(s.complete)-1] = nil
 		s.complete = s.complete[:len(s.complete)-1]
 		if rec == nil || !rec.terminal || s.records[rec.key] != rec {
@@ -647,11 +845,11 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 		s.mu.RUnlock()
 		return WaitResult{}, &NotFoundError{Root: root, Name: processName}
 	}
-	store, start, launchCursor := rec.store, rec.start, rec.cursor
+	store, start, launchCursor, launchBoundary := rec.store, rec.start, rec.cursor, rec.launchBoundary
 	s.mu.RUnlock()
 
 	after := opts.After
-	if after == nil && launchCursor != 0 {
+	if after == nil && launchBoundary {
 		after = &launchCursor
 	}
 	sub := store.Subscribe(output.ReadOptions{After: after, Match: opts.Match, MaxBytes: s.maxLineBytes})
