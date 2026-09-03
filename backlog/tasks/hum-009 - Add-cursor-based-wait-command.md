@@ -1,10 +1,10 @@
 ---
 id: HUM-009
 title: Add cursor-based wait command
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-02 17:07'
-updated_date: '2026-09-03 03:16'
+updated_date: '2026-09-03 14:36'
 labels:
   - cli
   - output
@@ -36,18 +36,36 @@ Modified-file contract: internal/output/, internal/app/, internal/protocol/, int
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/output ./internal/app -run Wait` exits 0 and proves buffered-first matching from the launch cursor by default, no missed append race, exit wakeup, timeout, cancellation, and monotonic returned cursors.
-- [ ] #2 `go test ./internal/protocol ./internal/cli -run Wait` exits 0 and covers optional after-cursor, optional regex, the 30s default timeout and explicit `--timeout`, help text naming exit-wait and `hum start`, stable matched/exited/timed_out JSON, human output, exit codes 0/2/3/1, validation errors, and unavailable-daemon guidance without auto-start.
-- [ ] #3 The built-binary integration scenario proves one wait returns 0 immediately for buffered matching output, one blocks until new matching output then returns 0, one returns exited with code 3 when matching, one without `--match` returns 0 on exit, one returns timed_out with code 2 and a new cursor, and an unavailable daemon prints `Nothing is running. Start a process with hum run <name> -- <command>.` without creating runtime state.
-- [ ] #4 `go test -race ./internal/output ./internal/app ./internal/daemon` exits 0 with concurrent append, exit, timeout, disconnect, log followers, and multiple waiters.
+- [x] #1 `go test ./internal/output ./internal/app -run Wait` exits 0 and proves buffered-first matching from the launch cursor by default, no missed append race, exit wakeup, timeout, cancellation, and monotonic returned cursors.
+- [x] #2 `go test ./internal/protocol ./internal/cli -run Wait` exits 0 and covers optional after-cursor, optional regex, the 30s default timeout and explicit `--timeout`, help text naming exit-wait and `hum start`, stable matched/exited/timed_out JSON, human output, exit codes 0/2/3/1, validation errors, and unavailable-daemon guidance without auto-start.
+- [x] #3 The built-binary integration scenario proves one wait returns 0 immediately for buffered matching output, one blocks until new matching output then returns 0, one returns exited with code 3 when matching, one without `--match` returns 0 on exit, one returns timed_out with code 2 and a new cursor, and an unavailable daemon prints `Nothing is running. Start a process with hum run <name> -- <command>.` without creating runtime state.
+- [x] #4 `go test -race ./internal/output ./internal/app ./internal/daemon` exits 0 with concurrent append, exit, timeout, disconnect, log followers, and multiple waiters.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC#1 `go test ./internal/output ./internal/app -run Wait` exited 0; buffered/default and explicit cursor behavior, append wakeup, exit, timeout, cancellation, large lines, concurrent waiters, and monotonic cursors passed.
+AC#2 `go test ./internal/protocol ./internal/cli -run Wait` exited 0; request options, 30s/default and explicit timeouts, help, stable JSON/human outcomes, exit codes, validation, and unavailable-daemon behavior passed.
+AC#3 `go test ./integration -run Wait -count=1 -timeout 120s` exited 0; built binaries proved pre-buffered and new matches, exited code 3, no-match exit success, timeout code 2/new cursor, and unavailable daemon without runtime state.
+AC#4 `go test -race ./internal/output ./internal/app ./internal/daemon` exited 0; append/exit/timeout/disconnect/follower/multiple-waiter paths passed under the race detector.
+Final gate: `task ci` exited 0 on final implementation commit c8abe11.
+Independent verification: PASS for AC#1-AC#4. Adversarial review findings (protocol version negotiation and large retained lines) were fixed and affected gates reran green.
+Scope deviation: internal/daemon/ is required for wait wire dispatch, timeout validation, disconnect cancellation, and client connection ownership; integration/wait_test.go is required for AC#3 built-binary/runtime-state proof. No protected gate file changed. No test was deleted, skipped, or weakened.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented `hum wait` with cursor-based buffered matching, append/exit subscriptions, bounded timeout and cancellation, stable human/JSON outcomes, script exit codes, daemon transport, validation, and built-binary/race coverage. Commit c8abe11; final `task ci` passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
