@@ -202,6 +202,7 @@ type record struct {
 	start        time.Time
 	cursor       output.Cursor
 	restartCount int
+	restarting   bool
 
 	state      State
 	result     process.Result
@@ -459,6 +460,129 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	return initial, nil
 }
 
+// Restart stops and relaunches one retained process with its original launch
+// specification. The process name and output sequence remain reserved for the
+// entire operation.
+func (s *Supervisor) Restart(ctx context.Context, cwd, name string) (Process, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rec, err := s.lookup(cwd, name)
+	if err != nil {
+		return Process{}, err
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return Process{}, ErrSupervisorClosed
+	}
+	if s.records[rec.key] != rec || rec.store == nil {
+		s.mu.Unlock()
+		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
+	}
+	if _, ok := s.starting[rec.key]; ok {
+		s.mu.Unlock()
+		return Process{}, fmt.Errorf("%w: %q is being started", ErrNameInUse, rec.name)
+	}
+	s.starting[rec.key] = struct{}{}
+	rec.restarting = true
+	s.launches.Add(1)
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.starting, rec.key)
+		rec.restarting = false
+		s.mu.Unlock()
+		s.launches.Done()
+	}()
+
+	rec.stopMu.Lock()
+	defer rec.stopMu.Unlock()
+	if err := s.stopRecord(ctx, rec); err != nil {
+		return Process{}, err
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return Process{}, ErrSupervisorClosed
+	}
+	if s.records[rec.key] != rec || rec.store == nil {
+		s.mu.Unlock()
+		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
+	}
+	store := rec.store
+	argv := append([]string(nil), rec.argv...)
+	env := append([]string(nil), rec.env...)
+	launchCwd := rec.cwd
+	s.mu.Unlock()
+
+	launchCursor, err := store.Append(output.System, s.now(), fmt.Sprintf("%s restarted\n", rec.name))
+	if err != nil {
+		return Process{}, fmt.Errorf("restart marker: %w", err)
+	}
+	startedAt := s.now()
+	child, err := s.startProcess(process.Spec{
+		Dir:          launchCwd,
+		Argv:         append([]string(nil), argv...),
+		Env:          append([]string(nil), env...),
+		Output:       store,
+		MaxLineBytes: s.maxLineBytes,
+		Now:          s.now,
+	})
+	if err != nil {
+		return Process{}, err
+	}
+	if child == nil {
+		return Process{}, fmt.Errorf("%w: process starter returned nil child", ErrInvalidRequest)
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = child.Signal(syscall.SIGKILL)
+		<-child.Done()
+		_ = child.Wait()
+		return Process{}, ErrSupervisorClosed
+	}
+	if s.records[rec.key] != rec {
+		s.mu.Unlock()
+		_ = child.Signal(syscall.SIGKILL)
+		<-child.Done()
+		_ = child.Wait()
+		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
+	}
+	s.removeCompletedLocked(rec)
+	rec.child = child
+	rec.pid = child.PID()
+	rec.pgid = child.PGID()
+	rec.start = startedAt
+	rec.cursor = launchCursor
+	rec.restartCount++
+	rec.state = StateRunning
+	rec.result = process.Result{}
+	rec.terminalAt = time.Time{}
+	rec.terminal = false
+	rec.done = make(chan struct{})
+	restarted := rec.snapshotLocked()
+	s.mu.Unlock()
+
+	go s.reconcile(rec)
+	return restarted, nil
+}
+
+// Restarting reports whether name is between its stop and relaunch phases.
+func (s *Supervisor) Restarting(cwd, name string) bool {
+	rec, err := s.lookup(cwd, name)
+	if err != nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.records[rec.key] == rec && rec.restarting
+}
+
 func (s *Supervisor) reconcile(rec *record) {
 	result := rec.child.Wait()
 	if result.ExitedAt.IsZero() {
@@ -647,11 +771,11 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 		s.mu.RUnlock()
 		return WaitResult{}, &NotFoundError{Root: root, Name: processName}
 	}
-	store, start, launchCursor := rec.store, rec.start, rec.cursor
+	store, start, launchCursor, restarted := rec.store, rec.start, rec.cursor, rec.restartCount != 0
 	s.mu.RUnlock()
 
 	after := opts.After
-	if after == nil && launchCursor != 0 {
+	if after == nil && restarted {
 		after = &launchCursor
 	}
 	sub := store.Subscribe(output.ReadOptions{After: after, Match: opts.Match, MaxBytes: s.maxLineBytes})

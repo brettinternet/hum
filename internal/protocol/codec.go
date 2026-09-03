@@ -172,6 +172,7 @@ type Request struct {
 	Wait     *WaitRequest     `json:"-"`
 	Signal   *SignalRequest   `json:"-"`
 	Stop     *StopRequest     `json:"-"`
+	Restart  *RestartRequest  `json:"-"`
 	Shutdown *ShutdownRequest `json:"-"`
 }
 
@@ -195,7 +196,7 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	r.Raw = append(r.Raw[:0], data...)
 	r.Payload = append(r.Payload[:0], data...)
 	r.Version = 0
-	r.Hello, r.Start, r.List, r.Get, r.Output, r.Follow, r.Wait, r.Signal, r.Stop, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+	r.Hello, r.Start, r.List, r.Get, r.Output, r.Follow, r.Wait, r.Signal, r.Stop, r.Restart, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 
 	var err error
 	switch header.Op {
@@ -227,6 +228,9 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	case OpStop:
 		r.Stop = new(StopRequest)
 		err = json.Unmarshal(data, r.Stop)
+	case OpRestart:
+		r.Restart = new(RestartRequest)
+		err = json.Unmarshal(data, r.Restart)
 	case OpShutdown:
 		r.Shutdown = new(ShutdownRequest)
 		err = json.Unmarshal(data, r.Shutdown)
@@ -282,6 +286,9 @@ func (r Request) MarshalJSON() ([]byte, error) {
 	}
 	if r.Stop != nil {
 		return json.Marshal(r.Stop)
+	}
+	if r.Restart != nil {
+		return json.Marshal(r.Restart)
 	}
 	if r.Shutdown != nil {
 		return json.Marshal(r.Shutdown)

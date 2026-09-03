@@ -1441,3 +1441,140 @@ func TestWaitReachesExitAfterLineWithinSupervisorMaxLineBytes(t *testing.T) {
 		t.Fatalf("large-line exit wait = %#v, want exited code 7 at %v", got, child.result.ExitedAt)
 	}
 }
+
+func TestRestartPreservesLaunchAndOutputState(t *testing.T) {
+	root := makeProject(t, false)
+	children := []*timedChild{
+		{pid: 4101, done: make(chan struct{}), result: process.Result{ExitCode: 0, ExitedAt: time.Now()}},
+		{pid: 4102, done: make(chan struct{}), result: process.Result{ExitCode: 0, ExitedAt: time.Now().Add(time.Second)}},
+		{pid: 4103, done: make(chan struct{}), result: process.Result{ExitCode: 0, ExitedAt: time.Now().Add(2 * time.Second)}},
+	}
+	var (
+		mu      sync.Mutex
+		specs   []process.Spec
+		calls   int
+		entered = make(chan struct{})
+		release = make(chan struct{})
+	)
+	s := testSupervisor(t, Options{StartProcess: func(spec process.Spec) (Child, error) {
+		mu.Lock()
+		index := calls
+		calls++
+		specs = append(specs, process.Spec{
+			Dir: spec.Dir, Argv: append([]string(nil), spec.Argv...),
+			Env: append([]string(nil), spec.Env...), Output: spec.Output,
+			MaxLineBytes: spec.MaxLineBytes, Now: spec.Now,
+		})
+		mu.Unlock()
+		if index == 1 {
+			close(entered)
+			<-release
+		}
+		return children[index], nil
+	}})
+	request := StartRequest{
+		Name: "api", Cwd: root,
+		Argv: []string{"/bin/sh", "-c", "printf launch"},
+		Env:  []string{"TOKEN=secret", "PATH=/usr/bin:/bin"},
+	}
+	first, err := s.Start(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := s.Output(root, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCursor, err := store.Append(output.Stdout, time.Now(), "old-only\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type restartResult struct {
+		process Process
+		err     error
+	}
+	resultCh := make(chan restartResult, 1)
+	go func() {
+		restarted, restartErr := s.Restart(context.Background(), root, "api")
+		resultCh <- restartResult{process: restarted, err: restartErr}
+	}()
+	<-entered
+	if !s.Restarting(root, "api") {
+		t.Fatal("restart state was not visible while relaunch was blocked")
+	}
+	if _, err := s.Start(request); !errors.Is(err, ErrNameInUse) {
+		t.Fatalf("start during restart error = %v, want ErrNameInUse", err)
+	}
+	close(release)
+	result := <-resultCh
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	second := result.process
+	if second.PID == first.PID || second.RestartCount != 1 {
+		t.Fatalf("restarted process = %#v, want new PID and restart count 1", second)
+	}
+	if second.LaunchCursor <= oldCursor {
+		t.Fatalf("launch cursor = %d, want after old cursor %d", second.LaunchCursor, oldCursor)
+	}
+	sameStore, err := s.Output(root, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameStore != store {
+		t.Fatal("restart replaced the output store")
+	}
+	read, err := store.Read(output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundMarker := false
+	for _, entry := range read.Entries {
+		if entry.Cursor == second.LaunchCursor && entry.Stream == output.System && strings.Contains(entry.Text, "restarted") {
+			foundMarker = true
+		}
+	}
+	if !foundMarker {
+		t.Fatalf("restart marker missing from %#v", read.Entries)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	waited, err := s.Wait(ctx, root, "api", WaitOptions{Match: regexp.MustCompile("old-only")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited.Outcome != WaitTimedOut {
+		t.Fatalf("wait outcome = %q, want %q", waited.Outcome, WaitTimedOut)
+	}
+
+	mu.Lock()
+	if len(specs) != 2 {
+		t.Fatalf("start specs = %d, want 2", len(specs))
+	}
+	if specs[0].Dir != specs[1].Dir || !reflect.DeepEqual(specs[0].Argv, specs[1].Argv) || !reflect.DeepEqual(specs[0].Env, specs[1].Env) || specs[0].Output != specs[1].Output {
+		t.Fatalf("restart changed launch spec: first=%#v second=%#v", specs[0], specs[1])
+	}
+	mu.Unlock()
+
+	children[1].release()
+	waitExited(t, s, root, "api")
+	third, err := s.Restart(context.Background(), root, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.PID != 4103 || third.RestartCount != 2 {
+		t.Fatalf("restart of exited process = %#v", third)
+	}
+}
+
+func TestRestartRejectsInvalidAndMissingNames(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{})
+	if _, err := s.Restart(context.Background(), root, "not valid"); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("invalid-name error = %v", err)
+	}
+	if _, err := s.Restart(context.Background(), root, "missing"); err == nil {
+		t.Fatal("missing process restart succeeded")
+	}
+}

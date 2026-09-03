@@ -103,6 +103,17 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 		},
 		{
+			Name:      "restart",
+			Usage:     "restart one or more supervised processes",
+			ArgsUsage: "NAME...",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+			},
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return restartCommand(ctx, cmd, version, buildTime, writer)
+			},
+		},
+		{
 			Name:      "stop",
 			Usage:     "stop one or more supervised processes",
 			ArgsUsage: "NAME...",
@@ -698,6 +709,50 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		}
 	}
 	return firstErr
+}
+
+func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	names := cmd.Args().Slice()
+	if len(names) == 0 {
+		return errors.New("restart requires at least one process name")
+	}
+	ctx = nonNilContext(ctx)
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, cfg)
+	if err != nil {
+		if daemonUnavailable(err) {
+			return newUserFacingError(logsUnavailableMessage)
+		}
+		return err
+	}
+	defer client.Close()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
+	for _, name := range names {
+		process, err := client.Restart(ctx, daemon.RestartRequest{Name: name, Cwd: cwd})
+		if err != nil {
+			return err
+		}
+		result := restartResult{
+			Name:         process.Name,
+			PID:          process.PID,
+			Restarts:     process.RestartCount,
+			LaunchCursor: protocol.Cursor(process.LaunchCursor),
+		}
+		if cmd.Bool("json") {
+			if err := encodeJSON(writer, result); err != nil {
+				return err
+			}
+		} else if err := renderRestartHuman(writer, result); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func shutdownCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {

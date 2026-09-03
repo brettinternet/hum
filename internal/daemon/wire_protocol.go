@@ -57,6 +57,11 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 			return wireRequest{}, errors.New("stop request is missing payload")
 		}
 		wire.Name, wire.Cwd = req.Stop.Name, req.Stop.Cwd
+	case protocol.OpRestart:
+		if req.Restart == nil {
+			return wireRequest{}, errors.New("restart request is missing payload")
+		}
+		wire.Name, wire.Cwd = req.Restart.Name, req.Restart.Cwd
 	case protocol.OpShutdown:
 		if req.Shutdown == nil {
 			return wireRequest{}, errors.New("shutdown request is missing payload")
@@ -113,6 +118,8 @@ func writeProtocolResponse(encoder *protocol.Encoder, response wireResponse) err
 		return encoder.EncodeResponse(protocol.SignalResponse{Op: protocol.OpSignal, OK: response.OK})
 	case "stop":
 		return encoder.EncodeResponse(protocol.StopResponse{Op: protocol.OpStop, OK: response.OK, Process: optionalProtocolProcess(response.Process)})
+	case "restart":
+		return encoder.EncodeResponse(protocol.RestartResponse{Op: protocol.OpRestart, OK: response.OK, Process: optionalProtocolProcess(response.Process)})
 	case "wait":
 		return encoder.EncodeResponse(protocolWaitResponseFromWire(response))
 	case "shutdown":
