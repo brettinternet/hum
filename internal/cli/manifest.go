@@ -27,7 +27,7 @@ func loadManifest(cwd string) (manifestState, error) {
 	if err != nil {
 		return manifestState{}, err
 	}
-	defs, err := project.LoadDefinitions(root)
+	defs, err := project.ResolveDefinitions(root)
 	if err != nil {
 		return manifestState{}, err
 	}
@@ -36,6 +36,32 @@ func loadManifest(cwd string) (manifestState, error) {
 		byName[definition.Name] = definition
 	}
 	return manifestState{root: root, defs: defs, byName: byName}, nil
+}
+
+// loadManifestOrEmpty preserves the ad-hoc command path when no conventional
+// or explicit definition exists. Any other resolution failure remains
+// authoritative and is returned before a daemon is contacted.
+func loadManifestOrEmpty(cwd string) (manifestState, error) {
+	manifest, err := loadManifest(cwd)
+	if err == nil {
+		return manifest, nil
+	}
+	var noCandidate *project.NoCandidateError
+	if !errors.As(err, &noCandidate) {
+		return manifestState{}, err
+	}
+	root := noCandidate.Root
+	if root == "" {
+		root, err = app.DiscoverProjectRoot(cwd)
+		if err != nil {
+			return manifestState{}, err
+		}
+	}
+	return manifestState{
+		root:   root,
+		defs:   []project.Definition{},
+		byName: make(map[string]project.Definition),
+	}, nil
 }
 
 func readinessConfig(definition project.Definition) *protocol.ReadinessConfig {
@@ -57,7 +83,7 @@ func manifestProcess(definition project.Definition, root string) app.Process {
 }
 
 func manifestRootForLaunch(source, root string) string {
-	if source != "manifest" {
+	if source == "ad_hoc" {
 		return ""
 	}
 	return root
@@ -136,7 +162,11 @@ func manifestLaunchResultFor(definition project.Definition, process app.Process,
 	}
 	cursor := uint64(process.LaunchCursor)
 	result.LaunchCursor = &cursor
-	if process.State != app.StateRunning || process.Readiness == nil {
+	if process.State != app.StateRunning {
+		return result
+	}
+	if process.Readiness == nil {
+		result.Readiness = app.ReadinessRunningUnverified
 		return result
 	}
 	result.Readiness = process.Readiness.State
@@ -454,8 +484,11 @@ func manifestResultJSON(result manifestLaunchResult) manifestLaunchResult {
 }
 
 func processReadinessFields(process app.Process) (string, *protocol.Cursor) {
-	if process.State != app.StateRunning || process.Source == "" || process.Source == "ad_hoc" || process.Readiness == nil {
+	if process.State != app.StateRunning || process.Source == "" || process.Source == "ad_hoc" {
 		return "", nil
+	}
+	if process.Readiness == nil {
+		return app.ReadinessRunningUnverified, nil
 	}
 	var cursor *protocol.Cursor
 	if process.Readiness.Cursor != nil {

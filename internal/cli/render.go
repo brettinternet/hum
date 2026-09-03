@@ -82,9 +82,14 @@ func statusJSONFor(process app.Process) statusJSON {
 }
 
 type runResult struct {
-	Name   string          `json:"name"`
-	PID    int             `json:"pid"`
-	Cursor protocol.Cursor `json:"cursor"`
+	Name        string           `json:"name"`
+	Source      string           `json:"source,omitempty"`
+	Argv        []string         `json:"argv,omitempty"`
+	Outcome     string           `json:"outcome,omitempty"`
+	Readiness   string           `json:"readiness,omitempty"`
+	ReadyCursor *protocol.Cursor `json:"ready_cursor,omitempty"`
+	PID         int              `json:"pid"`
+	Cursor      protocol.Cursor  `json:"cursor"`
 }
 
 type stopResult struct {
@@ -374,7 +379,7 @@ func renderStopHuman(w io.Writer, result stopResult) error {
 
 func renderRestartHuman(w io.Writer, result restartResult) error {
 	line := fmt.Sprintf("%s restarted pid=%d restarts=%d launch_cursor=%d", result.Name, result.PID, result.Restarts, result.LaunchCursor)
-	if result.Source == "manifest" {
+	if result.Source != "" {
 		line += fmt.Sprintf(" source=%s argv=%s", result.Source, shellJoin(result.Argv))
 		if result.Readiness != "" {
 			line += " readiness=" + result.Readiness

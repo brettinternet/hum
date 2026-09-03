@@ -62,52 +62,61 @@ func LoadDefinitions(root string) ([]Definition, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hum.yaml: project root: %w", err)
 	}
+	definitions, _, err := loadDefinitions(root)
+	return definitions, err
+}
+
+// loadDefinitions parses hum.yaml and reports whether the manifest was
+// present. The presence bit is kept private so LoadDefinitions can retain its
+// historical missing-manifest behavior while ResolveDefinitions can make a
+// present manifest authoritative.
+func loadDefinitions(root string) ([]Definition, bool, error) {
 	filename := filepath.Join(root, "hum.yaml")
 	file, err := os.Open(filename)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			if _, lstatErr := os.Lstat(filename); errors.Is(lstatErr, os.ErrNotExist) {
-				return []Definition{}, nil
+				return []Definition{}, false, nil
 			}
 		}
-		return nil, fmt.Errorf("%s: open: %w", filename, err)
+		return nil, true, fmt.Errorf("%s: open: %w", filename, err)
 	}
 	defer file.Close()
 
 	contents, err := io.ReadAll(file)
 	if err != nil {
-		return nil, fmt.Errorf("%s: read: %w", filename, err)
+		return nil, true, fmt.Errorf("%s: read: %w", filename, err)
 	}
 	trimmed := bytes.TrimSpace(bytes.TrimPrefix(contents, []byte("\xef\xbb\xbf")))
 	if len(trimmed) > 0 && json.Valid(trimmed) {
-		return nil, manifestError(filename, "manifest", "unsupported format: JSON is not supported")
+		return nil, true, manifestError(filename, "manifest", "unsupported format: JSON is not supported")
 	}
 
 	decoder := yaml.NewDecoder(bytes.NewReader(contents))
 	var document yaml.Node
 	if err := decoder.Decode(&document); err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, manifestError(filename, "manifest", "document is empty")
+			return nil, true, manifestError(filename, "manifest", "document is empty")
 		}
-		return nil, fmt.Errorf("%s: decode YAML: %w", filename, err)
+		return nil, true, fmt.Errorf("%s: decode YAML: %w", filename, err)
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err == nil {
-		return nil, manifestError(filename, "manifest", "multiple YAML documents are not allowed")
+		return nil, true, manifestError(filename, "manifest", "multiple YAML documents are not allowed")
 	} else if !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%s: decode YAML: multiple documents are not allowed: %w", filename, err)
+		return nil, true, fmt.Errorf("%s: decode YAML: multiple documents are not allowed: %w", filename, err)
 	}
 
 	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0] == nil {
-		return nil, manifestError(filename, "manifest", "document must contain exactly one value")
+		return nil, true, manifestError(filename, "manifest", "document must contain exactly one value")
 	}
 	rootNode := document.Content[0]
 	if err := rejectForbidden(filename, "manifest", rootNode); err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	entries, err := decodeMapping(filename, "manifest", rootNode, manifestFields)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	fields := make(map[string]*yaml.Node, len(entries))
 	for _, entry := range entries {
@@ -116,16 +125,20 @@ func LoadDefinitions(root string) ([]Definition, error) {
 
 	versionNode, ok := fields["version"]
 	if !ok {
-		return nil, manifestError(filename, "manifest", "missing key %q", "version")
+		return nil, true, manifestError(filename, "manifest", "missing key %q", "version")
 	}
 	if err := parseVersion(filename, versionNode); err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	processesNode, ok := fields["processes"]
 	if !ok {
-		return nil, manifestError(filename, "manifest", "missing key %q", "processes")
+		return nil, true, manifestError(filename, "manifest", "missing key %q", "processes")
 	}
-	return parseProcesses(root, filename, processesNode)
+	definitions, err := parseProcesses(root, filename, processesNode)
+	if err != nil {
+		return nil, true, err
+	}
+	return definitions, true, nil
 }
 
 func parseVersion(filename string, node *yaml.Node) error {

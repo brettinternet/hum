@@ -333,7 +333,12 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
-	manifest, err := loadManifest(cwd)
+	var manifest manifestState
+	if len(argv) == 0 {
+		manifest, err = loadManifest(cwd)
+	} else {
+		manifest, err = loadManifestOrEmpty(cwd)
+	}
 	if err != nil {
 		return err
 	}
@@ -369,14 +374,37 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return err
 	}
 	if cmd.Bool("detach") {
-		if cmd.Bool("json") {
-			return encodeJSON(writer, runResult{
-				Name:   process.Name,
-				PID:    process.PID,
-				Cursor: protocol.Cursor(process.LaunchCursor),
-			})
+		result := runResult{
+			Name:   process.Name,
+			PID:    process.PID,
+			Cursor: protocol.Cursor(process.LaunchCursor),
 		}
-		_, err := fmt.Fprintf(writer, "started %s (PID %d, cursor %d)\n", process.Name, process.PID, process.LaunchCursor)
+		if process.Source != "" && process.Source != "ad_hoc" {
+			result.Source = process.Source
+			result.Argv = append([]string(nil), process.Argv...)
+			result.Outcome = "started"
+			if ready == nil {
+				result.Outcome = "running_unverified"
+				result.Readiness = "running_unverified"
+			} else if process.Readiness != nil {
+				result.Readiness = process.Readiness.State
+				if process.Readiness.Cursor != nil {
+					cursor := protocol.Cursor(*process.Readiness.Cursor)
+					result.ReadyCursor = &cursor
+				}
+			}
+		}
+		if cmd.Bool("json") {
+			return encodeJSON(writer, result)
+		}
+		if result.Source == "" {
+			_, err := fmt.Fprintf(writer, "started %s (PID %d, cursor %d)\n", process.Name, process.PID, process.LaunchCursor)
+			return err
+		}
+		_, err := fmt.Fprintf(writer,
+			"started %s (PID %d, cursor %d, source=%s, argv=%s, outcome=%s, readiness=%s)\n",
+			process.Name, process.PID, process.LaunchCursor, result.Source, shellJoin(result.Argv),
+			result.Outcome, result.Readiness)
 		return err
 	}
 	followRequest := daemon.FollowRequest{
@@ -444,7 +472,7 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
-	manifest, err := loadManifest(cwd)
+	manifest, err := loadManifestOrEmpty(cwd)
 	if err != nil {
 		return err
 	}
@@ -500,6 +528,10 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
+	manifest, err := loadManifestOrEmpty(cwd)
+	if err != nil {
+		return err
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -510,10 +542,6 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 			_ = client.Close()
 		}
 		if daemonUnavailable(err) {
-			manifest, manifestErr := loadManifest(cwd)
-			if manifestErr != nil {
-				return manifestErr
-			}
 			if definition, ok := manifest.byName[name]; ok {
 				return manifestUnavailableMessage(definition)
 			}
@@ -558,6 +586,10 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
+	manifest, err := loadManifestOrEmpty(cwd)
+	if err != nil {
+		return err
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -565,10 +597,6 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	client, err := daemonClient(ctx, cfg)
 	if err != nil {
 		if daemonUnavailable(err) {
-			manifest, manifestErr := loadManifest(cwd)
-			if manifestErr != nil {
-				return manifestErr
-			}
 			if definition, ok := manifest.byName[name]; ok {
 				return manifestUnavailableMessage(definition)
 			}
@@ -685,6 +713,10 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
+	manifest, err := loadManifestOrEmpty(cwd)
+	if err != nil {
+		return err
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -695,10 +727,6 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			_ = client.Close()
 		}
 		if daemonUnavailable(err) {
-			manifest, manifestErr := loadManifest(cwd)
-			if manifestErr != nil {
-				return manifestErr
-			}
 			if definition, ok := manifest.byName[name]; ok {
 				return manifestUnavailableMessage(definition)
 			}
@@ -835,7 +863,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
-	manifest, err := loadManifest(cwd)
+	manifest, err := loadManifestOrEmpty(cwd)
 	if err != nil {
 		return err
 	}
