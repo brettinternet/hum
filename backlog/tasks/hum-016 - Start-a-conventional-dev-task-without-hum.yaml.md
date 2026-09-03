@@ -1,10 +1,10 @@
 ---
 id: HUM-016
-title: Start a conventional dev task without hum.yaml
+title: Discover a conventional dev entrypoint without hum.yaml
 status: To Do
 assignee: []
 created_date: '2026-09-02 20:42'
-updated_date: '2026-09-02 20:45'
+updated_date: '2026-09-03 02:42'
 labels:
   - cli
   - config
@@ -29,24 +29,27 @@ ordinal: 1150
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: when a project has no `hum.yaml`, a human or agent can run `hum up` and get one deterministic, source-labelled conventional development process without first authoring configuration or retyping its underlying command.
 
-Scope: extend `internal/project` resolution so a present `hum.yaml` is always authoritative: valid YAML yields exactly its declarations, including an empty mapping; invalid YAML fails; neither case falls back to discovery. Only when the file is absent, inspect available project-level task runners through native machine-readable interfaces: exact local `dev` from `mise tasks --local --json` run at the project root and exact `dev` from `task --dir <root> --list-all --json`. Skip a runner whose executable is unavailable. Accept exactly one candidate and normalize it as `argv: [mise, run, dev]` or `argv: [task, dev]`; if both qualify, return an actionable ambiguity error.
+Scope: extend `internal/project` resolution so a present `hum.yaml` is always authoritative: valid YAML yields exactly its declarations, including an empty mapping; invalid YAML fails; neither case falls back to discovery. Only when the file is absent, inspect every supported root-level declaration without launching a development process, collect candidates, accept exactly one, and return an actionable ambiguity error listing every source when several qualify. Do not hide lower-priority candidates behind precedence.
 
-Only when neither project task qualifies, inspect the root `package.json` for an exact `scripts.dev`. Select its runner from `packageManager` first; otherwise require exactly one lockfile family among Bun (`bun.lock` or `bun.lockb`), pnpm (`pnpm-lock.yaml`), Yarn (`yarn.lock`), and npm (`package-lock.json` or `npm-shrinkwrap.json`). Conflicting families are an error; no lockfile defaults to npm. Normalize the inferred process as name `dev`, root cwd, source `mise`, `task`, or `package_json`, and runner argv `[bun|pnpm|yarn|npm, run, dev]`, with no readiness expression. Never parse or execute the package script body directly.
+Recognize these bounded conventions: an exact local Mise task `dev` through `mise tasks --local --json`; an exact Task task `dev` through `task --dir <root> --list-all --json`; an exact public Just recipe `dev` through Just's JSON dump for the root-resolved justfile; a literal non-pattern `dev` target in the root Makefile family, parsed conservatively without executing Make; an exact root `package.json` `scripts.dev`; an exact root `deno.json` or `deno.jsonc` `tasks.dev`; an exact root `composer.json` `scripts.dev`; an executable root `bin/dev`; and, for a root `mix.exs`, an available `phx.server` Mix task confirmed by Mix introspection. Skip command-backed detectors when their runner is unavailable. Malformed files or native machine-readable output for a present candidate source fail with a source-specific configuration error rather than falling through.
 
-The resolved definition powers `hum up`, `hum start dev`, `hum run dev` without argv, `hum restart dev`, and project-aware `hum list`. A discovered launch succeeds after spawn as `running_unverified`; it must never be reported ready. Malformed native output, ambiguity, and no candidate return typed, actionable errors and do not start a daemon.
+Normalize every candidate as the single name `dev`, root cwd, no readiness expression, stable source metadata, and exact argv: `[mise, run, dev]`, `[task, dev]`, `[just, dev]`, `[make, dev]`, the package runner's `[bun|pnpm|yarn|npm, run, dev]`, `[deno, task, dev]`, `[composer, run-script, dev]`, `[./bin/dev]`, or `[mix, phx.server]`. Package runner selection honors `packageManager` first, otherwise requires exactly one Bun, pnpm, Yarn, or npm lockfile family and defaults to npm only when none exists. Never parse or execute package, Composer, Deno, Just, Make, or Mix task bodies during Hum's own resolution, and never probe by starting likely commands.
 
-Non-goals: inferring commands other than exact `dev`, scanning workspace packages or nested manifests, combining multiple inferred processes, inferring ports/readiness/dependencies, parsing human-formatted runner output or package-script shell text, or overriding an explicit `hum.yaml`.
+The resolved definition powers `hum up`, `hum start dev`, `hum run dev` without argv, `hum restart dev`, and project-aware `hum list`. A discovered launch succeeds after spawn as `running_unverified`; it must never be reported ready. Ambiguity, malformed discovery input, and no candidate return typed, actionable errors and do not start a daemon. The no-candidate error names `hum.yaml` and the supported root-level conventions.
+
+Non-goals: language-level guesses such as bare `go run`, `cargo run`, framework launch commands other than confirmed `mix phx.server`, Docker Compose inference, scanning workspace packages or nested manifests, combining several inferred processes, inferring ports/readiness/dependencies, executing candidate commands to see which succeeds, or overriding an explicit `hum.yaml`.
 
 Modified-file contract: internal/project/, internal/cli/, integration/, internal/testutil/, README.md, docs/design.md.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/project -run 'TestResolveExplicit|TestDiscoverProjectTask'` exits 0 and proves explicit YAML wins without fallback, empty explicit definitions stay empty, unavailable task-runner executables are skipped, exact project-root mise/task dev tasks normalize with stable source metadata, malformed native output fails, and dual matches return an actionable ambiguity error.
-- [ ] #2 `go test ./internal/project -run TestDiscoverPackageDev` exits 0 and proves package discovery requires root scripts.dev, honors packageManager before lockfiles, recognizes each supported lockfile family, emits runner argv without parsing script text, defaults to npm only with no lockfile, and rejects conflicting families, malformed input, and workspace-only scripts.
-- [ ] #3 `go test ./internal/cli -run 'TestDiscoveredUp|TestDiscoveredStart|TestDiscoveredList|TestDiscoveryErrors'` exits 0 and proves up/start/run-without-argv/restart/list consume the same resolved dev definition, report running_unverified plus its source, never report readiness, and do not start a daemon for resolution errors.
-- [ ] #4 `go test ./integration -run TestZeroConfigDiscovery -count=1` exits 0 and proves a repository with one conventional dev task and no hum.yaml starts exactly once through hum up, is idempotent across start/run/restart/list, and exposes no underlying-command requirement to the caller.
-- [ ] #5 `go test -race ./internal/project ./internal/cli -run 'Discover|Discovered'` exits 0 and preserves one deterministic resolved definition and one running child under concurrent zero-config requests.
+- [ ] #1 `go test ./internal/project -run TestResolveExplicit -count=1` exits 0 and proves valid, empty, and invalid `hum.yaml` are authoritative and never fall back to discovery.
+- [ ] #2 `go test ./internal/project -run TestDiscoverTaskRunnerDev -count=1` exits 0 and proves exact root Mise, Task, Just, and conservative literal Make `dev` declarations normalize to their documented argv and source metadata without executing recipe bodies; unavailable command-backed runners are skipped and malformed introspection fails visibly.
+- [ ] #3 `go test ./internal/project -run TestDiscoverEcosystemDev -count=1` exits 0 and proves exact package, Deno, and Composer `dev` entries, executable `bin/dev`, and confirmed Mix `phx.server` normalize to documented argv; package-manager selection honors `packageManager`, recognizes every supported lockfile family, rejects conflicts, and no detector starts a development command.
+- [ ] #4 `go test ./internal/project -run TestDiscoveryAmbiguity -count=1` exits 0 and proves all supported sources are collected before selection, exactly one candidate succeeds, multiple candidates fail while naming every source, and no candidate fails while naming `hum.yaml` plus the supported conventions.
+- [ ] #5 `go test ./internal/cli -run 'TestDiscoveredUp|TestDiscoveredStart|TestDiscoveredList|TestDiscoveryErrors' -count=1` exits 0 and proves up/start/run-without-argv/restart/list consume the same inferred `dev` definition, report `running_unverified` and source metadata, never report readiness, and do not start a daemon for resolution errors.
+- [ ] #6 `go test ./integration -run TestZeroConfigDiscovery -count=1` exits 0 across representative task-runner, package, Mix/Phoenix, and executable `bin/dev` fixtures and proves one unambiguous root entrypoint starts exactly once, remains idempotent across start/run/restart/list, and exposes no underlying-command requirement to the caller.
 <!-- AC:END -->
 
 ## Definition of Done
