@@ -2,7 +2,7 @@
 
 hum is a local development process supervisor for humans and coding agents.
 
-The current CLI surface is intentionally limited to help and version output. Process and daemon commands (`serve`, `run`, `list`, `status`, `logs`, `wait`, `stop`, and `shutdown`) are planned. See the [hum design](docs/design.md) for the intended behavior and delivery order.
+The current CLI surface is intentionally limited to help and version output. Process and daemon commands (`serve`, `run`, `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `restart`, `stop`, `shutdown`, and `init`) are planned. See the [hum design](docs/design.md) for the intended behavior and delivery order.
 
 ## Planned lifecycle
 
@@ -29,7 +29,7 @@ hum serve           # foreground; diagnostics on stderr
 hum serve --daemon  # detached and idempotent; prints PID and socket after readiness
 ```
 
-Detached daemon diagnostics will use a bounded or rotating `daemon.log` in the private runtime directory. Concurrent starts will produce one daemon, and verified stale PID/socket files will be recovered safely. `run` is the only command that auto-starts it. If the daemon is unavailable, `list`, `status`, `logs`, `wait`, `stop`, and `shutdown` will suggest `hum serve --daemon` instead of starting an empty daemon.
+Detached daemon diagnostics will use a bounded or rotating `daemon.log` in the private runtime directory. Concurrent starts will produce one daemon, and verified stale PID/socket files will be recovered safely. Only launch commands (`run`, `start`, `up`) auto-start it. If the daemon is unavailable, `status`, `logs`, `wait`, and `restart` will report that nothing is running and name the launch command to use instead of starting an empty daemon.
 
 Follow logs without attaching process control:
 
@@ -41,7 +41,7 @@ hum logs api --after-cursor 2941 --limit-bytes 16000 --json
 
 Following is read-only: Ctrl+C cancels only that follower, and multiple followers may observe the same process. `--json --follow` will emit newline-delimited JSON events. Reads and streaming delivery remain bounded, and a lagging follower is told when earlier output was evicted.
 
-`hum stop api` will gracefully stop one managed process group. Daemon shutdown is distinct:
+`hum stop api` will gracefully stop one managed process group, and `hum down` will stop every process in the current project. Daemon shutdown is distinct:
 
 ```sh
 hum shutdown

@@ -4,7 +4,7 @@ title: Add cursor-based wait command
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:07'
-updated_date: '2026-09-02 20:27'
+updated_date: '2026-09-03 03:16'
 labels:
   - cli
   - output
@@ -27,18 +27,18 @@ ordinal: 900
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: after the lifecycle slice is green, clients can wait efficiently for existing or new matching output, process exit, or a deadline without receiving unsolicited logs, and scripts can branch on the exit code.
 
-Scope: `hum wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]`; `--after-cursor` defaults to 0 so retained output is searched first; subscribe internally to append/exit transitions without polling races; return a new cursor and distinguish matched, exited, and timed_out outcomes in human and stable JSON output; exit codes 0 when the awaited condition happened (a match when `--match` is given, otherwise exit), 2 on timeout, 3 when the process exited before matching, and 1 for errors; release waiters on cancellation/disconnection; validate cursors, regexes, durations, names, and server bounds. Wait never auto-starts the daemon; if unavailable it returns `Start it with hum serve --daemon.`
+Scope: `hum wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]`; `--after-cursor` defaults to the process launch cursor (the cursor recorded at its most recent launch, which is 0 until HUM-012 introduces restart) so retained output of the current incarnation is searched first and an earlier incarnation can never satisfy a later wait; `--timeout` defaults to 30s so a caller never blocks indefinitely; command help states that without `--match` wait returns on exit and that waiting for declared readiness is `hum start <name>` (HUM-014); subscribe internally to append/exit transitions without polling races; return a new cursor and distinguish matched, exited, and timed_out outcomes in human and stable JSON output; exit codes 0 when the awaited condition happened (a match when `--match` is given, otherwise exit), 2 on timeout, 3 when the process exited before matching, and 1 for errors; release waiters on cancellation/disconnection; validate cursors, regexes, durations, names, and server bounds. Wait never auto-starts the daemon; if unavailable it fails with `Nothing is running. Start a process with hum run <name> -- <command>.`
 
-Non-goals: streaming output (`logs --follow` owns that behavior), shell retries, persistence, daemon auto-start, or MCP.
+Non-goals: streaming output (`logs --follow` owns that behavior), shell retries, persistence, daemon auto-start, readiness expressions, or MCP.
 
 Modified-file contract: internal/output/, internal/app/, internal/protocol/, internal/cli/.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/output ./internal/app -run Wait` exits 0 and proves buffered-first matching from cursor 0 by default, no missed append race, exit wakeup, timeout, cancellation, and monotonic returned cursors.
-- [ ] #2 `go test ./internal/protocol ./internal/cli -run Wait` exits 0 and covers optional after-cursor, optional regex/timeout, stable matched/exited/timed_out JSON, human output, exit codes 0/2/3/1, validation errors, and unavailable-daemon guidance without auto-start.
-- [ ] #3 The built-binary integration scenario proves one wait returns 0 immediately for buffered matching output, one blocks until new matching output then returns 0, one returns exited with code 3 when matching, one without `--match` returns 0 on exit, one returns timed_out with code 2 and a new cursor, and an unavailable daemon returns `Start it with hum serve --daemon.` without creating runtime state.
+- [ ] #1 `go test ./internal/output ./internal/app -run Wait` exits 0 and proves buffered-first matching from the launch cursor by default, no missed append race, exit wakeup, timeout, cancellation, and monotonic returned cursors.
+- [ ] #2 `go test ./internal/protocol ./internal/cli -run Wait` exits 0 and covers optional after-cursor, optional regex, the 30s default timeout and explicit `--timeout`, help text naming exit-wait and `hum start`, stable matched/exited/timed_out JSON, human output, exit codes 0/2/3/1, validation errors, and unavailable-daemon guidance without auto-start.
+- [ ] #3 The built-binary integration scenario proves one wait returns 0 immediately for buffered matching output, one blocks until new matching output then returns 0, one returns exited with code 3 when matching, one without `--match` returns 0 on exit, one returns timed_out with code 2 and a new cursor, and an unavailable daemon prints `Nothing is running. Start a process with hum run <name> -- <command>.` without creating runtime state.
 - [ ] #4 `go test -race ./internal/output ./internal/app ./internal/daemon` exits 0 with concurrent append, exit, timeout, disconnect, log followers, and multiple waiters.
 <!-- AC:END -->
 

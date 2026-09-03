@@ -4,7 +4,7 @@ title: Add restart command
 status: To Do
 assignee: []
 created_date: '2026-09-02 20:13'
-updated_date: '2026-09-02 20:27'
+updated_date: '2026-09-03 03:16'
 labels:
   - cli
   - process
@@ -26,20 +26,20 @@ ordinal: 950
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: after the lifecycle slice is green, a human or agent can restart one managed process by name without knowing its command, and followers and cursors remain valid across the restart.
+Outcome: after the lifecycle slice is green, a human or agent can restart managed processes by name without knowing their commands, and followers and cursors remain valid across the restart.
 
-Scope: `hum restart <name> [--json]`; an application service that runs the stop sequence (SIGTERM, bounded grace, SIGKILL if needed), then relaunches the recorded argv, cwd, and environment under the same name while the name stays reserved; new PID and start time and an incremented restart count; the output sequence continues without cursor reset and records a system entry marking the restart; existing `logs --follow` clients observe the marker and the new output; a process that already exited can be restarted; human output and stable JSON with name, pid, restarts, and cursor; clear not-found and invalid-name errors. Restart never auto-starts the daemon; if unavailable it returns `Start it with hum serve --daemon.`
+Scope: `hum restart <name>... [--json]`; an application service that runs the stop sequence (SIGTERM, bounded grace, SIGKILL if needed), then relaunches the recorded argv, cwd, and environment under the same name while the name stays reserved; new PID and start time and an incremented restart count; each incarnation records its launch cursor so the HUM-009 `wait` default `--after-cursor` moves to the new incarnation and pre-restart lines can never satisfy a later wait; the output sequence continues without cursor reset and records a system entry marking the restart; existing `logs --follow` clients observe the marker and the new output; a process that already exited can be restarted; several names produce one stable result per name; human output and stable JSON with name, pid, restarts, and the new launch cursor; clear not-found and invalid-name errors. Restart never auto-starts the daemon; if unavailable it fails with `Nothing is running. Start a process with hum run <name> -- <command>.`
 
-Non-goals: manifest-driven relaunch (next milestone), changing argv/cwd/env, automatic restart on crash, backoff policies, or MCP.
+Non-goals: manifest-driven relaunch (next milestone), changing argv/cwd/env, automatic restart on crash, backoff policies, `down`, or MCP.
 
 Modified-file contract: internal/output/, internal/app/, internal/protocol/, internal/cli/.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/app ./internal/protocol ./internal/cli -run Restart` exits 0 and covers running and exited processes, name reservation during restart, identical argv/cwd/env relaunch, incremented restart count, invalid-name, missing-process, and unavailable-daemon states.
+- [ ] #1 `go test ./internal/app ./internal/protocol ./internal/cli -run Restart` exits 0 and covers running and exited processes, name reservation during restart, identical argv/cwd/env relaunch, incremented restart count and recorded launch cursor, several names with one result per name, invalid-name, missing-process, and unavailable-daemon states.
 - [ ] #2 `go test ./internal/output -run TestSystemEntry` exits 0 and proves a restart marker is appended as a system entry with a monotonic cursor visible to bounded reads and followers.
-- [ ] #3 Against the integration fixture, `hum restart api --json` returns a new PID with restarts incremented, a follower started before the restart prints the marker followed by the first line of the new process, and `hum logs api --after-cursor <pre-restart cursor>` returns output spanning both incarnations.
+- [ ] #3 Against the integration fixture, `hum restart api --json` returns a new PID with restarts incremented and the new launch cursor, a follower started before the restart prints the marker followed by the first line of the new process, `hum logs api --after-cursor <pre-restart cursor>` returns output spanning both incarnations, and `hum wait api --match <line only the first incarnation printed> --timeout 1s` after the restart times out with code 2 instead of matching the old line.
 <!-- AC:END -->
 
 ## Definition of Done
