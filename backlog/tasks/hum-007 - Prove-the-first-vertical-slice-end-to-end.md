@@ -4,7 +4,7 @@ title: Prove daemon lifecycle and observation end to end
 status: To Do
 assignee: []
 created_date: '2026-09-02 17:06'
-updated_date: '2026-09-02 20:27'
+updated_date: '2026-09-03 01:32'
 labels:
   - integration
   - tooling
@@ -41,7 +41,7 @@ Modified-file contract: integration/, internal/testutil/, Taskfile.dist.yaml, .g
 - [ ] #2 `go test ./integration -run 'TestAttachedRun|TestDetachedRun|TestReconnect' -count=1` exits 0 and proves client cwd and environment inheritance, live stdout/stderr, managed exit codes, Ctrl+C process-group forwarding, SIGTERM detaching the client without stopping the process, detached name/PID output, and attached-client loss without managed-process termination.
 - [ ] #3 `go test ./integration -run 'TestLogFollowers|TestNDJSONFollow' -count=1` exits 0 and proves initial bounded filters, cursor delivery, multiple followers, eviction reporting, cancellation without process termination, and operation after the original run client disconnects.
 - [ ] #4 `go test ./integration -run 'TestStopTree|TestShutdown' -count=1` exits 0 and proves stop removes child/grandchild trees, default shutdown refuses and lists `<project root>: <name>` entries, and `--stop-processes` uses SIGTERM/grace/SIGKILL before daemon exit.
-- [ ] #5 The macOS and Linux CI jobs each run `task ci` and the built-binary integration suite successfully.
+- [ ] #5 `test "$(grep -c "runs-on: macos-latest" .github/workflows/ci.yaml)" -ge 1 && test "$(grep -c "runs-on: ubuntu-latest" .github/workflows/ci.yaml)" -ge 1 && test "$(grep -c "task ci" .github/workflows/ci.yaml)" -ge 2` exits 0 and proves the committed GitHub Actions workflow defines macOS and Linux jobs that each invoke `task ci`; successful remote job results are owner-confirmed after task completion and are not an acceptance or completion gate.
 <!-- AC:END -->
 
 ## Definition of Done
@@ -53,3 +53,12 @@ Modified-file contract: integration/, internal/testutil/, Taskfile.dist.yaml, .g
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-03 01:32
+---
+Owner decision: implementing and locally inspecting the macOS/Linux GitHub Actions workflow completes AC#5. Agents must not request push or Actions permissions, wait for remote CI, or require the remote jobs to pass. The owner will confirm remote results and create a follow-up issue for failures.
+---
+<!-- COMMENTS:END -->
