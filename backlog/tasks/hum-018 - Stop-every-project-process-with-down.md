@@ -1,9 +1,10 @@
 ---
 id: HUM-018
 title: Stop every project process with down
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-03 03:15'
+updated_date: '2026-09-03 23:58'
 labels:
   - cli
   - process
@@ -37,17 +38,52 @@ Modified-file contract: internal/app/, internal/protocol/, internal/cli/, integr
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/app ./internal/protocol ./internal/cli -run Down -count=1` exits 0 and proves down stops every running record in the current project only, waits for graceful termination before SIGKILL per group, leaves other projects and the daemon running, returns one stable human/JSON result per name including not_running declared names, exits 0/1 as documented, and succeeds without a daemon printing `Nothing is running in this project.` while creating no runtime state.
-- [ ] #2 `go test ./integration -run TestDownWorkflow -count=1` exits 0 and proves `up` followed by `down --json` stops every declared process and a detached ad hoc record in the same project, a process in a second project keeps running, `list` then shows every project process stopped, the daemon still answers, and a second `down` is a no-op success.
-- [ ] #3 `go test ./internal/cli -run TestLifecycleHelp -count=1` exits 0 and README.md plus docs/design.md document `down` as the project-scoped inverse of `up`, distinct from `stop <name>...` and both `shutdown` modes.
+- [x] #1 `go test ./internal/app ./internal/protocol ./internal/cli -run Down -count=1` exits 0 and proves down stops every running record in the current project only, waits for graceful termination before SIGKILL per group, leaves other projects and the daemon running, returns one stable human/JSON result per name including not_running declared names, exits 0/1 as documented, and succeeds without a daemon printing `Nothing is running in this project.` while creating no runtime state.
+- [x] #2 `go test ./integration -run TestDownWorkflow -count=1` exits 0 and proves `up` followed by `down --json` stops every declared process and a detached ad hoc record in the same project, a process in a second project keeps running, `list` then shows every project process stopped, the daemon still answers, and a second `down` is a no-op success.
+- [x] #3 `go test ./internal/cli -run TestLifecycleHelp -count=1` exits 0 and README.md plus docs/design.md document `down` as the project-scoped inverse of `up`, distinct from `stop <name>...` and both `shutdown` modes.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+- [x] Implement project-scoped down protocol and application behavior
+- [x] Add CLI command, stable human/JSON output, and lifecycle help
+- [x] Add focused and end-to-end tests for isolation, no-daemon, failures, and no-op behavior
+- [x] Document down versus stop and shutdown
+- [x] Run all acceptance commands, independent verification, and task ci
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation commit: 0d32250 feat: add project-scoped down command
+
+AC#1 PASS — `go test ./internal/app ./internal/protocol ./internal/cli -run Down -count=1` exited 0: internal/app and internal/protocol passed with no matching tests; internal/cli passed.
+AC#2 PASS — `go test ./integration -run TestDownWorkflow -count=1` exited 0: hum/integration passed.
+AC#3 PASS — `go test ./internal/cli -run TestLifecycleHelp -count=1` exited 0: hum/internal/cli passed.
+
+Final commit gate PASS — `task ci` exited 0 on commit 0d32250; formatting/vet/staticcheck, all Go tests, race tests, build, and built-binary smoke passed.
+Adversarial review PASS after fixing daemon transport error classification and no-daemon manifest ordering; regression tests added for both.
+Modified-file contract PASS — implementation touches only README.md, docs/design.md, internal/cli/, and integration/.
+No tests were deleted, skipped, or weakened. No protected gate file was modified.
+
+Independent verifier PASS — AC1, AC2, AC3, modified-file contract, no weakened/deleted/skipped tests, and protected-file checks all passed against clean commit 0d32250 after both adversarial-review fixes.
+
+Main integration PASS — fast-forwarded main to 0d32250, then `task ci` exited 0 on merged main with checks, all tests, race tests, build, and smoke green.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented and integrated `hum down [--json]` as the project-scoped inverse of `up`. It stops current-project resolved and ad-hoc processes concurrently through independent daemon connections, preserves other projects and the daemon, includes declared not-running names, emits stable human/JSON results, and succeeds without daemon autostart when nothing is running. Added focused, lifecycle-help, and end-to-end coverage plus README/design documentation. All acceptance commands, adversarial review fixes, independent verifier PASS, final commit gate, and merged-main gate completed on 0d32250.
+<!-- SECTION:FINAL_SUMMARY:END -->
