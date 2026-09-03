@@ -52,6 +52,53 @@ func TestRestartCLIJSONAndHumanResults(t *testing.T) {
 	}
 }
 
+func TestRestartCLIMissingMiddleStopsProcessing(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+
+	first := stopShutdownStartProcess(t, server, projectRoot, "first", []string{"/bin/sh", "-c", "sleep 30"})
+	trailing := stopShutdownStartProcess(t, server, projectRoot, "trailing", []string{"/bin/sh", "-c", "sleep 30"})
+	stdout, stderr, err := stopShutdownRun(t, "restart", "--json", "first", "missing", "trailing")
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("restart with missing middle name: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+
+	lines := stopShutdownNonEmptyLines(stdout)
+	if len(lines) != 1 {
+		t.Fatalf("restart result count = %d, want only first success: %q", len(lines), stdout)
+	}
+	var result restartResult
+	if err := json.Unmarshal([]byte(lines[0]), &result); err != nil {
+		t.Fatalf("decode first restart result: %v (%q)", err, lines[0])
+	}
+	if result.Name != "first" || result.PID == first.PID || result.Restarts != 1 {
+		t.Fatalf("first restart result = %#v, original PID %d", result, first.PID)
+	}
+
+	var firstPID, trailingPID int
+	var firstRestarts, trailingRestarts int
+	for _, process := range stopShutdownListActive(t, server, projectRoot) {
+		switch process.Name {
+		case "first":
+			firstPID = process.PID
+			firstRestarts = process.RestartCount
+		case "trailing":
+			trailingPID = process.PID
+			trailingRestarts = process.RestartCount
+		}
+	}
+	if firstPID == 0 || firstPID == first.PID || firstRestarts != 1 {
+		t.Fatalf("first process after restart = pid %d restarts %d, want new PID and one restart", firstPID, firstRestarts)
+	}
+	if trailingPID != trailing.PID || trailingRestarts != 0 {
+		t.Fatalf("trailing process after missing middle name = pid %d restarts %d, want original PID %d and zero restarts", trailingPID, trailingRestarts, trailing.PID)
+	}
+}
+
 func TestRestartCLIInvalidMissingAndUnavailable(t *testing.T) {
 	t.Run("invalid and missing", func(t *testing.T) {
 		_ = stopShutdownTestProject(t)

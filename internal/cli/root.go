@@ -11,12 +11,16 @@ import (
 // and output writers.
 func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urfavecli.Command {
 	return &urfavecli.Command{
-		Name:        "hum",
-		Usage:       "A local development process supervisor",
-		Description: "Supervise development processes locally from the command line.",
-		Version:     version + " (built " + buildTime + ")",
-		Writer:      writer,
-		ErrWriter:   errWriter,
+		Name:  "hum",
+		Usage: "A local development process supervisor",
+		Description: "The ordinary workflow is hum run NAME -- COMMAND [ARGS...]. run automatically starts a detached daemon when needed and stays attached by default; add --detach to return immediately. " +
+			"hum serve runs the daemon in the foreground, while hum serve --daemon runs it detached. " +
+			"Read/control commands (excluding explicit hum serve) do not start an empty daemon: list, status, logs, wait, restart, stop, and shutdown inspect or control existing work; " +
+			"When nothing is running, status, logs, wait, and restart point to hum run <name> -- <command>, while stop and shutdown report that there is no work to do. " +
+			"Stopping named processes and shutting down the daemon are separate operations.",
+		Version:   version + " (built " + buildTime + ")",
+		Writer:    writer,
+		ErrWriter: errWriter,
 		Flags: []urfavecli.Flag{
 			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon"},
 			&urfavecli.StringFlag{Name: "stop-grace", Usage: "grace period before killing a process"},
