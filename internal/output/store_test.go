@@ -798,3 +798,89 @@ func TestSystemEntryRestartMarkerIsMonotonicAndVisible(t *testing.T) {
 		t.Fatalf("follower restart event = %#v", event)
 	}
 }
+
+func TestAppendObserverCapturesBeforeEviction(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 8, DefaultReadEntries: 8, DefaultReadBytes: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type observed struct {
+		entry Entry
+	}
+	seen := make(chan observed, 2)
+	observer := store.ObserveAppend(func(entry Entry) {
+		seen <- observed{entry: entry}
+	})
+	defer observer.Close()
+
+	first, err := store.Append(Stdout, time.Unix(1, 0), "ready\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(Stdout, time.Unix(2, 0), "filler\n"); err != nil {
+		t.Fatal(err)
+	}
+	if first != 0 {
+		t.Fatalf("first cursor = %d, want 0", first)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("observer callbacks = %d, want 2", len(seen))
+	}
+	got := <-seen
+	if got.entry.Cursor != first || got.entry.Text != "ready\n" {
+		t.Fatalf("first observed entry = %#v, want ready at cursor %d", got.entry, first)
+	}
+	if _, err := store.Read(ReadOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAppendObserverCloseWaitsForInFlightAppend(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	observer := store.ObserveAppend(func(Entry) {
+		close(entered)
+		<-release
+	})
+
+	appendDone := make(chan struct{})
+	go func() {
+		_, _ = store.Append(Stdout, time.Unix(1, 0), "one\n")
+		close(appendDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("append observer did not run")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		observer.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+		t.Fatal("observer Close returned while callback was in flight")
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-appendDone:
+	case <-time.After(time.Second):
+		t.Fatal("append did not finish after releasing observer")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("observer Close did not finish after append")
+	}
+
+	if _, err := store.Append(Stdout, time.Unix(2, 0), "two\n"); err != nil {
+		t.Fatal(err)
+	}
+}

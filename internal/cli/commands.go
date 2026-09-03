@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -53,6 +54,34 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 		},
 		{
+			Name:        "start",
+			Usage:       "ensure one or more manifest processes are running",
+			ArgsUsage:   "NAME...",
+			Description: "Start resolves names from hum.yaml, launches stopped declarations with the full client environment, and waits for readiness unless --no-wait is set.",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after the process is spawned"},
+				&urfavecli.StringFlag{Name: "timeout", Usage: "maximum readiness wait duration"},
+				&urfavecli.BoolFlag{Name: "json", Usage: "write one stable JSON object per name"},
+			},
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return startCommand(ctx, cmd, version, buildTime, writer)
+			},
+		},
+		{
+			Name:        "up",
+			Usage:       "ensure every manifest process is running",
+			ArgsUsage:   "",
+			Description: "Up resolves every hum.yaml declaration in lexical order, continues after launch failures, and waits for readiness concurrently unless --no-wait is set.",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after processes are spawned"},
+				&urfavecli.StringFlag{Name: "timeout", Usage: "maximum readiness wait duration"},
+				&urfavecli.BoolFlag{Name: "json", Usage: "write one stable JSON object per declaration"},
+			},
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return upCommand(ctx, cmd, version, buildTime, writer)
+			},
+		},
+		{
 			Name:      "list",
 			Usage:     "list supervised processes (current project by default)",
 			ArgsUsage: "",
@@ -71,7 +100,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:     "show one supervised process (read-only)",
 			ArgsUsage: "NAME",
 			Description: "Status only reads one named process and never starts a daemon. " +
-				"If no daemon is available, it reports Nothing is running and points to hum run <name> -- <command> as the launch command.",
+				"If no daemon is available, resolved manifest names point to hum start <name>; undefined names keep the hum run <name> -- <command> guidance.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
 			},
@@ -106,7 +135,8 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Description: "Without --match, wait returns when the process exits; with --match, it returns when output matches or the process exits. " +
 				"It searches from the current incarnation's launch cursor by default and waits at most 30s unless --timeout is set. " +
 				"Exit code is 0 for a match or an exit without --match, 3 when --match sees process exit first, and 2 on timeout. " +
-				"Current processes can use wait --match for output matching; declared readiness belongs to future resolved-process commands only. If no daemon is available, it points to hum run <name> -- <command> instead of starting one.",
+				"Current processes can use wait --match for output matching; future resolved-process commands use readiness from hum start and hum up. " +
+				"Without a daemon, resolved manifest names point to hum start <name>; undefined names keep the hum run <name> -- <command> guidance.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.Uint64Flag{Name: "after-cursor", DefaultText: "current launch cursor", Usage: "search entries after this cursor"},
 				&urfavecli.StringFlag{Name: "match", Usage: "wait for output matching this non-empty regular expression"},
@@ -245,6 +275,9 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 		return args[0], argv, nil
 	}
 	if separator < 0 {
+		if len(args) == 1 {
+			return args[0], nil, nil
+		}
 		return "", nil, errors.New("run requires a command after --")
 	}
 	if separator < 2 {
@@ -300,6 +333,27 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
+	manifest, err := loadManifest(cwd)
+	if err != nil {
+		return err
+	}
+	definition, declared := manifest.byName[name]
+	launchCwd := cwd
+	lookupCwd := cwd
+	source := "ad_hoc"
+	var ready *protocol.ReadinessConfig
+	if len(argv) == 0 {
+		if !declared {
+			return errors.New("run requires a command after --")
+		}
+		argv = append([]string(nil), definition.Argv...)
+		launchCwd = definition.Cwd
+		lookupCwd = manifest.root
+		source = definition.Source
+		ready = readinessConfig(definition)
+	} else if declared {
+		return fmt.Errorf("process %q is declared in hum.yaml; use hum start %s", name, name)
+	}
 	client, err := runDaemonClient(ctx, cfg)
 	if err != nil {
 		return err
@@ -307,7 +361,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	defer client.Close()
 	signals := notifyFollowSignals()
 	defer signal.Stop(signals)
-	process, err := client.Start(ctx, daemon.StartRequest{Name: name, Argv: argv, Cwd: cwd, Env: os.Environ()})
+	process, err := client.Start(ctx, daemon.StartRequest{Name: name, Source: source, Root: manifestRootForLaunch(source, manifest.root), Argv: argv, Cwd: launchCwd, Env: os.Environ(), Ready: ready})
 	if err != nil {
 		if isNameInUse(err) || errors.Is(err, app.ErrNameInUse) {
 			return fmt.Errorf("%w; watch it with hum logs %s --follow", err, name)
@@ -325,10 +379,9 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		_, err := fmt.Fprintf(writer, "started %s (PID %d, cursor %d)\n", process.Name, process.PID, process.LaunchCursor)
 		return err
 	}
-
 	followRequest := daemon.FollowRequest{
 		Name:       name,
-		Cwd:        cwd,
+		Cwd:        lookupCwd,
 		Stream:     protocol.StreamBoth,
 		MaxEntries: cfg.ReadEntries,
 		MaxBytes:   int(cfg.ReadBytes),
@@ -353,13 +406,13 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		if sig == os.Interrupt {
 			interrupts++
 			if interrupts == 1 {
-				err := client.Signal(context.Background(), daemon.SignalRequest{Name: name, Cwd: cwd, Signal: "SIGINT"})
+				err := client.Signal(context.Background(), daemon.SignalRequest{Name: name, Cwd: lookupCwd, Signal: "SIGINT"})
 				if isNotFound(err) {
 					return false, nil
 				}
 				return false, err
 			}
-			err := client.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: cwd})
+			err := client.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: lookupCwd})
 			if isNotFound(err) {
 				return false, nil
 			}
@@ -387,6 +440,14 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	ctx = nonNilContext(ctx)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
+	manifest, err := loadManifest(cwd)
+	if err != nil {
+		return err
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -394,25 +455,29 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	client, err := daemonClient(ctx, cfg)
 	if err != nil {
 		if daemonUnavailable(err) {
-			if cmd.Bool("json") {
-				return encodeJSON(writer, listJSON{Processes: []protocol.Process{}})
+			processes := make([]app.Process, 0, len(manifest.defs))
+			for _, definition := range manifest.defs {
+				processes = append(processes, manifestProcess(definition, manifest.root))
 			}
-			_, writeErr := fmt.Fprintln(writer, stopUnavailableMessage)
-			return writeErr
+			if cmd.Bool("json") {
+				items := make([]listProcessJSON, 0, len(processes))
+				for _, process := range processes {
+					items = append(items, processJSON(process))
+				}
+				return encodeJSON(writer, listJSON{Processes: items})
+			}
+			return renderListHuman(writer, processes, cmd.Bool("all"))
 		}
 		return err
 	}
 	defer client.Close()
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
-	}
 	processes, err := client.List(ctx, daemon.ListRequest{Cwd: cwd, All: cmd.Bool("all")})
 	if err != nil {
 		return err
 	}
+	processes = mergeManifestProcesses(manifest, processes)
 	if cmd.Bool("json") {
-		items := make([]protocol.Process, 0, len(processes))
+		items := make([]listProcessJSON, 0, len(processes))
 		for _, process := range processes {
 			items = append(items, processJSON(process))
 		}
@@ -431,6 +496,10 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	name := args[0]
 	ctx = nonNilContext(ctx)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -441,15 +510,18 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 			_ = client.Close()
 		}
 		if daemonUnavailable(err) {
+			manifest, manifestErr := loadManifest(cwd)
+			if manifestErr != nil {
+				return manifestErr
+			}
+			if definition, ok := manifest.byName[name]; ok {
+				return manifestUnavailableMessage(definition)
+			}
 			return newUserFacingError(logsUnavailableMessage)
 		}
 		return err
 	}
 	defer client.Close()
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
-	}
 	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd})
 	if err != nil {
 		return err
@@ -482,6 +554,10 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	name := args[0]
 	ctx = nonNilContext(ctx)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -489,15 +565,18 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	client, err := daemonClient(ctx, cfg)
 	if err != nil {
 		if daemonUnavailable(err) {
+			manifest, manifestErr := loadManifest(cwd)
+			if manifestErr != nil {
+				return manifestErr
+			}
+			if definition, ok := manifest.byName[name]; ok {
+				return manifestUnavailableMessage(definition)
+			}
 			return newUserFacingError(logsUnavailableMessage)
 		}
 		return err
 	}
 	defer client.Close()
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
-	}
 	maxBytes := int(cfg.ReadBytes)
 	if limitBytes != 0 {
 		maxBytes = limitBytes
@@ -602,6 +681,10 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -612,15 +695,18 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			_ = client.Close()
 		}
 		if daemonUnavailable(err) {
+			manifest, manifestErr := loadManifest(cwd)
+			if manifestErr != nil {
+				return manifestErr
+			}
+			if definition, ok := manifest.byName[name]; ok {
+				return manifestUnavailableMessage(definition)
+			}
 			return newUserFacingError(logsUnavailableMessage)
 		}
 		return err
 	}
 	defer client.Close()
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
-	}
 	result, err := client.Wait(ctx, daemon.WaitRequest{
 		Name:      name,
 		Cwd:       cwd,
@@ -745,6 +831,14 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		return errors.New("restart requires at least one process name")
 	}
 	ctx = nonNilContext(ctx)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
+	manifest, err := loadManifest(cwd)
+	if err != nil {
+		return err
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -752,28 +846,54 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 	client, err := daemonClient(ctx, cfg)
 	if err != nil {
 		if daemonUnavailable(err) {
+			for _, name := range names {
+				if definition, ok := manifest.byName[name]; ok {
+					return manifestUnavailableMessage(definition)
+				}
+			}
 			return newUserFacingError(logsUnavailableMessage)
 		}
 		return err
 	}
 	defer client.Close()
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
-	}
 	for _, name := range names {
-		process, err := client.Restart(ctx, daemon.RestartRequest{Name: name, Cwd: cwd})
+		request := daemon.RestartRequest{Name: name, Cwd: cwd}
+		definition, manifestLaunch := manifest.byName[name]
+		if manifestLaunch {
+			request.Update = true
+			request.Root = manifest.root
+			request.Cwd = definition.Cwd
+			request.Argv = append([]string(nil), definition.Argv...)
+			request.Env = manifestProcessEnv()
+			request.Source = definition.Source
+			request.Ready = readinessConfig(definition)
+		}
+		process, err := client.Restart(ctx, request)
 		if err != nil {
 			return err
 		}
+		readiness, readyCursor := processReadinessFields(process)
 		result := restartResult{
 			Name:         process.Name,
+			Source:       process.Source,
+			Argv:         append([]string(nil), process.Argv...),
 			PID:          process.PID,
 			Restarts:     process.RestartCount,
 			LaunchCursor: protocol.Cursor(process.LaunchCursor),
+			Readiness:    readiness,
+			ReadyCursor:  readyCursor,
 		}
 		if cmd.Bool("json") {
-			if err := encodeJSON(writer, result); err != nil {
+			if manifestLaunch {
+				if err := encodeJSON(writer, result); err != nil {
+					return err
+				}
+			} else if err := encodeJSON(writer, legacyRestartResult{
+				Name:         result.Name,
+				PID:          result.PID,
+				Restarts:     result.Restarts,
+				LaunchCursor: result.LaunchCursor,
+			}); err != nil {
 				return err
 			}
 		} else if err := renderRestartHuman(writer, result); err != nil {
@@ -836,6 +956,123 @@ func shutdownCommand(ctx context.Context, cmd *urfavecli.Command, version, build
 	return err
 }
 
+func startCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	names := cmd.Args().Slice()
+	if len(names) == 0 {
+		return errors.New("start requires at least one process name")
+	}
+	return manifestLaunchCommand(ctx, cmd, version, buildTime, writer, names)
+}
+
+func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	if err := requireNoArgs(cmd, "up"); err != nil {
+		return err
+	}
+	manifest, err := loadManifestForCommand()
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(manifest.defs))
+	for _, definition := range manifest.defs {
+		names = append(names, definition.Name)
+	}
+	return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifest, names)
+}
+
+func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, names []string) error {
+	manifest, err := loadManifestForCommand()
+	if err != nil {
+		return err
+	}
+	return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifest, names)
+}
+
+func loadManifestForCommand() (manifestState, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return manifestState{}, fmt.Errorf("current directory: %w", err)
+	}
+	return loadManifest(cwd)
+}
+
+func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string) error {
+	ctx = nonNilContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	timeoutOverride, err := manifestTimeoutOverride(cmd)
+	if err != nil {
+		return err
+	}
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return err
+	}
+	client, err := runDaemonClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
+	results := make([]manifestLaunchResult, len(names))
+	waitItems := make([]manifestWaitItem, 0, len(names))
+	env := manifestProcessEnv()
+	for index, name := range names {
+		definition, ok := manifest.byName[name]
+		if !ok {
+			results[index] = manifestLaunchError(undefinedManifestDefinition(name), fmt.Errorf("manifest does not declare process %q", name))
+			continue
+		}
+		result, process, _, ensureErr := ensureManifestStart(ctx, client, cwd, manifest.root, definition, env)
+		if ensureErr != nil {
+			results[index] = manifestLaunchError(definition, ensureErr)
+			continue
+		}
+		results[index] = result
+		if cmd.Bool("no-wait") || result.Outcome == "error" ||
+			process.State != app.StateRunning || process.Readiness == nil ||
+			process.Readiness.State != app.ReadinessStarting {
+			continue
+		}
+		timeout := timeoutOverride
+		if timeout == 0 {
+			timeout, err = parseManifestTimeout(cmd, definition)
+			if err != nil {
+				results[index] = manifestLaunchError(definition, err)
+				continue
+			}
+		}
+		waitItems = append(waitItems, manifestWaitItem{index: index, definition: definition, process: process, initial: result.Outcome, timeout: timeout})
+	}
+	var waits sync.WaitGroup
+	for _, item := range waitItems {
+		item := item
+		waits.Add(1)
+		go func() {
+			defer waits.Done()
+			waitResult, waitErr := manifestReadinessResult(client, ctx, cwd, item.definition, item.process, item.initial, item.timeout)
+			if waitErr != nil {
+				waitResult = manifestLaunchError(item.definition, waitErr)
+			}
+			results[item.index] = waitResult
+		}()
+	}
+	waits.Wait()
+	for _, result := range results {
+		if cmd.Bool("json") {
+			if err := encodeJSON(writer, manifestResultJSON(result)); err != nil {
+				return err
+			}
+		} else if err := renderManifestLaunchHuman(writer, result); err != nil {
+			return err
+		}
+	}
+	return aggregateManifestExit(results)
+
+}
 func notifyFollowSignals() chan os.Signal {
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)

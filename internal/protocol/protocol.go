@@ -11,7 +11,7 @@ import (
 
 // Version is the current private protocol version. The hello exchange carries
 // this value on every connection.
-const Version = 4
+const Version = 5
 
 // CurrentVersion is an explicit alias for Version for callers that prefer a
 // descriptive name.
@@ -173,14 +173,27 @@ func (r *ShutdownRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ReadinessConfig describes an output expression used to mark a resolved
+// process ready. Timeout is represented as a Go duration on the in-process
+// API and uses the standard duration JSON number on the wire.
+type ReadinessConfig struct {
+	Match   string        `json:"match"`
+	Timeout time.Duration `json:"timeout"`
+}
+
 // StartRequest asks the daemon to launch one direct-argv process. Env is sent
 // only in this request and is intentionally absent from every response DTO.
+// Root is the explicit manifest project root used for supervisor keying; Cwd
+// remains the child working directory.
 type StartRequest struct {
-	Op   Operation `json:"op"`
-	Name string    `json:"name"`
-	Argv []string  `json:"argv"`
-	Cwd  string    `json:"cwd"`
-	Env  []string  `json:"env"`
+	Op     Operation        `json:"op"`
+	Name   string           `json:"name"`
+	Argv   []string         `json:"argv"`
+	Cwd    string           `json:"cwd"`
+	Root   string           `json:"root,omitempty"`
+	Env    []string         `json:"env"`
+	Source string           `json:"source,omitempty"`
+	Ready  *ReadinessConfig `json:"ready,omitempty"`
 }
 
 // NewStartRequest builds a process start request.
@@ -191,23 +204,29 @@ func NewStartRequest(name string, argv []string, cwd string, env []string) Start
 // MarshalJSON writes the stable start request fields in protocol order.
 func (r StartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op   Operation `json:"op"`
-		Name string    `json:"name"`
-		Argv []string  `json:"argv"`
-		Cwd  string    `json:"cwd"`
-		Env  []string  `json:"env"`
-	}{Op: OpStart, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Env: r.Env})
+		Op     Operation        `json:"op"`
+		Name   string           `json:"name"`
+		Argv   []string         `json:"argv"`
+		Cwd    string           `json:"cwd"`
+		Root   string           `json:"root,omitempty"`
+		Env    []string         `json:"env"`
+		Source string           `json:"source,omitempty"`
+		Ready  *ReadinessConfig `json:"ready,omitempty"`
+	}{Op: OpStart, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready})
 }
 
 // UnmarshalJSON decodes a start request and validates its operation when
 // present.
 func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op   Operation `json:"op"`
-		Name string    `json:"name"`
-		Argv []string  `json:"argv"`
-		Cwd  string    `json:"cwd"`
-		Env  []string  `json:"env"`
+		Op     Operation        `json:"op"`
+		Name   string           `json:"name"`
+		Argv   []string         `json:"argv"`
+		Cwd    string           `json:"cwd"`
+		Root   string           `json:"root"`
+		Env    []string         `json:"env"`
+		Source string           `json:"source"`
+		Ready  *ReadinessConfig `json:"ready"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -216,7 +235,8 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
 	r.Op = OpStart
-	r.Name, r.Argv, r.Cwd, r.Env = wire.Name, wire.Argv, wire.Cwd, wire.Env
+	r.Name, r.Argv, r.Cwd, r.Root, r.Env = wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env
+	r.Source, r.Ready = wire.Source, wire.Ready
 	return nil
 }
 
@@ -555,34 +575,56 @@ func (r *StopRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// RestartRequest asks the daemon to restart one process with its recorded
-// launch specification.
+// RestartRequest asks the daemon to restart one process. By default it uses
+// the process's retained launch specification. Update requests replace that
+// specification atomically before relaunching; Env is request-only and is
+// never echoed in a response. Root is the explicit manifest root used for
+// lookup and retained record keying; Cwd remains the update child directory.
 type RestartRequest struct {
-	Op   Operation `json:"op"`
-	Name string    `json:"name"`
-	Cwd  string    `json:"cwd"`
+	Op     Operation        `json:"op"`
+	Name   string           `json:"name"`
+	Cwd    string           `json:"cwd"`
+	Root   string           `json:"root,omitempty"`
+	Update bool             `json:"update,omitempty"`
+	Argv   []string         `json:"argv,omitempty"`
+	Env    []string         `json:"env,omitempty"`
+	Source string           `json:"source,omitempty"`
+	Ready  *ReadinessConfig `json:"ready,omitempty"`
 }
 
-// NewRestartRequest builds a restart request.
+// NewRestartRequest builds a restart request that preserves the retained
+// launch specification.
 func NewRestartRequest(name, cwd string) RestartRequest {
 	return RestartRequest{Op: OpRestart, Name: name, Cwd: cwd}
 }
 
-// MarshalJSON writes a restart request with its stable operation.
+// MarshalJSON writes the stable restart request fields in protocol order.
 func (r RestartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op   Operation `json:"op"`
-		Name string    `json:"name"`
-		Cwd  string    `json:"cwd"`
-	}{Op: OpRestart, Name: r.Name, Cwd: r.Cwd})
+		Op     Operation        `json:"op"`
+		Name   string           `json:"name"`
+		Cwd    string           `json:"cwd"`
+		Root   string           `json:"root,omitempty"`
+		Update bool             `json:"update,omitempty"`
+		Argv   []string         `json:"argv,omitempty"`
+		Env    []string         `json:"env,omitempty"`
+		Source string           `json:"source,omitempty"`
+		Ready  *ReadinessConfig `json:"ready,omitempty"`
+	}{Op: OpRestart, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready})
 }
 
 // UnmarshalJSON decodes a restart request.
 func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op   Operation `json:"op"`
-		Name string    `json:"name"`
-		Cwd  string    `json:"cwd"`
+		Op     Operation        `json:"op"`
+		Name   string           `json:"name"`
+		Cwd    string           `json:"cwd"`
+		Root   string           `json:"root"`
+		Update bool             `json:"update"`
+		Argv   []string         `json:"argv"`
+		Env    []string         `json:"env"`
+		Source string           `json:"source"`
+		Ready  *ReadinessConfig `json:"ready"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -590,7 +632,8 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpRestart {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Name, r.Cwd = OpRestart, wire.Name, wire.Cwd
+	r.Op, r.Name, r.Cwd, r.Root = OpRestart, wire.Name, wire.Cwd, wire.Root
+	r.Update, r.Argv, r.Env, r.Source, r.Ready = wire.Update, wire.Argv, wire.Env, wire.Source, wire.Ready
 	return nil
 }
 
@@ -637,10 +680,17 @@ type Readiness struct {
 	Match  string    `json:"match,omitempty"`
 }
 
+const (
+	ReadinessStarting          = "starting"
+	ReadinessReady             = "ready"
+	ReadinessRunningUnverified = "running_unverified"
+)
+
 // Process is the response-safe process snapshot. It deliberately has no Env
 // field; the environment supplied by StartRequest is never echoed.
 type Process struct {
 	Name         string     `json:"name"`
+	Source       string     `json:"source,omitempty"`
 	Root         string     `json:"root"`
 	PID          int        `json:"pid"`
 	PGID         int        `json:"pgid"`

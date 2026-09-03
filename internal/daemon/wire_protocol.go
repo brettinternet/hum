@@ -21,7 +21,8 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		if req.Start == nil {
 			return wireRequest{}, errors.New("start request is missing payload")
 		}
-		wire.Name, wire.Argv, wire.Cwd, wire.Env = req.Start.Name, req.Start.Argv, req.Start.Cwd, req.Start.Env
+		wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env = req.Start.Name, req.Start.Argv, req.Start.Cwd, req.Start.Root, req.Start.Env
+		wire.Source, wire.Ready = req.Start.Source, wireReadinessConfigFromProtocol(req.Start.Ready)
 	case protocol.OpList:
 		if req.List == nil {
 			return wireRequest{}, errors.New("list request is missing payload")
@@ -61,7 +62,9 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		if req.Restart == nil {
 			return wireRequest{}, errors.New("restart request is missing payload")
 		}
-		wire.Name, wire.Cwd = req.Restart.Name, req.Restart.Cwd
+		wire.Name, wire.Cwd, wire.Root = req.Restart.Name, req.Restart.Cwd, req.Restart.Root
+		wire.Update, wire.Argv, wire.Env = req.Restart.Update, req.Restart.Argv, req.Restart.Env
+		wire.Source, wire.Ready = req.Restart.Source, wireReadinessConfigFromProtocol(req.Restart.Ready)
 	case protocol.OpShutdown:
 		if req.Shutdown == nil {
 			return wireRequest{}, errors.New("shutdown request is missing payload")
@@ -71,6 +74,26 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		return wireRequest{}, fmt.Errorf("unsupported operation %q", req.Op)
 	}
 	return wire, nil
+}
+func wireReadinessConfigFromProtocol(config *protocol.ReadinessConfig) *wireReadinessConfig {
+	if config == nil {
+		return nil
+	}
+	return &wireReadinessConfig{Match: config.Match, Timeout: config.Timeout}
+}
+
+func protocolReadinessConfigFromWire(config *wireReadinessConfig) *protocol.ReadinessConfig {
+	if config == nil {
+		return nil
+	}
+	return &protocol.ReadinessConfig{Match: config.Match, Timeout: config.Timeout}
+}
+
+func appReadinessConfigFromWire(config *wireReadinessConfig) *app.ReadinessConfig {
+	if config == nil {
+		return nil
+	}
+	return &app.ReadinessConfig{Match: config.Match, Timeout: config.Timeout}
 }
 
 func wireRequestFromProtocolOutput(op, name, cwd string, after *protocol.Cursor, tail int, stream protocol.Stream, match string, maxEntries, maxBytes int) wireRequest {
@@ -147,10 +170,16 @@ func wireErrorToProtocol(wire *wireError) *protocol.WireError {
 
 func protocolProcessFromWire(item wireProcess) protocol.Process {
 	result := protocol.Process{
-		Name: item.Name, Root: item.Root, PID: item.PID, PGID: item.PGID,
+		Name: item.Name, Source: item.Source, Root: item.Root, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: protocol.Cursor(item.LaunchCursor), State: item.State,
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
+	}
+	if item.Readiness != nil {
+		result.Readiness = &protocol.Readiness{
+			State: item.Readiness.State, Cursor: protocolCursorFromUint64(item.Readiness.Cursor),
+			Time: item.Readiness.Time, Match: item.Readiness.Match,
+		}
 	}
 	if item.Exit != nil {
 		exitCode := item.Exit.Code

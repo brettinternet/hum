@@ -16,7 +16,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":4}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":5}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -107,6 +107,21 @@ func TestOperationRequestsRoundTripThroughDecoder(t *testing.T) {
 		{name: "stop", value: NewStopRequest("api", "/tmp/project"), op: OpStop, check: func(t *testing.T, req Request) {
 			if req.Stop == nil || req.Stop.Name != "api" {
 				t.Fatalf("stop request = %#v", req.Stop)
+			}
+		}},
+		{name: "restart", value: func() RestartRequest {
+			r := NewRestartRequest("api", "/tmp/project")
+			r.Update = true
+			r.Argv = []string{"./server", "--port", "8080"}
+			r.Env = []string{"TOKEN=updated"}
+			r.Source = "manifest"
+			r.Ready = &ReadinessConfig{Match: "ready", Timeout: time.Second}
+			return r
+		}(), op: OpRestart, check: func(t *testing.T, req Request) {
+			if req.Restart == nil || !req.Restart.Update || !reflect.DeepEqual(req.Restart.Argv, []string{"./server", "--port", "8080"}) ||
+				!reflect.DeepEqual(req.Restart.Env, []string{"TOKEN=updated"}) || req.Restart.Source != "manifest" ||
+				req.Restart.Ready == nil || req.Restart.Ready.Match != "ready" {
+				t.Fatalf("restart request = %#v", req.Restart)
 			}
 		}},
 		{name: "shutdown", value: NewShutdownRequest(false), op: OpShutdown, check: func(t *testing.T, req Request) {
@@ -468,7 +483,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":4}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":5}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError
@@ -628,7 +643,7 @@ func TestRestartProtocolRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Restart == nil || *decoded.Restart != request {
+	if decoded.Restart == nil || !reflect.DeepEqual(*decoded.Restart, request) {
 		t.Fatalf("decoded restart = %#v", decoded.Restart)
 	}
 
@@ -645,5 +660,101 @@ func TestRestartProtocolRoundTrip(t *testing.T) {
 	if decodedResponse.Op != OpRestart || !decodedResponse.OK || decodedResponse.Process == nil ||
 		decodedResponse.Process.PID != 42 || decodedResponse.Process.LaunchCursor != 7 || decodedResponse.Process.RestartCount != 2 {
 		t.Fatalf("decoded response = %#v", decodedResponse)
+	}
+}
+
+func TestReadinessFieldProtocolRoundTrip(t *testing.T) {
+	at := time.Unix(231, 456).UTC()
+	matchingCursor := Cursor(12)
+	request := StartRequest{
+		Op: OpStart, Name: "api", Source: "manifest:hum.yaml",
+		Argv: []string{"server", "--port", "8080"}, Cwd: "/project",
+		Env:   []string{"TOKEN=do-not-echo"},
+		Ready: &ReadinessConfig{Match: `listening`, Timeout: 1500 * time.Millisecond},
+	}
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decodedRequest StartRequest
+	if err := json.Unmarshal(raw, &decodedRequest); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decodedRequest, request) {
+		t.Fatalf("decoded readiness request = %#v, want %#v", decodedRequest, request)
+	}
+	if !bytes.Contains(raw, []byte(`"source":"manifest:hum.yaml"`)) ||
+		!bytes.Contains(raw, []byte(`"ready":{"match":"listening"`)) {
+		t.Fatalf("readiness request fields missing from %s", raw)
+	}
+
+	process := Process{
+		Name: "api", Source: "manifest:hum.yaml", Root: "/project",
+		PID: 42, PGID: 42, Cwd: "/project", Argv: request.Argv,
+		Start: at, LaunchCursor: 7, State: "running",
+		Readiness: &Readiness{
+			State: ReadinessReady, Cursor: &matchingCursor, Time: at,
+			Match: `listening`,
+		},
+	}
+	response, err := json.Marshal(NewStartResponse(process))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(response, []byte(`"env"`)) || bytes.Contains(response, []byte("do-not-echo")) {
+		t.Fatalf("readiness response leaked environment: %s", response)
+	}
+	var decodedResponse StartResponse
+	if err := json.Unmarshal(response, &decodedResponse); err != nil {
+		t.Fatal(err)
+	}
+	if decodedResponse.Process == nil || decodedResponse.Process.Source != process.Source ||
+		decodedResponse.Process.Readiness == nil ||
+		decodedResponse.Process.Readiness.State != ReadinessReady ||
+		decodedResponse.Process.Readiness.Cursor == nil ||
+		*decodedResponse.Process.Readiness.Cursor != matchingCursor ||
+		decodedResponse.Process.Readiness.Match != `listening` {
+		t.Fatalf("decoded readiness response = %#v", decodedResponse)
+	}
+}
+
+func TestExplicitRootRequestRoundTrip(t *testing.T) {
+	start := StartRequest{
+		Op: OpStart, Name: "api", Root: "/outer/project", Cwd: "/outer/project/tool",
+		Argv: []string{"server"}, Env: []string{"TOKEN=secret"},
+	}
+	raw, err := json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"root":"/outer/project"`)) {
+		t.Fatalf("start request omitted explicit root: %s", raw)
+	}
+	var decodedStart StartRequest
+	if err := json.Unmarshal(raw, &decodedStart); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decodedStart, start) {
+		t.Fatalf("decoded start = %#v, want %#v", decodedStart, start)
+	}
+
+	restart := RestartRequest{
+		Op: OpRestart, Name: "api", Root: "/outer/project", Cwd: "/outer/project/tool",
+		Update: true, Argv: []string{"server", "--reload"}, Source: "manifest",
+		Ready: &ReadinessConfig{Match: "ready", Timeout: time.Second},
+	}
+	raw, err = json.Marshal(restart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"root":"/outer/project"`)) {
+		t.Fatalf("restart request omitted explicit root: %s", raw)
+	}
+	var decodedRestart RestartRequest
+	if err := json.Unmarshal(raw, &decodedRestart); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decodedRestart, restart) {
+		t.Fatalf("decoded restart = %#v, want %#v", decodedRestart, restart)
 	}
 }

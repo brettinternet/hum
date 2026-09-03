@@ -168,7 +168,11 @@ func (c *Client) SocketPath() string {
 }
 
 func (c *Client) Start(ctx context.Context, req StartRequest) (app.Process, error) {
-	response, err := c.roundTrip(ctx, wireRequest{Op: "start", Name: req.Name, Argv: append([]string(nil), req.Argv...), Cwd: req.Cwd, Env: append([]string(nil), req.Env...)})
+	response, err := c.roundTrip(ctx, wireRequest{
+		Op: "start", Name: req.Name, Source: req.Source, Root: req.Root,
+		Argv: append([]string(nil), req.Argv...), Cwd: req.Cwd,
+		Env: append([]string(nil), req.Env...), Ready: wireReadinessConfigFromProtocol(req.Ready),
+	})
 	if err != nil {
 		return app.Process{}, err
 	}
@@ -317,7 +321,11 @@ func (c *Client) Stop(ctx context.Context, req StopRequest) error {
 }
 
 func (c *Client) Restart(ctx context.Context, req RestartRequest) (app.Process, error) {
-	response, err := c.roundTrip(ctx, wireRequest{Op: "restart", Name: req.Name, Cwd: req.Cwd})
+	response, err := c.roundTrip(ctx, wireRequest{
+		Op: "restart", Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
+		Argv: append([]string(nil), req.Argv...), Env: append([]string(nil), req.Env...),
+		Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready),
+	})
 	if err != nil {
 		return app.Process{}, err
 	}
@@ -479,7 +487,10 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 	case "hello":
 		value = protocol.Hello{Op: protocol.OpHello, Version: req.Version}
 	case "start":
-		value = protocol.StartRequest{Op: protocol.OpStart, Name: req.Name, Argv: req.Argv, Cwd: req.Cwd, Env: req.Env}
+		value = protocol.StartRequest{
+			Op: protocol.OpStart, Name: req.Name, Argv: req.Argv, Cwd: req.Cwd, Root: req.Root, Env: req.Env,
+			Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready),
+		}
 	case "list":
 		value = protocol.ListRequest{Op: protocol.OpList, Cwd: req.Cwd, All: req.All, IncludeCompleted: req.IncludeCompleted}
 	case "get":
@@ -495,7 +506,11 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 	case "stop":
 		value = protocol.StopRequest{Op: protocol.OpStop, Name: req.Name, Cwd: req.Cwd}
 	case "restart":
-		value = protocol.RestartRequest{Op: protocol.OpRestart, Name: req.Name, Cwd: req.Cwd}
+		value = protocol.RestartRequest{
+			Op: protocol.OpRestart, Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
+			Argv: req.Argv, Env: req.Env, Source: req.Source,
+			Ready: protocolReadinessConfigFromWire(req.Ready),
+		}
 	case "shutdown":
 		value = protocol.ShutdownRequest{Op: protocol.OpShutdown, Force: req.Force}
 	default:
@@ -614,10 +629,16 @@ func wireErrorToError(wire *wireError) error {
 
 func appProcessFromWire(item wireProcess) app.Process {
 	result := app.Process{
-		Name: item.Name, Root: item.Root, PID: item.PID, PGID: item.PGID,
+		Name: item.Name, Source: item.Source, Root: item.Root, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: output.Cursor(item.LaunchCursor), State: app.State(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
+	}
+	if item.Readiness != nil {
+		result.Readiness = &app.Readiness{
+			State: item.Readiness.State, Cursor: cursorFromUint64(item.Readiness.Cursor),
+			Time: item.Readiness.Time, Match: item.Readiness.Match,
+		}
 	}
 	if item.NextCursor != nil {
 		result.NextCursor = output.Cursor(*item.NextCursor)

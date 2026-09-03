@@ -1989,3 +1989,465 @@ func TestRestartFailedStartReleasesReservationAndReevicts(t *testing.T) {
 		t.Fatalf("restart after ordinary start failure = %v", err)
 	}
 }
+
+func waitForReadinessState(t *testing.T, s *Supervisor, cwd, name, want string) Process {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		model, err := s.Get(cwd, name)
+		if err == nil && model.Readiness != nil && model.Readiness.State == want {
+			return model
+		}
+		time.Sleep(time.Millisecond)
+	}
+	model, err := s.Get(cwd, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("process %q readiness = %#v, want state %q", name, model.Readiness, want)
+	return Process{}
+}
+
+func TestManifestReadinessRetention(t *testing.T) {
+	root := makeProject(t, false)
+	child := newSubscriptionChild(6001, 0, time.Unix(201, 0), "")
+	s := testSupervisor(t, Options{
+		OutputLimits: output.Limits{
+			RetainedBytes:      8,
+			DefaultReadEntries: 8,
+			DefaultReadBytes:   64,
+		},
+		StartProcess: func(spec process.Spec) (Child, error) {
+			child.store = spec.Output
+			return child, nil
+		},
+	})
+	started, err := s.Start(StartRequest{
+		Name: "web", Source: "manifest:hum.yaml", Cwd: root,
+		Argv:  []string{"/bin/fake", "web"},
+		Ready: &ReadinessConfig{Match: `^ready$`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Readiness == nil || started.Readiness.State != ReadinessStarting {
+		t.Fatalf("initial readiness = %#v, want starting", started.Readiness)
+	}
+	store, err := s.Output(root, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	matchingCursor, err := store.Append(output.Stdout, time.Unix(202, 0), "ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := waitForReadinessState(t, s, root, "web", ReadinessReady)
+	if ready.Source != "manifest:hum.yaml" || ready.Readiness == nil ||
+		ready.Readiness.Cursor == nil || *ready.Readiness.Cursor != matchingCursor {
+		t.Fatalf("ready snapshot = %#v, want source and cursor %d", ready, matchingCursor)
+	}
+	if _, err := store.Append(output.Stdout, time.Unix(203, 0), "filler"); err != nil {
+		t.Fatal(err)
+	}
+	read, err := store.Read(output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Oldest == nil || *read.Oldest <= matchingCursor {
+		t.Fatalf("retained output oldest = %#v, want match cursor %d evicted", read.Oldest, matchingCursor)
+	}
+	retained, err := s.Get(root, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained.Readiness == nil || retained.Readiness.State != ReadinessReady ||
+		retained.Readiness.Cursor == nil || *retained.Readiness.Cursor != matchingCursor {
+		t.Fatalf("readiness after eviction = %#v, want ready cursor %d", retained.Readiness, matchingCursor)
+	}
+}
+
+func TestManifestRestartReadinessReset(t *testing.T) {
+	root := makeProject(t, false)
+	first := newSubscriptionChild(6101, 0, time.Unix(211, 0), "")
+	second := newSubscriptionChild(6102, 0, time.Unix(212, 0), "")
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	s := testSupervisor(t, Options{
+		StartProcess: func(spec process.Spec) (Child, error) {
+			mu.Lock()
+			index := calls
+			calls++
+			mu.Unlock()
+			switch index {
+			case 0:
+				first.store = spec.Output
+				return first, nil
+			case 1:
+				second.store = spec.Output
+				return second, nil
+			default:
+				return nil, fmt.Errorf("unexpected launch %d", index)
+			}
+		},
+	})
+	if _, err := s.Start(StartRequest{
+		Name: "api", Source: "manifest:hum.yaml", Cwd: root,
+		Argv:  []string{"/bin/fake", "api"},
+		Env:   []string{"TOKEN=secret"},
+		Ready: &ReadinessConfig{Match: `ready`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := s.Output(root, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCursor, err := store.Append(output.Stdout, time.Unix(213, 0), "ready old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := waitForReadinessState(t, s, root, "api", ReadinessReady)
+	if ready.Readiness == nil || ready.Readiness.Cursor == nil || *ready.Readiness.Cursor != oldCursor {
+		t.Fatalf("first readiness = %#v, want cursor %d", ready.Readiness, oldCursor)
+	}
+	restarted, err := s.Restart(context.Background(), root, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.Readiness == nil || restarted.Readiness.State != ReadinessStarting {
+		t.Fatalf("restarted readiness = %#v, want starting", restarted.Readiness)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	oldWait, err := s.Wait(ctx, root, "api", WaitOptions{Match: regexp.MustCompile(`ready`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldWait.Outcome != WaitTimedOut {
+		t.Fatalf("old readiness wait = %#v, want timed_out", oldWait)
+	}
+	newCursor, err := store.Append(output.Stdout, time.Unix(214, 0), "ready new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	newWait, err := s.Wait(ctx, root, "api", WaitOptions{Match: regexp.MustCompile(`ready`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newWait.Outcome != WaitMatched || newWait.Cursor != newCursor {
+		t.Fatalf("new readiness wait = %#v, want matched cursor %d", newWait, newCursor)
+	}
+}
+
+func TestReadinessField(t *testing.T) {
+	root := makeProject(t, false)
+	early := newSubscriptionChild(6201, 0, time.Unix(221, 0), "ready early\n")
+	starting := newSubscriptionChild(6202, 0, time.Unix(222, 0), "")
+	unverified := newSubscriptionChild(6203, 0, time.Unix(223, 0), "")
+	adHoc := newSubscriptionChild(6204, 0, time.Unix(224, 0), "")
+	exited := newSubscriptionChild(6205, 7, time.Unix(225, 0), "")
+	children := map[string]*subscriptionChild{
+		"early": early, "starting": starting, "unverified": unverified,
+		"ad-hoc": adHoc, "exited": exited,
+	}
+	s := testSupervisor(t, Options{StartProcess: subscriptionStarter(children)})
+
+	earlyProcess, err := s.Start(StartRequest{
+		Name: "early", Source: "manifest:hum.yaml", Cwd: root,
+		Argv:  []string{"/bin/fake", "early"},
+		Ready: &ReadinessConfig{Match: `ready`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if earlyProcess.Source != "manifest:hum.yaml" || earlyProcess.Readiness == nil ||
+		earlyProcess.Readiness.State != ReadinessReady || earlyProcess.Readiness.Cursor == nil {
+		t.Fatalf("early process = %#v, want source and ready readiness", earlyProcess)
+	}
+	startingProcess, err := s.Start(StartRequest{
+		Name: "starting", Source: "manifest:hum.yaml", Cwd: root,
+		Argv:  []string{"/bin/fake", "starting"},
+		Ready: &ReadinessConfig{Match: `ready`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if startingProcess.Readiness == nil || startingProcess.Readiness.State != ReadinessStarting {
+		t.Fatalf("starting process readiness = %#v, want starting", startingProcess.Readiness)
+	}
+	unverifiedProcess, err := s.Start(StartRequest{
+		Name: "unverified", Source: "discovery", Cwd: root,
+		Argv: []string{"/bin/fake", "unverified"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unverifiedProcess.Readiness == nil || unverifiedProcess.Readiness.State != ReadinessRunningUnverified {
+		t.Fatalf("unverified process readiness = %#v, want running_unverified", unverifiedProcess.Readiness)
+	}
+	adHocProcess, err := s.Start(StartRequest{
+		Name: "ad-hoc", Cwd: root, Argv: []string{"/bin/fake", "ad-hoc"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adHocProcess.Readiness != nil || adHocProcess.Source != "" {
+		t.Fatalf("ad-hoc process = %#v, want no source or readiness", adHocProcess)
+	}
+	if _, err := s.Start(StartRequest{
+		Name: "exited", Source: "manifest:hum.yaml", Cwd: root,
+		Argv:  []string{"/bin/fake", "exited"},
+		Ready: &ReadinessConfig{Match: `ready`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exited.release()
+	terminal := waitExited(t, s, root, "exited")
+	if terminal.Readiness != nil {
+		t.Fatalf("exited readiness = %#v, want omitted", terminal.Readiness)
+	}
+}
+
+func TestStartReservationCoversConcurrentAndFailedLaunch(t *testing.T) {
+	root := makeProject(t, false)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	child := newSubscriptionChild(6301, 0, time.Unix(231, 0), "")
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	s := testSupervisor(t, Options{
+		StartProcess: func(spec process.Spec) (Child, error) {
+			mu.Lock()
+			index := calls
+			calls++
+			mu.Unlock()
+			if index == 0 {
+				close(entered)
+				<-release
+				return nil, errors.New("launch failed")
+			}
+			child.store = spec.Output
+			return child, nil
+		},
+	})
+
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := s.Start(StartRequest{Name: "reserved", Cwd: root, Argv: []string{"/bin/fake", "reserved"}})
+		firstResult <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("first launch did not reach starter")
+	}
+	if _, err := s.Start(StartRequest{Name: "reserved", Cwd: root, Argv: []string{"/bin/fake", "reserved"}}); !errors.Is(err, ErrNameInUse) {
+		t.Fatalf("concurrent start error = %v, want ErrNameInUse", err)
+	}
+	close(release)
+	if err := <-firstResult; err == nil {
+		t.Fatal("failed launch unexpectedly succeeded")
+	}
+	if _, err := s.Start(StartRequest{Name: "reserved", Cwd: root, Argv: []string{"/bin/fake", "reserved"}}); err != nil {
+		t.Fatalf("start after failed launch = %v", err)
+	}
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 2 {
+		t.Fatalf("starter calls = %d, want one failed and one successful launch", gotCalls)
+	}
+}
+
+func TestManifestRootKeepsNestedGitCwdIdentity(t *testing.T) {
+	root := makeProject(t, false)
+	nested := filepath.Join(root, "tool")
+	if err := os.MkdirAll(filepath.Join(nested, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first := newSubscriptionChild(6401, 0, time.Unix(241, 0), "")
+	second := newSubscriptionChild(6402, 0, time.Unix(242, 0), "")
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	s := testSupervisor(t, Options{
+		StartProcess: func(spec process.Spec) (Child, error) {
+			mu.Lock()
+			index := calls
+			calls++
+			mu.Unlock()
+			if index == 0 {
+				first.store = spec.Output
+				return first, nil
+			}
+			second.store = spec.Output
+			return second, nil
+		},
+	})
+	started, err := s.Start(StartRequest{
+		Name: "nested", Root: root + string(filepath.Separator) + ".", Cwd: nested,
+		Source: "manifest:hum.yaml", Argv: []string{"/bin/fake", "nested"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Root != filepath.Clean(root) || started.Cwd != filepath.Clean(nested) {
+		t.Fatalf("started identity = %#v, want root %q and cwd %q", started, filepath.Clean(root), filepath.Clean(nested))
+	}
+	items, err := s.List(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Root != filepath.Clean(root) {
+		t.Fatalf("outer-root list = %#v, want nested process under %q", items, filepath.Clean(root))
+	}
+	if _, err := s.Get(root, "nested"); err != nil {
+		t.Fatalf("outer-root get = %v", err)
+	}
+	if _, err := s.Get(nested, "nested"); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("nested-root get error = %v, want ErrProcessNotFound", err)
+	}
+
+	restarted, err := s.Restart(context.Background(), nested, "nested", RestartOptions{
+		Update: true, Root: root + string(filepath.Separator) + ".", Cwd: nested,
+		Source: "manifest:hum.yaml", Argv: []string{"/bin/fake", "nested"},
+	})
+	if err != nil {
+		t.Fatalf("nested-cwd explicit-root restart = %v", err)
+	}
+	if restarted.Root != filepath.Clean(root) || restarted.Cwd != filepath.Clean(nested) {
+		t.Fatalf("restarted identity = %#v, want root %q and cwd %q", restarted, filepath.Clean(root), filepath.Clean(nested))
+	}
+}
+
+func TestManifestReadinessCapturesSynchronousEvictedStart(t *testing.T) {
+	root := makeProject(t, false)
+	child := newSubscriptionChild(6501, 0, time.Unix(251, 0), "")
+	s := testSupervisor(t, Options{
+		OutputLimits: output.Limits{
+			RetainedBytes: 8, DefaultReadEntries: 8, DefaultReadBytes: 64,
+		},
+		StartProcess: func(spec process.Spec) (Child, error) {
+			child.store = spec.Output
+			if _, err := spec.Output.Append(output.Stdout, time.Unix(252, 0), "ready"); err != nil {
+				return nil, err
+			}
+			if _, err := spec.Output.Append(output.Stdout, time.Unix(253, 0), "filler"); err != nil {
+				return nil, err
+			}
+			return child, nil
+		},
+	})
+	started, err := s.Start(StartRequest{
+		Name: "sync-start", Source: "manifest:hum.yaml", Cwd: root,
+		Argv: []string{"/bin/fake", "sync-start"}, Ready: &ReadinessConfig{Match: `^ready$`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Readiness == nil || started.Readiness.State != ReadinessReady ||
+		started.Readiness.Cursor == nil || *started.Readiness.Cursor != 0 {
+		t.Fatalf("synchronous start readiness = %#v, want ready cursor 0", started.Readiness)
+	}
+	store, err := s.Output(root, "sync-start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := store.Read(output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained.Oldest == nil || *retained.Oldest <= 0 {
+		t.Fatalf("synchronous start retained output = %#v, want cursor 0 evicted", retained)
+	}
+	got, err := s.Get(root, "sync-start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Readiness == nil || got.Readiness.State != ReadinessReady ||
+		got.Readiness.Cursor == nil || *got.Readiness.Cursor != 0 {
+		t.Fatalf("synchronous start readiness after eviction = %#v", got.Readiness)
+	}
+}
+
+func TestManifestRestartReadinessCapturesSynchronousEvictedStart(t *testing.T) {
+	root := makeProject(t, false)
+	first := newSubscriptionChild(6601, 0, time.Unix(261, 0), "")
+	second := newSubscriptionChild(6602, 0, time.Unix(262, 0), "")
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	s := testSupervisor(t, Options{
+		OutputLimits: output.Limits{
+			RetainedBytes: 8, DefaultReadEntries: 8, DefaultReadBytes: 64,
+		},
+		StartProcess: func(spec process.Spec) (Child, error) {
+			mu.Lock()
+			index := calls
+			calls++
+			mu.Unlock()
+			if index == 0 {
+				first.store = spec.Output
+				return first, nil
+			}
+			second.store = spec.Output
+			if _, err := spec.Output.Append(output.Stdout, time.Unix(263, 0), "ready"); err != nil {
+				return nil, err
+			}
+			if _, err := spec.Output.Append(output.Stdout, time.Unix(264, 0), "filler"); err != nil {
+				return nil, err
+			}
+			return second, nil
+		},
+	})
+	if _, err := s.Start(StartRequest{
+		Name: "sync-restart", Source: "manifest:hum.yaml", Cwd: root,
+		Argv: []string{"/bin/fake", "sync-restart"}, Ready: &ReadinessConfig{Match: `^ready$`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := s.Output(root, "sync-restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCursor, err := store.Append(output.Stdout, time.Unix(265, 0), "ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(output.Stdout, time.Unix(266, 0), "filler"); err != nil {
+		t.Fatal(err)
+	}
+	waitForReadinessState(t, s, root, "sync-restart", ReadinessReady)
+
+	restarted, err := s.Restart(context.Background(), root, "sync-restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.Readiness == nil || restarted.Readiness.State != ReadinessReady ||
+		restarted.Readiness.Cursor == nil || *restarted.Readiness.Cursor <= oldCursor {
+		t.Fatalf("synchronous restart readiness = %#v, want a new ready cursor after %d", restarted.Readiness, oldCursor)
+	}
+	latest, err := store.Read(output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Oldest == nil || restarted.Readiness.Cursor == nil || *latest.Oldest <= *restarted.Readiness.Cursor {
+		t.Fatalf("synchronous restart retained output = %#v, want new match cursor evicted", latest)
+	}
+	got, err := s.Get(root, "sync-restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Readiness == nil || got.Readiness.State != ReadinessReady ||
+		got.Readiness.Cursor == nil || *got.Readiness.Cursor != *restarted.Readiness.Cursor {
+		t.Fatalf("synchronous restart readiness after eviction = %#v", got.Readiness)
+	}
+}

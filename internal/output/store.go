@@ -11,7 +11,7 @@ import (
 const maxExitHistory = 64
 
 // Store owns the process output ring and the generation used to wake pull
-// subscribers. The ring and all subscriber state are protected by mu.
+// subscribers. The ring and all subscriber/observer state are protected by mu.
 type Store struct {
 	mu               sync.Mutex
 	ring             *ring
@@ -23,12 +23,55 @@ type Store struct {
 	// notification history.
 	exits         []storedExit
 	subscriptions map[*Subscription]struct{}
+	observers     map[*AppendObserver]struct{}
 }
 type storedExit struct {
 	exit       Exit
 	through    Cursor
 	hasThrough bool
 	sequence   uint64
+}
+
+// AppendObserver receives each successfully appended entry synchronously,
+// before Append returns and while the store lock is held. Callbacks MUST NOT
+// call back into Store; Close waits for an in-progress callback and removes
+// the observer before any later append can invoke it.
+type AppendObserver struct {
+	store    *Store
+	callback func(Entry)
+	closed   bool
+}
+
+// ObserveAppend registers a synchronous observer for future successful
+// appends. The callback receives a value copy, so it may retain the entry.
+// A nil callback is not registered and returns nil.
+func (s *Store) ObserveAppend(callback func(Entry)) *AppendObserver {
+	if s == nil || callback == nil {
+		return nil
+	}
+	s.mu.Lock()
+	observer := &AppendObserver{store: s, callback: callback}
+	if s.observers == nil {
+		s.observers = make(map[*AppendObserver]struct{})
+	}
+	s.observers[observer] = struct{}{}
+	s.mu.Unlock()
+	return observer
+}
+
+// Close unregisters an append observer. It is safe to call repeatedly and
+// concurrently with Append.
+func (o *AppendObserver) Close() {
+	if o == nil || o.store == nil {
+		return
+	}
+	s := o.store
+	s.mu.Lock()
+	if !o.closed {
+		o.closed = true
+		delete(s.observers, o)
+	}
+	s.mu.Unlock()
 }
 
 // NewStore constructs a bounded output store.
@@ -53,8 +96,15 @@ func (s *Store) Append(stream Stream, at time.Time, text string) (Cursor, error)
 	if err != nil {
 		return 0, err
 	}
+	entry := Entry{Cursor: cursor, Stream: stream, Time: at, Text: text}
 	s.latest = cursor
 	s.hasLatest = true
+	// Observers run synchronously under the store lock, before a subsequent
+	// append can evict this entry. Their callbacks must not call Store methods
+	// or attempt observer registration/unregistration.
+	for observer := range s.observers {
+		observer.callback(entry)
+	}
 	s.broadcastLocked()
 	return cursor, nil
 }

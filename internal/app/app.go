@@ -28,19 +28,47 @@ const (
 	StateExited  State = "exited"
 )
 
+// ReadinessConfig describes an output expression used to mark a manifest
+// process ready. Match is compiled once when the process is admitted.
+type ReadinessConfig struct {
+	Match   string
+	Timeout time.Duration
+}
+
+// Readiness is the response-safe readiness state of a running resolved
+// process. Cursor is the first matching output cursor for this incarnation.
+type Readiness struct {
+	State  string
+	Cursor *output.Cursor
+	Time   time.Time
+	Match  string
+}
+
+const (
+	ReadinessStarting          = "starting"
+	ReadinessReady             = "ready"
+	ReadinessRunningUnverified = "running_unverified"
+)
+
 // StartRequest describes one direct-argv launch. Env is copied and is never
-// inherited from the supervisor when it is nil or empty.
+// inherited from the supervisor when it is nil or empty. Root, when present,
+// is the explicit manifest project root used for record keying; Cwd remains
+// only the child working directory.
 type StartRequest struct {
-	Name string
-	Cwd  string
-	Argv []string
-	Env  []string
+	Name   string
+	Source string
+	Root   string
+	Cwd    string
+	Argv   []string
+	Env    []string
+	Ready  *ReadinessConfig
 }
 
 // Process is an immutable read model. It intentionally has no environment or
 // output-store field; callers use Supervisor.Output for output access.
 type Process struct {
 	Name         string
+	Source       string
 	Root         string
 	PID          int
 	PGID         int
@@ -54,6 +82,7 @@ type Process struct {
 	ExitCode     int
 	ExitedAt     time.Time
 	RestartCount int
+	Readiness    *Readiness
 }
 
 // WaitOutcome describes the terminal state observed by Wait.
@@ -80,6 +109,20 @@ type WaitResult struct {
 	Outcome WaitOutcome
 	Cursor  output.Cursor
 	Exit    *process.Result
+}
+
+// RestartOptions optionally replaces a retained launch specification. Update
+// must be true to apply any fields; a zero-value option preserves the
+// historical ad-hoc restart behavior. Root, when present, is the explicit
+// manifest root used to locate and retain the record key.
+type RestartOptions struct {
+	Update bool
+	Source string
+	Root   string
+	Cwd    string
+	Argv   []string
+	Env    []string
+	Ready  *ReadinessConfig
 }
 
 // Options configures a Supervisor. A zero OutputLimits value delegates to the
@@ -185,15 +228,85 @@ func ValidateName(name string) error {
 	return nil
 }
 
+// readinessTracker observes append events directly so the first matching
+// cursor is captured before a later append can evict the matching entry.
+// observe is called by output.Store while its lock is held and therefore must
+// never call back into Store.
+type readinessTracker struct {
+	pattern  *regexp.Regexp
+	after    output.Cursor
+	hasAfter bool
+
+	mu       sync.Mutex
+	ready    bool
+	cursor   output.Cursor
+	at       time.Time
+	once     sync.Once
+	observer *output.AppendObserver
+}
+
+func newReadinessTracker(store *output.Store, pattern *regexp.Regexp, after output.Cursor, hasAfter bool) *readinessTracker {
+	if store == nil || pattern == nil {
+		return nil
+	}
+	tracker := &readinessTracker{
+		pattern: pattern, after: after, hasAfter: hasAfter,
+	}
+	tracker.observer = store.ObserveAppend(tracker.observe)
+	return tracker
+}
+
+func (t *readinessTracker) observe(entry output.Entry) {
+	if t == nil || (t.hasAfter && entry.Cursor <= t.after) || !t.pattern.MatchString(entry.Text) {
+		return
+	}
+	t.mu.Lock()
+	if !t.ready {
+		t.ready = true
+		t.cursor = entry.Cursor
+		t.at = entry.Time
+	}
+	t.mu.Unlock()
+}
+
+func (t *readinessTracker) snapshot() (bool, output.Cursor, time.Time) {
+	if t == nil {
+		return false, 0, time.Time{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.ready, t.cursor, t.at
+}
+
+func (t *readinessTracker) close() {
+	if t == nil {
+		return
+	}
+	t.once.Do(func() {
+		if t.observer != nil {
+			t.observer.Close()
+		}
+	})
+}
+
 // record contains private relaunch state in addition to the immutable public
 // snapshot. It is never returned to callers.
 type record struct {
-	key  string
-	name string
-	root string
-	cwd  string
-	argv []string
-	env  []string
+	key    string
+	name   string
+	root   string
+	cwd    string
+	source string
+	argv   []string
+	env    []string
+
+	readyConfig  *ReadinessConfig
+	readyPattern *regexp.Regexp
+	tracker      *readinessTracker
+	// incarnation changes for every successful launch, including same-store
+	// restarts. Each incarnation owns one tracker; an old tracker can never
+	// update a later launch.
+	incarnation uint64
 
 	child        Child
 	pid          int
@@ -361,9 +474,25 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if err != nil {
 		return Process{}, err
 	}
-	root, err := DiscoverProjectRoot(cwd)
+	root := ""
+	if req.Root != "" {
+		root, err = absoluteClean(req.Root)
+	} else {
+		root, err = DiscoverProjectRoot(cwd)
+	}
 	if err != nil {
 		return Process{}, err
+	}
+	var readyConfig *ReadinessConfig
+	var readyPattern *regexp.Regexp
+	if req.Ready != nil {
+		config := *req.Ready
+		compiled, compileErr := regexp.Compile(config.Match)
+		if compileErr != nil {
+			return Process{}, fmt.Errorf("%w: readiness match: %v", ErrInvalidRequest, compileErr)
+		}
+		readyConfig = &config
+		readyPattern = compiled
 	}
 	argv := append([]string(nil), req.Argv...)
 	env := append([]string(nil), req.Env...)
@@ -399,6 +528,10 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		s.mu.Unlock()
 		return Process{}, fmt.Errorf("output store: %w", err)
 	}
+	var tracker *readinessTracker
+	if req.Source != "" && readyPattern != nil {
+		tracker = newReadinessTracker(store, readyPattern, 0, false)
+	}
 	startedAt := s.now()
 	specEnv := make([]string, len(env))
 	copy(specEnv, env)
@@ -415,6 +548,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		delete(s.starting, key)
 		s.evictLocked()
 		s.mu.Unlock()
+		if tracker != nil {
+			tracker.close()
+		}
 		return Process{}, err
 	}
 	if child == nil {
@@ -422,6 +558,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		delete(s.starting, key)
 		s.evictLocked()
 		s.mu.Unlock()
+		if tracker != nil {
+			tracker.close()
+		}
 		return Process{}, fmt.Errorf("%w: process starter returned nil child", ErrInvalidRequest)
 	}
 	pid, pgid := child.PID(), child.PGID()
@@ -431,6 +570,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if s.closed {
 		s.evictLocked()
 		s.mu.Unlock()
+		if tracker != nil {
+			tracker.close()
+		}
 		// Shutdown won the launch race. Kill this unregistered child and wait
 		// without holding the registry lock so it cannot be orphaned.
 		_ = child.Signal(syscall.SIGKILL)
@@ -439,8 +581,11 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		return Process{}, ErrSupervisorClosed
 	}
 	restartCount := 0
+	var previousTracker *readinessTracker
 	if previous := s.records[key]; previous != nil {
 		restartCount = previous.restartCount + 1
+		previousTracker = previous.tracker
+		previous.tracker = nil
 		s.removeCompletedLocked(previous)
 		previous.env = nil
 		previous.store = nil
@@ -451,8 +596,13 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		name:           req.Name,
 		root:           root,
 		cwd:            cwd,
+		source:         req.Source,
 		argv:           argv,
 		env:            env,
+		readyConfig:    readyConfig,
+		readyPattern:   readyPattern,
+		tracker:        tracker,
+		incarnation:    1,
 		child:          child,
 		pid:            pid,
 		pgid:           pgid,
@@ -467,7 +617,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	s.records[key] = rec
 	initial := rec.snapshotLocked()
 	s.mu.Unlock()
-
+	if previousTracker != nil {
+		previousTracker.close()
+	}
 	go s.reconcile(rec)
 	return initial, nil
 }
@@ -475,13 +627,67 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 // Restart stops and relaunches one retained process with its original launch
 // specification. The process name and output sequence remain reserved for the
 // entire operation.
-func (s *Supervisor) Restart(ctx context.Context, cwd, name string) (Process, error) {
+func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...RestartOptions) (Process, error) {
+	if len(options) > 1 {
+		return Process{}, fmt.Errorf("%w: restart accepts at most one options value", ErrInvalidRequest)
+	}
+	var update RestartOptions
+	if len(options) == 1 {
+		update = options[0]
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	rec, err := s.lookup(cwd, name)
+	rec, err := s.lookupRoot(cwd, name, update.Root)
 	if err != nil {
 		return Process{}, err
+	}
+	var (
+		updatedCwd      string
+		updatedArgv     []string
+		updatedEnv      []string
+		updatedReady    *ReadinessConfig
+		updatedPattern  *regexp.Regexp
+		previousTracker *readinessTracker
+	)
+	if update.Update {
+		updatedArgv = append([]string(nil), update.Argv...)
+		if len(updatedArgv) == 0 || updatedArgv[0] == "" {
+			return Process{}, fmt.Errorf("%w: restart argv must not be empty", ErrInvalidRequest)
+		}
+		updatedCwd = update.Cwd
+		if updatedCwd == "" {
+			updatedCwd = rec.cwd
+		}
+		updatedCwd, err = absoluteClean(updatedCwd)
+		if err != nil {
+			return Process{}, err
+		}
+		updatedRoot := update.Root
+		if updatedRoot != "" {
+			updatedRoot, err = absoluteClean(updatedRoot)
+		} else {
+			updatedRoot, err = DiscoverProjectRoot(updatedCwd)
+		}
+		if err != nil {
+			return Process{}, err
+		}
+		if updatedRoot != rec.root {
+			return Process{}, fmt.Errorf("%w: restart root %q does not match project %q", ErrInvalidRequest, updatedRoot, rec.root)
+		}
+		updatedEnv = append([]string(nil), update.Env...)
+		if updatedEnv == nil {
+			updatedEnv = []string{}
+		}
+		if update.Ready != nil {
+			config := *update.Ready
+			compiled, compileErr := regexp.Compile(config.Match)
+			if compileErr != nil {
+				return Process{}, fmt.Errorf("%w: readiness match: %v", ErrInvalidRequest, compileErr)
+			}
+			updatedReady = &config
+			updatedPattern = compiled
+		}
 	}
 
 	s.mu.Lock()
@@ -493,17 +699,22 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string) (Process, er
 		s.mu.Unlock()
 		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
 	}
-	if _, ok := s.starting[rec.key]; ok {
-		s.mu.Unlock()
-		return Process{}, fmt.Errorf("%w: %q is being started", ErrNameInUse, rec.name)
-	}
 	restartStore := rec.store
 	s.starting[rec.key] = struct{}{}
 	rec.restarting = true
+	previousTracker = rec.tracker
+	rec.tracker = nil
 	s.launches.Add(1)
 	s.mu.Unlock()
+	if previousTracker != nil {
+		previousTracker.close()
+	}
 	restartSucceeded := false
+	var launchTracker *readinessTracker
 	defer func() {
+		if !restartSucceeded && launchTracker != nil {
+			launchTracker.close()
+		}
 		s.mu.Lock()
 		delete(s.starting, rec.key)
 		rec.restarting = false
@@ -543,15 +754,35 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string) (Process, er
 		s.mu.Unlock()
 		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
 	}
+	// A definition update is committed while the name remains reserved by
+	// this restart. No concurrent Start or Restart can observe a partially
+	// updated launch specification.
+	if update.Update {
+		rec.cwd = updatedCwd
+		rec.source = update.Source
+		rec.argv = append([]string(nil), updatedArgv...)
+		rec.env = append([]string(nil), updatedEnv...)
+		rec.readyConfig = updatedReady
+		rec.readyPattern = updatedPattern
+	}
 	store := rec.store
 	argv := append([]string(nil), rec.argv...)
 	env := append([]string(nil), rec.env...)
 	launchCwd := rec.cwd
 	s.mu.Unlock()
-
-	launchCursor, err := store.Append(output.System, s.now(), fmt.Sprintf("%s restarted\n", rec.name))
+	marker := fmt.Sprintf("%s restarted\n", rec.name)
+	if limit := s.outputLimits.RetainedBytes; limit > 0 && len(marker) > limit {
+		marker = "restarted"
+		if len(marker) > limit {
+			marker = marker[:limit]
+		}
+	}
+	launchCursor, err := store.Append(output.System, s.now(), marker)
 	if err != nil {
 		return Process{}, fmt.Errorf("restart marker: %w", err)
+	}
+	if rec.source != "" && rec.readyPattern != nil {
+		launchTracker = newReadinessTracker(store, rec.readyPattern, launchCursor, true)
 	}
 	startedAt := s.now()
 	child, err := s.startProcess(process.Spec{
@@ -597,6 +828,8 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string) (Process, er
 	rec.terminalAt = time.Time{}
 	rec.terminal = false
 	rec.done = make(chan struct{})
+	rec.incarnation++
+	rec.tracker = launchTracker
 	restarted := rec.snapshotLocked()
 	restartSucceeded = true
 	s.mu.Unlock()
@@ -649,10 +882,15 @@ func (s *Supervisor) reconcile(rec *record) {
 	store := rec.store
 	republish := rec.pendingExit
 	rec.pendingExit = false
+	tracker := rec.tracker
+	rec.tracker = nil
 	s.insertCompletedLocked(rec)
 	close(rec.done)
 	s.evictLocked()
 	s.mu.Unlock()
+	if tracker != nil {
+		tracker.close()
+	}
 	if republish && store != nil {
 		store.NotifyExit(output.Exit{Code: result.ExitCode, Time: result.ExitedAt})
 	}
@@ -720,10 +958,20 @@ func (s *Supervisor) evictLocked() {
 }
 
 func (s *Supervisor) lookup(cwd, name string) (*record, error) {
+	return s.lookupRoot(cwd, name, "")
+}
+
+func (s *Supervisor) lookupRoot(cwd, name, rootHint string) (*record, error) {
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
-	root, err := DiscoverProjectRoot(cwd)
+	root := rootHint
+	var err error
+	if root == "" {
+		root, err = DiscoverProjectRoot(cwd)
+	} else {
+		root, err = absoluteClean(root)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1086,6 +1334,7 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 func (r *record) snapshotLocked() Process {
 	model := Process{
 		Name:         r.name,
+		Source:       r.source,
 		Root:         r.root,
 		PID:          r.pid,
 		PGID:         r.pgid,
@@ -1098,6 +1347,24 @@ func (r *record) snapshotLocked() Process {
 	}
 	if r.store != nil {
 		model.NextCursor = r.store.NextCursor()
+	}
+	if !r.terminal && r.source != "" {
+		switch {
+		case r.readyConfig == nil:
+			model.Readiness = &Readiness{State: ReadinessRunningUnverified}
+		default:
+			ready, cursor, at := r.tracker.snapshot()
+			if ready {
+				model.Readiness = &Readiness{
+					State: ReadinessReady, Cursor: &cursor, Time: at,
+					Match: r.readyConfig.Match,
+				}
+			} else {
+				model.Readiness = &Readiness{
+					State: ReadinessStarting, Match: r.readyConfig.Match,
+				}
+			}
+		}
 	}
 	if r.terminal {
 		result := r.result

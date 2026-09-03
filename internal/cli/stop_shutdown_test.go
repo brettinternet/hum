@@ -263,8 +263,7 @@ func stopShutdownStartProcess(t *testing.T, server *daemon.Server, projectRoot, 
 func stopShutdownRun(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	argv := append([]string{"hum"}, args...)
-	err := NewRootCommand("test", "test", &stdout, &stderr).Run(context.Background(), argv)
+	err := cliServeRunInvoke(context.Background(), args, &stdout, &stderr)
 	return stdout.String(), stderr.String(), err
 }
 

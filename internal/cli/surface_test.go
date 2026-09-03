@@ -14,6 +14,8 @@ func TestStatusAndWaitSurface(t *testing.T) {
 	want := map[string]bool{
 		"serve":    true,
 		"run":      true,
+		"start":    true,
+		"up":       true,
 		"list":     true,
 		"status":   true,
 		"logs":     true,
@@ -52,7 +54,7 @@ func TestWaitHelpDescribesExitAndReadiness(t *testing.T) {
 		t.Fatalf("wait help: %v", err)
 	}
 	help := strings.ToLower(output.String())
-	for _, want := range []string{"without --match", "exit", "hum run <name> -- <command>", "wait --match", "future resolved-process commands", "--after-cursor", "default: current launch cursor", "--match", "--timeout", "--json"} {
+	for _, want := range []string{"without --match", "exit", "hum run <name> -- <command>", "wait --match", "future resolved-process commands", "hum start <name>", "--after-cursor", "default: current launch cursor", "--match", "--timeout", "--json"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("wait help missing %q: %q", want, output.String())
 		}
@@ -73,6 +75,7 @@ func TestLifecycleHelp(t *testing.T) {
 				"automatically starts a detached daemon",
 				"stays attached by default",
 				"serve --daemon runs it detached",
+				"manifest projects use hum start",
 				"read/control commands (excluding explicit hum serve) do not start an empty daemon",
 				"hum run <name> -- <command>",
 				"stopping named processes and shutting down the daemon are separate operations",
@@ -103,6 +106,31 @@ func TestLifecycleHelp(t *testing.T) {
 				"daemon keeps owning it",
 				"stable json for detached runs",
 				"attached runs stream raw child output",
+			},
+		},
+		{
+			name: "start",
+			args: []string{"hum", "start", "--help"},
+			want: []string{
+				"manifest",
+				"one or more",
+				"--no-wait",
+				"--timeout",
+				"--json",
+				"readiness",
+			},
+		},
+		{
+			name: "up",
+			args: []string{"hum", "up", "--help"},
+			want: []string{
+				"every manifest process",
+				"lexical order",
+				"continues after launch failures",
+				"concurrently",
+				"--no-wait",
+				"--timeout",
+				"--json",
 			},
 		},
 		{
@@ -149,10 +177,11 @@ func TestLifecycleHelp(t *testing.T) {
 				"2 on timeout",
 				"wait --match",
 				"future resolved-process commands",
+				"hum start <name>",
 				"hum run <name> -- <command>",
 				"non-empty regular expression",
 			},
-			notWant: []string{"hum start <name>", "(default: 0)"},
+			notWant: []string{"(default: 0)"},
 		},
 		{
 			name: "restart",

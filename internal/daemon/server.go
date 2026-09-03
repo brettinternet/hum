@@ -507,7 +507,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		if req.Cwd == "" {
 			req.Cwd = "."
 		}
-		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...)})
+		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Source: req.Source, Root: req.Root, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...), Ready: appReadinessConfigFromWire(req.Ready)})
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
@@ -584,7 +584,12 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, app.ErrSupervisorClosed), false
 		}
-		process, err := s.supervisor.Restart(context.Background(), req.Cwd, req.Name)
+		options := app.RestartOptions{
+			Update: req.Update, Source: req.Source, Root: req.Root, Cwd: req.Cwd,
+			Argv: append([]string(nil), req.Argv...), Env: append([]string(nil), req.Env...),
+			Ready: appReadinessConfigFromWire(req.Ready),
+		}
+		process, err := s.supervisor.Restart(context.Background(), req.Cwd, req.Name, options)
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
@@ -762,23 +767,31 @@ func parseSignal(name string) (os.Signal, error) {
 
 // wire DTOs intentionally contain no environment field on responses.
 type wireRequest struct {
-	Op               string   `json:"op"`
-	Version          int      `json:"version,omitempty"`
-	Name             string   `json:"name,omitempty"`
-	Argv             []string `json:"argv,omitempty"`
-	Cwd              string   `json:"cwd,omitempty"`
-	Env              []string `json:"env,omitempty"`
-	All              bool     `json:"all,omitempty"`
-	IncludeCompleted bool     `json:"include_completed,omitempty"`
-	After            *uint64  `json:"after,omitempty"`
-	Tail             int      `json:"tail,omitempty"`
-	Stream           string   `json:"stream,omitempty"`
-	Match            string   `json:"match,omitempty"`
-	TimeoutMS        int64    `json:"timeout_ms,omitempty"`
-	MaxEntries       int      `json:"max_entries,omitempty"`
-	MaxBytes         int      `json:"max_bytes,omitempty"`
-	Signal           string   `json:"signal,omitempty"`
-	Force            bool     `json:"force,omitempty"`
+	Op               string               `json:"op"`
+	Version          int                  `json:"version,omitempty"`
+	Name             string               `json:"name,omitempty"`
+	Argv             []string             `json:"argv,omitempty"`
+	Cwd              string               `json:"cwd,omitempty"`
+	Root             string               `json:"root,omitempty"`
+	Env              []string             `json:"env,omitempty"`
+	Source           string               `json:"source,omitempty"`
+	Ready            *wireReadinessConfig `json:"ready,omitempty"`
+	Update           bool                 `json:"update,omitempty"`
+	All              bool                 `json:"all,omitempty"`
+	IncludeCompleted bool                 `json:"include_completed,omitempty"`
+	After            *uint64              `json:"after,omitempty"`
+	Tail             int                  `json:"tail,omitempty"`
+	Stream           string               `json:"stream,omitempty"`
+	Match            string               `json:"match,omitempty"`
+	TimeoutMS        int64                `json:"timeout_ms,omitempty"`
+	MaxEntries       int                  `json:"max_entries,omitempty"`
+	MaxBytes         int                  `json:"max_bytes,omitempty"`
+	Signal           string               `json:"signal,omitempty"`
+	Force            bool                 `json:"force,omitempty"`
+}
+type wireReadinessConfig struct {
+	Match   string        `json:"match"`
+	Timeout time.Duration `json:"timeout"`
 }
 
 type wireResponse struct {
@@ -813,6 +826,7 @@ type wireError struct {
 
 type wireProcess struct {
 	Name         string           `json:"name"`
+	Source       string           `json:"source,omitempty"`
 	Root         string           `json:"root"`
 	PID          int              `json:"pid"`
 	PGID         int              `json:"pgid"`
@@ -826,6 +840,14 @@ type wireProcess struct {
 	ExitCode     int              `json:"exit_code,omitempty"`
 	ExitedAt     time.Time        `json:"exited_at,omitempty"`
 	RestartCount int              `json:"restart_count,omitempty"`
+	Readiness    *wireReadiness   `json:"readiness,omitempty"`
+}
+
+type wireReadiness struct {
+	State  string    `json:"state"`
+	Cursor *uint64   `json:"cursor,omitempty"`
+	Time   time.Time `json:"time,omitempty"`
+	Match  string    `json:"match,omitempty"`
 }
 
 type wireProcessExit struct {
@@ -909,10 +931,16 @@ func wireProcessesFromApp(items []app.Process) []wireProcess {
 
 func wireProcessFromApp(item app.Process) wireProcess {
 	result := wireProcess{
-		Name: item.Name, Root: item.Root, PID: item.PID, PGID: item.PGID,
+		Name: item.Name, Source: item.Source, Root: item.Root, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: uint64(item.LaunchCursor), State: string(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
+	}
+	if item.Readiness != nil {
+		result.Readiness = &wireReadiness{
+			State: item.Readiness.State, Cursor: cursorUint64(item.Readiness.Cursor),
+			Time: item.Readiness.Time, Match: item.Readiness.Match,
+		}
 	}
 	if item.Exit != nil {
 		result.Exit = &wireProcessExit{Code: item.Exit.ExitCode, Error: errorString(item.Exit.Err), Time: item.Exit.ExitedAt}
