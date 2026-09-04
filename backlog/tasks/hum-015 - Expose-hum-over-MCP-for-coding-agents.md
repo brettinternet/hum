@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-02 20:13'
-updated_date: '2026-09-04 01:10'
+updated_date: '2026-09-04 01:16'
 labels:
   - cli
   - protocol
@@ -82,10 +82,14 @@ AC#3 PASS: `go test ./internal/cli -run TestMCPHelp -count=1` passed with the re
 AC#4 PASS: `go test ./internal/mcp -run 'TestToolSchemas|TestToolValidation|TestErrorMapping' -count=1` passed for nine schemas, validation, stable result metadata, and typed errors.
 AC#5 PASS: `go test ./internal/mcp -run 'TestStartUp|TestDown|TestObservationTools|TestAdHocProcessTools' -count=1` passed for injected-client lifecycle behavior, readiness outcomes, ad hoc retention, and no-daemon controls.
 Final commit 8fdf637: `task ci` passed after commit. `task check:staged` passed before commit. Independent verifier returned PASS for AC#1-AC#5; adversarial reviewer returned PASS with no remaining actionable defect. Diff is confined to README.md, docs/design.md, integration/, internal/cli/, and internal/mcp/; no tests were deleted, skipped, or weakened and no protected gate file changed.
+
+Post-completion contract audit: commit 3854d38 adds all serialized terminal process fields (`exit`, `exit_code`, `exited_at`) to MCP output schemas and preserves the readiness expression recorded for the current process incarnation, avoiding waits on a changed manifest expression. Regression tests cover exited-process schema compatibility and the changed-match race. AC#4, AC#5, integration, `task ci`, and `task check:staged` passed; adversarial correction review returned PASS.
+
+Final correction commit 3854d38: `task ci` passed after commit.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Implemented `hum mcp` as a stdio MCP server exposing nine daemon-backed lifecycle tools without a second supervisor. Added CLI wiring, schemas and validation, readiness/collision/error semantics, explicit/zero-config/ad hoc integration coverage, and registration/design documentation. Verified commit 8fdf637 with every acceptance command, `task ci`, `task check:staged`, independent AC#1-AC#5 verification, and adversarial review.
+Implemented `hum mcp` with nine daemon-backed stdio lifecycle tools, stable schemas and validation, per-incarnation readiness behavior, explicit/zero-config/ad hoc integration coverage, and registration/design documentation. Verified the final implementation and contract correction with every acceptance command, `task ci`, `task check:staged`, independent AC#1-AC#5 verification, and adversarial review.
 <!-- SECTION:FINAL_SUMMARY:END -->
