@@ -3,12 +3,16 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"hum/internal/protocol"
+
+	urfavecli "github.com/urfave/cli/v3"
 )
 
 func TestFlagAliasParityReadCommands(t *testing.T) {
@@ -101,8 +105,9 @@ func TestFlagAliasParityReadCommands(t *testing.T) {
 			[]string{"logs", "alias-logs", "-n", "1", "--json"},
 			[]string{"logs", "alias-logs", "--tail", "1", "--json"},
 		)
-		if entries := hum006ListLogsEntries(t, hum006ListLogsDecodeJSONLines(t, tailJSON)[0]); len(entries) != 1 {
-			t.Fatalf("logs -n entries = %#v, want one", entries)
+		tailEntries := hum006ListLogsEntries(t, hum006ListLogsDecodeJSONLines(t, tailJSON)[0])
+		if len(tailEntries) != 1 || !reflect.DeepEqual(tailEntries[0], allEntries[len(allEntries)-1]) {
+			t.Fatalf("logs -n entries = %#v, want exact final retained entry %#v", tailEntries, allEntries[len(allEntries)-1])
 		}
 
 		afterJSON := flagAliasReadCompareAction(t, project,
@@ -133,12 +138,10 @@ func TestFlagAliasParityReadCommands(t *testing.T) {
 			t.Fatalf("logs -m texts = %#v, want stdout-match", matchTexts)
 		}
 
-		followJSON := flagAliasReadCompareAction(t, project,
-			[]string{"logs", "alias-logs", "-f", "--json"},
-			[]string{"logs", "alias-logs", "--follow", "--json"},
-		)
-		if len(hum006ListLogsDecodeJSONLines(t, followJSON)) == 0 {
-			t.Fatalf("follow alias logs = %q, want JSON events", followJSON)
+		shortFollow := flagAliasReadLiveFollow(t, project, "short", "-f")
+		longFollow := flagAliasReadLiveFollow(t, project, "long", "--follow")
+		if !reflect.DeepEqual(shortFollow, longFollow) {
+			t.Fatalf("short follow = %#v, long follow = %#v", shortFollow, longFollow)
 		}
 	})
 
@@ -199,4 +202,86 @@ func flagAliasReadCompareAction(t *testing.T, cwd string, shortArgs, longArgs []
 		t.Fatalf("short %v = (%q, %q, %v), long %v = (%q, %q, %v)", shortArgs, shortOut, shortErrOut, shortErr, longArgs, longOut, longErrOut, longErr)
 	}
 	return shortOut
+}
+
+type flagAliasReadFollowResult struct {
+	texts    []string
+	sawExit  bool
+	exitCode int
+}
+
+func flagAliasReadLiveFollow(t *testing.T, project, variant, flag string) flagAliasReadFollowResult {
+	t.Helper()
+	name := "alias-follow-" + variant
+	fixtureDir := t.TempDir()
+	probe := filepath.Join(fixtureDir, "probe")
+	release := filepath.Join(fixtureDir, "release")
+	script := fmt.Sprintf("printf 'before\\n'; while [ ! -f %q ]; do sleep 0.01; done; printf 'probe\\n'; while [ ! -f %q ]; do sleep 0.01; done; printf 'after\\n'", probe, release)
+	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", name, "--detach", "--", "/bin/sh", "-c", script); err != nil {
+		t.Fatalf("start %s: %v (stdout=%q stderr=%q)", name, err, stdout, stderr)
+	}
+	hum006ListLogsWaitForText(t, project, name, "before\n")
+	baseline, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", name, "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("baseline %s logs: %v (stdout=%q stderr=%q)", name, err, baseline, stderr)
+	}
+	beforeCursor, ok := hum006ListLogsEntryCursor(hum006ListLogsEntries(t, hum006ListLogsDecodeJSONLines(t, baseline)[0]), "before\n")
+	if !ok {
+		t.Fatalf("baseline %s logs = %q, missing before cursor", name, baseline)
+	}
+	if err := os.WriteFile(probe, []byte("probe"), 0o600); err != nil {
+		t.Fatalf("release follower probe: %v", err)
+	}
+	hum006ListLogsWaitForText(t, project, name, "probe\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	capture := hum006ListLogsFirstWriteWriter()
+	commandResult := make(chan hum006ListLogsCommandResult, 1)
+	oldwd := hum006ListLogsEnterDir(t, project)
+	defer hum006ListLogsLeaveDir(t, oldwd)
+	go func() {
+		var stderr strings.Builder
+		command := NewRootCommand("test", "test", capture, &stderr)
+		command.ExitErrHandler = func(context.Context, *urfavecli.Command, error) {}
+		err := command.Run(ctx, []string{"hum", "logs", name, flag, "--after-cursor", fmt.Sprint(beforeCursor), "--json"})
+		commandResult <- hum006ListLogsCommandResult{stdout: capture.String(), stderr: stderr.String(), err: err}
+	}()
+
+	select {
+	case <-capture.first:
+	case <-ctx.Done():
+		t.Fatalf("follower %s did not establish: %v", flag, ctx.Err())
+	}
+	select {
+	case premature := <-commandResult:
+		t.Fatalf("follower %s returned before release: %#v", flag, premature)
+	default:
+	}
+	if err := os.WriteFile(release, []byte("release"), 0o600); err != nil {
+		t.Fatalf("release follower producer: %v", err)
+	}
+
+	var commandOutput hum006ListLogsCommandResult
+	select {
+	case commandOutput = <-commandResult:
+	case <-ctx.Done():
+		t.Fatalf("follower %s did not finish: %v", flag, ctx.Err())
+	}
+	result := flagAliasReadFollowResult{exitCode: waitCLIExitCode(commandOutput.err)}
+	for _, object := range hum006ListLogsDecodeJSONLines(t, commandOutput.stdout) {
+		if object["op"] != "event" {
+			t.Fatalf("live follow %s %s object = %#v, want op=event", name, flag, object)
+		}
+		if object["type"] == "exit" {
+			result.sawExit = true
+		}
+		if entries, ok := hum006ListLogsMaybeEntries(object); ok {
+			result.texts = append(result.texts, hum006ListLogsEntryTexts(t, entries)...)
+		}
+	}
+	if ctx.Err() != nil || result.exitCode != 0 || !result.sawExit || commandOutput.stderr != "" || !hum006ListLogsEqualStrings(result.texts, []string{"probe\n", "after\n"}) {
+		t.Fatalf("live follow %s %s = %#v (stdout=%q stderr=%q err=%v ctx=%v)", name, flag, result, commandOutput.stdout, commandOutput.stderr, commandOutput.err, ctx.Err())
+	}
+	return result
 }
