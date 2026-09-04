@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +35,54 @@ func durableWaitText(t *testing.T, process *testutil.Process, stderr bool, text 
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("process output did not contain %q: stdout=%q stderr=%q", text, process.Stdout(), process.Stderr())
+}
+
+func TestStatusReportsFollowers(t *testing.T) {
+	hum, runtime := durableSetup(t)
+	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "observed", "--follow")
+	durableWaitText(t, follower, false, "waiting for first launch")
+
+	waitFollowers := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(lifecycleTimeout)
+		for time.Now().Before(deadline) {
+			status := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "observed", "--json")
+			var snapshot struct {
+				Followers int `json:"followers"`
+			}
+			if status.Code == 0 && json.Unmarshal([]byte(status.Stdout), &snapshot) == nil && snapshot.Followers == want {
+				return
+			}
+			time.Sleep(lifecyclePollInterval)
+		}
+		t.Fatalf("status did not report followers=%d", want)
+	}
+	waitFollowers(1)
+
+	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "observed", "--detach", "--", "/bin/sh", "-c", "sleep 30")
+	if started.Code != 0 {
+		t.Fatalf("start: %#v", started)
+	}
+	waitFollowers(1)
+
+	if err := follower.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := follower.Wait(lifecycleTimeout); err != nil {
+		t.Fatalf("Ctrl+C follower: %v; stdout=%q stderr=%q", err, follower.Stdout(), follower.Stderr())
+	}
+	waitFollowers(0)
+
+	if removed := testutil.Run(t, hum, runtime.cwd, runtime.env, "remove", "observed"); removed.Code != 0 {
+		t.Fatalf("remove: %#v", removed)
+	}
+	if status := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "observed", "--json"); status.Code == 0 {
+		t.Fatalf("removed status still exists: %#v", status)
+	}
+	listed := testutil.Run(t, hum, runtime.cwd, runtime.env, "list", "--all", "--json")
+	if listed.Code != 0 || strings.Contains(listed.Stdout, `"name":"observed"`) {
+		t.Fatalf("removed record remains listed: %#v", listed)
+	}
 }
 
 func TestDurableFollowAcrossStopStart(t *testing.T) {

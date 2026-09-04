@@ -128,7 +128,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:     "list supervised processes (current project by default)",
 			ArgsUsage: "",
 			Description: "List is read-only and does not start an empty daemon. " +
-				"Use --all to include processes from every project; when nothing is running, it reports that state.",
+				"Use --all to include processes from every project; followed records show their live followers count, while unfollowed human output is unchanged. When nothing is running, it reports that state.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "all", Aliases: []string{"a"}, Usage: "list processes from every project"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
@@ -141,7 +141,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:      "status",
 			Usage:     "show one supervised process (read-only)",
 			ArgsUsage: "NAME",
-			Description: "Status only reads one named process and never starts a daemon. " +
+			Description: "Status only reads one named process and never starts a daemon. It reports followers, the live attached run and logs --follow count, as a read-only observation. " +
 				"If no daemon is available, resolved manifest names point to hum start <name>; undefined names keep the hum run <name> -- <command> guidance.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
@@ -221,7 +221,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:     "remove one or more supervision sessions",
 			ArgsUsage: "NAME...",
 			Description: "Remove stops each running incarnation, closes attached followers, and discards retained output and launch state. " +
-				"It changes runtime state only and never edits hum.yaml.",
+				"The observed followers count never warns, prompts, or blocks removal. It changes runtime state only and never edits hum.yaml.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
 			},

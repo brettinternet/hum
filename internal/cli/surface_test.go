@@ -316,6 +316,8 @@ func TestLifecycleHelp(t *testing.T) {
 				"does not start an empty daemon",
 				"--all",
 				"every project",
+				"followers count",
+				"unfollowed human output is unchanged",
 			},
 		},
 		{
@@ -324,6 +326,8 @@ func TestLifecycleHelp(t *testing.T) {
 			want: []string{
 				"read-only",
 				"never starts a daemon",
+				"followers",
+				"live attached run and logs --follow count",
 				"hum run <name> -- <command>",
 			},
 		},
@@ -385,7 +389,7 @@ func TestLifecycleHelp(t *testing.T) {
 		{
 			name: "remove",
 			args: []string{"hum", "remove", "--help"},
-			want: []string{"supervision sessions", "stops each running incarnation", "closes attached followers", "discards retained output", "never edits hum.yaml"},
+			want: []string{"supervision sessions", "stops each running incarnation", "closes attached followers", "discards retained output", "followers count never warns, prompts, or blocks removal", "never edits hum.yaml"},
 		},
 		{
 			name: "shutdown",

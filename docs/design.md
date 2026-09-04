@@ -55,8 +55,10 @@ Combined short options are unsupported; MCP fields have no aliases.
 `--output-bytes`, and `--completed-records` remain long-only.
 
 Human-readable output is the default. JSON process snapshots include `name`,
-`source`, and `argv`, plus identity, readiness, cursors, and errors when
-applicable. `start` and `up` emit one NDJSON launch result per name. `up` uses
+`source`, `argv`, and the integer `followers` count, plus identity, readiness,
+cursors, and errors when applicable. Human `status` always prints `followers`;
+human `list` adds `followers=N` only to followed records, leaving ordinary
+unfollowed list output unchanged. `start` and `up` emit one NDJSON launch result per name. `up` uses
 lexical declaration order, attempts every entry, and applies this exit-code
 precedence: request error (1), early exit (3), timeout (2), success (0).
 Attached `run --json` still streams raw child output; `logs --json --follow`
@@ -95,7 +97,8 @@ daemon it reports resolved definitions as stopped. `status`, `logs`, `wait`,
 `restart`, `stop`, and `remove` operate on resolved and ad hoc records in the
 project. `stop` preserves the durable session; `remove` stops its child, closes
 followers, and discards runtime launch state and output without editing
-`hum.yaml`.
+`hum.yaml`. The reported follower count is read-only: `remove` never warns,
+prompts, refuses, or otherwise gates behavior based on it.
 
 `down` is the project-scoped inverse of `up`. It concurrently stops every
 running project record, includes declared-but-absent names as `not_running`, and
@@ -201,7 +204,10 @@ Byte-bounded retention reports eviction explicitly; a live pre-launch or stopped
 follower reserves its session from completed-record eviction. Attached `run` and
 `logs --follow` may start before the first launch, return retained output, print
 exit/wait/launch boundaries, and remain open across stop/start and down/up until
-Ctrl+C, removal, or transport loss. Ctrl+C detaches only the observer. `wait`
+Ctrl+C, removal, or transport loss. Status, list, and their MCP equivalents
+report how many of these live followers the daemon currently holds open,
+including pre-launch and stopped-session followers; the count is not persisted
+and is zero when no session exists. Ctrl+C detaches only the observer. `wait`
 without an explicit cursor waits for the next incarnation when stopped or
 unlaunched and remains bounded (30 seconds by default). Exited and ad hoc
 records omit readiness.
@@ -229,7 +235,8 @@ The tools share CLI definition, readiness, cursor, collision, and aggregate
 semantics. Only `start` and `up` may create or replace a daemon. Without one,
 `list` reports stopped definitions; `stop` and `down` succeed; the other control
 tools return unavailable-daemon errors. Recorded environments are never
-returned.
+returned. MCP `status` and `list` return the same `followers` integer as the CLI
+snapshot.
 
 MCP exposes no follow or other unbounded operation; agents use bounded `wait`
 and `logs`. The adapter receives a protocol-shaped daemon client and constructs

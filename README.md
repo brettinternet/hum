@@ -46,8 +46,11 @@ Process names are durable supervision sessions. Attached `run` and `logs --follo
 stay open across stops and launches until Ctrl+C; they may attach before the first
 launch. `wait` is the bounded alternative for automation. `stop` preserves the
 session and retained launch state, while `remove` stops and discards runtime state
-without editing `hum.yaml`. Unobserved completed sessions remain bounded by
-eviction. `down` stops all project processes; a later `up` restarts resolved
+without editing `hum.yaml`. `hum status <name>` and `hum list --all` report the
+number of live attached `run` and `logs --follow` clients as `followers`; this is
+a read-only observation and never warns, prompts, or blocks `remove`. Records
+without a live daemon session report zero. Unobserved completed sessions remain
+bounded by eviction. `down` stops all project processes; a later `up` restarts resolved
 definitions, not retained ad hoc sessions. Daemon loss ends followers nonzero
 with a diagnostic; followers do not reconnect.
 
