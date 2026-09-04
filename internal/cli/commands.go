@@ -33,7 +33,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Description: "By default, hum serve stays attached in the foreground and writes daemon diagnostics to stderr. " +
 				"hum serve --daemon starts a detached daemon, waits for readiness, and reports its PID and socket before returning.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "daemon", Usage: "start the daemon detached, wait for readiness, and print its PID and socket"},
+				&urfavecli.BoolFlag{Name: "daemon", Aliases: []string{"d"}, Usage: "start the daemon detached, wait for readiness, and print its PID and socket"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return serveCommand(ctx, cmd, version, buildTime, errWriter)
@@ -47,7 +47,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				"A single candidate is written as a generated manifest; no candidate or ambiguous candidates produce a commented template. " +
 				"Reports the absolute path, outcome, and next command hum up; use --json for stable JSON.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return initCommand(ctx, cmd, writer)
@@ -73,8 +73,8 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				"Without --detach, it stays attached and streams the managed process stdout and stderr until exit. " +
 				"With --detach, it starts the process, prints its name and PID (or JSON), and returns immediately; the daemon keeps owning it.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "detach", Usage: "start the process detached and return without attaching"},
-				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON for detached runs; attached runs stream raw child output"},
+				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, Usage: "start the process detached and return without attaching"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON for detached runs; attached runs stream raw child output"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return runCommand(ctx, cmd, version, buildTime, writer, errWriter)
@@ -87,8 +87,8 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Description: "Start resolves names from hum.yaml, launches stopped declarations with the full client environment, and waits for readiness unless --no-wait is set.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after the process is spawned"},
-				&urfavecli.StringFlag{Name: "timeout", Usage: "maximum readiness wait duration"},
-				&urfavecli.BoolFlag{Name: "json", Usage: "write one stable JSON object per name"},
+				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return startCommand(ctx, cmd, version, buildTime, writer)
@@ -101,8 +101,8 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Description: "Up resolves every hum.yaml declaration in lexical order, continues after launch failures, and waits for readiness concurrently unless --no-wait is set.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after processes are spawned"},
-				&urfavecli.StringFlag{Name: "timeout", Usage: "maximum readiness wait duration"},
-				&urfavecli.BoolFlag{Name: "json", Usage: "write one stable JSON object per declaration"},
+				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per declaration"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return upCommand(ctx, cmd, version, buildTime, writer)
@@ -116,7 +116,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				"Declared manifest names with no running record are reported as not running; down emits one stable result per name and is idempotent. " +
 				"Down never starts or shuts down the daemon, and when no work exists it reports Nothing is running in this project.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "json", Usage: "write one stable JSON object per name"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return downCommand(ctx, cmd, version, buildTime, writer)
@@ -129,8 +129,8 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Description: "List is read-only and does not start an empty daemon. " +
 				"Use --all to include processes from every project; when nothing is running, it reports that state.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "all", Usage: "list processes from every project"},
-				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+				&urfavecli.BoolFlag{Name: "all", Aliases: []string{"a"}, Usage: "list processes from every project"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return listCommand(ctx, cmd, version, buildTime, writer)
@@ -143,7 +143,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Description: "Status only reads one named process and never starts a daemon. " +
 				"If no daemon is available, resolved manifest names point to hum start <name>; undefined names keep the hum run <name> -- <command> guidance.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return statusCommand(ctx, cmd, version, buildTime, writer)
@@ -157,13 +157,13 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				"--follow first reads retained entries and then streams new entries; following is read-only, so Ctrl+C cancels only the follower and never signals the managed process. " +
 				"If no daemon is available, it reports Nothing is running and points to hum run <name> -- <command> as the launch command.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.StringFlag{Name: "stream", Value: "both", Usage: "select stdout, stderr, or both"},
-				&urfavecli.IntFlag{Name: "tail", Usage: "select the final N entries"},
-				&urfavecli.Uint64Flag{Name: "after-cursor", Usage: "read entries after this cursor"},
-				&urfavecli.IntFlag{Name: "limit-bytes", Usage: "limit returned output bytes"},
-				&urfavecli.StringFlag{Name: "match", Usage: "filter entries by regular expression"},
-				&urfavecli.BoolFlag{Name: "follow", Usage: "follow output until process exit"},
-				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "select stdout, stderr, or both"},
+				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, Usage: "select the final N entries"},
+				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, Usage: "read entries after this cursor"},
+				&urfavecli.IntFlag{Name: "limit-bytes", Aliases: []string{"b"}, Usage: "limit returned output bytes"},
+				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "filter entries by regular expression"},
+				&urfavecli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "follow output until process exit"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return logsCommand(ctx, cmd, version, buildTime, writer, errWriter)
@@ -179,10 +179,10 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				"Current processes can use wait --match for output matching; future resolved-process commands use readiness from hum start and hum up. " +
 				"Without a daemon, resolved manifest names point to hum start <name>; undefined names keep the hum run <name> -- <command> guidance.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.Uint64Flag{Name: "after-cursor", DefaultText: "current launch cursor", Usage: "search entries after this cursor"},
-				&urfavecli.StringFlag{Name: "match", Usage: "wait for output matching this non-empty regular expression"},
-				&urfavecli.StringFlag{Name: "timeout", Usage: "maximum wait duration (default 30s)"},
-				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, DefaultText: "current launch cursor", Usage: "search entries after this cursor"},
+				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "wait for output matching this non-empty regular expression"},
+				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum wait duration (default 30s)"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return waitCommand(ctx, cmd, version, buildTime, writer)
@@ -197,7 +197,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				"It restarts processes, not the daemon. " +
 				"If no daemon is available, it reports Nothing is running and points to hum run <name> -- <command> as the launch command.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return restartCommand(ctx, cmd, version, buildTime, writer)
@@ -211,7 +211,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				"Stopping an already-stopped or unknown name succeeds as not running, so stop is idempotent. " +
 				"Stop affects managed processes only and does not shut down the daemon; with no daemon, it reports Nothing is running.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return stopCommand(ctx, cmd, version, buildTime, writer)
@@ -226,7 +226,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				"Use --stop-processes to gracefully stop every managed process before the daemon exits; if no daemon is running, shutdown succeeds with No hum daemon is running.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "stop-processes", Usage: "stop all managed processes before shutting down; default refuses when any are active"},
-				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return shutdownCommand(ctx, cmd, version, buildTime, writer)
@@ -326,7 +326,18 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 	}
 	for i := 1; i < separator; i++ {
 		flag := args[i]
-		name, value, hasValue := strings.Cut(strings.TrimPrefix(flag, "--"), "=")
+		flagName, value, hasValue := strings.Cut(flag, "=")
+		name := ""
+		switch flagName {
+		case "-d":
+			name = "detach"
+		case "-j":
+			name = "json"
+		default:
+			if strings.HasPrefix(flagName, "--") {
+				name = strings.TrimPrefix(flagName, "--")
+			}
+		}
 		switch name {
 		case "detach", "json":
 			if hasValue {

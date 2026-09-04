@@ -35,6 +35,49 @@ hum shutdown [--stop-processes] [--json]
 hum mcp
 ```
 
+### Stable CLI flag aliases
+
+Aliases are command-local (with `-h/--help` and `-v/--version` as global
+aliases). Combined-short parsing is unsupported; each short spelling must be
+provided as its own option. The long spelling remains canonical and is
+preferred in primary commands, narrative, scripts, workflow examples, and
+error messages. MCP fields have no aliases.
+
+| Command scope | Alias | Canonical long option |
+| --- | --- | --- |
+| Global | `-h` | `--help` |
+| Global | `-v` | `--version` |
+| `init` | `-j` | `--json` |
+| `serve` | `-d` | `--daemon` |
+| `start` | `-t` | `--timeout` |
+| `start` | `-j` | `--json` |
+| `up` | `-t` | `--timeout` |
+| `up` | `-j` | `--json` |
+| `down` | `-j` | `--json` |
+| `run` | `-d` | `--detach` |
+| `run` | `-j` | `--json` |
+| `list` | `-a` | `--all` |
+| `list` | `-j` | `--json` |
+| `status` | `-j` | `--json` |
+| `logs` | `-s` | `--stream` |
+| `logs` | `-n` | `--tail` |
+| `logs` | `-c` | `--after-cursor` |
+| `logs` | `-b` | `--limit-bytes` |
+| `logs` | `-m` | `--match` |
+| `logs` | `-f` | `--follow` |
+| `logs` | `-j` | `--json` |
+| `wait` | `-c` | `--after-cursor` |
+| `wait` | `-m` | `--match` |
+| `wait` | `-t` | `--timeout` |
+| `wait` | `-j` | `--json` |
+| `restart` | `-j` | `--json` |
+| `stop` | `-j` | `--json` |
+| `shutdown` | `-j` | `--json` |
+
+These options remain long-only and have no aliases: `--no-wait`,
+`--stop-processes`, `--runtime-dir`, `--stop-grace`, `--output-bytes`, and
+`--completed-records`.
+
 Human-readable output is the default. `start` and `up` JSON are newline-
 delimited, with one launch result per name. Every result has `name`, `outcome`,
 `source`, and `argv`; process identity, readiness, `ready_cursor`, and error
