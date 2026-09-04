@@ -38,6 +38,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				return serveCommand(ctx, cmd, version, buildTime, errWriter)
 			},
 		},
+		mcpCLICommand(version, buildTime, writer),
 		{
 			Name:         "run",
 			Usage:        "start a named process (attached by default)",

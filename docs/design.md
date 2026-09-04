@@ -5,15 +5,15 @@
 hum is a local process supervisor for humans and coding agents. A private
 Unix-socket daemon owns named process groups and bounded output independently of
 client lifetimes. The current product includes a strict project manifest,
-bounded zero-config resolution for one conventional `dev` entrypoint, and
-idempotent resolved-definition launches while retaining an ad hoc command path
-for operators. macOS and Linux are supported; Windows is not.
+bounded zero-config resolution for one conventional `dev` entrypoint,
+idempotent resolved-definition launches, an ad hoc command path for operators,
+and an MCP stdio adapter. macOS and Linux are supported; Windows is not.
 
-The daemon is the only process owner. CLI and future agent adapters resolve a
-project definition, translate it to the daemon protocol, and never launch a
-second supervisor or reconstruct shell text. Process names are scoped to the
-nearest Git root; without a Git marker, the caller's working directory is the
-project root.
+The daemon is the only process owner. CLI and MCP adapters resolve a project
+definition, translate it to the daemon protocol, and never launch a second
+supervisor or reconstruct shell text. Process names are scoped to the nearest
+Git root; without a Git marker, the caller's working directory is the project
+root.
 
 ## CLI
 
@@ -31,6 +31,7 @@ hum wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
 hum restart <name>... [--json]
 hum stop <name>... [--json]
 hum shutdown [--stop-processes] [--json]
+hum mcp
 ```
 
 Human-readable output is the default. `start` and `up` JSON are newline-
@@ -83,6 +84,62 @@ which targets only explicitly named groups, and from `shutdown`, which controls
 daemon lifetime: ordinary `shutdown` refuses while any process is active, while
 `shutdown --stop-processes` stops all managed groups across projects before
 terminating the daemon. Neither shutdown mode is used by `down`.
+
+## MCP stdio adapter
+
+`hum mcp` speaks MCP JSON-RPC over stdin/stdout only. Register it once with a
+coding agent as a direct executable (`/absolute/path/to/hum` with argument
+`mcp`); the agent does not need a shell skill. Every tool request requires
+`project_root` as an absolute existing directory. The caller supplies the
+nearest Git project root, or the requested directory when no Git marker exists,
+using the same root rule as the CLI.
+
+The adapter exposes exactly nine tools:
+`start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `restart`, and `stop`.
+`start` and `up` are resolved-definition operations: names must come from the
+current explicit manifest or zero-config resolution. They wait for readiness by
+default and accept `no_wait` and `timeout`, returning CLI states, source and
+`argv` metadata, retained per-incarnation readiness outcomes, cursors,
+collision errors, and `up` aggregate semantics. Discovered definitions without
+readiness return `running_unverified` and are never reported ready.
+
+`list` merges resolved definitions with every runtime record in the project.
+`status`, `logs`, `wait`, `restart`, and `stop` control existing records in the
+requested project, whether resolved or `ad_hoc`; `down` stops every running
+record and returns CLI per-name results. `restart` uses the current resolved
+definition and MCP server environment when one exists. Otherwise, a retained
+ad hoc record is relaunched with its exact recorded argv, cwd, and environment.
+Logs and wait use bounded cursor-based inputs and outputs; wait defaults to the
+current launch cursor and CLI timeout. Recorded environments never appear in
+MCP responses.
+
+Only `start` and `up` may create or replace a daemon. Without a daemon, `list`
+reports resolved definitions as stopped; `status`, `logs`, `wait`, and `restart`
+preserve unavailable-daemon errors, while `stop` and `down` succeed with
+nothing running. A detached CLI `hum run transient --detach -- ...` creates
+the `ad_hoc` record that MCP can list and control. Daemon shutdown or
+replacement loses retained ad hoc definitions; an evicted ad hoc record cannot
+be reconstructed and restart returns not found.
+
+The MCP package receives a protocol-shaped backend/client. CLI wiring injects
+the existing daemon client and automatic-start/version-replacement helper, so
+the adapter constructs no `internal/app` services, process supervisors, or
+output stores in-process and never creates a second supervisor. MCP has no
+`run`, `serve`, or `shutdown` tool and no HTTP transport, authentication, or
+remote access.
+
+For an explicit manifest definition that needs environment activation, commit a
+runner or wrapper and put it in the definition's exact argv:
+
+```yaml
+processes:
+  web:
+    argv: [./tools/run-with-project-env, bun, run, dev]
+```
+
+The runner owns activation deterministically. CLI and MCP use the same argv;
+they do not activate mise, nvm, direnv, or other shell hooks, and the manifest
+has no environment literals or files.
 
 ## Canonical strict manifest
 
@@ -274,8 +331,9 @@ the current definition's argv/cwd/readiness and uses the requesting client's
 current environment, so edits to a committed definition or changes in the
 discovered root are respected.
 
-For deterministic MCP execution, a project that needs environment activation
-commits a tool runner or wrapper and puts it in manifest argv:
+For deterministic MCP execution of an explicit manifest definition, a project
+that needs environment activation commits a tool runner or wrapper and puts it
+in manifest argv:
 
 ```yaml
 processes:
@@ -296,8 +354,9 @@ commands other than a confirmed `mix phx.server`, Docker Compose inference,
 scanning workspace packages or nested manifests, combining several inferred
 processes, inferring ports, readiness, or dependencies, or executing candidate
 commands to see which succeeds. It also does not include manifest generation
-(`init`), a shell-only skill, an MCP server, automatic crash restart/backoff,
-environment literals/files, or arbitrary-command MCP tools.
+(`init`), a shell-only skill, arbitrary-command MCP tools, MCP HTTP transport,
+authentication, remote access, automatic crash restart/backoff, or environment
+literals/files.
 `down` is part of the current CLI surface, not a discovery feature; it reuses the
 daemon boundary and exact argv model described above rather than defining another
 supervisor.
