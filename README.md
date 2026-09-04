@@ -52,6 +52,7 @@ hum restart NAME... [--json]
 hum stop NAME... [--json]
 hum shutdown [--stop-processes] [--json]
 hum mcp
+hum skill
 ```
 
 Project definitions are resolved at the nearest Git project root. A present
@@ -194,6 +195,13 @@ processes:
 
 The runner owns activation deterministically. CLI and MCP then use the same
 argv without shell hooks, environment literals, or environment files.
+
+### Shell-only skill fallback
+
+MCP via `hum mcp` is the primary integration for coding agents. If MCP is
+unavailable, `hum skill` prints the versioned embedded Agent Skills file
+byte-for-byte for installation into an agent's normal skill location; it does
+not prescribe an agent-specific installer or configure an agent automatically.
 
 ## Canonical `hum.yaml` v1
 
@@ -479,9 +487,9 @@ language-level guesses such as bare `go run` or `cargo run`, framework launch
 commands other than a confirmed `mix phx.server`, Docker Compose inference,
 scanning workspace packages or nested manifests, combining several inferred
 processes, inferring ports, readiness, or dependencies, or executing candidate
-commands to see which succeeds. It also does not include a shell-only skill,
-arbitrary-command MCP tools, MCP HTTP transport, authentication, or remote
-access, automatic crash restart/backoff, or environment literals/files.
+commands to see which succeeds. It also does not include arbitrary-command MCP
+tools, MCP HTTP transport, authentication, or remote access, automatic crash
+restart/backoff, or environment literals/files.
 `hum down` is the project-scoped inverse of `hum up`: it stops every active
 resolved or ad hoc process in the current project, preserves the daemon and
 runtime records, and leaves other projects untouched. Use `hum stop NAME...` for

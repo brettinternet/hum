@@ -18,6 +18,7 @@ import (
 	"hum/internal/daemon"
 	"hum/internal/output"
 	"hum/internal/protocol"
+	"hum/internal/skill"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -53,6 +54,16 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 		},
 		mcpCLICommand(version, buildTime, writer),
+		{
+			Name:      "skill",
+			Usage:     "print the shell-only fallback skill",
+			ArgsUsage: "",
+			Description: "Print the embedded Agent Skills file for shell-only fallback use. " +
+				"MCP-capable agents should use hum mcp instead.",
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return skillCommand(ctx, cmd, writer)
+			},
+		},
 		{
 			Name:         "run",
 			Usage:        "start a named process (attached by default)",
@@ -1331,6 +1342,14 @@ func followLoop(parent context.Context, follower *daemon.Follower, signals <-cha
 			return 0, false, nil
 		}
 	}
+}
+
+func skillCommand(_ context.Context, cmd *urfavecli.Command, writer io.Writer) error {
+	if err := requireNoArgs(cmd, "skill"); err != nil {
+		return err
+	}
+	_, err := io.WriteString(writer, skill.Content())
+	return err
 }
 
 func requireNoArgs(cmd *urfavecli.Command, name string) error {

@@ -3,8 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"regexp"
 	"strings"
 	"testing"
+
+	"hum/internal/skill"
 )
 
 func TestStatusAndWaitSurface(t *testing.T) {
@@ -15,6 +19,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 		"serve":    true,
 		"init":     true,
 		"mcp":      true,
+		"skill":    true,
 		"run":      true,
 		"start":    true,
 		"up":       true,
@@ -42,6 +47,143 @@ func TestStatusAndWaitSurface(t *testing.T) {
 			t.Errorf("root command is missing %q", name)
 		}
 	}
+}
+
+func TestSkillCommand(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+
+	if err := root.Run(context.Background(), []string{"hum", "skill"}); err != nil {
+		t.Fatalf("skill: %v", err)
+	}
+	if got, want := output.String(), skill.Content(); got != want {
+		t.Fatalf("skill output differs from embedded content:\n got %q\nwant %q", got, want)
+	}
+	if errorOutput.Len() != 0 {
+		t.Fatalf("unexpected stderr: %q", errorOutput.String())
+	}
+}
+
+func TestSkillRejectsPositionalArgs(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+
+	err := root.Run(context.Background(), []string{"hum", "skill", "extra"})
+	if err == nil || !strings.Contains(err.Error(), "skill accepts no positional arguments") {
+		t.Fatalf("skill with positional argument error = %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("skill wrote output after rejecting argument: %q", output.String())
+	}
+	if errorOutput.Len() != 0 {
+		t.Fatalf("unexpected stderr: %q", errorOutput.String())
+	}
+}
+
+func TestSkillPropagatesWriteErrors(t *testing.T) {
+	wantErr := errors.New("skill write failed")
+	var errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", skillErrorWriter{err: wantErr}, &errorOutput)
+
+	if err := root.Run(context.Background(), []string{"hum", "skill"}); !errors.Is(err, wantErr) {
+		t.Fatalf("skill write error = %v, want %v", err, wantErr)
+	}
+	if errorOutput.Len() != 0 {
+		t.Fatalf("unexpected stderr: %q", errorOutput.String())
+	}
+}
+
+func TestSkillHelp(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+
+	if err := root.Run(context.Background(), []string{"hum", "skill", "--help"}); err != nil {
+		t.Fatalf("skill help: %v", err)
+	}
+	help := strings.ToLower(output.String())
+	for _, want := range []string{"shell-only", "fallback", "mcp-capable", "hum mcp"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("skill help missing %q: %q", want, output.String())
+		}
+	}
+	if errorOutput.Len() != 0 {
+		t.Fatalf("unexpected stderr: %q", errorOutput.String())
+	}
+}
+
+func TestSkillReferencesMatchRootCommandsAndFlags(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+	content := skill.Content()
+
+	type commandFlag struct {
+		command string
+		flag    string
+	}
+	var references []commandFlag
+	inline := regexp.MustCompile("`([^`\\n]+)`")
+	commandReference := regexp.MustCompile(`\bhum\s+([a-z][a-z0-9-]*)\b`)
+	flagReference := regexp.MustCompile(`--([a-z][a-z0-9-]*)\b`)
+	commandReferenceCount := 0
+	for _, match := range inline.FindAllStringSubmatch(content, -1) {
+		command := commandReference.FindStringSubmatch(match[1])
+		if len(command) == 0 {
+			continue
+		}
+		commandReferenceCount++
+		name := command[1]
+		found := false
+		for _, command := range root.Commands {
+			if command != nil && command.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("skill references missing root command %q", name)
+		}
+		for _, flag := range flagReference.FindAllStringSubmatch(match[1], -1) {
+			references = append(references, commandFlag{command: name, flag: flag[1]})
+		}
+	}
+	if commandReferenceCount == 0 {
+		t.Fatal("skill contains no hum command references")
+	}
+
+	for _, reference := range references {
+		var commandFound bool
+		var flagFound bool
+		for _, command := range root.Commands {
+			if command == nil || command.Name != reference.command {
+				continue
+			}
+			commandFound = true
+			for _, flag := range command.Flags {
+				for _, name := range flag.Names() {
+					if name == reference.flag {
+						flagFound = true
+					}
+				}
+			}
+			break
+		}
+		if !commandFound {
+			t.Errorf("skill flag --%s references missing root command %q", reference.flag, reference.command)
+		} else if !flagFound {
+			t.Errorf("skill flag --%s is not a flag on hum %s", reference.flag, reference.command)
+		}
+	}
+	if len(references) == 0 {
+		t.Fatal("skill contains no command-scoped flag references")
+	}
+}
+
+type skillErrorWriter struct {
+	err error
+}
+
+func (w skillErrorWriter) Write([]byte) (int, error) {
+	return 0, w.err
 }
 
 func TestWaitHelpDescribesExitAndReadiness(t *testing.T) {
