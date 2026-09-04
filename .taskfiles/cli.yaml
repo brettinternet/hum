@@ -22,6 +22,10 @@ tasks:
       - mkdir -p bin
       - mise exec go -- go build -o bin/hum ./cmd/hum
 
+  run:
+    desc: Run hum from source
+    cmd: mise exec go -- go run ./cmd/hum {{.CLI_ARGS}}
+
   check:
     desc: Run Go checks
     cmds:
