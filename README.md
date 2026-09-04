@@ -34,6 +34,20 @@ processes:
     argv: [bun, run, worker]
 ```
 
+Existing Task or Just definitions can remain the source of truth; `hum.yaml`
+can forward to them while adding supervision-specific readiness:
+
+```yaml
+version: 1
+processes:
+  web:
+    argv: [task, "dev:web"]
+    ready:
+      match: "Listening on"
+  worker:
+    argv: [just, dev-worker]
+```
+
 ```sh
 hum up
 hum status web
