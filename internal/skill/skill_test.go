@@ -1,8 +1,10 @@
 package skill
 
 import (
+	"encoding/json"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -105,5 +107,66 @@ func TestResolvedProjectInstructions(t *testing.T) {
 	packageManagerCommand := regexp.MustCompile(`(^|[^[:alnum:]_-])(npm|bun|yarn|pnpm)[[:space:]]+[^[:space:]]+`)
 	if packageManagerCommand.MatchString(content) {
 		t.Error("SKILL.md must not contain package-manager development commands")
+	}
+}
+
+func TestPluginPackageWiresSkillAndMCP(t *testing.T) {
+	var manifest struct {
+		Name       string `json:"name"`
+		Skills     string `json:"skills"`
+		MCPServers string `json:"mcpServers"`
+	}
+	decodePluginJSON(t, "../../plugins/hum/.codex-plugin/plugin.json", &manifest)
+	if manifest.Name != "hum" || manifest.Skills != "./skills/" || manifest.MCPServers != "./.mcp.json" {
+		t.Fatalf("plugin manifest wiring = %+v", manifest)
+	}
+
+	var mcpConfig struct {
+		Servers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	decodePluginJSON(t, "../../plugins/hum/.mcp.json", &mcpConfig)
+	humServer, ok := mcpConfig.Servers["hum"]
+	if !ok || humServer.Command != "hum" || !slices.Equal(humServer.Args, []string{"mcp"}) {
+		t.Fatalf("hum MCP server wiring = %+v", humServer)
+	}
+
+	pluginSkill, err := os.ReadFile("../../plugins/hum/skills/hum/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, instruction := range []string{"name: hum", "project_root", "Use the bundled hum MCP tools", "Never use raw `hum run"} {
+		if !strings.Contains(string(pluginSkill), instruction) {
+			t.Errorf("plugin skill missing %q", instruction)
+		}
+	}
+}
+
+func TestPluginMarketplaceEntry(t *testing.T) {
+	var marketplace struct {
+		Name    string `json:"name"`
+		Plugins []struct {
+			Name   string `json:"name"`
+			Source struct {
+				Path string `json:"path"`
+			} `json:"source"`
+		} `json:"plugins"`
+	}
+	decodePluginJSON(t, "../../.agents/plugins/marketplace.json", &marketplace)
+	if marketplace.Name != "hum" || len(marketplace.Plugins) != 1 || marketplace.Plugins[0].Name != "hum" || marketplace.Plugins[0].Source.Path != "./plugins/hum" {
+		t.Fatalf("marketplace wiring = %+v", marketplace)
+	}
+}
+
+func decodePluginJSON(t *testing.T, path string, target any) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(content, target); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
 	}
 }

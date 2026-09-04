@@ -1,10 +1,26 @@
 # Coding-agent setup
 
+## Install the Codex plugin
+
+The plugin bundles the hum workflow skill and MCP registration. Install `hum`
+on `PATH`, then from a hum repository checkout run:
+
+```sh
+codex plugin marketplace add .
+codex plugin add hum@hum
+```
+
+Start a new Codex session after installation. The plugin runs `hum mcp`, so the
+executable must remain available on `PATH` in Codex's environment.
+
+Use the manual MCP registration below for other coding agents or when plugin
+installation is unavailable.
+
 `hum mcp` is an MCP server over stdio. Register it once by pointing the client
 directly at the `hum` executable. Use an absolute path; do not wrap the command
 in `sh -c` or include a project path in the registration.
 
-## Register the MCP server
+## Register the MCP server manually
 
 Claude Code:
 

@@ -53,12 +53,16 @@ task cli:build
 
 ## Coding agents
 
-`hum mcp` exposes the same project processes and bounded output over MCP. For
-example, register the built executable with Codex:
+Codex users can install the bundled hum skill and MCP registration from a
+repository checkout after placing `hum` on `PATH`:
 
 ```sh
-codex mcp add hum -- /absolute/path/to/hum mcp
+codex plugin marketplace add .
+codex plugin add hum@hum
 ```
+
+`hum mcp` exposes the same project processes and bounded output over MCP for
+manual registration with other coding agents.
 
 See [coding-agent setup](docs/coding-agents.md) for Claude Code, Cursor, the MCP
 tool surface, and the shell-only skill fallback.

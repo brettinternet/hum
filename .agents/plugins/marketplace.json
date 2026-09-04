@@ -1,0 +1,20 @@
+{
+  "name": "hum",
+  "interface": {
+    "displayName": "hum"
+  },
+  "plugins": [
+    {
+      "name": "hum",
+      "source": {
+        "source": "local",
+        "path": "./plugins/hum"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

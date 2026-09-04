@@ -1,0 +1,26 @@
+{
+  "name": "hum",
+  "version": "0.1.0",
+  "description": "Manage project development processes through hum.",
+  "author": {
+    "name": "brettinternet",
+    "url": "https://github.com/brettinternet"
+  },
+  "homepage": "https://github.com/brettinternet/hum",
+  "repository": "https://github.com/brettinternet/hum",
+  "keywords": ["development", "processes", "mcp"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "hum",
+    "shortDescription": "Manage project development processes.",
+    "longDescription": "Start, inspect, wait for, restart, and stop project processes through hum's bounded process supervisor.",
+    "developerName": "brettinternet",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Start this project's development processes with hum.",
+      "Inspect this project's hum process status and logs."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
