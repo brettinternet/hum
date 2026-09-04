@@ -32,6 +32,15 @@ The build writes `bin/hum`. The current executable supports:
 
 `--help` displays the current command usage. The default development build reports `hum version dev (built unknown)`; release builds inject version and build-time metadata through Go linker flags.
 
+For a release or locally labelled build:
+
+```sh
+mkdir -p bin
+mise exec go -- go build \
+  -ldflags "-X main.buildVersion=1.2.3 -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -o bin/hum ./cmd/hum
+```
+
 ## Project gates
 
 ```sh
