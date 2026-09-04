@@ -1,5 +1,7 @@
 # hum
 
+[![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
+
 `hum` is a local process supervisor for humans and coding agents. It keeps
 project processes alive between commands and gives every client the same
 bounded logs and lifecycle controls.

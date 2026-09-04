@@ -2575,6 +2575,7 @@ func TestSessionFollowSurvivesStopAndStartStopped(t *testing.T) {
 	if !seenFirst {
 		t.Fatal("follower missed first incarnation output")
 	}
+	waitExited(t, s, root, "session")
 	if _, err := startShell(s, root, "session", "printf 'second\\n'; sleep 30"); err != nil {
 		t.Fatal(err)
 	}
