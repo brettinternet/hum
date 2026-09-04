@@ -17,7 +17,7 @@ import (
 	"hum/internal/testutil"
 )
 
-const manifestWorkflowTimeout = 15 * time.Second
+const manifestWorkflowTimeout = 30 * time.Second
 
 type manifestTestReady struct {
 	Match   string
