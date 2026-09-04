@@ -523,18 +523,6 @@ func lifecycleAssertDetachedSession(t *testing.T, pid int) {
 	}
 }
 
-func lifecycleProcessSessionID(t *testing.T, pid int) int {
-	t.Helper()
-	sid, err := syscall.Getsid(pid)
-	if err != nil {
-		t.Fatalf("read process session ID for %d: %v", pid, err)
-	}
-	if sid <= 0 {
-		t.Fatalf("process session ID for %d = %d: want positive session ID", pid, sid)
-	}
-	return sid
-}
-
 func lifecycleAssertBoundedLog(t *testing.T, path string, limit int64) {
 	t.Helper()
 	info, err := os.Stat(path)

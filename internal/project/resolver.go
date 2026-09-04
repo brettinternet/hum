@@ -259,14 +259,27 @@ func commandOutput(root, source, path string, skipEmptyFailure bool, argv ...str
 	output, err := run(root, argv...)
 	if err != nil {
 		// Mise and Task commonly report that their declaration file is
-		// absent with an empty failure. A declared Justfile or mix.exs,
-		// however, must surface a failed introspection.
-		if skipEmptyFailure && len(bytes.TrimSpace(output)) == 0 {
+		// absent with an empty failure. Task reserves exit code 100 for a
+		// missing Taskfile and may also write a diagnostic to stdout.
+		// A declared Justfile or mix.exs, however, must surface a failed
+		// introspection.
+		if skipEmptyFailure && (len(bytes.TrimSpace(output)) == 0 || source == "task" && commandExitCode(err) == 100) {
 			return nil, false, nil
 		}
 		return nil, false, &IntrospectionError{Source: source, Path: path, Argv: append([]string(nil), argv...), Err: err}
 	}
 	return output, true, nil
+}
+
+func commandExitCode(err error) int {
+	type exitCoder interface {
+		ExitCode() int
+	}
+	var coder exitCoder
+	if errors.As(err, &coder) {
+		return coder.ExitCode()
+	}
+	return -1
 }
 
 func detectMise(root string) (Definition, bool, error) {

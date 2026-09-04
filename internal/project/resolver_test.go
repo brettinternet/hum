@@ -16,6 +16,11 @@ type discoveryStub struct {
 	err    error
 }
 
+type discoveryExitError int
+
+func (err discoveryExitError) Error() string { return fmt.Sprintf("exit status %d", err) }
+func (err discoveryExitError) ExitCode() int { return int(err) }
+
 func installDiscoveryStubs(t *testing.T, stubs map[string]discoveryStub) *[]string {
 	t.Helper()
 	oldLookPath := discoveryLookPath
@@ -141,6 +146,18 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 			t.Fatal(err)
 		}
 		wantDiscoveredDefinition(t, definitions, root, "task", "task", "dev")
+	})
+
+	t.Run("missing Taskfile with diagnostic output", func(t *testing.T) {
+		root := t.TempDir()
+		installDiscoveryStubs(t, map[string]discoveryStub{
+			"task": {output: []byte("Taskfile not found\n"), err: discoveryExitError(100)},
+		})
+		_, err := ResolveDefinitions(root)
+		var noCandidate *NoCandidateError
+		if !errors.As(err, &noCandidate) {
+			t.Fatalf("error = %v, want NoCandidateError", err)
+		}
 	})
 
 	t.Run("public just recipe", func(t *testing.T) {
