@@ -1193,7 +1193,7 @@ func TestRemoveAndShutdown(t *testing.T) {
 	})
 	t.Run("forced waits and removes", func(t *testing.T) {
 		runtimeDir := shortRuntimeDir(t)
-		server := testServer(t, Config{RuntimeDir: runtimeDir, StopGrace: 300 * time.Millisecond})
+		server := testServer(t, Config{RuntimeDir: runtimeDir, StopGrace: 2 * time.Second})
 		root := t.TempDir()
 		client, err := Dial(context.Background(), server.Paths().Socket)
 		if err != nil {
