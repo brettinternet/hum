@@ -393,6 +393,37 @@ func TestStatusGetTransportsNextCursorAndTypedErrors(t *testing.T) {
 	}
 }
 
+func TestStatusFollowers(t *testing.T) {
+	root := t.TempDir()
+	server := testServer(t, Config{})
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	follower, err := client.Follow(context.Background(), protocol.NewFollowRequest("watched", root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.Get(context.Background(), protocol.NewGetRequest("watched", root))
+	if err != nil || got.Followers != 1 {
+		t.Fatalf("attached status followers = %d, err %v, want 1", got.Followers, err)
+	}
+	if err := follower.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		got, err = client.Get(context.Background(), protocol.NewGetRequest("watched", root))
+		if errors.Is(err, app.ErrProcessNotFound) || got.Followers == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("detached status followers = %d, err %v, want zero or removed pre-launch session", got.Followers, err)
+}
+
 func TestStatusResponseShapes(t *testing.T) {
 	initialCursor := uint64(19)
 	item := wireProcess{

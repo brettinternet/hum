@@ -133,6 +133,7 @@ func mcpProcess(process app.Process) protocol.Process {
 		Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...), Start: process.Start,
 		LaunchCursor: protocol.Cursor(process.LaunchCursor), State: string(process.State), Exit: mcpExit(process.Exit),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
+		Followers: process.Followers,
 	}
 	if process.NextCursor != 0 {
 		cursor := protocol.Cursor(process.NextCursor)

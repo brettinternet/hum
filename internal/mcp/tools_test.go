@@ -432,6 +432,34 @@ func TestDown(t *testing.T) {
 	}
 }
 
+func TestStatusListFollowers(t *testing.T) {
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"watched": {Name: "watched", State: "running", Followers: 2},
+	}}
+	s, root, _ := newTestServer(t, nil, client)
+
+	listedValue, err := s.callTool(context.Background(), "list", args(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := listedValue.([]protocol.Process)
+	if len(listed) != 1 || listed[0].Followers != 2 {
+		t.Fatalf("list followers = %#v, want 2", listed)
+	}
+	statusValue, err := s.callTool(context.Background(), "status", args(root, "name", "watched"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := statusValue.(protocol.Process).Followers; got != 2 {
+		t.Fatalf("status followers = %d, want 2", got)
+	}
+	properties := s.toolDefinitions()[4].OutputSchema["properties"].(map[string]any)
+	followers, ok := properties["followers"].(map[string]any)
+	if !ok || followers["type"] != "integer" {
+		t.Fatalf("followers schema = %#v, want integer", properties["followers"])
+	}
+}
+
 func TestObservationTools(t *testing.T) {
 	cursor := protocol.Cursor(12)
 	client := &fakeClient{processes: map[string]protocol.Process{"raw": {Name: "raw", State: "running", LaunchCursor: 5}}, output: protocol.OutputResult{Next: &cursor}}

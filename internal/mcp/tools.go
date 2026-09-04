@@ -154,8 +154,10 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"start": map[string]any{"type": "string"}, "launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 		"next_cursor": map[string]any{"type": "integer", "minimum": 0}, "state": map[string]any{"type": "string"},
 		"exit": exit, "exit_code": map[string]any{"type": "integer"}, "exited_at": map[string]any{"type": "string"},
-		"restart_count": map[string]any{"type": "integer", "minimum": 0}, "readiness": readiness,
-	}, "name", "source", "root", "cwd", "argv", "state", "launch_cursor")
+		"restart_count": map[string]any{"type": "integer", "minimum": 0},
+		"followers":     map[string]any{"type": "integer", "minimum": 0, "description": "Live run and logs --follow clients attached to this supervision session."},
+		"readiness":     readiness,
+	}, "name", "source", "root", "cwd", "argv", "state", "launch_cursor", "followers")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError}, "name", "outcome")
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")

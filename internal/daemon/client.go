@@ -655,6 +655,7 @@ func appProcessFromWire(item wireProcess) app.Process {
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: output.Cursor(item.LaunchCursor), State: app.State(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
+		Followers: item.Followers,
 	}
 	if item.Readiness != nil {
 		result.Readiness = &app.Readiness{

@@ -11,6 +11,27 @@ import (
 	"time"
 )
 
+func TestProcessFollowerCountRoundTrip(t *testing.T) {
+	encoded, err := json.Marshal(Process{Name: "watched", Followers: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"followers":3`) {
+		t.Fatalf("process JSON = %s, want followers integer", encoded)
+	}
+	var decoded Process
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Followers != 3 {
+		t.Fatalf("decoded followers = %d, want 3", decoded.Followers)
+	}
+	zero, err := json.Marshal(Process{Name: "unwatched"})
+	if err != nil || !strings.Contains(string(zero), `"followers":0`) {
+		t.Fatalf("zero-follower process JSON = %s, err %v", zero, err)
+	}
+}
+
 func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	hello, err := json.Marshal(NewHello())
 	if err != nil {
@@ -334,7 +355,7 @@ func TestStatusGetRequestResponseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","root":"/work/project","pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2}}`+"\n"; got != want {
+	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","root":"/work/project","pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0}}`+"\n"; got != want {
 		t.Fatalf("get response JSON = %s, want %s", got, want)
 	}
 

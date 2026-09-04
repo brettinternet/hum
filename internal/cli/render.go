@@ -32,6 +32,7 @@ type listProcessJSON struct {
 	ExitCode     int              `json:"exit_code,omitempty"`
 	ExitedAt     time.Time        `json:"exited_at,omitempty"`
 	RestartCount int              `json:"restart_count,omitempty"`
+	Followers    int              `json:"followers"`
 	Readiness    string           `json:"readiness,omitempty"`
 	ReadyCursor  *protocol.Cursor `json:"ready_cursor,omitempty"`
 }
@@ -53,6 +54,7 @@ type statusJSON struct {
 	ReadyCursor  *protocol.Cursor `json:"ready_cursor,omitempty"`
 	ExitStatus   *int             `json:"exit_status"`
 	RestartCount int              `json:"restart_count"`
+	Followers    int              `json:"followers"`
 	NextCursor   protocol.Cursor  `json:"next_cursor"`
 }
 
@@ -68,6 +70,7 @@ func statusJSONFor(process app.Process) statusJSON {
 		StartedAt:    process.Start.Format(time.RFC3339Nano),
 		State:        string(process.State),
 		RestartCount: process.RestartCount,
+		Followers:    process.Followers,
 		NextCursor:   protocol.Cursor(process.NextCursor),
 	}
 	result.Readiness, result.ReadyCursor = processReadinessFields(process)
@@ -161,6 +164,7 @@ func processJSON(process app.Process) listProcessJSON {
 		ExitCode:     process.ExitCode,
 		ExitedAt:     process.ExitedAt,
 		RestartCount: process.RestartCount,
+		Followers:    process.Followers,
 	}
 	if process.NextCursor != 0 {
 		nextCursor := protocol.Cursor(process.NextCursor)
@@ -302,6 +306,9 @@ func renderListHuman(w io.Writer, processes []app.Process, all bool) error {
 		prefix := fmt.Sprintf("%s\t%s\tPID %d\tsource=%s\targv=%s", process.Name, process.State, process.PID, process.Source, argv)
 		if all {
 			prefix = fmt.Sprintf("%s: %s\t%s\tPID %d\tsource=%s\targv=%s", process.Root, process.Name, process.State, process.PID, process.Source, argv)
+		}
+		if process.Followers > 0 {
+			prefix += fmt.Sprintf("\tfollowers=%d", process.Followers)
 		}
 		if readiness != "" {
 			prefix += "\treadiness=" + readiness
@@ -451,6 +458,6 @@ func renderStatusHuman(w io.Writer, process app.Process) error {
 	} else if _, err := fmt.Fprintf(w, "exit_status: %d\n", *status.ExitStatus); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(w, "restart_count: %d\nnext_cursor: %d\n", status.RestartCount, status.NextCursor)
+	_, err := fmt.Fprintf(w, "restart_count: %d\nfollowers: %d\nnext_cursor: %d\n", status.RestartCount, status.Followers, status.NextCursor)
 	return err
 }

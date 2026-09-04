@@ -102,6 +102,69 @@ func TestStatusRunningJSON(t *testing.T) {
 	}
 }
 
+func TestStatusListFollowers(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	name := "watched"
+	stopShutdownStartProcess(t, server, projectRoot, name, []string{"/bin/sh", "-c", "sleep 30"})
+	t.Cleanup(func() { _, _, _ = stopShutdownRun(t, "stop", name) })
+
+	plainBefore, stderr, err := stopShutdownRun(t, "list", "--all")
+	if err != nil || stderr != "" {
+		t.Fatalf("list --all before follow = %q, stderr %q, err %v", plainBefore, stderr, err)
+	}
+	if strings.Contains(plainBefore, "followers=") {
+		t.Fatalf("plain list without followers changed: %q", plainBefore)
+	}
+
+	client, err := daemon.Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	follower, err := client.Follow(context.Background(), protocol.NewFollowRequest(name, projectRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	human, stderr, err := stopShutdownRun(t, "status", name)
+	if err != nil || stderr != "" || !strings.Contains(human, "followers: 1\n") {
+		t.Fatalf("followed status = %q, stderr %q, err %v", human, stderr, err)
+	}
+	jsonStatus, stderr, err := stopShutdownRun(t, "status", name, "--json")
+	if err != nil || stderr != "" || statusDecodeJSON(t, jsonStatus).Followers != 1 {
+		t.Fatalf("followed status JSON = %q, stderr %q, err %v", jsonStatus, stderr, err)
+	}
+	listHuman, stderr, err := stopShutdownRun(t, "list", "--all")
+	if err != nil || stderr != "" || !strings.Contains(listHuman, "followers=1") {
+		t.Fatalf("followed list --all = %q, stderr %q, err %v", listHuman, stderr, err)
+	}
+	listOutput, stderr, err := stopShutdownRun(t, "list", "--all", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("followed list --all JSON = %q, stderr %q, err %v", listOutput, stderr, err)
+	}
+	var listed listJSON
+	if err := json.Unmarshal([]byte(listOutput), &listed); err != nil || len(listed.Processes) != 1 || listed.Processes[0].Followers != 1 {
+		t.Fatalf("followed list JSON = %#v, decode err %v", listed, err)
+	}
+
+	if err := follower.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if statusReadProcess(t, server, projectRoot, name).Followers == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	plainAfter, stderr, err := stopShutdownRun(t, "list", "--all")
+	if err != nil || stderr != "" || plainAfter != plainBefore {
+		t.Fatalf("plain list after detach = %q, want unchanged %q, stderr %q, err %v", plainAfter, plainBefore, stderr, err)
+	}
+}
+
 func TestStatusExitedAndSignaled(t *testing.T) {
 	t.Run("exited JSON and human output include terminal status", func(t *testing.T) {
 		projectRoot := stopShutdownTestProject(t)
@@ -363,7 +426,7 @@ func statusAssertExactFields(t *testing.T, text string) {
 	want := map[string]struct{}{
 		"name": {}, "project_root": {}, "pid": {}, "pgid": {}, "cwd": {},
 		"argv": {}, "started_at": {}, "state": {}, "exit_status": {},
-		"restart_count": {}, "next_cursor": {},
+		"restart_count": {}, "followers": {}, "next_cursor": {},
 	}
 	if len(fields) != len(want) {
 		t.Fatalf("status JSON fields = %#v, want exactly %#v", fields, want)
