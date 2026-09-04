@@ -10,9 +10,7 @@ hum logs dev --follow
 hum down
 ```
 
-![Demo of hum supervising a process, retaining its logs, and stopping it](docs/demo.gif)
-
-[Demo source](docs/demo.tape)
+[![Demo of hum supervising a process, retaining its logs, and stopping it](docs/demo.gif)](docs/demo.tape)
 
 With no configuration, `hum up` finds one conventional `dev` task in Mise,
 Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or Phoenix.
