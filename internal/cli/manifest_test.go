@@ -100,7 +100,7 @@ processes:
 	}
 }
 
-func TestManifestReadinessUsesInitialCursorBoundary(t *testing.T) {
+func TestManifestReadinessSurvivesExitAfterMatch(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	client := daemon.NewClient(clientConn)
 	t.Cleanup(func() {
@@ -147,12 +147,8 @@ func TestManifestReadinessUsesInitialCursorBoundary(t *testing.T) {
 			switch request.Op {
 			case protocol.OpGet:
 				gets++
-				readiness := &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}
-				if gets > 1 {
-					zero := protocol.Cursor(0)
-					readiness = &protocol.Readiness{State: protocol.ReadinessReady, Cursor: &zero, Match: "ready"}
-				}
-				process.Readiness = readiness
+				process.State = string(app.StateExited)
+				process.Readiness = nil
 				if err := encoder.EncodeResponse(protocol.NewGetResponse(process)); err != nil {
 					serverDone <- err
 					return
@@ -200,8 +196,8 @@ func TestManifestReadinessUsesInitialCursorBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manifest readiness: %v", err)
 	}
-	if result.Readiness != app.ReadinessReady || result.ReadyCursor == nil || *result.ReadyCursor != 0 {
-		t.Fatalf("manifest readiness result = %#v, want ready at cursor 0", result)
+	if result.Outcome != "started" || result.Readiness != app.ReadinessReady || result.ReadyCursor == nil || *result.ReadyCursor != 0 {
+		t.Fatalf("manifest readiness result = %#v, want started and ready at cursor 0", result)
 	}
 
 	_ = client.Close()

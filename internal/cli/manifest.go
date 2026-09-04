@@ -246,17 +246,20 @@ func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd str
 	// Start returns a snapshot taken before the child can necessarily emit its
 	// first line. Refresh it before subscribing so a readiness match that was
 	// recorded by the daemon in that interval is not lost to output eviction.
+	// If the child already exited, Wait must order its retained output and exit.
 	lookupCwd := process.Root
 	if lookupCwd == "" {
 		lookupCwd = cwd
 	}
 	if current, getErr := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd}); getErr == nil {
-		process = current
-		lookupCwd = process.Root
-		if lookupCwd == "" {
-			lookupCwd = cwd
+		if current.State == app.StateRunning {
+			process = current
+			lookupCwd = process.Root
+			if lookupCwd == "" {
+				lookupCwd = cwd
+			}
+			result = manifestLaunchResultFor(definition, process, initialOutcome)
 		}
-		result = manifestLaunchResultFor(definition, process, initialOutcome)
 	} else if !isNotFound(getErr) {
 		return result, getErr
 	}
@@ -335,6 +338,14 @@ func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd str
 				return result, getErr
 			}
 			if done {
+				if current.Outcome == "exited_before_ready" {
+					// Wait observed the readiness match before the process exited,
+					// even if reconciliation hid terminal readiness before Get.
+					result.Readiness = app.ReadinessReady
+					cursor := uint64(waitResult.Cursor)
+					result.ReadyCursor = &cursor
+					return result, nil
+				}
 				return current, nil
 			}
 			if time.Now().After(deadline) {
