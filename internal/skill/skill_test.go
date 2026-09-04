@@ -142,10 +142,24 @@ func TestPluginPackageWiresSkillAndMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, instruction := range []string{"name: hum", "project_root", "Use the bundled hum MCP tools", "Never use raw `hum run"} {
+	for _, instruction := range []string{
+		"name: hum",
+		"project_root",
+		"Use the bundled hum MCP tools",
+		"bounded later condition",
+		"before another client starts the name",
+		"durable session keeps terminal observers attached",
+		"Use `remove` only to discard the runtime session",
+		"never edits `hum.yaml`",
+		"later `up` restarts only resolved definitions",
+		"Never use raw `hum run",
+	} {
 		if !strings.Contains(string(pluginSkill), instruction) {
 			t.Errorf("plugin skill missing %q", instruction)
 		}
+	}
+	if strings.Contains(string(pluginSkill), "only when the developer asks you to stop that process") {
+		t.Error("plugin skill retains obsolete developer-request stop restriction")
 	}
 }
 

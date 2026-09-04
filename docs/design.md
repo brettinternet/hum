@@ -209,9 +209,9 @@ records omit readiness.
 ## Daemon and environments
 
 One daemon serves each private runtime directory at `hum.sock`. `serve --daemon`,
-`run`, `start`, and `up` use a startup lock and readiness handshake.
-Read-only commands do not start an empty daemon. Foreground daemon exit and
-`shutdown --stop-processes` stop all managed groups.
+`run`, `start`, `up`, CLI `logs --follow`, and CLI `wait` use a startup lock and
+readiness handshake. Bounded reads and controls do not start an empty daemon.
+Foreground daemon exit and `shutdown --stop-processes` stop all managed groups.
 
 The launching client supplies cwd and its full environment. Manifest `cwd`
 changes only the child directory; discovered definitions use the project root.
