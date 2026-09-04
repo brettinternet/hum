@@ -688,10 +688,7 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			if event.Read == nil {
 				return nil
 			}
-			if err := writeLogEntries(writer, event.Read.Entries); err != nil {
-				return err
-			}
-			return writeCursorTrailer(errWriter, *event.Read)
+			return writeLogEntries(writer, event.Read.Entries)
 		}, func(sig os.Signal) (bool, error) {
 			if sig == os.Interrupt || sig == syscall.SIGTERM || sig == syscall.SIGHUP {
 				return true, nil

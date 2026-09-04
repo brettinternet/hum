@@ -279,6 +279,17 @@ func TestLogsFollow(t *testing.T) {
 		if !sawExit {
 			t.Fatalf("late logs --follow events = %#v, missing terminal exit event", events)
 		}
+
+		humanOutput, humanErr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "late", "--follow")
+		if err != nil {
+			t.Fatalf("late human logs --follow: %v (stderr=%q)", err, humanErr)
+		}
+		if !strings.Contains(humanOutput, "late-follow\n") {
+			t.Fatalf("late human logs --follow stdout = %q, missing retained output", humanOutput)
+		}
+		if humanErr != "" {
+			t.Fatalf("late human logs --follow stderr = %q, want no cursor trailers", humanErr)
+		}
 	})
 
 	multiScript := "printf 'multi-first\\n'; sleep 1; printf 'multi-second\\n'; sleep 1"
