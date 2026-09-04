@@ -5,9 +5,13 @@ project processes alive between commands and gives every client the same
 bounded logs and lifecycle controls.
 
 ```sh
-hum up
-hum logs dev --follow
-hum down
+# shell A
+hum run clock -- ./clock.sh
+
+# shell B
+hum logs clock --follow
+
+# ^ these can also be run out of order
 ```
 
 [![Demo of hum supervising a process, retaining its logs, and stopping it](docs/demo.gif)](docs/demo.tape)
