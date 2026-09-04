@@ -460,6 +460,19 @@ func absoluteClean(path string) (string, error) {
 
 func keyFor(root, name string) string { return root + "\x00" + name }
 
+func (s *Supervisor) trackStore(key string, store *output.Store) {
+	store.SetIdleCallback(func() {
+		s.mu.Lock()
+		rec := s.records[key]
+		if rec != nil && rec.store == store && rec.terminal && rec.incarnation == 0 {
+			delete(s.records, key)
+		} else {
+			s.evictLocked()
+		}
+		s.mu.Unlock()
+	})
+}
+
 // Start launches a process with direct argv execution and returns its initial
 // immutable snapshot. A client disappearing after Start has no lifecycle
 // effect; only Stop or Shutdown sends signals.
@@ -467,10 +480,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if err := ValidateName(req.Name); err != nil {
 		return Process{}, err
 	}
-	if len(req.Argv) == 0 || req.Argv[0] == "" {
-		return Process{}, fmt.Errorf("%w: argv must not be empty", ErrInvalidRequest)
-	}
-	cwd, err := absoluteClean(req.Cwd)
+	requestCwd, err := absoluteClean(req.Cwd)
 	if err != nil {
 		return Process{}, err
 	}
@@ -478,11 +488,13 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if req.Root != "" {
 		root, err = absoluteClean(req.Root)
 	} else {
-		root, err = DiscoverProjectRoot(cwd)
+		root, err = DiscoverProjectRoot(requestCwd)
 	}
 	if err != nil {
 		return Process{}, err
 	}
+	key := keyFor(root, req.Name)
+
 	var readyConfig *ReadinessConfig
 	var readyPattern *regexp.Regexp
 	if req.Ready != nil {
@@ -491,15 +503,8 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		if compileErr != nil {
 			return Process{}, fmt.Errorf("%w: readiness match: %v", ErrInvalidRequest, compileErr)
 		}
-		readyConfig = &config
-		readyPattern = compiled
+		readyConfig, readyPattern = &config, compiled
 	}
-	argv := append([]string(nil), req.Argv...)
-	env := append([]string(nil), req.Env...)
-	if env == nil {
-		env = []string{}
-	}
-	key := keyFor(root, req.Name)
 
 	s.mu.Lock()
 	if s.closed {
@@ -515,113 +520,120 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		s.mu.Unlock()
 		return Process{}, fmt.Errorf("%w: %q is being started", ErrNameInUse, req.Name)
 	}
+	rec := s.records[key]
+	created := false
+	if rec == nil {
+		if len(req.Argv) == 0 || req.Argv[0] == "" {
+			s.mu.Unlock()
+			return Process{}, fmt.Errorf("%w: argv must not be empty", ErrInvalidRequest)
+		}
+		store, storeErr := output.NewStore(s.outputLimits)
+		if storeErr != nil {
+			s.mu.Unlock()
+			return Process{}, fmt.Errorf("output store: %w", storeErr)
+		}
+		done := make(chan struct{})
+		close(done)
+		rec = &record{key: key, name: req.Name, root: root, store: store, state: StateExited, terminal: true, done: done}
+		s.trackStore(key, store)
+		s.records[key] = rec
+		created = true
+	}
+	if len(req.Argv) != 0 {
+		if req.Argv[0] == "" {
+			s.mu.Unlock()
+			return Process{}, fmt.Errorf("%w: argv must not be empty", ErrInvalidRequest)
+		}
+		rec.cwd = requestCwd
+		rec.source = req.Source
+		rec.argv = append([]string(nil), req.Argv...)
+		rec.env = append([]string{}, req.Env...)
+		rec.readyConfig, rec.readyPattern = readyConfig, readyPattern
+	} else if len(rec.argv) == 0 {
+		s.mu.Unlock()
+		return Process{}, fmt.Errorf("%w: retained launch specification is empty", ErrInvalidRequest)
+	}
+	store := rec.store
+	argv := append([]string(nil), rec.argv...)
+	env := append([]string{}, rec.env...)
+	launchCwd := rec.cwd
+	pattern := rec.readyPattern
+	source := rec.source
+	wasLaunched := rec.incarnation != 0
 	s.starting[key] = struct{}{}
 	s.launches.Add(1)
 	s.mu.Unlock()
 	defer s.launches.Done()
 
-	store, err := output.NewStore(s.outputLimits)
-	if err != nil {
-		s.mu.Lock()
-		delete(s.starting, key)
-		s.evictLocked()
-		s.mu.Unlock()
-		return Process{}, fmt.Errorf("output store: %w", err)
+	launchCursor := output.Cursor(0)
+	launchBoundary := wasLaunched
+	if next := store.NextCursor(); next != 0 {
+		launchCursor = next - 1
 	}
-	var tracker *readinessTracker
-	if req.Source != "" && readyPattern != nil {
-		tracker = newReadinessTracker(store, readyPattern, 0, false)
+	if wasLaunched || store.SubscriberCount() != 0 {
+		marker := fmt.Sprintf("%s launched\n", req.Name)
+		launchCursor, err = store.Append(output.System, s.now(), marker)
+		if err != nil {
+			s.mu.Lock()
+			delete(s.starting, key)
+			if created && store.SubscriberCount() == 0 {
+				delete(s.records, key)
+			}
+			s.mu.Unlock()
+			return Process{}, fmt.Errorf("launch marker: %w", err)
+		}
+		launchBoundary = true
+	}
+	tracker := (*readinessTracker)(nil)
+	if source != "" && pattern != nil {
+		tracker = newReadinessTracker(store, pattern, launchCursor, launchBoundary)
 	}
 	startedAt := s.now()
-	specEnv := make([]string, len(env))
-	copy(specEnv, env)
-	child, err := s.startProcess(process.Spec{
-		Dir:          cwd,
-		Argv:         append([]string(nil), argv...),
-		Env:          specEnv,
-		Output:       store,
-		MaxLineBytes: s.maxLineBytes,
-		Now:          s.now,
-	})
-	if err != nil {
-		s.mu.Lock()
-		delete(s.starting, key)
-		s.evictLocked()
-		s.mu.Unlock()
+	child, err := s.startProcess(process.Spec{Dir: launchCwd, Argv: argv, Env: env, Output: store, MaxLineBytes: s.maxLineBytes, Now: s.now})
+	if err != nil || child == nil {
 		if tracker != nil {
 			tracker.close()
 		}
-		return Process{}, err
-	}
-	if child == nil {
 		s.mu.Lock()
 		delete(s.starting, key)
 		s.evictLocked()
 		s.mu.Unlock()
-		if tracker != nil {
-			tracker.close()
+		if err != nil {
+			return Process{}, err
 		}
 		return Process{}, fmt.Errorf("%w: process starter returned nil child", ErrInvalidRequest)
 	}
-	pid, pgid := child.PID(), child.PGID()
 
 	s.mu.Lock()
 	delete(s.starting, key)
-	if s.closed {
-		s.evictLocked()
+	if s.closed || s.records[key] != rec {
 		s.mu.Unlock()
 		if tracker != nil {
 			tracker.close()
 		}
-		// Shutdown won the launch race. Kill this unregistered child and wait
-		// without holding the registry lock so it cannot be orphaned.
 		_ = child.Signal(syscall.SIGKILL)
 		<-child.Done()
 		_ = child.Wait()
-		return Process{}, ErrSupervisorClosed
+		if s.closed {
+			return Process{}, ErrSupervisorClosed
+		}
+		return Process{}, &NotFoundError{Root: root, Name: req.Name}
 	}
-	restartCount := 0
-	var previousTracker *readinessTracker
-	if previous := s.records[key]; previous != nil {
-		restartCount = previous.restartCount + 1
-		previousTracker = previous.tracker
-		previous.tracker = nil
-		s.removeCompletedLocked(previous)
-		previous.env = nil
-		previous.store = nil
-		previous.child = nil
+	s.removeCompletedLocked(rec)
+	rec.child, rec.pid, rec.pgid = child, child.PID(), child.PGID()
+	rec.start, rec.cursor = startedAt, launchCursor
+	if wasLaunched {
+		rec.restartCount++
 	}
-	rec := &record{
-		key:            key,
-		name:           req.Name,
-		root:           root,
-		cwd:            cwd,
-		source:         req.Source,
-		argv:           argv,
-		env:            env,
-		readyConfig:    readyConfig,
-		readyPattern:   readyPattern,
-		tracker:        tracker,
-		incarnation:    1,
-		child:          child,
-		pid:            pid,
-		pgid:           pgid,
-		store:          store,
-		start:          startedAt,
-		cursor:         0,
-		restartCount:   restartCount,
-		launchBoundary: false,
-		state:          StateRunning,
-		done:           make(chan struct{}),
-	}
-	s.records[key] = rec
-	initial := rec.snapshotLocked()
+	rec.launchBoundary = launchBoundary
+	rec.state, rec.result, rec.terminalAt, rec.terminal = StateRunning, process.Result{}, time.Time{}, false
+	rec.done = make(chan struct{})
+	rec.incarnation++
+	rec.tracker = tracker
+	started := rec.snapshotLocked()
 	s.mu.Unlock()
-	if previousTracker != nil {
-		previousTracker.close()
-	}
 	go s.reconcile(rec)
-	return initial, nil
+	return started, nil
 }
 
 // Restart stops and relaunches one retained process with its original launch
@@ -929,7 +941,7 @@ func (s *Supervisor) evictLocked() {
 				index = i
 				break
 			}
-			if rec.restarting {
+			if rec.restarting || rec.store != nil && rec.store.SubscriberCount() != 0 {
 				continue
 			}
 			if _, reserved := s.starting[rec.key]; reserved {
@@ -1042,30 +1054,56 @@ func (s *Supervisor) Output(cwd, name string) (*output.Store, error) {
 	return rec.store, nil
 }
 
-// Subscribe is a convenience output-access surface for pull clients. It
-// snapshots the current record's store and start time before registering the
-// subscription, then replays a terminal notification published before that
-// registration when it belongs to this process incarnation.
-func (s *Supervisor) Subscribe(cwd, name string, opts output.ReadOptions) (*output.Subscription, error) {
-	rec, err := s.lookup(cwd, name)
+// ensureSession returns the durable project/name record, creating an empty
+// pre-launch session when necessary. The caller may attach before any launch.
+func (s *Supervisor) ensureSession(cwd, name string) (*record, error) {
+	if err := ValidateName(name); err != nil {
+		return nil, err
+	}
+	root, err := DiscoverProjectRoot(cwd)
 	if err != nil {
 		return nil, err
 	}
+	key := keyFor(root, name)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, ErrSupervisorClosed
+	}
+	if rec := s.records[key]; rec != nil {
+		return rec, nil
+	}
+	store, err := output.NewStore(s.outputLimits)
+	if err != nil {
+		return nil, fmt.Errorf("output store: %w", err)
+	}
+	done := make(chan struct{})
+	close(done)
+	rec := &record{key: key, name: name, root: root, cwd: root, store: store, state: StateExited, terminal: true, done: done}
+	s.trackStore(key, store)
+	s.records[key] = rec
+	return rec, nil
+}
 
-	// Capture the store and process start under the registry lock. A terminal
-	// record may be evicted after this lock is released, but the subscription
-	// keeps the captured store alive independently.
+// Subscribe attaches to a durable name rather than one process incarnation.
+// It may create an empty session before the first launch. Registration occurs
+// under the registry lock so launch and eviction cannot race the attachment.
+func (s *Supervisor) Subscribe(cwd, name string, opts output.ReadOptions) (*output.Subscription, error) {
+	rec, err := s.ensureSession(cwd, name)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	if s.records[rec.key] != rec || rec.store == nil {
 		root, processName := rec.root, rec.name
 		s.mu.RUnlock()
 		return nil, &NotFoundError{Root: root, Name: processName}
 	}
-	store, start := rec.store, rec.start
+	sub := rec.store.Subscribe(opts)
+	if !rec.start.IsZero() && !rec.terminal {
+		sub.ReplayLatestExitSince(rec.start)
+	}
 	s.mu.RUnlock()
-
-	sub := store.Subscribe(opts)
-	sub.ReplayLatestExitSince(start)
 	return sub, nil
 }
 
@@ -1081,27 +1119,39 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 
 	rec, err := s.lookup(cwd, name)
 	if err != nil {
-		return WaitResult{}, err
+		if opts.After != nil || !errors.Is(err, ErrProcessNotFound) {
+			return WaitResult{}, err
+		}
+		rec, err = s.ensureSession(cwd, name)
+		if err != nil {
+			return WaitResult{}, err
+		}
 	}
 
-	// Capture one process incarnation under the registry lock. The record may
-	// be evicted or replaced after this point; retaining its store and launch
-	// metadata keeps this wait tied to the looked-up incarnation.
 	s.mu.RLock()
 	if s.records[rec.key] != rec || rec.store == nil {
 		root, processName := rec.root, rec.name
 		s.mu.RUnlock()
 		return WaitResult{}, &NotFoundError{Root: root, Name: processName}
 	}
-	store, start, launchCursor, launchBoundary := rec.store, rec.start, rec.cursor, rec.launchBoundary
-	s.mu.RUnlock()
-
+	store := rec.store
 	after := opts.After
-	if after == nil && launchBoundary {
-		after = &launchCursor
+	if after == nil {
+		if rec.terminal {
+			if next := store.NextCursor(); next != 0 {
+				cursor := next - 1
+				after = &cursor
+			}
+		} else if rec.launchBoundary {
+			cursor := rec.cursor
+			after = &cursor
+		}
 	}
-	sub := store.Subscribe(output.ReadOptions{After: after, Match: opts.Match, MaxBytes: s.maxLineBytes})
-	sub.ReplayLatestExitSince(start)
+	sub := store.Subscribe(output.ReadOptions{After: after, Match: opts.Match, Streams: output.BothStreams, MaxBytes: s.maxLineBytes})
+	if !rec.terminal {
+		sub.ReplayLatestExitSince(rec.start)
+	}
+	s.mu.RUnlock()
 	defer sub.Close()
 
 	for {
@@ -1113,9 +1163,6 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 			return WaitResult{}, err
 		}
 		if event.Read != nil {
-			// A filtered read can consume metadata and nonmatching entries
-			// without yielding an entry. Only an actual matching entry ends
-			// the wait.
 			if opts.Match != nil && len(event.Read.Entries) != 0 {
 				return WaitResult{Outcome: WaitMatched, Cursor: sub.Cursor()}, nil
 			}
@@ -1124,21 +1171,13 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 		if event.Exit == nil {
 			continue
 		}
-
-		// NotifyExit wakes the subscription before Supervisor.reconcile closes
-		// rec.done. Prefer the reconciled result when it is already available,
-		// and otherwise preserve the exact exit code/time from the event.
 		exitResult := process.Result{ExitCode: event.Exit.Code, ExitedAt: event.Exit.Time}
 		s.mu.RLock()
 		if rec.terminal {
 			exitResult = rec.result
 		}
 		s.mu.RUnlock()
-		return WaitResult{
-			Outcome: WaitExited,
-			Cursor:  sub.Cursor(),
-			Exit:    &exitResult,
-		}, nil
+		return WaitResult{Outcome: WaitExited, Cursor: sub.Cursor(), Exit: &exitResult}, nil
 	}
 }
 
@@ -1265,6 +1304,44 @@ func (s *Supervisor) waitForDone(ctx context.Context, rec *record, duration time
 	}
 }
 
+// Remove stops and permanently discards one supervision session. Followers
+// are closed cleanly; configuration outside runtime state is never touched.
+func (s *Supervisor) Remove(ctx context.Context, cwd, name string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rec, err := s.lookup(cwd, name)
+	if err != nil {
+		return err
+	}
+	s.mu.RLock()
+	_, starting := s.starting[rec.key]
+	s.mu.RUnlock()
+	if starting {
+		return fmt.Errorf("%w: %q is being started", ErrNameInUse, name)
+	}
+	rec.stopMu.Lock()
+	err = s.stopRecord(ctx, rec)
+	rec.stopMu.Unlock()
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.records[rec.key] != rec {
+		s.mu.Unlock()
+		return &NotFoundError{Root: rec.root, Name: rec.name}
+	}
+	delete(s.records, rec.key)
+	s.removeCompletedLocked(rec)
+	store := rec.store
+	rec.store, rec.env, rec.argv, rec.child = nil, nil, nil, nil
+	s.mu.Unlock()
+	if store != nil {
+		store.Close(nil)
+	}
+	return nil
+}
+
 // Shutdown rejects new launches, stops every active group, and waits for each
 // terminal reconciliation. Concurrent callers share the first shutdown's
 // result; caller cancellation is reported only after shared cleanup finishes.
@@ -1322,9 +1399,18 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 		shutdownErr = errors.Join(shutdownErr, err)
 	}
 	s.mu.Lock()
+	stores := make([]*output.Store, 0, len(s.records))
+	for _, rec := range s.records {
+		if rec.store != nil {
+			stores = append(stores, rec.store)
+		}
+	}
 	s.shutdownErr = shutdownErr
 	close(s.shutdownDone)
 	s.mu.Unlock()
+	for _, store := range stores {
+		store.Close(ErrSupervisorClosed)
+	}
 	if callerErr := ctx.Err(); callerErr != nil {
 		return errors.Join(shutdownErr, callerErr)
 	}

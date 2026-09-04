@@ -123,6 +123,7 @@ var (
 	ErrEmptyText      = errors.New("output entry text is empty")
 	ErrCursorOverflow = errors.New("output cursor overflow")
 	ErrInvalidLimits  = errors.New("output limits are invalid")
+	ErrStoreClosed    = errors.New("output store is closed")
 )
 
 // FutureCursorError reports an After cursor beyond the current sequence

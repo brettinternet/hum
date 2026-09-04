@@ -24,6 +24,9 @@ type Store struct {
 	exits         []storedExit
 	subscriptions map[*Subscription]struct{}
 	observers     map[*AppendObserver]struct{}
+	closed        bool
+	closeErr      error
+	onIdle        func()
 }
 type storedExit struct {
 	exit       Exit
@@ -91,6 +94,9 @@ func NewStore(limits Limits) (*Store, error) {
 func (s *Store) Append(stream Stream, at time.Time, text string) (Cursor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return 0, ErrStoreClosed
+	}
 
 	cursor, err := s.ring.append(stream, at, text)
 	if err != nil {
@@ -153,6 +159,34 @@ func (s *Store) Subscribe(opts ReadOptions) *Subscription {
 	s.subscriptions[sub] = struct{}{}
 	s.mu.Unlock()
 	return sub
+}
+
+// SetIdleCallback installs a callback invoked after the final subscription
+// unregisters. The callback runs without the store lock held.
+func (s *Store) SetIdleCallback(callback func()) {
+	s.mu.Lock()
+	s.onIdle = callback
+	s.mu.Unlock()
+}
+
+// SubscriberCount reports live pull subscriptions. It is used by the
+// supervisor to keep observed completed sessions out of bounded eviction.
+func (s *Store) SubscriberCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.subscriptions)
+}
+
+// Close wakes every subscriber and prevents future appends. A nil reason is
+// a clean session removal; a non-nil reason is returned by Subscription.Next.
+func (s *Store) Close(reason error) {
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		s.closeErr = reason
+		s.broadcastLocked()
+	}
+	s.mu.Unlock()
 }
 
 // NotifyExit records an exit watermark and wakes every pull subscriber. The
@@ -266,8 +300,16 @@ func (s *Store) compactExitsLocked() {
 
 func (s *Store) discardSubscription(sub *Subscription) {
 	s.mu.Lock()
+	wasOpen := !sub.closed
 	s.unregisterLocked(sub)
+	var callback func()
+	if wasOpen && len(s.subscriptions) == 0 {
+		callback = s.onIdle
+	}
 	s.mu.Unlock()
+	if callback != nil {
+		callback()
+	}
 }
 
 // Subscription is an independent pull view over a Store. Calls to Next are
@@ -378,6 +420,15 @@ func (sub *Subscription) Next(ctx context.Context) (Event, error) {
 			s.compactExitsLocked()
 			s.mu.Unlock()
 			return Event{Exit: &record.exit}, nil
+		}
+		if s.closed {
+			err := s.closeErr
+			s.mu.Unlock()
+			sub.discardSubscription()
+			if err == nil {
+				return Event{}, ErrStoreClosed
+			}
+			return Event{}, err
 		}
 
 		wake := s.generation

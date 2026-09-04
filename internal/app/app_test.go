@@ -977,7 +977,6 @@ func TestSubscribeAfterProcessExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSubscriptionOutput(t, sub, "late-output\n")
-	assertSubscriptionExit(t, sub, 7)
 	assertNoSubscriptionEvent(t, sub)
 }
 
@@ -1125,15 +1124,15 @@ func TestSubscribeSurvivesCompletedLimitEviction(t *testing.T) {
 	second.release()
 	waitSubscriptionSignal(t, secondDone, "second process exit and eviction")
 
-	if _, err := s.Get(root, "first"); !errors.Is(err, ErrProcessNotFound) {
-		t.Fatalf("evicted first lookup error = %v, want ErrProcessNotFound", err)
-	}
-	if _, err := s.Output(root, "first"); !errors.Is(err, ErrProcessNotFound) {
-		t.Fatalf("evicted first output lookup error = %v, want ErrProcessNotFound", err)
+	if _, err := s.Get(root, "first"); err != nil {
+		t.Fatalf("followed first session was evicted: %v", err)
 	}
 	assertSubscriptionOutput(t, sub, "first-output\n")
-	assertSubscriptionExit(t, sub, 21)
 	assertNoSubscriptionEvent(t, sub)
+	sub.Close()
+	if _, err := s.Get(root, "first"); err != nil {
+		t.Fatalf("bounded retained first session disappeared: %v", err)
+	}
 }
 
 func TestSignalForwardsInterrupt(t *testing.T) {
@@ -1313,6 +1312,10 @@ func TestWaitExitWakeupWithAndWithoutMatch(t *testing.T) {
 			waitResult, waitErr := s.Wait(ctx, root, test.name, WaitOptions{Match: test.match})
 			result <- waitCallResult{result: waitResult, err: waitErr}
 		}(test)
+		deadline := time.Now().Add(time.Second)
+		for children[test.name].store.SubscriberCount() == 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
 		children[test.name].release()
 		got := awaitWaitResult(t, result)
 		cancel()
@@ -1643,10 +1646,10 @@ func TestRestartOrdinaryStartReplacementUsesInitialWaitCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	if replaced.RestartCount != 1 || replaced.LaunchCursor != 0 {
-		t.Fatalf("ordinary replacement metadata = %#v, want restart count 1 and cursor 0", replaced)
+		t.Fatalf("ordinary replacement metadata = %#v, want restart count 1 and launch boundary cursor 0", replaced)
 	}
-	if s.FollowContinuesAfter(root, "ordinary", firstExit.ExitedAt) {
-		t.Fatal("ordinary Start replacement incorrectly continues a follower")
+	if !s.FollowContinuesAfter(root, "ordinary", firstExit.ExitedAt) {
+		t.Fatal("ordinary Start replacement did not continue the durable follower")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -1655,8 +1658,8 @@ func TestRestartOrdinaryStartReplacementUsesInitialWaitCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != WaitMatched || got.Cursor != 0 || got.Exit != nil {
-		t.Fatalf("ordinary replacement wait = %#v, want matched cursor 0 without exit", got)
+	if got.Outcome != WaitMatched || got.Cursor != 1 || got.Exit != nil {
+		t.Fatalf("ordinary replacement wait = %#v, want matched cursor 1 without exit", got)
 	}
 }
 
@@ -1867,7 +1870,7 @@ func TestRestartEvictionSkipsReservedRecordsAndReevictsAfterFailure(t *testing.T
 	complete := len(s.complete)
 	s.mu.RUnlock()
 	if complete != 2 {
-		t.Fatalf("completed records while both names are reserved = %d, want temporary overflow of 2", complete)
+		t.Fatalf("completed records while names are reserved = %d, want temporary overflow of 2", complete)
 	}
 	if _, err := s.Get(root, "a"); err != nil {
 		t.Fatalf("reserved restarting record was evicted: %v", err)
@@ -1881,7 +1884,7 @@ func TestRestartEvictionSkipsReservedRecordsAndReevictsAfterFailure(t *testing.T
 		t.Fatal("failed restart succeeded")
 	}
 	if _, err := s.Get(root, "a"); !errors.Is(err, ErrProcessNotFound) {
-		t.Fatalf("failed restart record lookup = %v, want eviction after reservation release", err)
+		t.Fatalf("failed restart record lookup = %v, want bounded eviction after reservation release", err)
 	}
 	if _, err := s.Get(root, "b"); err != nil {
 		t.Fatalf("other reserved record was evicted after failed restart: %v", err)
@@ -2449,5 +2452,103 @@ func TestManifestRestartReadinessCapturesSynchronousEvictedStart(t *testing.T) {
 	if got.Readiness == nil || got.Readiness.State != ReadinessReady ||
 		got.Readiness.Cursor == nil || *got.Readiness.Cursor != *restarted.Readiness.Cursor {
 		t.Fatalf("synchronous restart readiness after eviction = %#v", got.Readiness)
+	}
+}
+
+func TestSessionFollowSurvivesStopAndStartStopped(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StopGrace: 20 * time.Millisecond})
+	sub, err := s.Subscribe(root, "session", output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	if _, err := startShell(s, root, "session", "printf 'first\\n'"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	seenFirst, exits := false, 0
+	for exits == 0 {
+		event, err := sub.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Read != nil {
+			for _, entry := range event.Read.Entries {
+				seenFirst = seenFirst || entry.Text == "first\n"
+			}
+		}
+		if event.Exit != nil {
+			exits++
+		}
+	}
+	if !seenFirst {
+		t.Fatal("follower missed first incarnation output")
+	}
+	if _, err := startShell(s, root, "session", "printf 'second\\n'"); err != nil {
+		t.Fatal(err)
+	}
+	seenSecond := false
+	for exits < 2 {
+		event, err := sub.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Read != nil {
+			for _, entry := range event.Read.Entries {
+				seenSecond = seenSecond || entry.Text == "second\n"
+			}
+		}
+		if event.Exit != nil {
+			exits++
+		}
+	}
+	if !seenSecond {
+		t.Fatal("follower missed successor incarnation output")
+	}
+}
+
+func TestRemoveSessionClosesFollowerAndDiscardsLaunch(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{})
+	sub, err := s.Subscribe(root, "remove", output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove(context.Background(), root, "remove"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := sub.Next(ctx); !errors.Is(err, output.ErrStoreClosed) {
+		t.Fatalf("removed follower error = %v, want ErrStoreClosed", err)
+	}
+	if _, err := s.Get(root, "remove"); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("removed lookup = %v, want not found", err)
+	}
+}
+
+func TestWaitPreLaunchStartsAtNextIncarnation(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{})
+	result := make(chan WaitResult, 1)
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go func() {
+		got, err := s.Wait(ctx, root, "future", WaitOptions{Match: regexp.MustCompile("ready")})
+		result <- got
+		errCh <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if _, err := startShell(s, root, "future", "printf 'ready\\n'; sleep .05"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if got := <-result; got.Outcome != WaitMatched {
+		t.Fatalf("pre-launch wait = %#v, want matched", got)
 	}
 }
