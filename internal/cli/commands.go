@@ -38,6 +38,20 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				return serveCommand(ctx, cmd, version, buildTime, errWriter)
 			},
 		},
+		{
+			Name:      "init",
+			Usage:     "create a hum.yaml manifest from project discovery",
+			ArgsUsage: "",
+			Description: "Create hum.yaml from strict project discovery without starting a daemon. " +
+				"A single candidate is written as a generated manifest; no candidate or ambiguous candidates produce a commented template. " +
+				"Reports the absolute path, outcome, and next command hum up; use --json for stable JSON.",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+			},
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return initCommand(ctx, cmd, writer)
+			},
+		},
 		mcpCLICommand(version, buildTime, writer),
 		{
 			Name:         "run",

@@ -13,6 +13,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 
 	want := map[string]bool{
 		"serve":    true,
+		"init":     true,
 		"mcp":      true,
 		"run":      true,
 		"start":    true,
@@ -88,6 +89,20 @@ func TestLifecycleHelp(t *testing.T) {
 				"detached daemon",
 				"waits for readiness",
 				"pid and socket",
+			},
+		},
+		{
+			name: "init",
+			args: []string{"hum", "init", "--help"},
+			want: []string{
+				"create a hum.yaml manifest",
+				"strict project discovery",
+				"without starting a daemon",
+				"single candidate",
+				"commented template",
+				"absolute path",
+				"next command hum up",
+				"--json",
 			},
 		},
 		{

@@ -37,6 +37,7 @@ mise exec go -- go build \
 ## Command surface
 
 ```text
+hum init [--json]
 hum serve [--daemon]
 hum start NAME... [--no-wait] [--timeout DURATION] [--json]
 hum up [--no-wait] [--timeout DURATION] [--json]
@@ -63,6 +64,16 @@ ensures every resolved definition is running in lexical name order. Both
 commands start a detached daemon when needed and wait for declared readiness
 by default. `--no-wait` returns after spawn, and `--timeout` overrides the
 manifest or 30-second readiness timeout.
+`hum init` resolves the same nearest project root and discovery candidates as
+`up`, but it never launches a candidate or starts a daemon. With exactly one
+candidate it writes `hum.yaml` with outcome `generated`; with no candidate or
+ambiguous candidates it writes a strict-parser-valid commented template with
+outcome `template`. The template has exactly one commented example entry,
+explains why no definition was generated, and lists every detected source and
+exact argv. An existing `hum.yaml` is never overwritten and is reported as an
+error with exit status 1. Human output includes `path:`, `outcome:`, and
+`next_command: hum up`; `--json` emits `path`, `outcome`, `next_command`, and
+`candidates` fields. Init never infers readiness, cwd, or multiple processes.
 
 Start and up JSON are newline-delimited: one object is emitted for each name
 with `name`, `outcome`, `source`, and `argv`, plus process identity,
@@ -215,6 +226,15 @@ regular expressions and durations, empty or non-string argv values, absolute or
 escaping cwd values, and alternate files such as `hum.yml`, `hum.json`, or
 `hum.toml`. Declaration order in the file does not affect behavior: names and
 `up` results are lexical.
+`hum init` uses this strict format for its first draft. A single candidate is
+written under its discovered name with the exact discovery argv, a source
+comment, and a commented `ready` example containing `match` and `timeout`.
+No-candidate and ambiguous results instead contain one commented example entry
+plus the reason and every detected candidate's source and argv. Comments are
+not executable definitions: the generated and template files remain valid
+version-1 documents, and init never infers readiness, cwd, or multiple
+processes. Init refuses any existing `hum.yaml` (including a dangling symlink
+or other non-regular path) without changing it.
 
 The manifest contains process definitions only. Runtime settings, dependency
 ordering, ports and HTTP health checks, automatic crash restart/backoff, and
@@ -225,16 +245,18 @@ features.
 
 When `hum.yaml` is absent, hum inspects every supported root-level convention
 without launching a development process and collects all qualifying candidates.
-There is no precedence among sources: resolution succeeds only with exactly one
-candidate. No candidates produce a typed, actionable `NoCandidateError` (wrapping
-`ErrNoCandidate`) that names `hum.yaml` and every supported convention;
-multiple candidates produce an `AmbiguityError` (wrapping `ErrAmbiguous`) that
-lists every qualifying source. A malformed root file produces a
-`ConfigurationError` (wrapping `ErrConfiguration`), and malformed native
-machine-readable output or a failed required introspection produces an
-`IntrospectionError` (wrapping `ErrIntrospection`), rather than being ignored
-or falling through. These errors are `errors.As`-compatible. If a
-command-backed runner is unavailable on `PATH`, that detector is skipped.
+No candidates produce a typed, actionable `NoCandidateError` (wrapping
+`ErrNoCandidate`) that names `hum.yaml`, every supported convention, and
+`hum init` as the way to create a draft; multiple candidates produce an
+`AmbiguityError` (wrapping `ErrAmbiguous`) that lists every qualifying source
+and directs the user to `hum init` for a commented template. A malformed root
+file produces a `ConfigurationError` (wrapping `ErrConfiguration`), and
+malformed native machine-readable output or a failed required introspection
+produces an `IntrospectionError` (wrapping `ErrIntrospection`), rather than
+being ignored or falling through. These errors are `errors.As`-compatible.
+If a command-backed runner is unavailable on `PATH`, that detector is skipped.
+`hum init` uses these same strict discovery errors and preserves them without
+writing a file when configuration or introspection fails.
 
 Each candidate is normalized to the one name `dev`, an absolute cwd equal to
 the project root, no readiness expression, and the exact argv shown here:
@@ -275,6 +297,35 @@ discovery input, and no-candidate errors therefore never start a daemon.
 Explicit-argv ad-hoc `run NAME -- ...` treats `NoCandidate` as no local
 definition and may start the daemon, but still propagates ambiguity, malformed,
 and introspection errors.
+
+## Initializing a manifest
+
+Use `hum init` when a project needs an explicit manifest instead of relying on
+zero-config discovery:
+
+```sh
+cd /path/to/project
+hum init
+# path: /path/to/project/hum.yaml
+# outcome: generated
+# next_command: hum up
+```
+
+With exactly one supported `dev` candidate, init writes a version-1 definition
+with that candidate's exact name and argv, a comment naming its source, and a
+commented readiness example (`match` and `timeout`). With no candidate or more
+than one candidate, init writes a strict-parser-valid commented template with
+exactly one example entry, a reason no definition was generated, and every
+detected source plus exact argv. It does not run candidate bodies, infer
+readiness or cwd, combine multiple processes, or start a daemon.
+
+`hum init --json` emits one object with `path`, `outcome`, `next_command`, and
+`candidates`; `next_command` is always `hum up`. Outcomes are `generated` or
+`template` on successful writes. If `hum.yaml` already exists at the nearest
+root, init refuses to overwrite it (including dangling symlinks and other
+non-regular paths), exits 1, and reports the existing path. Discovery,
+configuration, introspection, root, and write errors also exit 1 without a
+successful file.
 
 ## Manifest workflow
 
@@ -428,10 +479,9 @@ language-level guesses such as bare `go run` or `cargo run`, framework launch
 commands other than a confirmed `mix phx.server`, Docker Compose inference,
 scanning workspace packages or nested manifests, combining several inferred
 processes, inferring ports, readiness, or dependencies, or executing candidate
-commands to see which succeeds. It also does not include manifest generation
-(`init`), a shell-only skill, arbitrary-command MCP tools, MCP HTTP transport,
-authentication, or remote access, automatic crash restart/backoff, or
-environment literals/files.
+commands to see which succeeds. It also does not include a shell-only skill,
+arbitrary-command MCP tools, MCP HTTP transport, authentication, or remote
+access, automatic crash restart/backoff, or environment literals/files.
 `hum down` is the project-scoped inverse of `hum up`: it stops every active
 resolved or ad hoc process in the current project, preserves the daemon and
 runtime records, and leaves other projects untouched. Use `hum stop NAME...` for
