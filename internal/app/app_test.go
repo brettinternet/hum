@@ -1480,14 +1480,20 @@ func TestWaitReachesExitAfterLineWithinSupervisorMaxLineBytes(t *testing.T) {
 	if _, err := s.Start(StartRequest{Name: "large-exit", Cwd: root, Argv: []string{"/bin/fake", "large-exit"}}); err != nil {
 		t.Fatal(err)
 	}
-	child.release()
-
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	got, err := s.Wait(ctx, root, "large-exit", WaitOptions{})
-	if err != nil {
-		t.Fatal(err)
+	result := make(chan waitCallResult, 1)
+	go func() {
+		got, err := s.Wait(ctx, root, "large-exit", WaitOptions{})
+		result <- waitCallResult{result: got, err: err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	child.release()
+	waited := <-result
+	if waited.err != nil {
+		t.Fatal(waited.err)
 	}
+	got := waited.result
 	if got.Outcome != WaitExited || got.Cursor != 0 || got.Exit == nil || got.Exit.ExitCode != 7 ||
 		!got.Exit.ExitedAt.Equal(child.result.ExitedAt) {
 		t.Fatalf("large-line exit wait = %#v, want exited code 7 at %v", got, child.result.ExitedAt)
