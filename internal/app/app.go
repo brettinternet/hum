@@ -82,6 +82,7 @@ type Process struct {
 	ExitCode     int
 	ExitedAt     time.Time
 	RestartCount int
+	Followers    int
 	Readiness    *Readiness
 }
 
@@ -315,6 +316,7 @@ type record struct {
 	start        time.Time
 	cursor       output.Cursor
 	restartCount int
+	followers    int
 	// launchBoundary identifies a successful same-store Restart. It is
 	// deliberately independent of restartCount because ordinary Start
 	// replacement creates a fresh output sequence.
@@ -1089,23 +1091,49 @@ func (s *Supervisor) ensureSession(cwd, name string) (*record, error) {
 // Subscribe attaches to a durable name rather than one process incarnation.
 // It may create an empty session before the first launch. Registration occurs
 // under the registry lock so launch and eviction cannot race the attachment.
-func (s *Supervisor) Subscribe(cwd, name string, opts output.ReadOptions) (*output.Subscription, error) {
+func (s *Supervisor) Subscribe(cwd, name string, opts output.ReadOptions) (*Follower, error) {
 	rec, err := s.ensureSession(cwd, name)
 	if err != nil {
 		return nil, err
 	}
-	s.mu.RLock()
+	s.mu.Lock()
 	if s.records[rec.key] != rec || rec.store == nil {
 		root, processName := rec.root, rec.name
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil, &NotFoundError{Root: root, Name: processName}
 	}
 	sub := rec.store.Subscribe(opts)
+	rec.followers++
 	if !rec.start.IsZero() && !rec.terminal {
 		sub.ReplayLatestExitSince(rec.start)
 	}
-	s.mu.RUnlock()
-	return sub, nil
+	s.mu.Unlock()
+	return &Follower{sub: sub, close: func() {
+		s.mu.Lock()
+		if s.records[rec.key] == rec && rec.followers > 0 {
+			rec.followers--
+		}
+		s.mu.Unlock()
+	}}, nil
+}
+
+// Follower is one live durable follow attachment. It wraps the output cursor
+// so snapshots can count follow clients without including private Wait users.
+type Follower struct {
+	sub       *output.Subscription
+	close     func()
+	closeOnce sync.Once
+}
+
+func (f *Follower) Next(ctx context.Context) (output.Event, error) { return f.sub.Next(ctx) }
+func (f *Follower) Cursor() output.Cursor                          { return f.sub.Cursor() }
+
+// Close detaches the follower and updates the session count exactly once.
+func (f *Follower) Close() {
+	f.closeOnce.Do(func() {
+		f.sub.Close()
+		f.close()
+	})
 }
 
 // Wait blocks until output matching opts.Match is observed, the process exits,
@@ -1431,6 +1459,7 @@ func (r *record) snapshotLocked() Process {
 		LaunchCursor: r.cursor,
 		State:        r.state,
 		RestartCount: r.restartCount,
+		Followers:    r.followers,
 	}
 	if r.store != nil {
 		model.NextCursor = r.store.NextCursor()

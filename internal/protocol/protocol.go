@@ -742,6 +742,7 @@ type Process struct {
 	ExitCode     int        `json:"exit_code,omitempty"`
 	ExitedAt     time.Time  `json:"exited_at,omitempty"`
 	RestartCount int        `json:"restart_count,omitempty"`
+	Followers    int        `json:"followers"`
 	Readiness    *Readiness `json:"readiness,omitempty"`
 }
 

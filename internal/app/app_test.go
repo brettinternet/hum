@@ -270,8 +270,12 @@ func subscriptionStarter(children map[string]*subscriptionChild) func(process.Sp
 	}
 }
 
+type subscriptionReader interface {
+	Next(context.Context) (output.Event, error)
+}
+
 type subscriptionResult struct {
-	sub *output.Subscription
+	sub subscriptionReader
 	err error
 }
 
@@ -286,7 +290,7 @@ func waitSubscriptionSignal(t *testing.T, signal <-chan struct{}, what string) {
 	}
 }
 
-func nextSubscriptionEvent(t *testing.T, sub *output.Subscription) output.Event {
+func nextSubscriptionEvent(t *testing.T, sub subscriptionReader) output.Event {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -297,7 +301,7 @@ func nextSubscriptionEvent(t *testing.T, sub *output.Subscription) output.Event 
 	return event
 }
 
-func assertSubscriptionOutput(t *testing.T, sub *output.Subscription, text string) {
+func assertSubscriptionOutput(t *testing.T, sub subscriptionReader, text string) {
 	t.Helper()
 	event := nextSubscriptionEvent(t, sub)
 	if event.Read == nil || event.Exit != nil || len(event.Read.Entries) != 1 || event.Read.Entries[0].Text != text {
@@ -305,7 +309,7 @@ func assertSubscriptionOutput(t *testing.T, sub *output.Subscription, text strin
 	}
 }
 
-func assertSubscriptionExit(t *testing.T, sub *output.Subscription, code int) {
+func assertSubscriptionExit(t *testing.T, sub subscriptionReader, code int) {
 	t.Helper()
 	event := nextSubscriptionEvent(t, sub)
 	if event.Exit == nil || event.Read != nil || event.Exit.Code != code {
@@ -313,7 +317,7 @@ func assertSubscriptionExit(t *testing.T, sub *output.Subscription, code int) {
 	}
 }
 
-func assertNoSubscriptionEvent(t *testing.T, sub *output.Subscription) {
+func assertNoSubscriptionEvent(t *testing.T, sub subscriptionReader) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -2478,6 +2482,65 @@ func TestManifestRestartReadinessCapturesSynchronousEvictedStart(t *testing.T) {
 	if got.Readiness == nil || got.Readiness.State != ReadinessReady ||
 		got.Readiness.Cursor == nil || *got.Readiness.Cursor != *restarted.Readiness.Cursor {
 		t.Fatalf("synchronous restart readiness after eviction = %#v", got.Readiness)
+	}
+}
+
+func TestFollowerCountTracksDurableSessionAttachments(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{})
+
+	first, err := s.Subscribe(root, "counted", output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Subscribe(root, "counted", output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get(root, "counted"); err != nil || got.Followers != 2 {
+		t.Fatalf("pre-launch follower count = %d, err %v, want 2", got.Followers, err)
+	}
+	second.Close()
+	if got, err := s.Get(root, "counted"); err != nil || got.Followers != 1 {
+		t.Fatalf("detached follower count = %d, err %v, want 1", got.Followers, err)
+	}
+
+	if _, err := startShell(s, root, "counted", "printf 'first\\n'"); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitExited(t, s, root, "counted"); got.Followers != 1 {
+		t.Fatalf("stopped-session follower count = %d, want 1", got.Followers)
+	}
+	if _, err := startShell(s, root, "counted", "printf 'second\\n'"); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitExited(t, s, root, "counted"); got.Followers != 1 {
+		t.Fatalf("relaunched-session follower count = %d, want 1", got.Followers)
+	}
+
+	if _, err := startShell(s, root, "unfollowed", "printf 'done\\n'"); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitExited(t, s, root, "unfollowed"); got.Followers != 0 {
+		t.Fatalf("unfollowed record count = %d, want 0", got.Followers)
+	}
+
+	if err := s.Remove(context.Background(), root, "counted"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	for {
+		if _, err := first.Next(ctx); err != nil {
+			if !errors.Is(err, output.ErrStoreClosed) {
+				t.Fatalf("removed follower error = %v, want ErrStoreClosed", err)
+			}
+			break
+		}
+	}
+	first.Close()
+	if _, err := s.Get(root, "counted"); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("removed session lookup = %v, want not found", err)
 	}
 }
 

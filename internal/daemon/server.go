@@ -861,6 +861,7 @@ type wireProcess struct {
 	ExitCode     int              `json:"exit_code,omitempty"`
 	ExitedAt     time.Time        `json:"exited_at,omitempty"`
 	RestartCount int              `json:"restart_count,omitempty"`
+	Followers    int              `json:"followers"`
 	Readiness    *wireReadiness   `json:"readiness,omitempty"`
 }
 
@@ -956,6 +957,7 @@ func wireProcessFromApp(item app.Process) wireProcess {
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: uint64(item.LaunchCursor), State: string(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
+		Followers: item.Followers,
 	}
 	if item.Readiness != nil {
 		result.Readiness = &wireReadiness{

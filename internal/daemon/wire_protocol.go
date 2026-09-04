@@ -181,6 +181,7 @@ func protocolProcessFromWire(item wireProcess) protocol.Process {
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: protocol.Cursor(item.LaunchCursor), State: item.State,
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
+		Followers: item.Followers,
 	}
 	if item.Readiness != nil {
 		result.Readiness = &protocol.Readiness{
