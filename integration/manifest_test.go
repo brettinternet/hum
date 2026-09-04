@@ -109,9 +109,10 @@ func TestManifestWorkflow(t *testing.T) {
 			Ready: &manifestTestReady{Match: `stdout:0006`},
 		},
 		{
-			Name:  "gamma-retained",
-			Argv:  []string{fixture, "burst", gate, "8000"},
-			Ready: &manifestTestReady{Match: `stdout:0000`},
+			Name: "gamma-retained",
+			Argv: []string{fixture, "burst", gate, "8000"},
+			// Either stream's first line is cursor zero; pipe readers may race.
+			Ready: &manifestTestReady{Match: `(stdout|stderr):0000`},
 		},
 	}
 	writeManifestTestYAML(t, projectRoot, definitions)
