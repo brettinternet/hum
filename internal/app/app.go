@@ -521,7 +521,6 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		return Process{}, fmt.Errorf("%w: %q is being started", ErrNameInUse, req.Name)
 	}
 	rec := s.records[key]
-	created := false
 	if rec == nil {
 		if len(req.Argv) == 0 || req.Argv[0] == "" {
 			s.mu.Unlock()
@@ -537,7 +536,6 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		rec = &record{key: key, name: req.Name, root: root, store: store, state: StateExited, terminal: true, done: done}
 		s.trackStore(key, store)
 		s.records[key] = rec
-		created = true
 	}
 	if len(req.Argv) != 0 {
 		if req.Argv[0] == "" {
@@ -570,26 +568,29 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if next := store.NextCursor(); next != 0 {
 		launchCursor = next - 1
 	}
-	if wasLaunched || store.SubscriberCount() != 0 {
-		marker := fmt.Sprintf("%s launched\n", req.Name)
-		launchCursor, err = store.Append(output.System, s.now(), marker)
-		if err != nil {
-			s.mu.Lock()
-			delete(s.starting, key)
-			if created && store.SubscriberCount() == 0 {
-				delete(s.records, key)
+	var (
+		markerOnce sync.Once
+		markerErr  error
+		tracker    *readinessTracker
+	)
+	markStarted := func() error {
+		markerOnce.Do(func() {
+			if wasLaunched || store.SubscriberCount() != 0 {
+				marker := fmt.Sprintf("%s launched\n", req.Name)
+				launchCursor, markerErr = store.Append(output.System, s.now(), marker)
+				launchBoundary = markerErr == nil
 			}
-			s.mu.Unlock()
-			return Process{}, fmt.Errorf("launch marker: %w", err)
-		}
-		launchBoundary = true
-	}
-	tracker := (*readinessTracker)(nil)
-	if source != "" && pattern != nil {
-		tracker = newReadinessTracker(store, pattern, launchCursor, launchBoundary)
+			if markerErr == nil && source != "" && pattern != nil {
+				tracker = newReadinessTracker(store, pattern, launchCursor, launchBoundary)
+			}
+		})
+		return markerErr
 	}
 	startedAt := s.now()
-	child, err := s.startProcess(process.Spec{Dir: launchCwd, Argv: argv, Env: env, Output: store, MaxLineBytes: s.maxLineBytes, Now: s.now})
+	child, err := s.startProcess(process.Spec{Dir: launchCwd, Argv: argv, Env: env, Output: store, MaxLineBytes: s.maxLineBytes, Now: s.now, Started: markStarted})
+	if err == nil && child != nil {
+		err = markStarted()
+	}
 	if err != nil || child == nil {
 		if tracker != nil {
 			tracker.close()

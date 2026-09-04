@@ -82,6 +82,35 @@ func TestStop(t *testing.T) {
 	})
 }
 
+func TestRemove(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	manifest := []byte("version: 1\nprocesses:\n  remove-me:\n    argv: [/bin/sh, -c, sleep 30]\n")
+	manifestPath := filepath.Join(projectRoot, "hum.yaml")
+	if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stopShutdownStartProcess(t, server, projectRoot, "remove-me", []string{"/bin/sh", "-c", "sleep 30"})
+
+	stdout, stderr, err := stopShutdownRun(t, "remove", "remove-me", "--json")
+	if err != nil || stderr != "" || !strings.Contains(stdout, `"status":"removed"`) {
+		t.Fatalf("remove: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	gotManifest, err := os.ReadFile(manifestPath)
+	if err != nil || !bytes.Equal(gotManifest, manifest) {
+		t.Fatalf("remove changed hum.yaml: err=%v got=%q", err, gotManifest)
+	}
+	client, err := daemon.Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Get(context.Background(), daemon.GetRequest{Name: "remove-me", Cwd: projectRoot}); err == nil {
+		t.Fatal("removed session remained available")
+	}
+}
+
 func TestShutdown(t *testing.T) {
 	t.Run("default refuses and lists each active project/name", func(t *testing.T) {
 		projectRoot := stopShutdownTestProject(t)

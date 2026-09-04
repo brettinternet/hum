@@ -343,6 +343,26 @@ func TestStartCapturesLiteralArguments(t *testing.T) {
 	}
 }
 
+func TestStartedCallbackPrecedesOutputCapture(t *testing.T) {
+	store := newStore(t)
+	spec := helperSpec(store, "literal", "process-literal", "child-output")
+	spec.Started = func() error {
+		_, err := store.Append(output.System, time.Now(), "launched\n")
+		return err
+	}
+	child, err := Start(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := child.Wait(); result.Err != nil || result.ExitCode != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	got := entries(t, store)
+	if len(got) != 2 || got[0].Text != "launched\n" || got[1].Text != "child-output" {
+		t.Fatalf("callback/capture order = %#v", got)
+	}
+}
+
 func TestStartProvidesEOFStdin(t *testing.T) {
 	store := newStore(t)
 	child, err := Start(helperSpec(store, "stdin-eof"))

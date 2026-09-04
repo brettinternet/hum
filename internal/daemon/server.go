@@ -716,6 +716,9 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 			return
 		}
 		if event.Exit != nil {
+			if err := encoder.EncodeResponse(protocolStreamEventFromOutput(req.Name, event)); err != nil {
+				return
+			}
 			exitText := fmt.Sprintf("%s exited with code %d\n", req.Name, event.Exit.Code)
 			if event.Exit.Code < 0 {
 				exitText = fmt.Sprintf("%s exited by signal\n", req.Name)

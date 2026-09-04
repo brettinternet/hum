@@ -256,6 +256,11 @@ func subscriptionStarter(children map[string]*subscriptionChild) func(process.Sp
 			return nil, fmt.Errorf("unknown test child %q", name)
 		}
 		child.store = spec.Output
+		if spec.Started != nil {
+			if err := spec.Started(); err != nil {
+				return nil, err
+			}
+		}
 		if child.text != "" {
 			if _, err := spec.Output.Append(output.Stdout, child.result.ExitedAt, child.text); err != nil {
 				return nil, err
@@ -514,6 +519,11 @@ func TestStatusRunningSnapshotMetadataAndCursor(t *testing.T) {
 	s := testSupervisor(t, Options{
 		Now: func() time.Time { return startedAt },
 		StartProcess: func(spec process.Spec) (Child, error) {
+			if spec.Started != nil {
+				if err := spec.Started(); err != nil {
+					return nil, err
+				}
+			}
 			_, err := spec.Output.Append(output.Stdout, startedAt, "ready\n")
 			return child, err
 		},
@@ -1081,7 +1091,7 @@ func TestSubscribeRunningProcessSkipsHistoricalExitAndDoesNotDuplicateCurrent(t 
 	assertNoSubscriptionEvent(t, sub)
 }
 
-func TestSubscribeSurvivesCompletedLimitEviction(t *testing.T) {
+func TestSessionSubscribeSurvivesCompletedLimitEviction(t *testing.T) {
 	root := makeProject(t, false)
 	first := newSubscriptionChild(3104, 21, time.Unix(5, 0), "first-output\n")
 	second := newSubscriptionChild(3105, 22, time.Unix(6, 0), "second-output\n")
@@ -1329,7 +1339,7 @@ func TestWaitExitWakeupWithAndWithoutMatch(t *testing.T) {
 	}
 }
 
-func TestWaitTimeoutCursorCancellationAndConcurrentWaiters(t *testing.T) {
+func TestWaitPreLaunchTimeoutCursorCancellationAndConcurrentWaiters(t *testing.T) {
 	root := makeProject(t, false)
 	children := map[string]*subscriptionChild{
 		"timeout": newSubscriptionChild(5201, 0, time.Unix(41, 0), ""),
@@ -2339,6 +2349,11 @@ func TestManifestReadinessCapturesSynchronousEvictedStart(t *testing.T) {
 		},
 		StartProcess: func(spec process.Spec) (Child, error) {
 			child.store = spec.Output
+			if spec.Started != nil {
+				if err := spec.Started(); err != nil {
+					return nil, err
+				}
+			}
 			if _, err := spec.Output.Append(output.Stdout, time.Unix(252, 0), "ready"); err != nil {
 				return nil, err
 			}
@@ -2402,6 +2417,11 @@ func TestManifestRestartReadinessCapturesSynchronousEvictedStart(t *testing.T) {
 				return first, nil
 			}
 			second.store = spec.Output
+			if spec.Started != nil {
+				if err := spec.Started(); err != nil {
+					return nil, err
+				}
+			}
 			if _, err := spec.Output.Append(output.Stdout, time.Unix(263, 0), "ready"); err != nil {
 				return nil, err
 			}
@@ -2486,11 +2506,11 @@ func TestSessionFollowSurvivesStopAndStartStopped(t *testing.T) {
 	if !seenFirst {
 		t.Fatal("follower missed first incarnation output")
 	}
-	if _, err := startShell(s, root, "session", "printf 'second\\n'"); err != nil {
+	if _, err := startShell(s, root, "session", "printf 'second\\n'; sleep 30"); err != nil {
 		t.Fatal(err)
 	}
 	seenSecond := false
-	for exits < 2 {
+	for !seenSecond {
 		event, err := sub.Next(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -2500,12 +2520,83 @@ func TestSessionFollowSurvivesStopAndStartStopped(t *testing.T) {
 				seenSecond = seenSecond || entry.Text == "second\n"
 			}
 		}
+	}
+	if err := s.Stop(context.Background(), root, "session"); err != nil {
+		t.Fatal(err)
+	}
+	for exits < 2 {
+		event, err := sub.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if event.Exit != nil {
 			exits++
 		}
 	}
-	if !seenSecond {
-		t.Fatal("follower missed successor incarnation output")
+	if _, err := startShell(s, root, "session", "printf 'third\\n'"); err != nil {
+		t.Fatal(err)
+	}
+	var lifecycle []string
+	for exits < 3 {
+		event, err := sub.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Read != nil {
+			for _, entry := range event.Read.Entries {
+				lifecycle = append(lifecycle, entry.Text)
+			}
+		}
+		if event.Exit != nil {
+			exits++
+		}
+	}
+	launchIndex, outputIndex := -1, -1
+	for index, text := range lifecycle {
+		if text == "session launched\n" && launchIndex < 0 {
+			launchIndex = index
+		}
+		if text == "third\n" {
+			outputIndex = index
+		}
+	}
+	if launchIndex < 0 || outputIndex <= launchIndex {
+		t.Fatalf("successor lifecycle order = %#v", lifecycle)
+	}
+}
+
+func TestSessionFailedSpawnDoesNotPublishLaunch(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StartProcess: func(process.Spec) (Child, error) { return nil, errors.New("spawn failed") }})
+	sub, err := s.Subscribe(root, "failed-spawn", output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	if _, err := s.Start(StartRequest{Name: "failed-spawn", Cwd: root, Argv: []string{"/bin/false"}}); err == nil {
+		t.Fatal("failed spawn succeeded")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if event, err := sub.Next(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("failed spawn event=%#v err=%v", event, err)
+	}
+}
+
+func TestSessionShutdownClosesFollower(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{})
+	sub, err := s.Subscribe(root, "shutdown-follow", output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := sub.Next(ctx); !errors.Is(err, ErrSupervisorClosed) {
+		t.Fatalf("shutdown follower error = %v", err)
 	}
 }
 
@@ -2550,5 +2641,11 @@ func TestWaitPreLaunchStartsAtNextIncarnation(t *testing.T) {
 	}
 	if got := <-result; got.Outcome != WaitMatched {
 		t.Fatalf("pre-launch wait = %#v, want matched", got)
+	}
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer timeoutCancel()
+	got, err := s.Wait(timeoutCtx, root, "never-launched", WaitOptions{})
+	if err != nil || got.Outcome != WaitTimedOut || got.Exit != nil {
+		t.Fatalf("never-launched timeout = %#v err=%v", got, err)
 	}
 }

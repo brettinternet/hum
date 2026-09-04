@@ -79,21 +79,25 @@ func TestWait(t *testing.T) {
 
 		name := "wait-exit-before-match"
 		gate := filepath.Join(t.TempDir(), "burst-gate")
-		if err := os.WriteFile(gate, []byte("release"), 0o600); err != nil {
-			t.Fatalf("create burst gate: %v", err)
-		}
 		started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", name, "--detach", "--", fixture, "burst", gate, "4")
 		launchCursor := waitAssertStarted(t, started, name)
 		testutil.WaitForFile(t, runtime.paths.PID, waitIntegrationTimeout)
 		daemonPID = lifecycleReadPID(t, runtime.paths.PID)
 
-		result := testutil.Run(t, hum, runtime.cwd, runtime.env, "wait", name, "--match", "stdout:never-present", "--timeout", "2s", "--json")
-		if result.Code != 3 || result.Err == nil || result.Stderr != "" {
-			t.Fatalf("exit before match wait: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
+		waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", name, "--match", "stdout:never-present", "--timeout", "2s", "--json")
+		time.Sleep(100 * time.Millisecond)
+		if err := os.WriteFile(gate, []byte("release"), 0o600); err != nil {
+			t.Fatal(err)
 		}
-		response := waitDecodeJSON(t, result.Stdout)
+		if err := waiter.Wait(waitIntegrationTimeout); err == nil {
+			t.Fatalf("exit-before-match wait exited zero: %q", waiter.Stdout())
+		}
+		if waiter.Stderr() != "" {
+			t.Fatalf("exit-before-match stderr=%q", waiter.Stderr())
+		}
+		response := waitDecodeJSON(t, waiter.Stdout())
 		if response.Outcome != "exited" {
-			t.Fatalf("exit before match outcome = %q, want exited; response=%q", response.Outcome, result.Stdout)
+			t.Fatalf("exit before match outcome = %q, want exited; response=%q", response.Outcome, waiter.Stdout())
 		}
 		if response.Cursor <= launchCursor {
 			t.Fatalf("exit before match cursor = %d, want > launch cursor %d", response.Cursor, launchCursor)
@@ -116,6 +120,7 @@ func TestWait(t *testing.T) {
 		if waiter.Exited() {
 			t.Fatalf("no-match wait exited before process exit: stdout=%q stderr=%q", waiter.Stdout(), waiter.Stderr())
 		}
+		time.Sleep(100 * time.Millisecond)
 		if err := os.WriteFile(gate, []byte("release"), 0o600); err != nil {
 			t.Fatalf("release no-match burst gate: %v", err)
 		}
@@ -166,20 +171,14 @@ func TestWait(t *testing.T) {
 		testutil.WaitForFile(t, marker+".terminated", waitIntegrationTimeout)
 	})
 
-	t.Run("unavailable daemon leaves runtime empty", func(t *testing.T) {
+	t.Run("pre-launch wait creates daemon and times out", func(t *testing.T) {
 		runtime := lifecycleNewRuntime(t)
-		result := testutil.Run(t, hum, runtime.cwd, runtime.env, "wait", "missing")
-		const guidance = "Nothing is running. Start a process with hum run <name> -- <command>.\n"
-		if result.Code != 1 || result.Err == nil || result.Stdout != "" || result.Stderr != guidance {
-			t.Fatalf("unavailable wait: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
+		t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, 0) })
+		result := testutil.Run(t, hum, runtime.cwd, runtime.env, "wait", "missing", "--timeout", "100ms", "--json")
+		if result.Code != 2 || result.Err == nil || !strings.Contains(result.Stdout, `"outcome":"timed_out"`) || result.Stderr != "" {
+			t.Fatalf("pre-launch timeout: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
 		}
-		entries, err := os.ReadDir(runtime.paths.Dir)
-		if err != nil {
-			t.Fatalf("read unavailable runtime directory: %v", err)
-		}
-		if len(entries) != 0 {
-			t.Fatalf("unavailable wait created runtime state: %v", entries)
-		}
+		testutil.WaitForFile(t, runtime.paths.Ready, waitIntegrationTimeout)
 	})
 }
 

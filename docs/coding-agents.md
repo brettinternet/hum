@@ -49,8 +49,12 @@ Cursor and other clients that accept an `mcpServers` configuration:
 
 Every tool call requires `project_root`, set to the project's absolute path.
 The server exposes `start`, `up`, `down`, `list`, `status`, `logs`, `wait`,
-`restart`, and `stop`. It has no arbitrary-command `run` tool; define repeatable
-processes in `hum.yaml` and use the CLI for ad hoc commands.
+`restart`, `stop`, and `remove`. It has no arbitrary-command `run` or unbounded
+follow tool; agents use bounded `wait` and `logs`. For restart-with-work, use
+`stop`, run the intermediate command, then `start`: the durable session preserves
+terminal followers. `remove` is different from `stop`: it discards retained
+runtime state and output but never edits `hum.yaml`. `down` preserves sessions;
+a later `up` starts resolved definitions only, leaving ad hoc sessions stopped.
 
 See [the MCP design](design.md#mcp-stdio-adapter) for detailed behavior and
 failure semantics.

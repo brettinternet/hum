@@ -66,12 +66,17 @@ func TestAttachedRun(t *testing.T) {
 
 		fixtureArgs := []string{scenario.fixture, "inspect", "arg with spaces", "arg\twith-tabs", "--literal"}
 		runArgs := append([]string{"run", name, "--"}, fixtureArgs...)
-		result := testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, runArgs...)
-		if result.Code != 23 {
-			t.Fatalf("attached run exit code = %d (err %v), want 23; stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
+		result := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, runArgs...)
+		runitWaitForOutput(t, result, true, "waiting for next launch")
+		if err := result.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
 		}
+		if err := result.Wait(runitWaitTimeout); err != nil {
+			t.Fatalf("attached detach: %v", err)
+		}
+		stdout, stderr := result.Stdout(), result.Stderr()
 
-		snapshot := runitDecodeInspectSnapshot(t, result.Stdout)
+		snapshot := runitDecodeInspectSnapshot(t, stdout)
 		if !reflect.DeepEqual(snapshot.Argv, fixtureArgs) {
 			t.Fatalf("fixture argv = %#v, want exact %#v", snapshot.Argv, fixtureArgs)
 		}
@@ -82,14 +87,14 @@ func TestAttachedRun(t *testing.T) {
 			t.Fatalf("fixture selected environment = %#v, want %#v", snapshot.Env, want)
 		}
 
-		if !strings.Contains(result.Stdout, "stdout:raw with spaces \r\n") || !strings.Contains(result.Stdout, "stdout:partial") {
-			t.Fatalf("stdout lost raw content: %q", result.Stdout)
+		if !strings.Contains(stdout, "stdout:raw with spaces \r\n") || !strings.Contains(stdout, "stdout:partial") {
+			t.Fatalf("stdout lost raw content: %q", stdout)
 		}
-		if !strings.Contains(result.Stderr, "stderr:raw with spaces \r\n") || !strings.Contains(result.Stderr, "stderr:partial") {
-			t.Fatalf("stderr lost raw content: %q", result.Stderr)
+		if !strings.Contains(stderr, "stderr:raw with spaces \r\n") || !strings.Contains(stderr, "stderr:partial") {
+			t.Fatalf("stderr lost raw content: %q", stderr)
 		}
-		if strings.Contains(result.Stdout, "stderr:raw") || strings.Contains(result.Stderr, "stdout:raw") {
-			t.Fatalf("attached streams were not kept separate: stdout=%q stderr=%q", result.Stdout, result.Stderr)
+		if strings.Contains(stdout, "stderr:raw") || strings.Contains(stderr, "stdout:raw") {
+			t.Fatalf("attached streams were not kept separate: stdout=%q stderr=%q", stdout, stderr)
 		}
 	})
 
@@ -106,20 +111,16 @@ func TestAttachedRun(t *testing.T) {
 		runitWaitForOutput(t, client, true, "stderr:live with spaces \r\n")
 
 		if err := client.Signal(os.Interrupt); err != nil {
-			t.Fatalf("send first Ctrl-C: %v", err)
+			t.Fatalf("send Ctrl-C: %v", err)
 		}
-		runitWaitForOutput(t, client, false, "fixture:sigint-1\n")
-		if client.Exited() {
-			t.Fatal("first Ctrl-C detached or terminated the attached client")
-		}
-
-		if err := client.Signal(os.Interrupt); err != nil {
-			t.Fatalf("send second Ctrl-C: %v", err)
-		}
-		testutil.WaitForFile(t, marker+".terminated", runitWaitTimeout)
 		if err := client.Wait(runitWaitTimeout); err != nil {
-			t.Fatalf("attached client after graceful stop: %v; stdout=%q stderr=%q", err, client.Stdout(), client.Stderr())
+			t.Fatalf("Ctrl-C detach: %v; stdout=%q stderr=%q", err, client.Stdout(), client.Stderr())
 		}
+		managed := runitListProcess(t, scenario, name)
+		if managed.State != "running" {
+			t.Fatalf("Ctrl-C stopped child: %#v", managed)
+		}
+		runitStopProcess(t, scenario, name, marker, managed.PID)
 	})
 
 	t.Run("SIGTERM detaches without terminating", func(t *testing.T) {
@@ -245,6 +246,10 @@ func TestReconnect(t *testing.T) {
 	runitWaitForOutput(t, observer, false, "stdout:live with spaces \r\n")
 	runitWaitForOutput(t, observer, false, "stderr:live with spaces \r\n")
 	runitStopProcess(t, scenario, name, marker, managed.PID)
+	runitWaitForOutput(t, observer, false, "waiting for next launch")
+	if err := observer.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
 	if err := observer.Wait(runitWaitTimeout); err != nil {
 		t.Fatalf("fresh logs --follow observer exit: %v; stdout=%q stderr=%q", err, observer.Stdout(), observer.Stderr())
 	}

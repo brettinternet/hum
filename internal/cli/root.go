@@ -18,8 +18,8 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		Description: "The ordinary workflow is hum run NAME -- COMMAND [ARGS...]. run automatically starts a detached daemon when needed and stays attached by default; add --detach to return immediately. " +
 			"Manifest projects use hum start NAME and hum up to ensure declared processes are running, waiting for readiness unless --no-wait is set. " +
 			"hum serve runs the daemon in the foreground, while hum serve --daemon runs it detached. " +
-			"Read/control commands (excluding explicit hum serve) do not start an empty daemon: list, status, logs, wait, restart, stop, and shutdown inspect or control existing work; " +
-			"When nothing is running, status, logs, wait, and restart point to hum run <name> -- <command>, while stop and shutdown report that there is no work to do. " +
+			"Bounded reads and controls do not start an empty daemon: list, status, logs without --follow, restart, stop, remove, and shutdown inspect or control existing work. " +
+			"logs --follow and wait ensure a daemon exists so they can observe a future launch. When nothing is running, bounded status, logs, and restart provide launch guidance. " +
 			"Stopping named processes and shutting down the daemon are separate operations.",
 		Version:   version + " (built " + buildTime + ")",
 		Writer:    writer,

@@ -467,7 +467,7 @@ func TestObservationTools(t *testing.T) {
 	}
 }
 
-func TestAdHocProcessTools(t *testing.T) {
+func TestRemoveAdHocProcessTools(t *testing.T) {
 	client := &fakeClient{processes: map[string]protocol.Process{"raw": {Name: "raw", Argv: []string{"sleep", "1"}, Cwd: "/tmp", State: "running"}, "api": {Name: "api", Source: "old", Argv: []string{"old"}, State: "running"}}}
 	defs := []Definition{{Name: "api", Source: "hum.yaml", Argv: []string{"new"}, Cwd: "/work"}}
 	s, root, ensures := newTestServer(t, defs, client)

@@ -195,7 +195,7 @@ func TestWaitHelpDescribesExitAndReadiness(t *testing.T) {
 		t.Fatalf("wait help: %v", err)
 	}
 	help := strings.ToLower(output.String())
-	for _, want := range []string{"without --match", "exit", "hum run <name> -- <command>", "wait --match", "future resolved-process commands", "hum start <name>", "--after-cursor", "default: current launch cursor", "--match", "--timeout", "--json"} {
+	for _, want := range []string{"without --match", "process incarnation exits", "stopped or never-launched session", "next launch", "starts a daemon when needed", "--after-cursor", "default: current launch cursor", "--match", "--timeout", "--json"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("wait help missing %q: %q", want, output.String())
 		}
@@ -217,8 +217,10 @@ func TestLifecycleHelp(t *testing.T) {
 				"stays attached by default",
 				"serve --daemon runs it detached",
 				"manifest projects use hum start",
-				"read/control commands (excluding explicit hum serve) do not start an empty daemon",
-				"hum run <name> -- <command>",
+				"bounded reads and controls do not start an empty daemon",
+				"logs without --follow",
+				"logs --follow and wait ensure a daemon exists",
+				"observe a future launch",
 				"stopping named processes and shutting down the daemon are separate operations",
 			},
 		},
@@ -254,8 +256,8 @@ func TestLifecycleHelp(t *testing.T) {
 			want: []string{
 				"automatically starts a detached daemon",
 				"without --detach",
-				"attached",
-				"streams the managed process",
+				"named session across process exits and launches",
+				"ctrl+c detaches",
 				"with --detach",
 				"returns immediately",
 				"daemon keeps owning it",
@@ -267,8 +269,10 @@ func TestLifecycleHelp(t *testing.T) {
 			name: "start",
 			args: []string{"hum", "start", "--help"},
 			want: []string{
-				"manifest",
-				"one or more",
+				"named sessions",
+				"idempotent",
+				"retained stopped sessions",
+				"hum.yaml or conventional discovery",
 				"--no-wait",
 				"--timeout",
 				"--json",
@@ -332,7 +336,8 @@ func TestLifecycleHelp(t *testing.T) {
 				"read-only",
 				"cancels only the follower",
 				"never signals the managed process",
-				"hum run <name> -- <command>",
+				"attach before the first launch",
+				"exit, wait, and launch boundaries",
 			},
 		},
 		{
@@ -340,16 +345,15 @@ func TestLifecycleHelp(t *testing.T) {
 			args: []string{"hum", "wait", "--help"},
 			want: []string{
 				"without --match",
-				"current incarnation's launch cursor",
+				"one process incarnation",
+				"stopped or never-launched session",
+				"next launch",
+				"starts a daemon when needed",
 				"default: current launch cursor",
 				"30s",
 				"exit code is 0",
 				"3 when --match",
 				"2 on timeout",
-				"wait --match",
-				"future resolved-process commands",
-				"hum start <name>",
-				"hum run <name> -- <command>",
 				"non-empty regular expression",
 			},
 			notWant: []string{"(default: 0)"},
@@ -377,6 +381,11 @@ func TestLifecycleHelp(t *testing.T) {
 				"idempotent",
 				"does not shut down the daemon",
 			},
+		},
+		{
+			name: "remove",
+			args: []string{"hum", "remove", "--help"},
+			want: []string{"supervision sessions", "stops each running incarnation", "closes attached followers", "discards retained output", "never edits hum.yaml"},
 		},
 		{
 			name: "shutdown",

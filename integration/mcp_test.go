@@ -131,7 +131,7 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 
 	session := newMCPTestSession(t, hum, explicit, runtime.env)
 	listed := session.request(t, "tools/list", map[string]any{})
-	if listed.Error != nil || len(listed.Result.Tools) != 9 {
+	if listed.Error != nil || len(listed.Result.Tools) != 10 {
 		t.Fatalf("tools/list=%#v", listed)
 	}
 	startRaw, isErr := session.call(t, "start", explicit, map[string]any{"name": "api"})

@@ -82,12 +82,6 @@ func manifestProcess(definition project.Definition, root string) app.Process {
 	}
 }
 
-func manifestRootForLaunch(source, root string) string {
-	if source == "ad_hoc" {
-		return ""
-	}
-	return root
-}
 func mergeManifestProcesses(manifest manifestState, running []app.Process) []app.Process {
 	result := append([]app.Process(nil), running...)
 	seen := make(map[string]struct{}, len(result))

@@ -1,10 +1,11 @@
 ---
 id: HUM-020
 title: Keep named supervision sessions attached across process incarnations
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-04 17:00'
-updated_date: '2026-09-04 18:46'
+updated_date: '2026-09-04 20:20'
 labels:
   - cli
   - daemon
@@ -71,3 +72,27 @@ Modified-file contract: internal/app/, internal/output/, internal/protocol/, int
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Make app records durable sessions with one retained store across incarnations; add race-free pre-launch Subscribe/Wait, lifecycle boundary entries, retained/idempotent Start, removal, and subscriber-aware eviction.
+2. Extend output subscriptions with explicit close semantics so remove closes cleanly and shutdown reports failure.
+3. Add remove protocol/daemon/client support and make follow streams span exits and launches without polling.
+4. Update CLI and MCP start/run/logs/wait/remove semantics while preserving bounded agent operations and one-shot up/down.
+5. Add focused unit and integration coverage, update lifecycle documentation and bundled skill, run every acceptance command, review, verify, commit slices, and push main.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented durable app sessions, pre-launch follow/wait, subscriber-aware retention, stopped-session relaunch, protocol v6 remove, durable daemon streams, CLI/MCP remove, and Ctrl+C detach semantics. Commits: 7350a3c, d0d2546. Focused app, protocol/daemon, and CLI/MCP acceptance command subsets pass.
+
+AC#1 PASS — go test ./internal/app ./internal/output -run 'Test.*(Session|Follow|StartStopped|Remove|WaitPreLaunch)' -count=1 exited 0.
+AC#2 PASS — go test ./internal/protocol ./internal/daemon -run 'Test.*(Follow|Start|Remove)' -count=1 exited 0.
+AC#3 PASS — go test ./internal/cli ./internal/mcp -run 'Test.*(Start|Run|Follow|Remove|Wait|LifecycleHelp)' -count=1 exited 0.
+AC#4 PASS — go test ./integration -run 'Test(DurableFollowAcrossStopStart|FollowBeforeFirstLaunch|RunAttachesToRunning|WaitBeforeStart|RemoveSupervisionSession|UpWithDurableFollowers|FollowerExitsOnDaemonShutdown)' -count=1 exited 0.
+AC#5 PASS — go test ./internal/cli ./internal/skill -run 'Test(LifecycleHelp|ResolvedProjectInstructions)' -count=1 exited 0; README.md, docs/design.md, and docs/coding-agents.md were reviewed and updated.
+Full gate PASS — task ci exited 0, including gofmt, vet, staticcheck, all tests, race tests, build, and smoke.
+Modified-file contract deviations: cmd/hum/integration_test.go was required to update the existing built-binary smoke test for intentionally unbounded attached/follow semantics. internal/process/ was required to publish the launch boundary atomically after spawn succeeds but before child output capture begins. The backlog task file is provider-owned execution metadata updated through the backlog CLI.
+<!-- SECTION:NOTES:END -->

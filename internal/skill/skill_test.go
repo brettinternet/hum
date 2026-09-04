@@ -95,8 +95,13 @@ func TestResolvedProjectInstructions(t *testing.T) {
 	if !strings.Contains(content, "`hum stop <name>`") {
 		t.Error("SKILL.md missing exact hum stop invocation")
 	}
-	if !strings.Contains(content, "only when the developer asks you to stop that process") {
-		t.Error("SKILL.md missing developer-request stop restriction")
+	if strings.Contains(content, "only when the developer asks you to stop that process") {
+		t.Error("SKILL.md retains obsolete developer-request stop restriction")
+	}
+	for _, instruction := range []string{"Never use unbounded", "hum remove <name>", "durable session", "intermediate work"} {
+		if !strings.Contains(content, instruction) {
+			t.Errorf("SKILL.md missing lifecycle instruction %q", instruction)
+		}
 	}
 	rawRunWarning := "Never use raw `hum run ... -- ...`"
 	rawRunCommand := regexp.MustCompile(`\bhum[[:space:]]+run\b`)

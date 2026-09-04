@@ -43,7 +43,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	}
 }
 
-func TestOperationRequestsRoundTripThroughDecoder(t *testing.T) {
+func TestStartFollowRemoveOperationRequestsRoundTripThroughDecoder(t *testing.T) {
 	after := Cursor(17)
 	cases := []struct {
 		name  string
@@ -107,6 +107,11 @@ func TestOperationRequestsRoundTripThroughDecoder(t *testing.T) {
 		{name: "stop", value: NewStopRequest("api", "/tmp/project"), op: OpStop, check: func(t *testing.T, req Request) {
 			if req.Stop == nil || req.Stop.Name != "api" {
 				t.Fatalf("stop request = %#v", req.Stop)
+			}
+		}},
+		{name: "remove", value: NewRemoveRequest("api", "/tmp/project"), op: OpRemove, check: func(t *testing.T, req Request) {
+			if req.Remove == nil || req.Remove.Name != "api" || req.Remove.Cwd != "/tmp/project" {
+				t.Fatalf("remove request = %#v", req.Remove)
 			}
 		}},
 		{name: "restart", value: func() RestartRequest {

@@ -30,7 +30,9 @@ processes:
 hum up
 hum status web
 hum logs worker --tail 50
-hum restart web
+hum stop web
+# run migrations, installs, or other intermediate work
+hum start web
 hum down
 ```
 
@@ -39,6 +41,15 @@ Run a one-off named process without a manifest:
 ```sh
 hum run preview -- bun run preview
 ```
+
+Process names are durable supervision sessions. Attached `run` and `logs --follow`
+stay open across stops and launches until Ctrl+C; they may attach before the first
+launch. `wait` is the bounded alternative for automation. `stop` preserves the
+session and retained launch state, while `remove` stops and discards runtime state
+without editing `hum.yaml`. Unobserved completed sessions remain bounded by
+eviction. `down` stops all project processes; a later `up` restarts resolved
+definitions, not retained ad hoc sessions. Daemon loss ends followers nonzero
+with a diagnostic; followers do not reconnect.
 
 ## Install
 

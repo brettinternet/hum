@@ -284,7 +284,7 @@ func flagAliasReadLiveFollow(t *testing.T, project, variant, flag string) flagAl
 		}
 	}
 	joined := strings.Join(result.texts, "")
-	if result.exitCode != 0 || result.sawExit || commandOutput.stderr != "" || !strings.Contains(joined, "probe\n") || !strings.Contains(joined, "after\n") {
+	if result.exitCode != 0 || !result.sawExit || commandOutput.stderr != "" || !strings.Contains(joined, "probe\n") || !strings.Contains(joined, "after\n") {
 		t.Fatalf("live follow %s %s = %#v (stdout=%q stderr=%q err=%v ctx=%v)", name, flag, result, commandOutput.stdout, commandOutput.stderr, commandOutput.err, ctx.Err())
 	}
 	return result

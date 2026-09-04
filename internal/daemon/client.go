@@ -525,6 +525,8 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 		value = protocol.SignalRequest{Op: protocol.OpSignal, Name: req.Name, Cwd: req.Cwd, Signal: req.Signal}
 	case "stop":
 		value = protocol.StopRequest{Op: protocol.OpStop, Name: req.Name, Cwd: req.Cwd}
+	case "remove":
+		value = protocol.RemoveRequest{Op: protocol.OpRemove, Name: req.Name, Cwd: req.Cwd}
 	case "restart":
 		value = protocol.RestartRequest{
 			Op: protocol.OpRestart, Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,

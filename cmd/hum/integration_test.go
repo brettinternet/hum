@@ -218,19 +218,41 @@ func TestBuiltBinaryIntegration(t *testing.T) {
 	integrationWaitForSocket(t, serve, filepath.Join(runtimeDir, "hum.sock"))
 
 	attachedScript := "printf 'attached-stdout:%s\\n' \"$HUM_INTEGRATION_MARKER\"; printf 'attached-raw   \\n'; printf 'attached-argv:%s:%s\\n' \"$1\" \"$2\"; printf 'attached-stderr\\n' >&2; exit 7"
-	attached := integrationRunBinary(binary, cwd, "run", "attached", "--", "/bin/sh", "-c", attachedScript, "hum-child", "alpha", "beta")
-	if attached.err != nil && attached.code < 0 {
-		t.Fatalf("attached run failed to start: %v", attached.err)
+	attached, err := integrationStartFollower(binary, cwd, "run", "attached", "--", "/bin/sh", "-c", attachedScript, "hum-child", "alpha", "beta")
+	if err != nil {
+		t.Fatalf("start attached run: %v", err)
 	}
-	if attached.code != 7 {
-		t.Fatalf("attached run exit code = %d, want 7 (stdout=%q stderr=%q)", attached.code, attached.stdout, attached.stderr)
+	wantAttachedLines := []string{"attached-stdout:marker-for-child\n", "attached-raw   \n", "attached-argv:alpha:beta\n"}
+	for index, want := range wantAttachedLines {
+		line, lineErr := integrationFollowerLine(attached, 8*time.Second)
+		if lineErr != nil || line != want {
+			t.Fatalf("attached line %d = %q, %v; want %q", index, line, lineErr, want)
+		}
 	}
-	wantAttachedStdout := "attached-stdout:marker-for-child\nattached-raw   \nattached-argv:alpha:beta\n"
-	if attached.stdout != wantAttachedStdout {
-		t.Errorf("attached stdout = %q, want exact raw lines %q", attached.stdout, wantAttachedStdout)
+	attachedDeadline := time.Now().Add(8 * time.Second)
+	for !strings.Contains(attached.stderr.String(), "attached waiting for next launch\n") {
+		if time.Now().After(attachedDeadline) {
+			t.Fatalf("attached lifecycle stderr = %q", attached.stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if attached.stderr != "attached-stderr\n" {
-		t.Errorf("attached stderr = %q, want exact raw line %q", attached.stderr, "attached-stderr\n")
+	if attached.cmd.ProcessState != nil {
+		t.Fatal("attached run exited instead of waiting for the next launch")
+	}
+	if err := attached.cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("detach attached run: %v", err)
+	}
+	select {
+	case err := <-attached.wait:
+		if err != nil {
+			t.Fatalf("attached detach: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("attached run did not detach")
+	}
+	wantAttachedStderr := "attached launched\nattached-stderr\nattached exited with code 7\nattached waiting for next launch\n"
+	if attached.stderr.String() != wantAttachedStderr {
+		t.Errorf("attached stderr = %q, want %q", attached.stderr.String(), wantAttachedStderr)
 	}
 
 	t.Setenv("HUM_INTEGRATION_GATE", detachedGate)
@@ -381,9 +403,21 @@ func TestBuiltBinaryIntegration(t *testing.T) {
 		t.Fatalf("decode stop detached JSON: %v (stdout=%q)", err, stopDetached.stdout)
 	}
 
-	followerWaitErr := integrationDrainFollower(follower, 8*time.Second)
-	if followerWaitErr != nil {
-		t.Fatalf("logs follower after stop: %v (stderr=%q)", followerWaitErr, follower.stderr.String())
+	var waitingLine string
+	for !strings.Contains(waitingLine, "waiting for next launch") {
+		waitingLine, err = integrationFollowerLine(follower, 8*time.Second)
+		if err != nil {
+			t.Fatalf("logs follower after stop: line=%q err=%v stderr=%q", waitingLine, err, follower.stderr.String())
+		}
+	}
+	if follower.cmd.ProcessState != nil {
+		t.Fatal("logs follower exited after stop")
+	}
+	if err := follower.cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("detach logs follower: %v", err)
+	}
+	if err := integrationDrainFollower(follower, 8*time.Second); err != nil {
+		t.Fatalf("logs follower detach: %v (stderr=%q)", err, follower.stderr.String())
 	}
 
 	stopAlreadyStopped := integrationRunBinary(binary, cwd, "stop", "detached", "detached", "missing", "--json")

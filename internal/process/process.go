@@ -37,6 +37,8 @@ type Spec struct {
 	MaxLineBytes int
 	IdleFlush    time.Duration
 	Now          func() time.Time
+	// Started runs after the child is spawned but before output capture begins.
+	Started func() error
 }
 
 // Result is the immutable terminal status of a child.
@@ -143,6 +145,18 @@ func Start(spec Spec) (*Child, error) {
 		_ = stderrReader.Close()
 		_ = stderrWriter.Close()
 		return nil, fmt.Errorf("process: start %q: %w", argv[0], err)
+	}
+	if spec.Started != nil {
+		if err := spec.Started(); err != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = cmd.Wait()
+			_ = stdin.Close()
+			_ = stdoutReader.Close()
+			_ = stdoutWriter.Close()
+			_ = stderrReader.Close()
+			_ = stderrWriter.Close()
+			return nil, fmt.Errorf("process: started callback: %w", err)
+		}
 	}
 
 	// Stdio files assigned directly to Cmd are not owned by os/exec and remain

@@ -13,10 +13,12 @@ Use MCP as the primary integration. Use this skill only for shell-only fallback 
 - Use `hum start <name>` for one resolved process; it waits for readiness unless you opt out.
 - Use `hum list` for discovery, and to inspect each process's source and readiness.
 - Read bounded output with `hum logs --tail 100 <name>` or `hum logs --after-cursor <cursor> --json <name>`.
-- Use `hum wait <name>` for a later condition, such as matching output or process exit.
+- Use `hum wait <name>` for a bounded later condition, including before another client starts the name.
+- Never use unbounded `hum logs <name> --follow`; it is for interactive terminals.
+- For intermediate work, use `hum stop <name>`, run the work, then `hum start <name>`; the durable session keeps observers attached.
 - After process-definition changes, use `hum restart <name>`.
-- Use `hum stop <name>` only when the developer asks you to stop that process.
-- Use `hum down` to stop everything in the current project.
+- Use `hum remove <name>` only to discard the runtime session, retained output, and launch state; it never edits `hum.yaml`.
+- Use `hum down` to stop everything in the current project; a later `hum up` restarts only resolved definitions.
 
 ## Conservative discovery
 

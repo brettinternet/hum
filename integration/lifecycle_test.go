@@ -205,9 +205,14 @@ func TestAutomaticStartup(t *testing.T) {
 		daemonPID := 0
 		t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
 
-		result := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "automatic-attached", "--", "/bin/sh", "-c", "printf attached")
-		if result.Code != 0 || result.Err != nil || result.Stdout != "attached" || result.Stderr != "" {
-			t.Fatalf("attached automatic run: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
+		result := testutil.Start(t, hum, runtime.cwd, runtime.env, "run", "automatic-attached", "--", "/bin/sh", "-c", "printf attached")
+		durableWaitText(t, result, false, "attached")
+		durableWaitText(t, result, true, "waiting for next launch")
+		if err := result.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		if err := result.Wait(lifecycleTimeout); err != nil {
+			t.Fatalf("attached automatic detach: %v stdout=%q stderr=%q", err, result.Stdout(), result.Stderr())
 		}
 		testutil.WaitForFile(t, runtime.paths.PID, lifecycleTimeout)
 		testutil.WaitForFile(t, runtime.paths.Ready, lifecycleTimeout)

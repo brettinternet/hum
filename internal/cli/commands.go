@@ -71,7 +71,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			ArgsUsage:    "NAME -- COMMAND [ARGS...]",
 			StopOnNthArg: &runStopOnNthArg,
 			Description: "hum run automatically starts a detached daemon when none is available. " +
-				"Without --detach, it stays attached and streams the managed process stdout and stderr until exit. " +
+				"Without --detach, it follows the named session across process exits and launches until Ctrl+C detaches the observer. " +
 				"With --detach, it starts the process, prints its name and PID (or JSON), and returns immediately; the daemon keeps owning it.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, Usage: "start the process detached and return without attaching"},
@@ -83,9 +83,9 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:        "start",
-			Usage:       "ensure one or more manifest processes are running",
+			Usage:       "ensure one or more named sessions are running",
 			ArgsUsage:   "NAME...",
-			Description: "Start resolves names from hum.yaml, launches stopped declarations with the full client environment, and waits for readiness unless --no-wait is set.",
+			Description: "Start is idempotent for running sessions and relaunches retained stopped sessions. Absent names resolve from hum.yaml or conventional discovery. It waits for resolved readiness unless --no-wait is set.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after the process is spawned"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
@@ -155,15 +155,15 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:     "read retained process output (read-only)",
 			ArgsUsage: "NAME",
 			Description: "Logs reads bounded retained output without changing process state. " +
-				"--follow first reads retained entries and then streams new entries; following is read-only, so Ctrl+C cancels only the follower and never signals the managed process. " +
-				"If no daemon is available, it reports Nothing is running and points to hum run <name> -- <command> as the launch command.",
+				"--follow ensures a daemon exists, may attach before the first launch, and follows the named session across exit, wait, and launch boundaries. " +
+				"Following is read-only, so Ctrl+C cancels only the follower and never signals the managed process. Without --follow, an unavailable daemon reports Nothing is running.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "select stdout, stderr, or both"},
 				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, Usage: "select the final N entries"},
 				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, Usage: "read entries after this cursor"},
 				&urfavecli.IntFlag{Name: "limit-bytes", Aliases: []string{"b"}, Usage: "limit returned output bytes"},
 				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "filter entries by regular expression"},
-				&urfavecli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "follow output until process exit"},
+				&urfavecli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "follow the named session across process launches until interrupted"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -174,11 +174,9 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:      "wait",
 			Usage:     "wait for matching output or process exit (30s default)",
 			ArgsUsage: "NAME",
-			Description: "Without --match, wait returns when the process exits; with --match, it returns when output matches or the process exits. " +
-				"It searches from the current incarnation's launch cursor by default and waits at most 30s unless --timeout is set. " +
-				"Exit code is 0 for a match or an exit without --match, 3 when --match sees process exit first, and 2 on timeout. " +
-				"Current processes can use wait --match for output matching; future resolved-process commands use readiness from hum start and hum up. " +
-				"Without a daemon, resolved manifest names point to hum start <name>; undefined names keep the hum run <name> -- <command> guidance.",
+			Description: "Without --match, wait returns when one process incarnation exits; with --match, it returns when output matches or that incarnation exits. " +
+				"Without --after-cursor, a stopped or never-launched session waits for its next launch and evaluates from that launch cursor. " +
+				"It starts a daemon when needed and waits at most 30s unless --timeout is set. Exit code is 0 for a match or an exit without --match, 3 when --match sees process exit first, and 2 on timeout.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, DefaultText: "current launch cursor", Usage: "search entries after this cursor"},
 				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "wait for output matching this non-empty regular expression"},
@@ -449,6 +447,10 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		if cmd.Bool("json") {
 			return encodeJSON(writer, result)
 		}
+		if result.Source != "" {
+			_, err := fmt.Fprintf(writer, "started %s (PID %d, cursor %d, source=%s, argv=%s, outcome=%s, readiness=%s)\n", process.Name, process.PID, process.LaunchCursor, result.Source, shellJoin(result.Argv), result.Outcome, result.Readiness)
+			return err
+		}
 		_, err := fmt.Fprintf(writer, "started %s (PID %d, cursor %d)\n", process.Name, process.PID, process.LaunchCursor)
 		return err
 	}
@@ -471,8 +473,10 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 			return err
 		}
 	} else if getErr == nil && current.State != app.StateRunning {
-		if len(current.Argv) == 0 {
+		if len(current.Argv) == 0 && !declared {
 			_, err = fmt.Fprintf(writer, "%s waiting for first launch (name does not resolve; hum run %s -- COMMAND may create it)\n", name, name)
+		} else if len(current.Argv) == 0 {
+			_, err = fmt.Fprintf(writer, "%s waiting for first launch\n", name)
 		} else {
 			_, err = fmt.Fprintf(writer, "%s waiting for next launch\n", name)
 		}
@@ -671,7 +675,10 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		if process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd}); getErr == nil && process.State != app.StateRunning {
 			message := fmt.Sprintf("%s waiting for next launch\n", name)
 			if len(process.Argv) == 0 {
-				message = fmt.Sprintf("%s waiting for first launch (name does not resolve; hum run %s -- COMMAND may create it)\n", name, name)
+				message = fmt.Sprintf("%s waiting for first launch\n", name)
+				if _, declared := manifest.byName[name]; !declared {
+					message = fmt.Sprintf("%s waiting for first launch (name does not resolve; hum run %s -- COMMAND may create it)\n", name, name)
+				}
 			}
 			if cmd.Bool("json") {
 				err = encodeJSON(writer, eventJSON(name, output.Event{Read: &output.ReadResult{Entries: []output.Entry{{Stream: output.System, Time: time.Now(), Text: message}}}}))

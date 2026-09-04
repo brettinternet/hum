@@ -27,6 +27,7 @@ hum logs <name> [--stream stdout|stderr|both] [--tail N] [--after-cursor N]
 hum wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
 hum restart <name>... [--json]
 hum stop <name>... [--json]
+hum remove <name>... [--json]
 hum shutdown [--stop-processes] [--json]
 hum mcp
 ```
@@ -70,16 +71,19 @@ template. Existing paths and resolution or write errors exit 1. Output includes
 the path, `generated` or `template` outcome, and `hum up` as the next command;
 JSON also includes candidates.
 
-`start` idempotently ensures named definitions are running. Concurrent starts
-create at most one child. `up` does the same for every declaration, waits
-concurrently, and leaves successful children running after other failures.
-`--no-wait` returns after spawn.
+`start` idempotently ensures a named session is running. It relaunches retained
+stopped records; retained ad hoc records reuse their exact argv, cwd, and
+environment, while resolved records use the current definition and client
+environment. Concurrent starts create at most one child. `up` does the same only
+for current resolved definitions, waits concurrently, and leaves successful
+children running after other failures. `--no-wait` returns after spawn.
 
-`run <name>` uses an existing resolved definition and attached-run semantics.
-`run <name> -- <command>...` creates an ad hoc definition only when that name
-does not resolve. A missing zero-config candidate permits the ad hoc form;
-malformed, ambiguous, and introspection failures do not. A resolved name cannot
-be occupied by a conflicting ad hoc run.
+`run <name>` uses an existing resolved definition or attaches to an existing
+running or stopped session. `run <name> -- <command>...` creates an ad hoc
+session or replaces a stopped session's retained ad hoc launch spec; it keeps
+existing conflict rules while running. A missing zero-config candidate permits
+the ad hoc form; malformed, ambiguous, and introspection failures do not. A
+resolved name cannot be occupied by a conflicting ad hoc run.
 
 `restart` uses the current resolved definition and client environment. If only
 a retained ad hoc record exists, it reuses its exact argv, cwd, and environment.
@@ -88,7 +92,10 @@ restarted.
 
 `list` merges current definitions with all project runtime records. Without a
 daemon it reports resolved definitions as stopped. `status`, `logs`, `wait`,
-`restart`, and `stop` operate on resolved and ad hoc records in the project.
+`restart`, `stop`, and `remove` operate on resolved and ad hoc records in the
+project. `stop` preserves the durable session; `remove` stops its child, closes
+followers, and discards runtime launch state and output without editing
+`hum.yaml`.
 
 `down` is the project-scoped inverse of `up`. It concurrently stops every
 running project record, includes declared-but-absent names as `not_running`, and
@@ -188,11 +195,16 @@ at a new launch cursor, so old output cannot satisfy it. Definitions without
 `ready`, including all discovered definitions, report `running_unverified` and
 are never reported ready. A CLI timeout overrides the manifest timeout.
 
-Each record has one cursor sequence across stdout, stderr, and restarts. Entries
-contain stream, timestamp, raw text, and cursor. Byte-bounded retention reports
-eviction explicitly. `logs --follow` returns retained output, then cursor-based
-events; cancellation never signals the process. Exited and ad hoc records omit
-readiness.
+Each durable named session has one cursor sequence across stdout, stderr, and
+incarnations. Entries contain stream, timestamp, raw text, and cursor.
+Byte-bounded retention reports eviction explicitly; a live pre-launch or stopped
+follower reserves its session from completed-record eviction. Attached `run` and
+`logs --follow` may start before the first launch, return retained output, print
+exit/wait/launch boundaries, and remain open across stop/start and down/up until
+Ctrl+C, removal, or transport loss. Ctrl+C detaches only the observer. `wait`
+without an explicit cursor waits for the next incarnation when stopped or
+unlaunched and remains bounded (30 seconds by default). Exited and ad hoc
+records omit readiness.
 
 ## Daemon and environments
 
@@ -209,9 +221,9 @@ environment, so definition edits take effect.
 ## MCP adapter
 
 `hum mcp` serves JSON-RPC over stdin/stdout. Every request requires an absolute,
-existing `project_root` chosen by the same root rule as the CLI. It exposes nine
-tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `restart`, and
-`stop`.
+existing `project_root` chosen by the same root rule as the CLI. It exposes ten
+tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `restart`,
+`stop`, and `remove`.
 
 The tools share CLI definition, readiness, cursor, collision, and aggregate
 semantics. Only `start` and `up` may create or replace a daemon. Without one,
@@ -219,9 +231,10 @@ semantics. Only `start` and `up` may create or replace a daemon. Without one,
 tools return unavailable-daemon errors. Recorded environments are never
 returned.
 
-The adapter receives a protocol-shaped daemon client and constructs no app
-services, supervisors, or output stores in-process. It has no `run`, `serve`, or
-`shutdown`, HTTP transport, authentication, remote access, or arbitrary-command
+MCP exposes no follow or other unbounded operation; agents use bounded `wait`
+and `logs`. The adapter receives a protocol-shaped daemon client and constructs
+no app services, supervisors, or output stores in-process. It has no `run`,
+`serve`, or `shutdown`, HTTP transport, authentication, remote access, or arbitrary-command
 tool.
 
 ## Non-goals

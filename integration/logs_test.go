@@ -164,6 +164,10 @@ func TestLogFollowers(t *testing.T) {
 	}
 	logsitReleaseGate(t, multiGate)
 	for i, follower := range followers {
+		logsitWaitFollowerText(t, follower, `"type":"exit"`)
+		if err := follower.Signal(os.Interrupt); err != nil {
+			t.Fatal(err)
+		}
 		if err := follower.Wait(logsitFollowerTimeout); err != nil {
 			t.Fatalf("follower %d wait: %v; stdout=%q stderr=%q", i, err, follower.Stdout(), follower.Stderr())
 		}
@@ -215,12 +219,16 @@ func TestNDJSONFollow(t *testing.T) {
 	logsitWaitOutput(t, harness, "eviction", []string{"--json", "--stream", "both", "--match", "stdout:3499"}, func(lines []logsitJSONLine) bool {
 		return len(lines) == 1 && logsitHasEntryText(lines[0].Event.Entries, "stdout:3499\n")
 	})
+	follower := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "eviction", "--follow", "--json", "--after-cursor", "0", "--stream", "both", "--limit-bytes", "4096")
+	logsitWaitFollowerText(t, follower, `"type":"eviction"`)
 	logsitReleaseGate(t, gate)
 	logsitWaitOutput(t, harness, "eviction", []string{"--json", "--stream", "stdout", "--match", "stdout:6999"}, func(lines []logsitJSONLine) bool {
 		return len(lines) == 1 && logsitHasEntryText(lines[0].Event.Entries, "stdout:6999\n")
 	})
-
-	follower := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "eviction", "--follow", "--json", "--after-cursor", "0", "--stream", "both", "--limit-bytes", "4096")
+	logsitWaitFollowerText(t, follower, `"type":"exit"`)
+	if err := follower.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
 	if err := follower.Wait(logsitFollowerTimeout); err != nil {
 		t.Fatalf("eviction follower wait: %v; stdout=%q stderr=%q", err, follower.Stdout(), follower.Stderr())
 	}
@@ -250,10 +258,13 @@ func TestNDJSONFollow(t *testing.T) {
 		if _, ok := line.Raw["type"]; !ok {
 			t.Fatalf("follow line %d raw schema = %#v, missing type", index, line.Raw)
 		}
+		if event.Type == "output" && len(event.Entries) != 0 && event.Entries[0].Stream == "system" {
+			continue
+		}
 		switch event.Type {
 		case "output", "eviction":
 			if exitIndex >= 0 {
-				t.Fatalf("output line %d appeared after exit line %d", index, exitIndex)
+				t.Fatalf("process output line %d appeared after exit line %d", index, exitIndex)
 			}
 			outputEvents++
 			if len(event.Entries) == 0 {
@@ -282,11 +293,10 @@ func TestNDJSONFollow(t *testing.T) {
 				t.Fatalf("follow output line %d next=%d before last entry cursor=%d", index, *event.Next, lastCursor)
 			}
 			if event.Type == "eviction" {
-				if evictionEvent != nil {
-					t.Fatalf("multiple eviction events: %#v and %#v", evictionEvent.Event, event)
+				if evictionEvent == nil {
+					copyLine := *line
+					evictionEvent = &copyLine
 				}
-				copyLine := *line
-				evictionEvent = &copyLine
 				if !event.Truncated || event.EvictedThrough == nil || *event.EvictedThrough == 0 {
 					t.Fatalf("eviction event = %#v, want truncated and evicted_through metadata", event)
 				}
@@ -331,8 +341,8 @@ func TestNDJSONFollow(t *testing.T) {
 	if !sawMore {
 		t.Fatalf("eviction follow lines = %#v, want more=true from bounded delivery", lines)
 	}
-	if exitEvents != 1 || exitIndex != len(lines)-1 {
-		t.Fatalf("eviction follow ordering: exitEvents=%d exitIndex=%d lines=%d, want one final exit", exitEvents, exitIndex, len(lines))
+	if exitEvents != 1 || exitIndex < 0 {
+		t.Fatalf("eviction follow ordering: exitEvents=%d exitIndex=%d lines=%d, want one exit before waiting boundaries", exitEvents, exitIndex, len(lines))
 	}
 }
 
@@ -478,8 +488,8 @@ func logsitAssertFollowerOutput(t *testing.T, name string, lines []logsitJSONLin
 			t.Fatalf("%s follower line %d = %#v, want named event", name, index, line.Event)
 		}
 		if line.Event.Type == "exit" {
-			if exitIndex >= 0 || index != len(lines)-1 {
-				t.Fatalf("%s follower exit ordering at line %d in %#v", name, index, lines)
+			if exitIndex >= 0 {
+				t.Fatalf("%s follower duplicate exit at line %d in %#v", name, index, lines)
 			}
 			exitIndex = index
 			if line.Event.Exit == nil || line.Event.Exit.Code != 0 {

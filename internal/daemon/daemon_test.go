@@ -146,31 +146,6 @@ func (c *daemonTestReadConn) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
-type daemonTestGateWriter struct {
-	release <-chan struct{}
-	entered chan struct{}
-	once    sync.Once
-	mu      sync.Mutex
-	data    []byte
-}
-
-func (w *daemonTestGateWriter) Write(p []byte) (int, error) {
-	w.once.Do(func() {
-		close(w.entered)
-		<-w.release
-	})
-	w.mu.Lock()
-	w.data = append(w.data, p...)
-	w.mu.Unlock()
-	return len(p), nil
-}
-
-func (w *daemonTestGateWriter) bytes() []byte {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return append([]byte(nil), w.data...)
-}
-
 type daemonTestWriteConn struct {
 	net.Conn
 	writeCalls atomic.Uint64
@@ -1163,7 +1138,7 @@ func TestReadinessHandshake(t *testing.T) {
 	}
 }
 
-func TestShutdown(t *testing.T) {
+func TestRemoveAndShutdown(t *testing.T) {
 	t.Run("refuses active processes", func(t *testing.T) {
 		server := testServer(t, Config{})
 		root := t.TempDir()
