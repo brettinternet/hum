@@ -80,9 +80,6 @@ func initJSONFor(result project.InitResult) initJSON {
 			Argv:   argv,
 		}
 	}
-	if candidates == nil {
-		candidates = []initCandidateJSON{}
-	}
 	return initJSON{
 		Path:        result.Path,
 		Outcome:     result.Outcome,
