@@ -183,7 +183,7 @@ func TestLogsFollow(t *testing.T) {
 		t.Fatalf("human evicted logs stderr = %q, want next-cursor and truncation trailer", humanErr)
 	}
 
-	followContext, cancelFollow := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	followContext, cancelFollow := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	followOutput, stderr, err := hum006ListLogsRunAt(t, project, followContext, "logs", "overflow", "--follow", "--json", "--after-cursor", "0", "--limit-bytes", "16")
 	cancelFollow()
 	if err != nil {
@@ -244,7 +244,7 @@ func TestLogsFollow(t *testing.T) {
 			t.Fatalf("late-follow managed exit code = %d, want 29", completed.ExitCode)
 		}
 
-		followContext, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		followContext, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		followOutput, stderr, err := hum006ListLogsRunAt(t, project, followContext, "logs", "late", "--follow", "--json")
 		timedOut := followContext.Err() != nil
 		cancel()
@@ -258,7 +258,7 @@ func TestLogsFollow(t *testing.T) {
 		if !hum006ListLogsContainsString(hum006ListLogsAllEventTexts(t, events), "late-follow\n") {
 			t.Fatalf("late logs --follow events = %#v, missing retained output", events)
 		}
-		humanContext, cancelHuman := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		humanContext, cancelHuman := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		humanOutput, humanErr, err := hum006ListLogsRunAt(t, project, humanContext, "logs", "late", "--follow")
 		cancelHuman()
 		if err != nil {

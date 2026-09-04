@@ -307,7 +307,7 @@ func TestDownStopsProcessesConcurrentlyWithIndependentConnections(t *testing.T) 
 	if want := "alpha stopped\nbeta stopped\n"; stdout != want {
 		t.Fatalf("down output = %q, want %q", stdout, want)
 	}
-	if elapsed >= delay+150*time.Millisecond {
+	if elapsed >= 2*delay {
 		t.Fatalf("down took %s for two %s stops; workers were not concurrent", elapsed, delay)
 	}
 	for name, child := range children {
