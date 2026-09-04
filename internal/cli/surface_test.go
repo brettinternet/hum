@@ -13,6 +13,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 
 	want := map[string]bool{
 		"serve":    true,
+		"mcp":      true,
 		"run":      true,
 		"start":    true,
 		"up":       true,

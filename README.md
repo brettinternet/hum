@@ -50,6 +50,7 @@ hum wait NAME [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
 hum restart NAME... [--json]
 hum stop NAME... [--json]
 hum shutdown [--stop-processes] [--json]
+hum mcp
 ```
 
 Project definitions are resolved at the nearest Git project root. A present
@@ -98,6 +99,90 @@ runs are labelled `ad_hoc` in JSON list output.
 Human-readable output remains the default, while `--json` is intended for
 scripts and agents. Attached `run --json` still streams raw child stdout and
 stderr; `logs --json --follow` is NDJSON.
+
+## MCP for coding agents
+
+`hum mcp` is an MCP server on stdio: it reads MCP JSON-RPC from stdin and
+writes responses to stdout. Register it once with an agent by pointing the
+agent directly at the `hum` executable; an agent does not need a shell skill
+to use it. Use an absolute executable path in these examples:
+
+Claude Code:
+
+```sh
+claude mcp add --transport stdio hum -- /absolute/path/to/hum mcp
+```
+
+Codex CLI:
+
+```sh
+codex mcp add hum -- /absolute/path/to/hum mcp
+```
+
+Cursor (or another client using an `mcpServers` JSON configuration):
+
+```json
+{
+  "mcpServers": {
+    "hum": {
+      "command": "/absolute/path/to/hum",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+These are one-time registrations. Register the executable directly, not as
+`sh -c ...`; do not bake a project path into the registration. Every tool call
+requires `project_root`, an absolute existing directory. Pass the nearest Git
+project root, or the requested directory when no Git marker exists, using the
+same root rule as the CLI.
+
+The server exposes exactly nine tools:
+`start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `restart`, and `stop`.
+`start` and `up` accept only names from the current explicit `hum.yaml` or
+zero-config resolved definitions. They wait for readiness by default and
+accept `no_wait` and `timeout`; launch results retain CLI states, source and
+`argv` metadata, per-incarnation readiness and cursors, collision errors, and
+`up` aggregate semantics. A definition without readiness, including discovered
+`dev`, returns `running_unverified` and is never reported `ready`.
+
+`list` merges resolved definitions with every runtime record in the project.
+`status`, `logs`, `wait`, `restart`, and `stop` target an existing record in
+that project, whether resolved or `ad_hoc`; only `start` and `up` are
+definition-only. `restart` uses the current resolved definition and the MCP
+server's current environment, or relaunches a retained ad hoc record with its
+recorded exact `argv`, cwd, and environment when no definition exists. `down`
+stops every running record and returns the CLI per-name results. `logs` and
+`wait` expose bounded cursor-based inputs and outputs; `wait` defaults to the
+current launch cursor and the CLI timeout. No MCP response exposes a recorded
+environment.
+
+Only `start` and `up` may create or replace a daemon. Without a daemon,
+`list` reports resolved definitions as stopped; `status`, `logs`, `wait`, and
+`restart` preserve the CLI unavailable-daemon errors, while `stop` and `down`
+succeed with nothing running. A detached CLI command such as
+`hum run transient --detach -- ./tools/transient` is handed off through its
+runtime record and appears to MCP as `source: ad_hoc`. A daemon shutdown or
+replacement loses retained ad hoc definitions; an evicted ad hoc record cannot
+be reconstructed and its restart returns not found.
+
+MCP has no `run`, `serve`, or `shutdown` tool, and provides no HTTP transport,
+authentication, or remote access. It is an adapter over hum's existing daemon
+client and startup/version-replacement helper, not an in-process supervisor or
+output store; it never creates a second supervisor.
+
+For an explicit manifest definition that needs environment activation, commit a
+runner or wrapper and put it in the definition's exact `argv`:
+
+```yaml
+processes:
+  web:
+    argv: [./tools/run-with-project-env, bun, run, dev]
+```
+
+The runner owns activation deterministically. CLI and MCP then use the same
+argv without shell hooks, environment literals, or environment files.
 
 ## Canonical `hum.yaml` v1
 
@@ -278,8 +363,9 @@ mise, nvm, direnv, or another interactive shell. The requesting client's full
 environment is used for a launch and for a manifest or discovered restart;
 environment values are never returned by list or status.
 
-For deterministic MCP execution, commit a tool runner or wrapper in the
-repository and put that runner in the manifest argv. For example:
+For deterministic MCP execution of an explicit manifest definition, commit a
+tool runner or wrapper in the repository and put that runner in the manifest
+argv. For example:
 
 ```yaml
 processes:
@@ -343,8 +429,9 @@ commands other than a confirmed `mix phx.server`, Docker Compose inference,
 scanning workspace packages or nested manifests, combining several inferred
 processes, inferring ports, readiness, or dependencies, or executing candidate
 commands to see which succeeds. It also does not include manifest generation
-(`init`), a shell-only skill, an MCP server, automatic crash restart/backoff,
-environment literals/files, or arbitrary-command MCP tools.
+(`init`), a shell-only skill, arbitrary-command MCP tools, MCP HTTP transport,
+authentication, or remote access, automatic crash restart/backoff, or
+environment literals/files.
 `hum down` is the project-scoped inverse of `hum up`: it stops every active
 resolved or ad hoc process in the current project, preserves the daemon and
 runtime records, and leaves other projects untouched. Use `hum stop NAME...` for
