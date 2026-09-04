@@ -1,11 +1,11 @@
 ---
 id: HUM-020
 title: Keep named supervision sessions attached across process incarnations
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-04 17:00'
-updated_date: '2026-09-04 20:20'
+updated_date: '2026-09-04 20:26'
 labels:
   - cli
   - daemon
@@ -56,21 +56,21 @@ Modified-file contract: internal/app/, internal/output/, internal/protocol/, int
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/app ./internal/output -run 'Test.*(Session|Follow|StartStopped|Remove|WaitPreLaunch)' -count=1` exits 0 and proves a name follower survives ordinary stop and natural exit, observes ordered exit/wait/launch boundaries and successor output, cannot miss a rapid relaunch, protects its session from eviction, detaches independently on cancellation, and is closed only by session removal or daemon shutdown; and that wait without --after-cursor on a stopped or never-launched session blocks until the next launch within its deadline, evaluates from that launch cursor, and returns the existing timeout outcome when no launch arrives.
-- [ ] #2 `go test ./internal/protocol ./internal/daemon -run 'Test.*(Follow|Start|Remove)' -count=1` exits 0 and proves the versioned protocol supports a race-free name-scoped follow before, during, and between incarnations, including a syntactically valid name that does not resolve; ordinary start/restart/up launches wake followers; stop/down do not close them; remove does; and transport cancellation releases every subscription.
-- [ ] #3 `go test ./internal/cli ./internal/mcp -run 'Test.*(Start|Run|Follow|Remove|Wait|LifecycleHelp)' -count=1` exits 0 and proves start is idempotent for running names, relaunches retained stopped resolved and ad hoc records with the specified launch-source/environment rules, absent names still require resolution, attached argv-free run on a running name attaches instead of failing, remove has CLI/MCP parity and never edits hum.yaml, MCP start/stop/remove share session semantics, MCP exposes no follow or unbounded tool, wait keeps its 30s default and exits 2 when no launch arrives, follow starts a daemon only when requested, and no keep-open, force, or hook interface is introduced.
-- [ ] #4 `go test ./integration -run 'Test(DurableFollowAcrossStopStart|FollowBeforeFirstLaunch|RunAttachesToRunning|WaitBeforeStart|RemoveSupervisionSession|UpWithDurableFollowers|FollowerExitsOnDaemonShutdown)' -count=1` exits 0 and proves two-shell workflows end to end: attached run and logs followers remain open across stop, intermediate commands, start and across down/up; a follower opened before any process receives a later run; a second attached run joins a running session; a wait started before another shell's start returns its match; Ctrl+C detaches without stopping the child; remove closes followers and discards retained ad hoc launch state; up remains one-shot and leaves ad hoc followers waiting; and daemon shutdown ends followers with a nonzero exit and message instead of hanging.
-- [ ] #5 `go test ./internal/cli ./internal/skill -run 'Test(LifecycleHelp|ResolvedProjectInstructions)' -count=1` exits 0 and README.md, docs/design.md, docs/coding-agents.md, CLI help, and the bundled skill consistently document durable default following, pre-launch following and waiting, run attaching to running sessions, start of retained stopped records, stop versus remove, Ctrl+C detachment, bounded eviction, daemon-loss exit, unchanged up/down semantics, the stop, intermediate commands, start flow as the default restart-with-work pattern for humans and agents, and that agents use bounded wait/logs rather than --follow; the skill no longer restricts stop to developer requests.
+- [x] #1 `go test ./internal/app ./internal/output -run 'Test.*(Session|Follow|StartStopped|Remove|WaitPreLaunch)' -count=1` exits 0 and proves a name follower survives ordinary stop and natural exit, observes ordered exit/wait/launch boundaries and successor output, cannot miss a rapid relaunch, protects its session from eviction, detaches independently on cancellation, and is closed only by session removal or daemon shutdown; and that wait without --after-cursor on a stopped or never-launched session blocks until the next launch within its deadline, evaluates from that launch cursor, and returns the existing timeout outcome when no launch arrives.
+- [x] #2 `go test ./internal/protocol ./internal/daemon -run 'Test.*(Follow|Start|Remove)' -count=1` exits 0 and proves the versioned protocol supports a race-free name-scoped follow before, during, and between incarnations, including a syntactically valid name that does not resolve; ordinary start/restart/up launches wake followers; stop/down do not close them; remove does; and transport cancellation releases every subscription.
+- [x] #3 `go test ./internal/cli ./internal/mcp -run 'Test.*(Start|Run|Follow|Remove|Wait|LifecycleHelp)' -count=1` exits 0 and proves start is idempotent for running names, relaunches retained stopped resolved and ad hoc records with the specified launch-source/environment rules, absent names still require resolution, attached argv-free run on a running name attaches instead of failing, remove has CLI/MCP parity and never edits hum.yaml, MCP start/stop/remove share session semantics, MCP exposes no follow or unbounded tool, wait keeps its 30s default and exits 2 when no launch arrives, follow starts a daemon only when requested, and no keep-open, force, or hook interface is introduced.
+- [x] #4 `go test ./integration -run 'Test(DurableFollowAcrossStopStart|FollowBeforeFirstLaunch|RunAttachesToRunning|WaitBeforeStart|RemoveSupervisionSession|UpWithDurableFollowers|FollowerExitsOnDaemonShutdown)' -count=1` exits 0 and proves two-shell workflows end to end: attached run and logs followers remain open across stop, intermediate commands, start and across down/up; a follower opened before any process receives a later run; a second attached run joins a running session; a wait started before another shell's start returns its match; Ctrl+C detaches without stopping the child; remove closes followers and discards retained ad hoc launch state; up remains one-shot and leaves ad hoc followers waiting; and daemon shutdown ends followers with a nonzero exit and message instead of hanging.
+- [x] #5 `go test ./internal/cli ./internal/skill -run 'Test(LifecycleHelp|ResolvedProjectInstructions)' -count=1` exits 0 and README.md, docs/design.md, docs/coding-agents.md, CLI help, and the bundled skill consistently document durable default following, pre-launch following and waiting, run attaching to running sessions, start of retained stopped records, stop versus remove, Ctrl+C detachment, bounded eviction, daemon-loss exit, unchanged up/down semantics, the stop, intermediate commands, start flow as the default restart-with-work pattern for humans and agents, and that agents use bounded wait/logs rather than --follow; the skill no longer restricts stop to developer requests.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -95,4 +95,12 @@ AC#4 PASS — go test ./integration -run 'Test(DurableFollowAcrossStopStart|Foll
 AC#5 PASS — go test ./internal/cli ./internal/skill -run 'Test(LifecycleHelp|ResolvedProjectInstructions)' -count=1 exited 0; README.md, docs/design.md, and docs/coding-agents.md were reviewed and updated.
 Full gate PASS — task ci exited 0, including gofmt, vet, staticcheck, all tests, race tests, build, and smoke.
 Modified-file contract deviations: cmd/hum/integration_test.go was required to update the existing built-binary smoke test for intentionally unbounded attached/follow semantics. internal/process/ was required to publish the launch boundary atomically after spawn succeeds but before child output capture begins. The backlog task file is provider-owned execution metadata updated through the backlog CLI.
+
+Independent verifier PASS — all ACs and DOD items passed on HEAD 1dc952b; no remaining actionable defects.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented durable named supervision sessions across process incarnations, including pre-launch attach/wait, retained start semantics, lifecycle boundaries, remove across CLI/MCP, subscriber-aware retention, documentation, and end-to-end coverage.
+<!-- SECTION:FINAL_SUMMARY:END -->
