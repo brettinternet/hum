@@ -2626,6 +2626,17 @@ func TestRemoveSessionClosesFollowerAndDiscardsLaunch(t *testing.T) {
 	}
 }
 
+func TestWaitPreLaunchWithoutLaunchTimesOut(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	got, err := s.Wait(ctx, root, "never-launched", WaitOptions{})
+	if err != nil || got.Outcome != WaitTimedOut || got.Exit != nil {
+		t.Fatalf("never-launched timeout = %#v err=%v", got, err)
+	}
+}
+
 func TestWaitPreLaunchStartsAtNextIncarnation(t *testing.T) {
 	root := makeProject(t, false)
 	s := testSupervisor(t, Options{})
@@ -2647,11 +2658,5 @@ func TestWaitPreLaunchStartsAtNextIncarnation(t *testing.T) {
 	}
 	if got := <-result; got.Outcome != WaitMatched {
 		t.Fatalf("pre-launch wait = %#v, want matched", got)
-	}
-	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer timeoutCancel()
-	got, err := s.Wait(timeoutCtx, root, "never-launched", WaitOptions{})
-	if err != nil || got.Outcome != WaitTimedOut || got.Exit != nil {
-		t.Fatalf("never-launched timeout = %#v err=%v", got, err)
 	}
 }
