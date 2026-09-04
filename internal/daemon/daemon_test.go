@@ -1202,14 +1202,16 @@ func TestRemoveAndShutdown(t *testing.T) {
 		t.Cleanup(func() { _ = client.Close() })
 		descendantPath := filepath.Join(root, "descendant.pid")
 		termPath := filepath.Join(root, "descendant.term")
+		readyPath := filepath.Join(root, "descendant.ready")
 		script := `( 
 			trap '' HUP
 			trap 'printf term > "$2"' TERM
+			printf ready > "$3"
 			while :; do sleep 1; done
 		) &
 		printf '%s' "$!" > "$1"
 		exit 0`
-		managed, err := client.Start(context.Background(), testStartRequest(root, "active", testShell(t), "-c", script, "sh", descendantPath, termPath))
+		managed, err := client.Start(context.Background(), testStartRequest(root, "active", testShell(t), "-c", script, "sh", descendantPath, termPath, readyPath))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1226,6 +1228,10 @@ func TestRemoveAndShutdown(t *testing.T) {
 			if daemonTestProcessGroupAlive(managed.PGID) {
 				_ = syscall.Kill(-managed.PGID, syscall.SIGKILL)
 			}
+		})
+		waitForDaemonTest(t, 3*time.Second, "descendant signal handlers", func() bool {
+			_, err := os.Stat(readyPath)
+			return err == nil
 		})
 		waitForDaemonTest(t, 3*time.Second, "shell leader exit", func() bool {
 			return !processAlive(managed.PID)
