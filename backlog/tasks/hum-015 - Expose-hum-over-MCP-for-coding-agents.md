@@ -1,10 +1,11 @@
 ---
 id: HUM-015
 title: Expose the project process lifecycle over MCP
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-02 20:13'
-updated_date: '2026-09-03 03:18'
+updated_date: '2026-09-04 01:10'
 labels:
   - cli
   - protocol
@@ -45,19 +46,46 @@ Modified-file contract: internal/mcp/, internal/cli/, integration/, internal/tes
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go list -deps ./internal/mcp | rg '/internal/(app|process|output)$'` exits 1 and `go test ./internal/mcp -run TestNoInProcessSupervisor -count=1` exits 0, proving MCP uses the daemon client rather than constructing a second supervisor.
-- [ ] #2 `go test ./integration -run TestMCPResolvedAndAdHocLifecycle -count=1` exits 0 and proves a stdio client can start explicit YAML and zero-config definitions, then discover and operate on an ad hoc process launched as `hum run transient --detach -- <fixture argv>`: bounded logs, status, wait, restart with unchanged argv, and stop all match corresponding CLI JSON while daemon restart makes the ad hoc definition unavailable.
-- [ ] #3 `go test ./internal/cli -run TestMCPHelp -count=1` exits 0 and proves registration documentation/help names stdio transport, one-time agent registration, required project_root on every tool, the resolved start/up versus existing-record control boundary, ad hoc CLI handoff and daemon-loss limitation, deterministic argv-based environment activation for explicit definitions, and the absence of run/serve/shutdown MCP tools.
-- [ ] #4 `go test ./internal/mcp -run 'TestToolSchemas|TestToolValidation|TestErrorMapping' -count=1` exits 0 and proves the exact nine tools, absolute existing project_root validation, resolved-name validation only for start/up, existing-record validation for status/logs/wait/restart/stop, bounded logs/wait inputs with launch-cursor and timeout defaults, stable source-bearing result shapes including `readiness`, and typed unavailable/not-found errors.
-- [ ] #5 `go test ./internal/mcp -run 'TestStartUp|TestDown|TestObservationTools|TestAdHocProcessTools' -count=1` exits 0 with an injected daemon client and proves start/up auto-start, wait by default, and accept only resolved definitions, down stops every project record and returns per-name results, list merges resolved and ad hoc records, status/logs/wait/stop accept either record kind, resolved restart uses the current definition and server environment, retained ad hoc restart uses recorded argv/cwd/environment, evicted ad hoc restart is not found, and observation/control tools never create a daemon or expose recorded environment.
+- [x] #1 `go list -deps ./internal/mcp | rg '/internal/(app|process|output)$'` exits 1 and `go test ./internal/mcp -run TestNoInProcessSupervisor -count=1` exits 0, proving MCP uses the daemon client rather than constructing a second supervisor.
+- [x] #2 `go test ./integration -run TestMCPResolvedAndAdHocLifecycle -count=1` exits 0 and proves a stdio client can start explicit YAML and zero-config definitions, then discover and operate on an ad hoc process launched as `hum run transient --detach -- <fixture argv>`: bounded logs, status, wait, restart with unchanged argv, and stop all match corresponding CLI JSON while daemon restart makes the ad hoc definition unavailable.
+- [x] #3 `go test ./internal/cli -run TestMCPHelp -count=1` exits 0 and proves registration documentation/help names stdio transport, one-time agent registration, required project_root on every tool, the resolved start/up versus existing-record control boundary, ad hoc CLI handoff and daemon-loss limitation, deterministic argv-based environment activation for explicit definitions, and the absence of run/serve/shutdown MCP tools.
+- [x] #4 `go test ./internal/mcp -run 'TestToolSchemas|TestToolValidation|TestErrorMapping' -count=1` exits 0 and proves the exact nine tools, absolute existing project_root validation, resolved-name validation only for start/up, existing-record validation for status/logs/wait/restart/stop, bounded logs/wait inputs with launch-cursor and timeout defaults, stable source-bearing result shapes including `readiness`, and typed unavailable/not-found errors.
+- [x] #5 `go test ./internal/mcp -run 'TestStartUp|TestDown|TestObservationTools|TestAdHocProcessTools' -count=1` exits 0 with an injected daemon client and proves start/up auto-start, wait by default, and accept only resolved definitions, down stops every project record and returns per-name results, list merges resolved and ad hoc records, status/logs/wait/stop accept either record kind, resolved restart uses the current definition and server environment, retained ad hoc restart uses recorded argv/cwd/environment, evicted ad hoc restart is not found, and observation/control tools never create a daemon or expose recorded environment.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add an internal/mcp stdio server with the exact nine typed tools, schema validation, stable structured results, MCP error mapping, and an injected protocol-shaped lifecycle backend that imports no supervisor packages.
+2. Wire hum mcp in internal/cli through an adapter over the existing daemon.Client and daemon auto-start/version-replacement helpers, preserving resolved-definition versus existing-record semantics and ad hoc restart retention.
+3. Add focused internal/mcp, internal/cli, and integration coverage for schemas, lifecycle semantics, stdio interoperability, and the no-supervisor dependency boundary.
+4. Document agent registration, required absolute project_root, lifecycle boundaries, environment activation, and daemon-loss limits in README.md and docs/design.md.
+5. Run each acceptance command, task ci, independent verification, record evidence, commit, merge to main, and clean the worktree.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC#1 PASS: `go list -deps ./internal/mcp | rg '/internal/(app|process|output)$'` exited 1 with no matches; `go test ./internal/mcp -run TestNoInProcessSupervisor -count=1` passed.
+AC#2 PASS: `go test ./integration -run TestMCPResolvedAndAdHocLifecycle -count=1` passed, covering explicit, zero-config, and ad hoc lifecycle parity plus daemon-restart loss.
+AC#3 PASS: `go test ./internal/cli -run TestMCPHelp -count=1` passed with the required registration, boundary, environment, and non-tool documentation.
+AC#4 PASS: `go test ./internal/mcp -run 'TestToolSchemas|TestToolValidation|TestErrorMapping' -count=1` passed for nine schemas, validation, stable result metadata, and typed errors.
+AC#5 PASS: `go test ./internal/mcp -run 'TestStartUp|TestDown|TestObservationTools|TestAdHocProcessTools' -count=1` passed for injected-client lifecycle behavior, readiness outcomes, ad hoc retention, and no-daemon controls.
+Final commit 8fdf637: `task ci` passed after commit. `task check:staged` passed before commit. Independent verifier returned PASS for AC#1-AC#5; adversarial reviewer returned PASS with no remaining actionable defect. Diff is confined to README.md, docs/design.md, integration/, internal/cli/, and internal/mcp/; no tests were deleted, skipped, or weakened and no protected gate file changed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented `hum mcp` as a stdio MCP server exposing nine daemon-backed lifecycle tools without a second supervisor. Added CLI wiring, schemas and validation, readiness/collision/error semantics, explicit/zero-config/ad hoc integration coverage, and registration/design documentation. Verified commit 8fdf637 with every acceptance command, `task ci`, `task check:staged`, independent AC#1-AC#5 verification, and adversarial review.
+<!-- SECTION:FINAL_SUMMARY:END -->
