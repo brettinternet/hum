@@ -192,6 +192,30 @@ func TestToolSchemas(t *testing.T) {
 			t.Errorf("output schemas omit %s", requiredField)
 		}
 	}
+	statusProperties := defs[4].OutputSchema["properties"].(map[string]any)
+	exited := protocol.Process{
+		Name: "api", Root: "/tmp", Cwd: "/tmp", Argv: []string{"api"}, State: "exited",
+		Exit: &protocol.Exit{Code: 3, Time: time.Now(), Error: "failed"}, ExitCode: 3, ExitedAt: time.Now(),
+	}
+	encoded, err := json.Marshal(exited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var processFields map[string]any
+	if err := json.Unmarshal(encoded, &processFields); err != nil {
+		t.Fatal(err)
+	}
+	for field := range processFields {
+		if _, ok := statusProperties[field]; !ok {
+			t.Errorf("status schema rejects serialized process field %q", field)
+		}
+	}
+	exitProperties := statusProperties["exit"].(map[string]any)["properties"].(map[string]any)
+	for _, field := range []string{"code", "time", "error"} {
+		if _, ok := exitProperties[field]; !ok {
+			t.Errorf("exit schema omits %q", field)
+		}
+	}
 	var in bytes.Buffer
 	for _, line := range []string{`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`} {
 		in.WriteString(line + "\n")
@@ -358,6 +382,14 @@ func TestStartUp(t *testing.T) {
 	immediateValue, err := immediateServer.callTool(context.Background(), "start", args(immediateRoot, "name", "fast"))
 	if err != nil || immediateValue.(launchResult).Outcome != "started" || len(immediateClient.waits) != 0 {
 		t.Fatalf("ready-before-wait start = %#v waits=%#v err=%v", immediateValue, immediateClient.waits, err)
+	}
+	matchClient := &fakeClient{keepStarting: true, processes: map[string]protocol.Process{
+		"api": {Name: "api", Source: "hum.yaml", Root: root, State: "running", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "new"}},
+	}}
+	initial := protocol.Process{Name: "api", Source: "hum.yaml", Root: root, State: "running", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}}
+	current, outcome, err := s.waitForReadiness(context.Background(), matchClient, Resolution{Root: root}, Definition{Name: "api", Ready: &protocol.ReadinessConfig{Match: "new"}}, initial, "already_running", defaultTimeoutMS)
+	if err != nil || outcome != "already_running" || current.Readiness.Match != "new" || len(matchClient.waits) != 0 {
+		t.Fatalf("changed readiness match = %#v outcome=%q waits=%#v err=%v", current, outcome, matchClient.waits, err)
 	}
 	timeoutServer, timeoutRoot, _ := newTestServer(t, []Definition{{Name: "slow", Source: "hum.yaml", Argv: []string{"slow"}, Cwd: "/tmp", Ready: ready}}, timeoutClient)
 	timeoutValue, err := timeoutServer.callTool(context.Background(), "start", args(timeoutRoot, "name", "slow"))

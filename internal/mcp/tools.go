@@ -140,6 +140,11 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"time":   map[string]any{"type": "string"},
 		"match":  map[string]any{"type": "string"},
 	}, "state")
+	exit := objectSchema(map[string]any{
+		"code":  map[string]any{"type": "integer"},
+		"time":  map[string]any{"type": "string"},
+		"error": map[string]any{"type": "string"},
+	}, "code", "time")
 	process := objectSchema(map[string]any{
 		"name": map[string]any{"type": "string"}, "source": map[string]any{"type": "string"},
 		"root": map[string]any{"type": "string"}, "pid": map[string]any{"type": "integer"},
@@ -147,6 +152,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"argv":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"start": map[string]any{"type": "string"}, "launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 		"next_cursor": map[string]any{"type": "integer", "minimum": 0}, "state": map[string]any{"type": "string"},
+		"exit": exit, "exit_code": map[string]any{"type": "integer"}, "exited_at": map[string]any{"type": "string"},
 		"restart_count": map[string]any{"type": "integer", "minimum": 0}, "readiness": readiness,
 	}, "name", "source", "root", "cwd", "argv", "state", "launch_cursor")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
@@ -365,6 +371,10 @@ func launchOutcome(already bool, definition Definition) string {
 }
 
 func (s *Server) waitForReadiness(ctx context.Context, client Client, resolution Resolution, definition Definition, process protocol.Process, initial string, timeout int64) (protocol.Process, string, error) {
+	recordedMatch := definition.Ready.Match
+	if process.Readiness != nil && process.Readiness.Match != "" {
+		recordedMatch = process.Readiness.Match
+	}
 	readCurrent := func() (protocol.Process, string, bool, error) {
 		current, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: process.Name, Cwd: resolution.Root})
 		if getErr != nil {
@@ -374,6 +384,9 @@ func (s *Server) waitForReadiness(ctx context.Context, client Client, resolution
 			return current, "exited_before_ready", true, nil
 		}
 		if current.Readiness == nil || current.Readiness.State == protocol.ReadinessReady || current.Readiness.State == protocol.ReadinessRunningUnverified {
+			return current, initial, true, nil
+		}
+		if current.Readiness.State != protocol.ReadinessStarting || current.Readiness.Match != recordedMatch {
 			return current, initial, true, nil
 		}
 		return current, "", false, nil
@@ -386,7 +399,7 @@ func (s *Server) waitForReadiness(ctx context.Context, client Client, resolution
 		return current, outcome, nil
 	}
 	after := process.LaunchCursor
-	waited, err := client.Wait(ctx, protocol.WaitRequest{Op: protocol.OpWait, Name: process.Name, Cwd: resolution.Root, After: &after, Match: definition.Ready.Match, TimeoutMS: timeout})
+	waited, err := client.Wait(ctx, protocol.WaitRequest{Op: protocol.OpWait, Name: process.Name, Cwd: resolution.Root, After: &after, Match: recordedMatch, TimeoutMS: timeout})
 	if err != nil {
 		return protocol.Process{}, "", err
 	}
