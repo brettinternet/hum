@@ -40,9 +40,18 @@ Run a one-off named process without a manifest:
 hum run preview -- bun run preview
 ```
 
+## Install
+
+Install the latest macOS or Linux release with [mise](https://mise.jdx.dev/):
+
+```toml
+[tools]
+"github:brettinternet/hum" = "latest"
+```
+
 ## Build
 
-macOS and Linux are supported. Install [mise](https://mise.jdx.dev/), then:
+Install mise, then:
 
 ```sh
 mise install

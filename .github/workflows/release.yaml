@@ -1,0 +1,56 @@
+---
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      - name: Run CI
+        run: task ci
+
+      - name: Build release archives
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          version="${TAG#v}"
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p dist
+
+          for target in linux/amd64/x64 linux/arm64/arm64 darwin/amd64/x64 darwin/arm64/arm64; do
+            IFS=/ read -r goos goarch asset_arch <<< "$target"
+            case "$goos" in
+              darwin) asset_os=macos ;;
+              *) asset_os="$goos" ;;
+            esac
+            archive="hum-${version}-${asset_os}-${asset_arch}.tar.gz"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" mise exec go -- \
+              go build -trimpath \
+                -ldflags "-s -w -X main.buildVersion=${version} -X main.buildTime=${build_time}" \
+                -o dist/hum ./cmd/hum
+            tar -C dist -czf "dist/$archive" hum
+          done
+
+          cd dist
+          sha256sum ./*.tar.gz > checksums.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/checksums.txt
+          --verify-tag --generate-notes --title "${GITHUB_REF_NAME}"
