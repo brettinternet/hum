@@ -18,6 +18,7 @@ root.
 ## CLI
 
 ```text
+hum init [--json]
 hum serve [--daemon]
 hum start <name>... [--no-wait] [--timeout DURATION] [--json]
 hum up [--no-wait] [--timeout DURATION] [--json]
@@ -44,6 +45,13 @@ success 0. Attached `run --json` still streams raw child output, and
 `logs --json --follow` emits bounded NDJSON events. A definition without a
 readiness expression, including every discovered definition, reports
 `running_unverified` and is never reported ready.
+`hum init` is a non-launching manifest scaffold operation. It resolves the
+nearest project root and the same zero-config candidates as `up`, then writes
+only when `hum.yaml` is absent. Human output has `path:`, `outcome:`, and
+`next_command: hum up` lines; `--json` emits `path`, `outcome`, `next_command`,
+and `candidates`. Successful outcomes are `generated` for one candidate and
+`template` for no or ambiguous candidates. Existing manifests and root,
+configuration, introspection, or write errors exit 1.
 
 `run <name>` without an argv uses the current resolved project definition when
 the name resolves and keeps attached-run semantics; this includes discovered
@@ -179,21 +187,32 @@ sorted lexically by name before the CLI consumes them.
 The manifest contains process definitions only. It has no runtime settings,
 dependency ordering, ports or HTTP health checks, automatic crash
 restart/backoff, environment literals, or environment files.
+`hum init` generates only this strict version-1 shape and uses exclusive
+creation, so it never overwrites an existing `hum.yaml`, including a dangling
+symlink or other non-regular path. For one candidate, the file contains that
+candidate under its discovered name with its exact argv, a source comment, and
+a commented `ready` example with `match` and `timeout`. For no or ambiguous
+candidates, the file is a strict-parser-valid commented template with exactly
+one example entry, a reason no definition was generated, and every detected
+source plus exact argv. Init never executes candidate bodies, starts a daemon,
+or infers readiness, cwd, or multiple processes.
 
 ## Bounded zero-config resolution
 
 When `hum.yaml` is absent, resolution inspects every supported root-level
 convention without launching a development process and collects all qualifying
 candidates: resolution succeeds only with exactly one candidate. No candidates
-return a typed, actionable `NoCandidateError` (wrapping
-`ErrNoCandidate`) naming `hum.yaml` and the supported conventions; multiple
-candidates return an `AmbiguityError` (wrapping `ErrAmbiguous`) listing every
-qualifying source. A malformed root file produces a `ConfigurationError`
-(wrapping `ErrConfiguration`), and malformed native machine-readable output or
-a failed required introspection produces an `IntrospectionError` (wrapping
+return a typed, actionable `NoCandidateError` (wrapping `ErrNoCandidate`) that
+names `hum.yaml`, the supported conventions, and `hum init` as draft guidance;
+multiple candidates return an `AmbiguityError` (wrapping `ErrAmbiguous`) listing
+every qualifying source and directing the user to `hum init` for a commented
+template. A malformed root file produces a `ConfigurationError` (wrapping
+`ErrConfiguration`), and malformed native machine-readable output or a failed
+required introspection produces an `IntrospectionError` (wrapping
 `ErrIntrospection`), not an absent source or a reason to fall through. These
 errors are `errors.As`-compatible. A command-backed runner whose executable is
-unavailable on `PATH` is skipped.
+unavailable on `PATH` is skipped. Init preserves these strict discovery errors
+and does not write a successful file when they occur.
 
 Every candidate is normalized to the single name `dev`, an absolute cwd equal
 to the project root, no readiness expression, and one of these exact argv
@@ -353,10 +372,9 @@ language-level guesses such as bare `go run` or `cargo run`, framework launch
 commands other than a confirmed `mix phx.server`, Docker Compose inference,
 scanning workspace packages or nested manifests, combining several inferred
 processes, inferring ports, readiness, or dependencies, or executing candidate
-commands to see which succeeds. It also does not include manifest generation
-(`init`), a shell-only skill, arbitrary-command MCP tools, MCP HTTP transport,
-authentication, remote access, automatic crash restart/backoff, or environment
-literals/files.
+commands to see which succeeds. It also does not include a shell-only skill,
+arbitrary-command MCP tools, MCP HTTP transport, authentication, remote access,
+automatic crash restart/backoff, or environment literals/files.
 `down` is part of the current CLI surface, not a discovery feature; it reuses the
 daemon boundary and exact argv model described above rather than defining another
 supervisor.

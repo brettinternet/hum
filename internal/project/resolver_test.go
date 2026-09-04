@@ -636,6 +636,9 @@ func TestDiscoveryAmbiguity(t *testing.T) {
 				t.Fatalf("error = %v, want source %q", err, source)
 			}
 		}
+		if !strings.Contains(err.Error(), "hum init") {
+			t.Fatalf("error = %v, want hum init guidance", err)
+		}
 	})
 
 	t.Run("one candidate succeeds", func(t *testing.T) {
@@ -657,7 +660,7 @@ func TestDiscoveryAmbiguity(t *testing.T) {
 		if !errors.As(err, &noCandidate) {
 			t.Fatalf("error = %v, want NoCandidateError", err)
 		}
-		for _, text := range append([]string{"hum.yaml"}, supportedDiscoveryConventions...) {
+		for _, text := range append([]string{"hum.yaml", "hum init"}, supportedDiscoveryConventions...) {
 			if !strings.Contains(err.Error(), text) {
 				t.Fatalf("error = %v, want actionable detail %q", err, text)
 			}

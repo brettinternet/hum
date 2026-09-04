@@ -49,7 +49,7 @@ func (e *NoCandidateError) Error() string {
 	if len(conventions) == 0 {
 		conventions = supportedDiscoveryConventions
 	}
-	return fmt.Sprintf("%s in %s: hum.yaml is absent; supported conventions: %s", ErrNoCandidate, e.Root, strings.Join(conventions, ", "))
+	return fmt.Sprintf("%s in %s: hum.yaml is absent; run hum init to create one; supported conventions: %s", ErrNoCandidate, e.Root, strings.Join(conventions, ", "))
 }
 
 func (e *NoCandidateError) Unwrap() error { return ErrNoCandidate }
@@ -66,7 +66,7 @@ func (e *AmbiguityError) Error() string {
 	if e == nil {
 		return ErrAmbiguous.Error()
 	}
-	return fmt.Sprintf("%s in %s: sources %s qualify for dev", ErrAmbiguous, e.Root, strings.Join(e.Sources, ", "))
+	return fmt.Sprintf("%s in %s: sources %s qualify for dev; run hum init to choose one", ErrAmbiguous, e.Root, strings.Join(e.Sources, ", "))
 }
 
 func (e *AmbiguityError) Unwrap() error { return ErrAmbiguous }
