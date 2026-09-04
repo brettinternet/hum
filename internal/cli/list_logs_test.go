@@ -183,21 +183,20 @@ func TestLogsFollow(t *testing.T) {
 		t.Fatalf("human evicted logs stderr = %q, want next-cursor and truncation trailer", humanErr)
 	}
 
-	followOutput, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "overflow", "--follow", "--json", "--after-cursor", "0", "--limit-bytes", "16")
+	followContext, cancelFollow := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	followOutput, stderr, err := hum006ListLogsRunAt(t, project, followContext, "logs", "overflow", "--follow", "--json", "--after-cursor", "0", "--limit-bytes", "16")
+	cancelFollow()
 	if err != nil {
 		t.Fatalf("bounded eviction follow: %v (stderr=%q)", err, stderr)
 	}
 	followObjects := hum006ListLogsDecodeJSONLines(t, followOutput)
 	var outputEvents, evictionEvents int
-	var sawMore, sawExit bool
+	var sawMore bool
 	for _, event := range followObjects {
 		if event["op"] != "event" {
 			t.Errorf("follow NDJSON event = %#v, want op=event", event)
 		}
 		typ, _ := event["type"].(string)
-		if typ == "exit" {
-			sawExit = true
-		}
 		if hum006ListLogsBool(event, "more") {
 			sawMore = true
 		}
@@ -232,9 +231,6 @@ func TestLogsFollow(t *testing.T) {
 	if evictionEvents == 0 {
 		t.Fatalf("follow NDJSON = %q, want eviction reporting", followOutput)
 	}
-	if !sawExit {
-		t.Fatalf("follow NDJSON = %q, want terminal exit event", followOutput)
-	}
 	if len(followObjects) < 2 {
 		t.Fatalf("follow NDJSON = %q, want bounded output plus terminal event", followOutput)
 	}
@@ -248,12 +244,12 @@ func TestLogsFollow(t *testing.T) {
 			t.Fatalf("late-follow managed exit code = %d, want 29", completed.ExitCode)
 		}
 
-		followContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		followContext, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		followOutput, stderr, err := hum006ListLogsRunAt(t, project, followContext, "logs", "late", "--follow", "--json")
 		timedOut := followContext.Err() != nil
 		cancel()
-		if timedOut {
-			t.Fatalf("late logs --follow did not terminate: stdout=%q stderr=%q err=%v", followOutput, stderr, err)
+		if !timedOut {
+			t.Fatalf("late logs --follow terminated instead of waiting: stdout=%q stderr=%q err=%v", followOutput, stderr, err)
 		}
 		if err != nil {
 			t.Fatalf("late logs --follow: %v (stderr=%q)", err, stderr)
@@ -262,25 +258,9 @@ func TestLogsFollow(t *testing.T) {
 		if !hum006ListLogsContainsString(hum006ListLogsAllEventTexts(t, events), "late-follow\n") {
 			t.Fatalf("late logs --follow events = %#v, missing retained output", events)
 		}
-		var sawExit bool
-		for _, event := range events {
-			if typ, _ := event["type"].(string); typ != "exit" {
-				continue
-			}
-			sawExit = true
-			exit, ok := event["exit"].(map[string]any)
-			if !ok {
-				t.Fatalf("late exit event = %#v, missing exit payload", event)
-			}
-			if code, ok := hum006ListLogsUint(exit, "code"); !ok || code != 29 {
-				t.Fatalf("late exit event = %#v, want code 29", event)
-			}
-		}
-		if !sawExit {
-			t.Fatalf("late logs --follow events = %#v, missing terminal exit event", events)
-		}
-
-		humanOutput, humanErr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "late", "--follow")
+		humanContext, cancelHuman := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		humanOutput, humanErr, err := hum006ListLogsRunAt(t, project, humanContext, "logs", "late", "--follow")
+		cancelHuman()
 		if err != nil {
 			t.Fatalf("late human logs --follow: %v (stderr=%q)", err, humanErr)
 		}
@@ -301,7 +281,9 @@ func TestLogsFollow(t *testing.T) {
 	multiResults := make(chan hum006ListLogsCommandResult, 2)
 	for range 2 {
 		go func() {
-			stdout, stderr, err := hum006ListLogsRunHere(context.Background(), "logs", "multi", "--follow", "--json")
+			followCtx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+			defer cancel()
+			stdout, stderr, err := hum006ListLogsRunHere(followCtx, "logs", "multi", "--follow", "--json")
 			multiResults <- hum006ListLogsCommandResult{stdout: stdout, stderr: stderr, err: err}
 		}()
 	}

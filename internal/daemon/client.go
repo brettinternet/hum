@@ -42,6 +42,7 @@ type WaitRequest = protocol.WaitRequest
 type SignalRequest = protocol.SignalRequest
 type StopRequest = protocol.StopRequest
 type RestartRequest = protocol.RestartRequest
+type RemoveRequest = protocol.RemoveRequest
 type ShutdownRequest = protocol.ShutdownRequest
 
 // Dial connects to a socket, performs the mandatory hello, and returns the
@@ -268,7 +269,21 @@ func (c *Client) Follow(ctx context.Context, req FollowRequest) (*Follower, erro
 		_ = followerClient.Close()
 		return nil, err
 	}
-	return &Follower{client: followerClient}, nil
+	follower := &Follower{client: followerClient}
+	response, err := followerClient.readResponse(ctx)
+	if err != nil {
+		_ = follower.Close()
+		return nil, err
+	}
+	if response.Error != nil {
+		_ = follower.Close()
+		return nil, wireErrorToError(response.Error)
+	}
+	if response.Type != string(protocol.EventReady) {
+		_ = follower.Close()
+		return nil, fmt.Errorf("daemon follow response omitted ready event")
+	}
+	return follower, nil
 }
 
 // Follower represents one bounded follow stream. Next returns retained output,
@@ -317,6 +332,11 @@ func (c *Client) Signal(ctx context.Context, req SignalRequest) error {
 
 func (c *Client) Stop(ctx context.Context, req StopRequest) error {
 	_, err := c.roundTrip(ctx, wireRequest{Op: "stop", Name: req.Name, Cwd: req.Cwd})
+	return err
+}
+
+func (c *Client) Remove(ctx context.Context, req RemoveRequest) error {
+	_, err := c.roundTrip(ctx, wireRequest{Op: "remove", Name: req.Name, Cwd: req.Cwd})
 	return err
 }
 

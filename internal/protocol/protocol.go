@@ -11,7 +11,7 @@ import (
 
 // Version is the current private protocol version. The hello exchange carries
 // this value on every connection.
-const Version = 5
+const Version = 6
 
 // CurrentVersion is an explicit alias for Version for callers that prefer a
 // descriptive name.
@@ -44,6 +44,8 @@ const (
 	OpStop Operation = "stop"
 	// OpRestart stops and relaunches one supervised process.
 	OpRestart Operation = "restart"
+	// OpRemove stops and discards one supervision session.
+	OpRemove Operation = "remove"
 	// OpShutdown retires the daemon.
 	OpShutdown Operation = "shutdown"
 	// OpEvent marks a streaming event response. It is not a client request.
@@ -61,6 +63,7 @@ const (
 	OperationSignal   = OpSignal
 	OperationStop     = OpStop
 	OperationRestart  = OpRestart
+	OperationRemove   = OpRemove
 	OperationShutdown = OpShutdown
 	OperationEvent    = OpEvent
 )
@@ -79,7 +82,7 @@ const (
 
 var knownOperations = map[Operation]struct{}{
 	OpHello: {}, OpStart: {}, OpList: {}, OpGet: {}, OpOutput: {},
-	OpFollow: {}, OpWait: {}, OpSignal: {}, OpStop: {}, OpRestart: {}, OpShutdown: {},
+	OpFollow: {}, OpWait: {}, OpSignal: {}, OpStop: {}, OpRestart: {}, OpRemove: {}, OpShutdown: {},
 }
 
 // IsKnown reports whether op is one of the protocol operations.
@@ -575,6 +578,41 @@ func (r *StopRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// RemoveRequest asks the daemon to stop and discard one supervision session.
+type RemoveRequest struct {
+	Op   Operation `json:"op"`
+	Name string    `json:"name"`
+	Cwd  string    `json:"cwd"`
+}
+
+func NewRemoveRequest(name, cwd string) RemoveRequest {
+	return RemoveRequest{Op: OpRemove, Name: name, Cwd: cwd}
+}
+
+func (r RemoveRequest) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Op   Operation `json:"op"`
+		Name string    `json:"name"`
+		Cwd  string    `json:"cwd"`
+	}{Op: OpRemove, Name: r.Name, Cwd: r.Cwd})
+}
+
+func (r *RemoveRequest) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Op   Operation `json:"op"`
+		Name string    `json:"name"`
+		Cwd  string    `json:"cwd"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.Op != "" && wire.Op != OpRemove {
+		return &UnknownOperationError{Operation: wire.Op}
+	}
+	r.Op, r.Name, r.Cwd = OpRemove, wire.Name, wire.Cwd
+	return nil
+}
+
 // RestartRequest asks the daemon to restart one process. By default it uses
 // the process's retained launch specification. Update requests replace that
 // specification atomically before relaunching; Env is request-only and is
@@ -907,6 +945,13 @@ type RestartResponse struct {
 	OK      bool       `json:"ok"`
 	Process *Process   `json:"process,omitempty"`
 	Error   *WireError `json:"error,omitempty"`
+}
+
+// RemoveResponse reports completed runtime-session removal.
+type RemoveResponse struct {
+	Op    Operation  `json:"op"`
+	OK    bool       `json:"ok"`
+	Error *WireError `json:"error,omitempty"`
 }
 
 // NewRestartResponse builds a successful restart response.

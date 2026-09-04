@@ -17,6 +17,7 @@ import (
 	"hum/internal/app"
 	"hum/internal/daemon"
 	"hum/internal/output"
+	"hum/internal/project"
 	"hum/internal/protocol"
 	"hum/internal/skill"
 
@@ -218,6 +219,19 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 		},
 		{
+			Name:      "remove",
+			Usage:     "remove one or more supervision sessions",
+			ArgsUsage: "NAME...",
+			Description: "Remove stops each running incarnation, closes attached followers, and discards retained output and launch state. " +
+				"It changes runtime state only and never edits hum.yaml.",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
+			},
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return removeCommand(ctx, cmd, version, buildTime, writer)
+			},
+		},
+		{
 			Name:      "shutdown",
 			Usage:     "shut down the hum daemon",
 			ArgsUsage: "",
@@ -385,30 +399,12 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
-	var manifest manifestState
-	if len(argv) == 0 {
-		manifest, err = loadManifest(cwd)
-	} else {
-		manifest, err = loadManifestOrEmpty(cwd)
-	}
+	manifest, err := loadManifestOrEmpty(cwd)
 	if err != nil {
 		return err
 	}
 	definition, declared := manifest.byName[name]
-	launchCwd := cwd
-	lookupCwd := cwd
-	source := "ad_hoc"
-	var ready *protocol.ReadinessConfig
-	if len(argv) == 0 {
-		if !declared {
-			return errors.New("run requires a command after --")
-		}
-		argv = append([]string(nil), definition.Argv...)
-		launchCwd = definition.Cwd
-		lookupCwd = manifest.root
-		source = definition.Source
-		ready = readinessConfig(definition)
-	} else if declared {
+	if len(argv) != 0 && declared {
 		return fmt.Errorf("process %q is declared in hum.yaml; use hum start %s", name, name)
 	}
 	client, err := runDaemonClient(ctx, cfg)
@@ -416,63 +412,76 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return err
 	}
 	defer client.Close()
-	signals := notifyFollowSignals()
-	defer signal.Stop(signals)
-	process, err := client.Start(ctx, daemon.StartRequest{Name: name, Source: source, Root: manifestRootForLaunch(source, manifest.root), Argv: argv, Cwd: launchCwd, Env: os.Environ(), Ready: ready})
-	if err != nil {
-		if isNameInUse(err) || errors.Is(err, app.ErrNameInUse) {
-			return fmt.Errorf("%w; watch it with hum logs %s --follow", err, name)
+
+	launch := func() (app.Process, error) {
+		if len(argv) != 0 {
+			return client.Start(ctx, daemon.StartRequest{Name: name, Source: "ad_hoc", Argv: argv, Cwd: cwd, Env: os.Environ()})
 		}
-		return err
+		if declared {
+			return client.Start(ctx, daemon.StartRequest{Name: name, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: os.Environ(), Ready: readinessConfig(definition)})
+		}
+		return client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root})
 	}
+
 	if cmd.Bool("detach") {
-		result := runResult{
-			Name:   process.Name,
-			PID:    process.PID,
-			Cursor: protocol.Cursor(process.LaunchCursor),
+		if len(argv) == 0 && !declared {
+			current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+			if getErr != nil || len(current.Argv) == 0 {
+				return errors.New("run requires a command after --")
+			}
 		}
+		process, startErr := launch()
+		if startErr != nil {
+			if isNameInUse(startErr) || errors.Is(startErr, app.ErrNameInUse) {
+				return fmt.Errorf("%w; watch it with hum logs %s --follow", startErr, name)
+			}
+			return startErr
+		}
+		result := runResult{Name: process.Name, PID: process.PID, Cursor: protocol.Cursor(process.LaunchCursor)}
 		if process.Source != "" && process.Source != "ad_hoc" {
-			result.Source = process.Source
-			result.Argv = append([]string(nil), process.Argv...)
-			result.Outcome = "started"
-			if ready == nil {
-				result.Outcome = "running_unverified"
-				result.Readiness = "running_unverified"
-			} else if process.Readiness != nil {
+			result.Source, result.Argv, result.Outcome = process.Source, append([]string(nil), process.Argv...), "started"
+			if process.Readiness == nil || process.Readiness.State == app.ReadinessRunningUnverified {
+				result.Outcome, result.Readiness = "running_unverified", "running_unverified"
+			} else {
 				result.Readiness = process.Readiness.State
-				if process.Readiness.Cursor != nil {
-					cursor := protocol.Cursor(*process.Readiness.Cursor)
-					result.ReadyCursor = &cursor
-				}
 			}
 		}
 		if cmd.Bool("json") {
 			return encodeJSON(writer, result)
 		}
-		if result.Source == "" {
-			_, err := fmt.Fprintf(writer, "started %s (PID %d, cursor %d)\n", process.Name, process.PID, process.LaunchCursor)
-			return err
-		}
-		_, err := fmt.Fprintf(writer,
-			"started %s (PID %d, cursor %d, source=%s, argv=%s, outcome=%s, readiness=%s)\n",
-			process.Name, process.PID, process.LaunchCursor, result.Source, shellJoin(result.Argv),
-			result.Outcome, result.Readiness)
+		_, err := fmt.Fprintf(writer, "started %s (PID %d, cursor %d)\n", process.Name, process.PID, process.LaunchCursor)
 		return err
 	}
-	followRequest := daemon.FollowRequest{
-		Name:       name,
-		Cwd:        lookupCwd,
-		Stream:     protocol.StreamBoth,
-		MaxEntries: cfg.ReadEntries,
-		MaxBytes:   int(cfg.ReadBytes),
-	}
-	follower, err := client.Follow(context.Background(), followRequest)
+
+	signals := notifyFollowSignals()
+	defer signal.Stop(signals)
+	follower, err := client.Follow(context.Background(), daemon.FollowRequest{Name: name, Cwd: manifest.root, Stream: protocol.StreamBoth, MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes)})
 	if err != nil {
 		return err
 	}
 	defer follower.Close()
-	interrupts := 0
-	exitCode, exited, err := followLoop(ctx, follower, signals, func(event output.Event) error {
+
+	current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+	shouldLaunch := len(argv) != 0 || declared && (getErr != nil || current.State != app.StateRunning)
+	if shouldLaunch {
+		if _, err := launch(); err != nil {
+			if isNameInUse(err) || errors.Is(err, app.ErrNameInUse) {
+				return fmt.Errorf("%w; watch it with hum logs %s --follow", err, name)
+			}
+			return err
+		}
+	} else if getErr == nil && current.State != app.StateRunning {
+		if len(current.Argv) == 0 {
+			_, err = fmt.Fprintf(writer, "%s waiting for first launch (name does not resolve; hum run %s -- COMMAND may create it)\n", name, name)
+		} else {
+			_, err = fmt.Fprintf(writer, "%s waiting for next launch\n", name)
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	_, _, err = followLoop(ctx, follower, signals, func(event output.Event) error {
 		if event.Read == nil {
 			return nil
 		}
@@ -483,36 +492,9 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		}
 		return nil
 	}, func(sig os.Signal) (bool, error) {
-		if sig == os.Interrupt {
-			interrupts++
-			if interrupts == 1 {
-				err := client.Signal(context.Background(), daemon.SignalRequest{Name: name, Cwd: lookupCwd, Signal: "SIGINT"})
-				if isNotFound(err) {
-					return false, nil
-				}
-				return false, err
-			}
-			err := client.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: lookupCwd})
-			if isNotFound(err) {
-				return false, nil
-			}
-			return false, err
-		}
-		if sig == syscall.SIGTERM || sig == syscall.SIGHUP {
-			return true, nil
-		}
-		return false, nil
+		return sig == os.Interrupt || sig == syscall.SIGTERM || sig == syscall.SIGHUP, nil
 	})
-	if err != nil {
-		return err
-	}
-	if !exited {
-		return nil
-	}
-	if exitCode == 0 {
-		return nil
-	}
-	return urfavecli.Exit("", exitCode)
+	return err
 }
 
 func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
@@ -646,7 +628,12 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err != nil {
 		return err
 	}
-	client, err := daemonClient(ctx, cfg)
+	var client *daemon.Client
+	if cmd.Bool("follow") {
+		client, err = runDaemonClient(ctx, cfg)
+	} else {
+		client, err = daemonClient(ctx, cfg)
+	}
 	if err != nil {
 		if daemonUnavailable(err) {
 			if definition, ok := manifest.byName[name]; ok {
@@ -681,6 +668,20 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			return err
 		}
 		defer follower.Close()
+		if process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd}); getErr == nil && process.State != app.StateRunning {
+			message := fmt.Sprintf("%s waiting for next launch\n", name)
+			if len(process.Argv) == 0 {
+				message = fmt.Sprintf("%s waiting for first launch (name does not resolve; hum run %s -- COMMAND may create it)\n", name, name)
+			}
+			if cmd.Bool("json") {
+				err = encodeJSON(writer, eventJSON(name, output.Event{Read: &output.ReadResult{Entries: []output.Entry{{Stream: output.System, Time: time.Now(), Text: message}}}}))
+			} else {
+				_, err = io.WriteString(writer, message)
+			}
+			if err != nil {
+				return err
+			}
+		}
 		_, _, err = followLoop(ctx, follower, signals, func(event output.Event) error {
 			if cmd.Bool("json") {
 				return encodeJSON(writer, eventJSON(name, event))
@@ -762,24 +763,17 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err != nil {
 		return fmt.Errorf("current directory: %w", err)
 	}
-	manifest, err := loadManifestOrEmpty(cwd)
-	if err != nil {
+	if _, err := loadManifestOrEmpty(cwd); err != nil {
 		return err
 	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
 	}
-	client, err := daemonClient(ctx, cfg)
+	client, err := runDaemonClient(ctx, cfg)
 	if err != nil {
 		if client != nil {
 			_ = client.Close()
-		}
-		if daemonUnavailable(err) {
-			if definition, ok := manifest.byName[name]; ok {
-				return manifestUnavailableMessage(definition)
-			}
-			return newUserFacingError(logsUnavailableMessage)
 		}
 		return err
 	}
@@ -900,6 +894,41 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		}
 	}
 	return firstErr
+}
+
+func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	names := cmd.Args().Slice()
+	if len(names) == 0 {
+		return errors.New("remove requires at least one process name")
+	}
+	ctx = nonNilContext(ctx)
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
+	for _, name := range names {
+		if err := client.Remove(context.Background(), daemon.RemoveRequest{Name: name, Cwd: cwd}); err != nil {
+			return err
+		}
+		result := stopResult{Name: name, Status: "removed"}
+		if cmd.Bool("json") {
+			if err := encodeJSON(writer, result); err != nil {
+				return err
+			}
+		} else if _, err := fmt.Fprintf(writer, "removed %s\n", name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
@@ -1171,9 +1200,31 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 }
 
 func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, names []string) error {
-	manifest, err := loadManifestForCommand()
+	cwd, err := os.Getwd()
 	if err != nil {
-		return err
+		return fmt.Errorf("current directory: %w", err)
+	}
+	manifest, err := loadManifest(cwd)
+	if err != nil {
+		var noCandidate *project.NoCandidateError
+		if !errors.As(err, &noCandidate) {
+			return err
+		}
+		cfg, configErr := cliConfig(cmd, version, buildTime)
+		if configErr != nil {
+			return configErr
+		}
+		client, dialErr := daemonClient(ctx, cfg)
+		if client != nil {
+			_ = client.Close()
+		}
+		if dialErr != nil {
+			return err
+		}
+		manifest, err = loadManifestOrEmpty(cwd)
+		if err != nil {
+			return err
+		}
 	}
 	return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifest, names)
 }
@@ -1214,7 +1265,23 @@ func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command,
 	for index, name := range names {
 		definition, ok := manifest.byName[name]
 		if !ok {
-			results[index] = manifestLaunchError(undefinedManifestDefinition(name), fmt.Errorf("manifest does not declare process %q", name))
+			current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+			if getErr != nil || len(current.Argv) == 0 {
+				results[index] = manifestLaunchError(undefinedManifestDefinition(name), fmt.Errorf("no process definition or retained launch specification for %q", name))
+				continue
+			}
+			definition = undefinedManifestDefinition(name)
+			definition.Source, definition.Argv, definition.Cwd = current.Source, append([]string(nil), current.Argv...), current.Cwd
+			if current.State == app.StateRunning {
+				results[index] = manifestLaunchResultFor(definition, current, "already_running")
+				continue
+			}
+			process, startErr := client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root})
+			if startErr != nil {
+				results[index] = manifestLaunchError(definition, startErr)
+			} else {
+				results[index] = manifestLaunchResultFor(definition, process, "started")
+			}
 			continue
 		}
 		result, process, _, ensureErr := ensureManifestStart(ctx, client, cwd, manifest.root, definition, env)
@@ -1306,18 +1373,10 @@ func followLoop(parent context.Context, follower *daemon.Follower, signals <-cha
 			}
 			if result.err != nil {
 				closeFollower()
-				if errors.Is(result.err, context.Canceled) || errors.Is(result.err, context.DeadlineExceeded) {
+				if errors.Is(result.err, context.Canceled) || errors.Is(result.err, context.DeadlineExceeded) || errors.Is(result.err, io.EOF) {
 					return 0, false, nil
 				}
 				return 0, false, result.err
-			}
-			if result.event.Exit != nil {
-				if err := onEvent(result.event); err != nil {
-					closeFollower()
-					return 0, false, err
-				}
-				closeFollower()
-				return result.event.Exit.Code, true, nil
 			}
 			if err := onEvent(result.event); err != nil {
 				closeFollower()

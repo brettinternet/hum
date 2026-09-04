@@ -25,6 +25,7 @@ func TestFlagAliases(t *testing.T) {
 		"wait":     {"after-cursor": {"c"}, "match": {"m"}, "timeout": {"t"}, "json": {"j"}},
 		"restart":  {"json": {"j"}},
 		"stop":     {"json": {"j"}},
+		"remove":   {"json": {"j"}},
 		"shutdown": {"stop-processes": nil, "json": {"j"}},
 		"mcp":      {},
 		"skill":    {},

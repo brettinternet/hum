@@ -49,6 +49,7 @@ type Client interface {
 	Output(context.Context, protocol.OutputRequest) (protocol.OutputResult, error)
 	Wait(context.Context, protocol.WaitRequest) (protocol.WaitResponse, error)
 	Stop(context.Context, protocol.StopRequest) error
+	Remove(context.Context, protocol.RemoveRequest) error
 	Restart(context.Context, protocol.RestartRequest) (protocol.Process, error)
 	Close() error
 }
@@ -170,7 +171,8 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "logs", Description: "Read a bounded cursor-based output window for an existing declared or ad_hoc runtime record.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0}, "tail": map[string]any{"type": "integer", "minimum": 0}, "max_entries": map[string]any{"type": "integer", "minimum": 1}, "max_bytes": map[string]any{"type": "integer", "minimum": 1}}, "project_root", "name"), OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0}, "match": map[string]any{"type": "string"}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
-		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record; succeeds as not_running when no record is running.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
+		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record while preserving its supervision session.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
+		{Name: "remove", Description: "Stop and discard one runtime supervision session, its retained launch specification, and output.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
 	}
 }
 
@@ -321,6 +323,8 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		return s.restart(ctx, resolution, input.Name)
 	case "stop":
 		return s.stop(ctx, resolution, input.Name)
+	case "remove":
+		return s.remove(ctx, resolution, input.Name)
 	default:
 		panic("unreachable")
 	}
@@ -443,7 +447,25 @@ func (s *Server) waitForReadiness(ctx context.Context, client Client, resolution
 func (s *Server) start(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
 	definition, ok := findDefinition(resolution, input.Name)
 	if !ok {
-		return nil, &ToolError{Code: "not_found", Message: fmt.Sprintf("process definition %q not found", input.Name)}
+		client, err := s.client(ctx, true)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		defer client.Close()
+		process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Cwd: resolution.Root})
+		if err != nil {
+			return nil, &ToolError{Code: "not_found", Message: fmt.Sprintf("process definition or retained session %q not found", input.Name)}
+		}
+		outcome := "already_running"
+		if process.State != "running" {
+			process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: input.Name, Cwd: resolution.Root, Root: resolution.Root})
+			if err != nil {
+				return nil, mapError(err)
+			}
+			outcome = "started"
+		}
+		process = normalizeProcess(process)
+		return launchResult{Name: input.Name, Outcome: outcome, Process: &process}, nil
 	}
 	timeout, err := readinessTimeout(input.TimeoutMS, definition)
 	if err != nil {
@@ -625,13 +647,6 @@ func (s *Server) wait(ctx context.Context, resolution Resolution, input commonIn
 	if input.After != nil {
 		cursor := protocol.Cursor(*input.After)
 		request.After = &cursor
-	} else {
-		process, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Cwd: resolution.Root})
-		if getErr != nil {
-			return nil, mapError(getErr)
-		}
-		cursor := process.LaunchCursor
-		request.After = &cursor
 	}
 	result, err := client.Wait(ctx, request)
 	if err != nil {
@@ -684,6 +699,18 @@ func (s *Server) down(ctx context.Context, resolution Resolution) (any, error) {
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+func (s *Server) remove(ctx context.Context, resolution Resolution, name string) (any, error) {
+	client, err := s.client(ctx, false)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer client.Close()
+	if err := client.Remove(ctx, protocol.RemoveRequest{Op: protocol.OpRemove, Name: name, Cwd: resolution.Root}); err != nil {
+		return nil, mapError(err)
+	}
+	return stopResult{Name: name, State: "removed"}, nil
 }
 
 func (s *Server) restart(ctx context.Context, resolution Resolution, name string) (any, error) {

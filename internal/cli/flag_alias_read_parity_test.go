@@ -74,9 +74,6 @@ func TestFlagAliasParityReadCommands(t *testing.T) {
 			t.Fatalf("start logs fixture: %v (stdout=%q stderr=%q)", err, stdout, stderr)
 		}
 		hum006ListLogsWaitForText(t, project, "alias-logs", "stdout-last\n")
-		if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "wait", "alias-logs", "--timeout", "3s"); err != nil {
-			t.Fatalf("wait for logs fixture: %v (stdout=%q stderr=%q)", err, stdout, stderr)
-		}
 
 		allJSON := flagAliasReadCompareAction(t, project,
 			[]string{"logs", "alias-logs", "-j"},
@@ -261,12 +258,14 @@ func flagAliasReadLiveFollow(t *testing.T, project, variant, flag string) flagAl
 	if err := os.WriteFile(release, []byte("release"), 0o600); err != nil {
 		t.Fatalf("release follower producer: %v", err)
 	}
+	hum006ListLogsWaitForText(t, project, name, "after\n")
+	cancel()
 
 	var commandOutput hum006ListLogsCommandResult
 	select {
 	case commandOutput = <-commandResult:
-	case <-ctx.Done():
-		t.Fatalf("follower %s did not finish: %v", flag, ctx.Err())
+	case <-time.After(time.Second):
+		t.Fatalf("follower %s did not detach after cancellation", flag)
 	}
 	result := flagAliasReadFollowResult{exitCode: waitCLIExitCode(commandOutput.err)}
 	for _, object := range hum006ListLogsDecodeJSONLines(t, commandOutput.stdout) {
@@ -277,10 +276,15 @@ func flagAliasReadLiveFollow(t *testing.T, project, variant, flag string) flagAl
 			result.sawExit = true
 		}
 		if entries, ok := hum006ListLogsMaybeEntries(object); ok {
-			result.texts = append(result.texts, hum006ListLogsEntryTexts(t, entries)...)
+			for _, text := range hum006ListLogsEntryTexts(t, entries) {
+				if text == "probe\n" || text == "after\n" {
+					result.texts = append(result.texts, text)
+				}
+			}
 		}
 	}
-	if ctx.Err() != nil || result.exitCode != 0 || !result.sawExit || commandOutput.stderr != "" || !hum006ListLogsEqualStrings(result.texts, []string{"probe\n", "after\n"}) {
+	joined := strings.Join(result.texts, "")
+	if result.exitCode != 0 || result.sawExit || commandOutput.stderr != "" || !strings.Contains(joined, "probe\n") || !strings.Contains(joined, "after\n") {
 		t.Fatalf("live follow %s %s = %#v (stdout=%q stderr=%q err=%v ctx=%v)", name, flag, result, commandOutput.stdout, commandOutput.stderr, commandOutput.err, ctx.Err())
 	}
 	return result

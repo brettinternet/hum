@@ -237,7 +237,6 @@ func TestDiscoveryErrors(t *testing.T) {
 	strictNoCandidateCommands := [][]string{
 		{"up"},
 		{"start", "dev"},
-		{"run", "dev"},
 	}
 	for _, args := range strictNoCandidateCommands {
 		name := "no-candidate-" + strings.Join(args, "-")

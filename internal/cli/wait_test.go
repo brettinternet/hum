@@ -342,22 +342,16 @@ func waitCLIStubDaemon(t *testing.T, response protocol.WaitResponse) (string, <-
 	return runtimeDir, requests
 }
 
-func TestWaitCLIUnavailableDoesNotCreateRuntimeState(t *testing.T) {
-	runtimeDir := filepath.Join(t.TempDir(), "runtime")
+func TestWaitCLIPreLaunchSessionTimesOut(t *testing.T) {
+	_, runtimeDir := stopShutdownTestServer(t, time.Second)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 
-	stdout, stderr, err := waitCLIRun(t, "wait", "api")
-	if err == nil || err.Error() != logsUnavailableMessage {
-		t.Fatalf("unavailable wait error = %v, want exact %q", err, logsUnavailableMessage)
+	stdout, stderr, err := waitCLIRun(t, "wait", "api", "--timeout", "20ms")
+	if got := waitCLIExitCode(err); got != 2 {
+		t.Fatalf("pre-launch wait exit code = %d, want 2 (stdout=%q stderr=%q err=%v)", got, stdout, stderr, err)
 	}
-	if got := waitCLIExitCode(err); got != 1 {
-		t.Fatalf("unavailable wait exit code = %d, want 1", got)
-	}
-	if stdout != "" || stderr != "" {
-		t.Fatalf("unavailable wait output = stdout %q stderr %q, want empty", stdout, stderr)
-	}
-	if _, statErr := os.Stat(runtimeDir); !os.IsNotExist(statErr) {
-		t.Fatalf("unavailable wait runtime state stat error = %v, want not-exist", statErr)
+	if !strings.Contains(stdout, "timed_out") || stderr != "" {
+		t.Fatalf("pre-launch wait output = stdout %q stderr %q", stdout, stderr)
 	}
 }
 

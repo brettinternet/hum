@@ -119,6 +119,9 @@ func (c *mcpDaemonClient) Wait(ctx context.Context, request protocol.WaitRequest
 func (c *mcpDaemonClient) Stop(ctx context.Context, request protocol.StopRequest) error {
 	return c.client.Stop(ctx, request)
 }
+func (c *mcpDaemonClient) Remove(ctx context.Context, request protocol.RemoveRequest) error {
+	return c.client.Remove(ctx, request)
+}
 func (c *mcpDaemonClient) Restart(ctx context.Context, request protocol.RestartRequest) (protocol.Process, error) {
 	process, err := c.client.Restart(ctx, request)
 	return mcpProcess(process), err

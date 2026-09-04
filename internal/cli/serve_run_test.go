@@ -419,11 +419,15 @@ func TestAutomaticDaemonStartup(t *testing.T) {
 			_, _, _ = cliServeRunInvokeForTest("shutdown", "--stop-processes")
 		})
 
-		stdout, stderr, err := cliServeRunInvokeForTest("run", "automatic-attached", "--", "/bin/sh", "-c", "printf attached")
+		attachedCtx, cancelAttached := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		var attachedOut, attachedErr strings.Builder
+		err := cliServeRunInvoke(attachedCtx, []string{"run", "automatic-attached", "--", "/bin/sh", "-c", "printf attached"}, &attachedOut, &attachedErr)
+		cancelAttached()
 		if err != nil {
 			t.Fatalf("attached automatic run: %v", err)
 		}
-		if stdout != "attached" || stderr != "" {
+		stdout, stderr := attachedOut.String(), attachedErr.String()
+		if !strings.Contains(stdout, "attached") || !strings.Contains(stderr, "automatic-attached launched") || !strings.Contains(stderr, "waiting for next launch") {
 			t.Fatalf("attached automatic output = stdout %q stderr %q", stdout, stderr)
 		}
 
@@ -661,8 +665,14 @@ func TestAttachedRun(t *testing.T) {
 		}
 		runArgs := append([]string{"run", "inspect", "--"}, fixtureArgs...)
 		client := cliServeRunStartClientInDir(t, clientDir, runArgs...)
-		if err := client.wait(5 * time.Second); cliServeRunExitCode(err) != 23 {
-			t.Fatalf("attached run exit = %v (code %d), want managed code 23; stdout=%q stderr=%q", err, cliServeRunExitCode(err), client.stdout(), client.stderr())
+		if err := cliServeRunWaitForText(client.stderrPath, "waiting for next launch"); err != nil {
+			t.Fatalf("attached run did not remain on stopped session: %v; stderr=%q", err, client.stderr())
+		}
+		if err := client.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.wait(5 * time.Second); err != nil {
+			t.Fatalf("attached run detach = %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
 		}
 
 		var snapshot cliServeRunFixtureSnapshot
@@ -702,8 +712,14 @@ func TestAttachedRun(t *testing.T) {
 		cliServeRunStartDaemon(t, runtimeDir)
 
 		client := cliServeRunStartClient(t, cliServeRunWithFixtureArgs([]string{"run", "attached-json", "--json"}, "inspect")...)
-		if err := client.wait(5 * time.Second); cliServeRunExitCode(err) != 23 {
-			t.Fatalf("attached JSON run exit = %v (code %d), want managed code 23; stdout=%q stderr=%q", err, cliServeRunExitCode(err), client.stdout(), client.stderr())
+		if err := cliServeRunWaitForText(client.stderrPath, "waiting for next launch"); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.wait(5 * time.Second); err != nil {
+			t.Fatalf("attached JSON detach = %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
 		}
 
 		stdout, stderr := client.stdout(), client.stderr()
@@ -741,8 +757,14 @@ func TestAttachedRun(t *testing.T) {
 		cliServeRunStartDaemonWithSupervisor(t, runtimeDir, supervisor)
 
 		client := cliServeRunStartClient(t, "run", "already-exited", "--", "/bin/sh", "-c", "exit 37")
-		if err := client.wait(5 * time.Second); cliServeRunExitCode(err) != 37 {
-			t.Fatalf("already-exited attached run = %v (code %d), want managed code 37; stdout=%q stderr=%q", err, cliServeRunExitCode(err), client.stdout(), client.stderr())
+		if err := cliServeRunWaitForText(client.stderrPath, "already-exited waiting for next launch"); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.wait(5 * time.Second); err != nil {
+			t.Fatalf("already-exited attached detach = %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
 		}
 	})
 
@@ -792,21 +814,12 @@ func TestAttachedRun(t *testing.T) {
 		if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
 			t.Fatalf("managed process readiness after queued interrupt: %v", err)
 		}
-		if err := cliServeRunWaitForText(client.stdoutPath, "fixture:sigint-1\n"); err != nil {
-			t.Fatalf("queued first SIGINT was not forwarded: %v; output=%q", err, client.stdout())
-		}
-		if client.exited() {
-			t.Fatal("queued first SIGINT detached or terminated the attached run")
-		}
-
-		if err := client.cmd.Process.Signal(os.Interrupt); err != nil {
-			t.Fatalf("second interrupt: %v", err)
-		}
-		if err := cliServeRunWaitForText(client.stdoutPath, "fixture:sigterm\n"); err != nil {
-			t.Fatalf("second SIGINT did not initiate graceful stop: %v; output=%q", err, client.stdout())
-		}
 		if err := client.wait(5 * time.Second); err != nil {
-			t.Fatalf("attached run after queued graceful stop: %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
+			t.Fatalf("queued SIGINT did not detach: %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
+		}
+		cliServeRunAssertRunning(t, daemon.NewRuntimePaths(runtimeDir), "queued-signals")
+		if err := cliServeRunStop(t, "queued-signals"); err != nil {
+			t.Fatal(err)
 		}
 		if err := cliServeRunWaitForFile(marker + ".terminated"); err != nil {
 			t.Fatal(err)
@@ -832,21 +845,12 @@ func TestAttachedRun(t *testing.T) {
 		if err := client.cmd.Process.Signal(os.Interrupt); err != nil {
 			t.Fatalf("first interrupt: %v", err)
 		}
-		if err := cliServeRunWaitForText(client.stdoutPath, "fixture:sigint-1\n"); err != nil {
-			t.Fatalf("first SIGINT was not forwarded: %v; output=%q", err, client.stdout())
-		}
-		if client.exited() {
-			t.Fatal("first SIGINT detached the run instead of staying attached")
-		}
-
-		if err := client.cmd.Process.Signal(os.Interrupt); err != nil {
-			t.Fatalf("second interrupt: %v", err)
-		}
-		if err := cliServeRunWaitForText(client.stdoutPath, "fixture:sigterm\n"); err != nil {
-			t.Fatalf("second SIGINT did not initiate graceful stop: %v; output=%q", err, client.stdout())
-		}
 		if err := client.wait(5 * time.Second); err != nil {
-			t.Fatalf("attached run after graceful stop: %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
+			t.Fatalf("first SIGINT did not detach: %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
+		}
+		cliServeRunAssertRunning(t, daemon.NewRuntimePaths(runtimeDir), "signals")
+		if err := cliServeRunStop(t, "signals"); err != nil {
+			t.Fatal(err)
 		}
 		if err := cliServeRunWaitForFile(marker + ".terminated"); err != nil {
 			t.Fatal(err)

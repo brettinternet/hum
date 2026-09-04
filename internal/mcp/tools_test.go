@@ -105,6 +105,10 @@ func (f *fakeClient) Stop(_ context.Context, req protocol.StopRequest) error {
 	f.stops = append(f.stops, req)
 	return f.stopErr[req.Name]
 }
+func (f *fakeClient) Remove(_ context.Context, req protocol.RemoveRequest) error {
+	f.stops = append(f.stops, protocol.StopRequest{Op: protocol.OpStop, Name: req.Name, Cwd: req.Cwd})
+	return f.stopErr[req.Name]
+}
 func (f *fakeClient) Restart(_ context.Context, req protocol.RestartRequest) (protocol.Process, error) {
 	f.restarts = append(f.restarts, req)
 	p, ok := f.processes[req.Name]
@@ -177,7 +181,7 @@ func TestToolSchemas(t *testing.T) {
 			t.Errorf("%s lacks output schema", d.Name)
 		}
 	}
-	want := []string{"start", "up", "down", "list", "status", "logs", "wait", "restart", "stop"}
+	want := []string{"start", "up", "down", "list", "status", "logs", "wait", "restart", "stop", "remove"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("tools=%v want %v", names, want)
 	}
@@ -453,8 +457,8 @@ func TestObservationTools(t *testing.T) {
 	if _, err = s.callTool(context.Background(), "wait", args(root, "name", "raw")); err != nil {
 		t.Fatal(err)
 	}
-	if client.waits[len(client.waits)-1].After == nil || *client.waits[len(client.waits)-1].After != 5 {
-		t.Fatalf("wait=%#v", client.waits)
+	if client.waits[len(client.waits)-1].After != nil {
+		t.Fatalf("default session wait unexpectedly set after cursor: %#v", client.waits)
 	}
 	for _, ensure := range *ensures {
 		if ensure {
@@ -484,8 +488,11 @@ func TestAdHocProcessTools(t *testing.T) {
 	if _, err = s.callTool(context.Background(), "stop", args(root, "name", "raw")); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.stops) != 1 {
-		t.Fatalf("stops=%#v", client.stops)
+	if _, err = s.callTool(context.Background(), "remove", args(root, "name", "raw")); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.stops) != 2 {
+		t.Fatalf("stop/remove calls=%#v", client.stops)
 	}
 	for _, ensure := range *ensures {
 		if ensure {

@@ -173,6 +173,7 @@ type Request struct {
 	Signal   *SignalRequest   `json:"-"`
 	Stop     *StopRequest     `json:"-"`
 	Restart  *RestartRequest  `json:"-"`
+	Remove   *RemoveRequest   `json:"-"`
 	Shutdown *ShutdownRequest `json:"-"`
 }
 
@@ -196,7 +197,7 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	r.Raw = append(r.Raw[:0], data...)
 	r.Payload = append(r.Payload[:0], data...)
 	r.Version = 0
-	r.Hello, r.Start, r.List, r.Get, r.Output, r.Follow, r.Wait, r.Signal, r.Stop, r.Restart, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+	r.Hello, r.Start, r.List, r.Get, r.Output, r.Follow, r.Wait, r.Signal, r.Stop, r.Restart, r.Remove, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 
 	var err error
 	switch header.Op {
@@ -231,6 +232,9 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	case OpRestart:
 		r.Restart = new(RestartRequest)
 		err = json.Unmarshal(data, r.Restart)
+	case OpRemove:
+		r.Remove = new(RemoveRequest)
+		err = json.Unmarshal(data, r.Remove)
 	case OpShutdown:
 		r.Shutdown = new(ShutdownRequest)
 		err = json.Unmarshal(data, r.Shutdown)
@@ -289,6 +293,9 @@ func (r Request) MarshalJSON() ([]byte, error) {
 	}
 	if r.Restart != nil {
 		return json.Marshal(r.Restart)
+	}
+	if r.Remove != nil {
+		return json.Marshal(r.Remove)
 	}
 	if r.Shutdown != nil {
 		return json.Marshal(r.Shutdown)

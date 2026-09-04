@@ -30,6 +30,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 		"wait":     true,
 		"restart":  true,
 		"stop":     true,
+		"remove":   true,
 		"shutdown": true,
 	}
 	got := make(map[string]bool, len(root.Commands))

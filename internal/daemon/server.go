@@ -578,6 +578,11 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 			process = &value
 		}
 		return wireResponse{Op: req.Op, OK: true, Process: process}, false
+	case "remove":
+		if err := s.supervisor.Remove(context.Background(), req.Cwd, req.Name); err != nil {
+			return dispatchError(req.Op, err), false
+		}
+		return wireResponse{Op: req.Op, OK: true}, false
 	case "restart":
 		s.shutdownMu.Lock()
 		if s.shutdownStarted {
@@ -689,6 +694,9 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 		return
 	}
 	defer sub.Close()
+	if err := encoder.EncodeResponse(protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventReady, Name: req.Name, Ready: true}); err != nil {
+		return
+	}
 	followCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
@@ -699,18 +707,28 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 	for {
 		event, err := sub.Next(followCtx)
 		if err != nil {
+			if errors.Is(err, output.ErrStoreClosed) {
+				return
+			}
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
 				_ = encoder.EncodeResponse(protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventError, Name: req.Name, Error: wireErrorToProtocol(protocolWireError(err))})
 			}
 			return
 		}
-		if event.Exit != nil && s.supervisor.FollowContinuesAfter(req.Cwd, req.Name, event.Exit.Time) {
+		if event.Exit != nil {
+			exitText := fmt.Sprintf("%s exited with code %d\n", req.Name, event.Exit.Code)
+			if event.Exit.Code < 0 {
+				exitText = fmt.Sprintf("%s exited by signal\n", req.Name)
+			}
+			for _, text := range []string{exitText, fmt.Sprintf("%s waiting for next launch\n", req.Name)} {
+				message := protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventOutput, Name: req.Name, Entries: []protocol.OutputEntry{{Stream: protocol.StreamSystem, Time: event.Exit.Time, Text: text}}}
+				if err := encoder.EncodeResponse(message); err != nil {
+					return
+				}
+			}
 			continue
 		}
 		if err := encoder.EncodeResponse(protocolStreamEventFromOutput(req.Name, event)); err != nil {
-			return
-		}
-		if event.Exit != nil {
 			return
 		}
 	}

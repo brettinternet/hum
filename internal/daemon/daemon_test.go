@@ -1,11 +1,9 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -550,8 +548,8 @@ func TestMultipleFollowers(t *testing.T) {
 	defer second.Close()
 	for _, follower := range []*Follower{first, second} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		var seenOne, seenTwo, exited bool
-		for !exited {
+		var seenOne, seenTwo, waiting bool
+		for !waiting {
 			event, err := follower.Next(ctx)
 			if err != nil {
 				cancel()
@@ -563,8 +561,10 @@ func TestMultipleFollowers(t *testing.T) {
 					seenTwo = seenTwo || strings.Contains(entry.Text, "two")
 				}
 			}
-			if event.Exit != nil {
-				exited = true
+			if event.Read != nil {
+				for _, entry := range event.Read.Entries {
+					waiting = waiting || strings.Contains(entry.Text, "waiting for next launch")
+				}
 			}
 		}
 		cancel()
@@ -687,109 +687,59 @@ func TestMultipleFollowers(t *testing.T) {
 	})
 }
 
-func TestRestartFollowerClosesAfterOrdinaryStartReplacement(t *testing.T) {
+func TestFollowAcrossOrdinaryStartReplacement(t *testing.T) {
+	server := testServer(t, Config{})
 	root := t.TempDir()
-	oldChild := &daemonTestChild{pid: 9401, done: make(chan struct{})}
-	newChild := &daemonTestChild{pid: 9402, done: make(chan struct{})}
-	var oldStore, newStore *output.Store
-	starts := 0
-	supervisor, err := app.New(app.Options{
-		StartProcess: func(spec process.Spec) (app.Child, error) {
-			starts++
-			switch starts {
-			case 1:
-				oldStore = spec.Output
-				return oldChild, nil
-			case 2:
-				newStore = spec.Output
-				return newChild, nil
-			default:
-				return nil, errors.New("unexpected extra process start")
-			}
-		},
-	})
+	client, err := Dial(context.Background(), server.Paths().Socket)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{supervisor: supervisor, projects: make(map[string]struct{})}
-	serverConn, followerConn := net.Pipe()
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	writer := &daemonTestGateWriter{release: release, entered: make(chan struct{})}
-	t.Cleanup(func() {
-		releaseOnce.Do(func() { close(release) })
-		_ = serverConn.Close()
-		_ = followerConn.Close()
-		_ = supervisor.Shutdown(context.Background())
-	})
-
-	if _, err := supervisor.Start(app.StartRequest{Name: "restart", Cwd: root, Argv: []string{"fake", "old"}}); err != nil {
+	defer client.Close()
+	shell := testShell(t)
+	if _, err := client.Start(context.Background(), testStartRequest(root, "restart", shell, "-c", "printf 'old\\n'; sleep .1")); err != nil {
 		t.Fatal(err)
 	}
-	if oldStore == nil {
-		t.Fatal("initial start did not expose output store")
-	}
-	if _, err := oldStore.Append(output.Stdout, time.Unix(1, 0), "old output\n"); err != nil {
+	follower, err := client.Follow(context.Background(), protocol.NewFollowRequest("restart", root))
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	followDone := make(chan struct{})
-	go func() {
-		defer close(followDone)
-		defer serverConn.Close()
-		server.handleFollow(context.Background(), serverConn, protocol.NewEncoder(writer), wireRequest{Cwd: root, Name: "restart"})
-	}()
-	select {
-	case <-writer.entered:
-	case <-time.After(time.Second):
-		t.Fatal("follower did not begin writing retained output")
+	defer follower.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	seenOld, seenWaiting := false, false
+	for !seenWaiting {
+		event, err := follower.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Read != nil {
+			for _, entry := range event.Read.Entries {
+				seenOld = seenOld || strings.Contains(entry.Text, "old")
+				seenWaiting = seenWaiting || strings.Contains(entry.Text, "waiting for next launch")
+			}
+		}
 	}
-
-	exitTime := time.Unix(2, 0)
-	oldStore.NotifyExit(output.Exit{Code: 17, Time: exitTime})
-	oldChild.once.Do(func() { close(oldChild.done) })
-	waitForDaemonTest(t, time.Second, "old process to exit", func() bool {
-		process, getErr := supervisor.Get(root, "restart")
-		return getErr == nil && process.State == app.StateExited
-	})
-
-	replacement, _ := server.dispatch(wireRequest{
-		Op:   string(protocol.OpStart),
-		Name: "restart",
-		Cwd:  root,
-		Argv: []string{"fake", "new"},
-	})
-	if replacement.Error != nil || replacement.Process == nil {
-		t.Fatalf("ordinary start replacement = %+v", replacement)
+	if !seenOld {
+		t.Fatal("durable follower missed first incarnation")
 	}
-	if newStore == nil || newStore == oldStore {
-		t.Fatal("ordinary start did not install a new output store")
+	if _, err := client.Start(context.Background(), testStartRequest(root, "restart", shell, "-c", "printf 'new\\n'; sleep .1")); err != nil {
+		t.Fatal(err)
 	}
-
-	releaseOnce.Do(func() { close(release) })
-	select {
-	case <-followDone:
-	case <-time.After(time.Second):
-		t.Fatal("old follower remained open after ordinary name reuse")
+	seenLaunch, seenNew := false, false
+	for !seenNew {
+		event, err := follower.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Read != nil {
+			for _, entry := range event.Read.Entries {
+				seenLaunch = seenLaunch || strings.Contains(entry.Text, "launched")
+				seenNew = seenNew || strings.Contains(entry.Text, "new")
+			}
+		}
 	}
-
-	decoder := protocol.NewDecoder(bytes.NewReader(writer.bytes()))
-	var outputEvent, exitEvent protocol.StreamEvent
-	if err := decoder.Decode(&outputEvent); err != nil {
-		t.Fatalf("decode retained output event: %v", err)
-	}
-	if outputEvent.Type != protocol.EventOutput {
-		t.Fatalf("retained output event type = %q, want output", outputEvent.Type)
-	}
-	if err := decoder.Decode(&exitEvent); err != nil {
-		t.Fatalf("decode final exit event: %v", err)
-	}
-	if exitEvent.Type != protocol.EventExit || exitEvent.Exit == nil || exitEvent.Exit.Code != 17 || !exitEvent.Exit.Time.Equal(exitTime) {
-		t.Fatalf("final follower exit event = %#v, want code 17 at %v", exitEvent, exitTime)
-	}
-	var extra protocol.StreamEvent
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		t.Fatalf("follower after final exit = %v, want EOF", err)
+	if !seenLaunch {
+		t.Fatal("durable follower missed successor launch boundary")
 	}
 }
 
@@ -884,43 +834,30 @@ func TestFollowRetainsOutputAfterCompletedEviction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForDaemonTest(t, 3*time.Second, "process B to evict process A", func() bool {
+	waitForDaemonTest(t, 3*time.Second, "process B to exit while process A stays reserved", func() bool {
 		b, bErr := server.Supervisor().Get(root, "B")
 		_, aErr := server.Supervisor().Get(root, "A")
-		return bErr == nil && b.State == app.StateExited && errors.Is(aErr, app.ErrProcessNotFound)
+		return aErr == nil && (errors.Is(bErr, app.ErrProcessNotFound) || bErr == nil && b.State == app.StateExited)
 	})
 
 	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancelDrain()
-	gotSecond, exits := false, 0
-	for exits == 0 {
+	gotSecond := false
+	for !gotSecond {
 		event, err := follower.Next(drainCtx)
 		if err != nil {
-			t.Fatalf("draining follower after eviction: %v", err)
+			t.Fatalf("draining reserved follower: %v", err)
 		}
-		if event.Exit != nil {
-			exits++
-			continue
-		}
-		if event.Read == nil {
-			t.Fatalf("follower returned empty event after eviction: %#v", event)
-		}
-		for _, entry := range event.Read.Entries {
-			gotSecond = gotSecond || entry.Text == "A second\n"
+		if event.Read != nil {
+			for _, entry := range event.Read.Entries {
+				gotSecond = gotSecond || entry.Text == "A second\n"
+			}
 		}
 	}
 	if !gotSecond {
-		t.Fatal("follower missed retained output after process A was evicted")
+		t.Fatal("follower missed retained output while its completed session was protected")
 	}
-	extraCtx, cancelExtra := context.WithTimeout(context.Background(), time.Second)
-	extra, err := follower.Next(extraCtx)
-	cancelExtra()
-	if err == nil {
-		t.Fatalf("follower returned a second terminal event: %#v", extra)
-	}
-	if !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) {
-		t.Fatalf("follower after terminal exit = %v, want closed stream", err)
-	}
+
 }
 
 func TestRepeatedCompletedProcessFollow(t *testing.T) {
@@ -956,9 +893,15 @@ func TestRepeatedCompletedProcessFollow(t *testing.T) {
 			if err != nil {
 				cancelNext()
 				_ = follower.Close()
-				t.Fatalf("follow %s did not return after exit: %v", name, err)
+				t.Fatalf("follow %s missed retained output: %v", name, err)
 			}
-			if event.Exit != nil {
+			seen := false
+			if event.Read != nil {
+				for _, entry := range event.Read.Entries {
+					seen = seen || strings.Contains(entry.Text, "done")
+				}
+			}
+			if seen {
 				break
 			}
 		}
