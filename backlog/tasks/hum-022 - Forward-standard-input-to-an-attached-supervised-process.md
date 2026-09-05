@@ -2,10 +2,9 @@
 id: HUM-022
 title: Opt a supervised session into a pseudo-terminal for interactive devtools
 status: Done
-assignee:
-  - '@brett'
+assignee: []
 created_date: '2026-09-05 13:55'
-updated_date: '2026-09-05 19:40'
+updated_date: '2026-09-05 19:41'
 labels:
   - cli
   - daemon
@@ -107,6 +106,8 @@ AC#4 evidence: `go test ./internal/project -run '^TestTTYManifest$' -count=1 -v`
 AC#5 evidence: `go test ./integration -run '^TestTTYInteractiveSession$' -count=1 -v`, `go test ./internal/cli -run '^TestTTYHelpAndDocs$' -count=1 -v`, and `go test ./internal/skill -run '^TestTTYInstructions$' -count=1 -v` exited 0 with all named PASS lines; independent verifier also reproduced competing attach behavior and returned PASS.
 Gate evidence: `task ci` exited 0, including gofmt, go vet, staticcheck, `go test ./...`, race suites, build, and smoke coverage. Independent verifier returned PASS for AC1-AC5 and confirmed no tests were deleted, skipped, or weakened and no protected gate file changed.
 Modified-file deviation: the authoritative `backlog/tasks/hum-022 - Forward-standard-input-to-an-attached-supervised-process.md` changed only through required Backlog.md provider claim, evidence, and completion writes; implementation changes remain within the declared modified-file contract.
+
+Delivery: implementation committed as e8a2d08 (feat: add interactive tty sessions); task ci passed on that commit.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
