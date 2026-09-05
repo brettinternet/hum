@@ -4,13 +4,14 @@ title: Report follower counts in status and list
 status: Done
 assignee: []
 created_date: '2026-09-04 18:55'
-updated_date: '2026-09-04 20:45'
+updated_date: '2026-09-05 14:37'
 labels:
   - cli
   - daemon
   - protocol
   - mcp
   - docs
+milestone: m-2
 dependencies:
   - HUM-020
 priority: medium

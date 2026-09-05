@@ -5,13 +5,14 @@ status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-04 17:00'
-updated_date: '2026-09-04 20:26'
+updated_date: '2026-09-05 14:37'
 labels:
   - cli
   - daemon
   - lifecycle
   - mcp
   - docs
+milestone: m-2
 dependencies:
   - HUM-015
 modified_files:
