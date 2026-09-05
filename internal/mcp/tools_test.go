@@ -39,6 +39,9 @@ type fakeClient struct {
 	gets            []protocol.GetRequest
 	outputs         []protocol.OutputRequest
 	waits           []protocol.WaitRequest
+	inputs          []InputRequest
+	inputResult     InputResult
+	inputErr        error
 	stops           []protocol.StopRequest
 	restarts        []protocol.RestartRequest
 	waitHook        func(protocol.WaitRequest)
@@ -100,6 +103,19 @@ func (f *fakeClient) Wait(_ context.Context, req protocol.WaitRequest) (protocol
 		return protocol.NewWaitResponse(protocol.WaitMatched, 9, nil), nil
 	}
 	return f.waitResult, nil
+}
+func (f *fakeClient) Input(_ context.Context, req InputRequest) (InputResult, error) {
+	f.inputs = append(f.inputs, req)
+	if f.inputErr != nil {
+		return InputResult{}, f.inputErr
+	}
+	if process, ok := f.processes[req.Name]; ok && process.State != "" && process.State != "running" && process.State != "starting" {
+		return InputResult{}, &SessionNotRunningError{Name: req.Name}
+	}
+	if f.inputResult.Name == "" {
+		return InputResult{Name: req.Name, Bytes: len(req.Data), LaunchCursor: f.processes[req.Name].LaunchCursor}, nil
+	}
+	return f.inputResult, nil
 }
 func (f *fakeClient) Stop(_ context.Context, req protocol.StopRequest) error {
 	f.stops = append(f.stops, req)
@@ -181,7 +197,7 @@ func TestToolSchemas(t *testing.T) {
 			t.Errorf("%s lacks output schema", d.Name)
 		}
 	}
-	want := []string{"start", "up", "down", "list", "status", "logs", "wait", "restart", "stop", "remove"}
+	want := []string{"start", "up", "down", "list", "status", "logs", "wait", "input", "restart", "stop", "remove"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("tools=%v want %v", names, want)
 	}
@@ -195,6 +211,25 @@ func TestToolSchemas(t *testing.T) {
 		if !strings.Contains(string(blob), requiredField) {
 			t.Errorf("output schemas omit %s", requiredField)
 		}
+	}
+	inputDefinition := defs[7]
+	if inputDefinition.Name != "input" {
+		t.Fatalf("input tool position = %d (%s)", 7, inputDefinition.Name)
+	}
+	if inputDefinition.InputSchema["additionalProperties"] != false {
+		t.Fatal("input schema is not closed")
+	}
+	branches, ok := inputDefinition.InputSchema["oneOf"].([]any)
+	if !ok || len(branches) != 2 {
+		t.Fatalf("input schema oneOf = %#v", inputDefinition.InputSchema["oneOf"])
+	}
+	textBranch := branches[0].(map[string]any)["properties"].(map[string]any)
+	base64Branch := branches[1].(map[string]any)["properties"].(map[string]any)
+	if _, ok := textBranch["base64"]; ok {
+		t.Fatal("text input branch accepts base64")
+	}
+	if _, ok := base64Branch["text"]; ok {
+		t.Fatal("base64 input branch accepts text")
 	}
 	statusProperties := defs[4].OutputSchema["properties"].(map[string]any)
 	exited := protocol.Process{
@@ -283,8 +318,12 @@ func TestErrorMapping(t *testing.T) {
 	if err != nil || len(got.([]protocol.Process)) != 0 {
 		t.Fatalf("unavailable list=%#v err=%v", got, err)
 	}
-	for _, tool := range []string{"status", "logs", "wait", "restart"} {
-		if _, callErr := s.callTool(context.Background(), tool, args(root, "name", "raw")); mapError(callErr).Code != "unavailable" {
+	for _, tool := range []string{"status", "logs", "wait", "input", "restart"} {
+		arguments := args(root, "name", "raw")
+		if tool == "input" {
+			arguments = args(root, "name", "raw", "text", "x")
+		}
+		if _, callErr := s.callTool(context.Background(), tool, arguments); mapError(callErr).Code != "unavailable" {
 			t.Errorf("%s unavailable error = %v", tool, callErr)
 		}
 	}
@@ -547,6 +586,187 @@ func TestSortedToolNames(t *testing.T) {
 	sort.Strings(sorted)
 	if len(names) != len(sorted) {
 		t.Fatal("unreachable")
+	}
+}
+
+func TestInputTool(t *testing.T) {
+	client := &fakeClient{processes: map[string]protocol.Process{}, startErr: map[string]error{}, stopErr: map[string]error{}}
+	server, root, _ := newTestServer(t, []Definition{{Name: "prompt", Source: "manifest", Argv: []string{"prompt"}, TTY: true}}, client)
+	client.processes["prompt"] = protocol.Process{Name: "prompt", Root: root, Cwd: root, TTY: true, State: "running", LaunchCursor: 12}
+
+	inputDefinition := server.toolDefinitions()[7]
+	if inputDefinition.Name != "input" || inputDefinition.InputSchema["additionalProperties"] != false {
+		t.Fatalf("input schema = %#v", inputDefinition)
+	}
+	inputRequired, ok := inputDefinition.InputSchema["required"].([]string)
+	if !ok || !contains(inputRequired, "project_root") || !contains(inputRequired, "name") {
+		t.Fatalf("input required fields = %#v", inputDefinition.InputSchema["required"])
+	}
+	branches, ok := inputDefinition.InputSchema["oneOf"].([]any)
+	if !ok || len(branches) != 2 {
+		t.Fatalf("input oneOf = %#v", inputDefinition.InputSchema["oneOf"])
+	}
+	for index, branch := range branches {
+		branchSchema, ok := branch.(map[string]any)
+		if !ok || branchSchema["additionalProperties"] != false {
+			t.Fatalf("input branch %d = %#v", index, branch)
+		}
+		required, ok := branchSchema["required"].([]string)
+		if !ok || !contains(required, "project_root") || !contains(required, "name") {
+			t.Fatalf("input branch %d required = %#v", index, branchSchema["required"])
+		}
+		properties, ok := branchSchema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("input branch %d properties = %#v", index, branchSchema["properties"])
+		}
+		if index == 0 {
+			if !contains(required, "text") || properties["text"].(map[string]any)["minLength"] != 1 {
+				t.Fatalf("text branch = %#v", branchSchema)
+			}
+			if _, exists := properties["base64"]; exists {
+				t.Fatal("text branch accepts base64")
+			}
+		} else {
+			base64Property := properties["base64"].(map[string]any)
+			if !contains(required, "base64") || base64Property["pattern"] != "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$" || !strings.Contains(base64Property["description"].(string), "without whitespace") {
+				t.Fatalf("base64 branch = %#v", branchSchema)
+			}
+			if _, exists := properties["text"]; exists {
+				t.Fatal("base64 branch accepts text")
+			}
+		}
+	}
+	outputProperties, ok := inputDefinition.OutputSchema["properties"].(map[string]any)
+	outputRequired, requiredOK := inputDefinition.OutputSchema["required"].([]string)
+	if !ok || !requiredOK || inputDefinition.OutputSchema["additionalProperties"] != false {
+		t.Fatalf("input output schema = %#v", inputDefinition.OutputSchema)
+	}
+	for _, field := range []string{"name", "bytes", "launch_cursor"} {
+		if !contains(outputRequired, field) {
+			t.Fatalf("input output schema does not require %q", field)
+		}
+		if _, exists := outputProperties[field]; !exists {
+			t.Fatalf("input output schema missing %q", field)
+		}
+	}
+
+	textPayload := "hé\x00"
+	value, err := server.callTool(context.Background(), "input", args(root, "name", "prompt", "text", textPayload))
+	if err != nil {
+		t.Fatalf("input text: %v", err)
+	}
+	result, ok := value.(InputResult)
+	if !ok || result.Name != "prompt" || result.Bytes != len([]byte(textPayload)) || result.LaunchCursor != 12 {
+		t.Fatalf("input result = %#v", value)
+	}
+	if len(client.inputs) != 1 || !bytes.Equal(client.inputs[0].Data, []byte(textPayload)) || client.inputs[0].Root != root || client.inputs[0].Cwd != root {
+		t.Fatalf("input request = %#v", client.inputs)
+	}
+	value, err = server.callTool(context.Background(), "input", args(root, "name", "prompt", "base64", "AP8="))
+	if err != nil {
+		t.Fatalf("input base64: %v", err)
+	}
+	result, ok = value.(InputResult)
+	if !ok || result.Bytes != 2 || result.LaunchCursor != 12 || !bytes.Equal(client.inputs[1].Data, []byte{0, 255}) {
+		t.Fatalf("input base64 result=%#v requests=%#v", value, client.inputs)
+	}
+
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{"missing payload", args(root, "name", "prompt")},
+		{"both payloads", args(root, "name", "prompt", "text", "x", "base64", "eA==")},
+		{"empty text", args(root, "name", "prompt", "text", "")},
+		{"bad base64", args(root, "name", "prompt", "base64", "not base64")},
+		{"un-padded base64", args(root, "name", "prompt", "base64", "eA")},
+		{"base64 whitespace", args(root, "name", "prompt", "base64", "eA==\n")},
+		{"oversized base64", args(root, "name", "prompt", "base64", strings.Repeat("A", 43692))},
+		{"unknown input field", args(root, "name", "prompt", "text", "x", "timeout_ms", 1)},
+		{"oversized", args(root, "name", "prompt", "text", strings.Repeat("x", protocol.MaxInputBytes+1))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(client.inputs)
+			if _, err := server.callTool(context.Background(), "input", tc.raw); err == nil {
+				t.Fatal("input accepted invalid payload")
+			}
+			if len(client.inputs) != before {
+				t.Fatalf("invalid payload invoked client: %#v", client.inputs)
+			}
+		})
+	}
+
+	stopped := client.processes["prompt"]
+	stopped.State = "exited"
+	client.processes["prompt"] = stopped
+	if _, err := server.callTool(context.Background(), "input", args(root, "name", "prompt", "text", "again")); mapError(err).Code != "session_not_running" {
+		t.Fatalf("stopped input error = %v", err)
+	}
+	if len(client.inputs) != 3 {
+		t.Fatalf("stopped input client calls = %#v", client.inputs)
+	}
+
+	nonTTY := stopped
+	nonTTY.State, nonTTY.TTY = "running", false
+	client.processes["prompt"] = nonTTY
+	if _, err := server.callTool(context.Background(), "input", args(root, "name", "prompt", "text", "again")); mapError(err).Code != string(protocol.ErrorInputNotTTY) {
+		t.Fatalf("non-tty input error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		code      protocol.ErrorCode
+		process   protocol.Process
+		wantCalls int
+	}{
+		{name: "not found", code: protocol.ErrorNotFound, wantCalls: 0},
+		{name: "conflict", code: protocol.ErrorInputConflict, process: protocol.Process{State: "running", TTY: true}, wantCalls: 1},
+		{name: "closed", code: protocol.ErrorInputClosed, process: protocol.Process{State: "running", TTY: true}, wantCalls: 1},
+		{name: "stale", code: protocol.ErrorInputStale, process: protocol.Process{State: "running", TTY: true}, wantCalls: 1},
+		{name: "not running", code: "session_not_running", process: protocol.Process{State: "exited", TTY: true}, wantCalls: 1},
+		{name: "not tty", code: protocol.ErrorInputNotTTY, process: protocol.Process{State: "running", TTY: false}, wantCalls: 0},
+		{name: "too large", code: protocol.ErrorInputTooLarge, process: protocol.Process{State: "running", TTY: true}, wantCalls: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caseClient := &fakeClient{processes: map[string]protocol.Process{}, startErr: map[string]error{}, stopErr: map[string]error{}}
+			caseServer, caseRoot, _ := newTestServer(t, []Definition{{Name: "prompt", Source: "manifest", Argv: []string{"prompt"}, TTY: true}}, caseClient)
+			targetName := "prompt"
+			if tc.name == "not found" {
+				targetName = "missing"
+			}
+			if tc.process.State != "" {
+				tc.process.Name, tc.process.Root, tc.process.Cwd = targetName, caseRoot, caseRoot
+				caseClient.processes[targetName] = tc.process
+			}
+			if tc.name == "too large" {
+				_, err := caseServer.callTool(context.Background(), "input", args(caseRoot, "name", targetName, "text", strings.Repeat("x", protocol.MaxInputBytes+1)))
+				if mapError(err).Code != string(tc.code) {
+					t.Fatalf("too large error = %v", err)
+				}
+				if len(caseClient.inputs) != tc.wantCalls {
+					t.Fatalf("too large client calls = %d, want %d", len(caseClient.inputs), tc.wantCalls)
+				}
+				return
+			}
+			if tc.code == protocol.ErrorInputConflict || tc.code == protocol.ErrorInputClosed || tc.code == protocol.ErrorInputStale {
+				caseClient.inputErr = protocol.NewWireError(tc.code, string(tc.code), nil)
+			}
+			_, err := caseServer.callTool(context.Background(), "input", args(caseRoot, "name", targetName, "text", "x"))
+			if mapError(err).Code != string(tc.code) {
+				t.Fatalf("%s error = %v", tc.name, err)
+			}
+			if len(caseClient.inputs) != tc.wantCalls {
+				t.Fatalf("%s client calls = %d, want %d", tc.name, len(caseClient.inputs), tc.wantCalls)
+			}
+		})
+	}
+
+	unavailableRoot := t.TempDir()
+	unavailableServer := NewServer(Options{Resolver: fakeResolver{resolution: Resolution{Root: unavailableRoot}}, ClientFactory: func(context.Context, bool) (Client, error) {
+		return nil, ErrDaemonUnavailable
+	}})
+	if _, err := unavailableServer.callTool(context.Background(), "input", args(unavailableRoot, "name", "prompt", "text", "x")); mapError(err).Code != "unavailable" {
+		t.Fatalf("unavailable input error = %v", err)
 	}
 }
 

@@ -49,8 +49,15 @@ Cursor and other clients that accept an `mcpServers` configuration:
 
 Every tool call requires `project_root`, set to the project's absolute path.
 The server exposes `start`, `up`, `down`, `list`, `status`, `logs`, `wait`,
-`restart`, `stop`, and `remove`. It has no arbitrary-command `run` or unbounded
-follow tool; agents use bounded `wait` and `logs`. For restart-with-work, use
+`input`, `restart`, `stop`, and `remove`. Its bounded `input` tool accepts
+exact non-empty text or strict padded base64 without whitespace for an
+already-running TTY incarnation; text sends exact bytes without a newline and returns its launch cursor;
+it never starts, waits, queues, retries, retains, or echoes input and an
+ownership conflict fails immediately; payloads are bounded at 1-32768 bytes.
+The one-shot operation is at-most-once and does not resend across a launch race;
+hum neither retains nor explicitly echoes submitted bytes. It has no
+arbitrary-command `run` or unbounded follow tool; agents use bounded
+`wait` and `logs`. For restart-with-work, use
 `stop`, run the intermediate command, then `start`: the durable session preserves
 terminal followers. `remove` is different from `stop`: it discards retained
 runtime state and output but never edits `hum.yaml`. `down` preserves sessions;
@@ -103,7 +110,11 @@ output-only. The owner uses raw mode and alone forwards SIGWINCH resizes;
 Ctrl-] detaches input, raw mode is restored after panic, terminal echo is
 controlled by the child, and Ctrl-C is forwarded only in TTY mode (normal
 non-TTY runs still use Ctrl-C to detach
-observation); Ctrl-D and Ctrl-Z are forwarded in TTY mode. MCP reports `tty` but
-has no input tool. Stop/restart preserves the lease across successors,
+observation); Ctrl-D and Ctrl-Z are forwarded in TTY mode. MCP reports `tty` and
+provides the same bounded `input` tool for exact prompt responses. Stop/restart
+preserves the lease across successors,
 remove and shutdown close it, and `shutdown --stop-processes` is required when
-active work must be stopped.
+active work must be stopped. For a one-shot prompt response, use MCP `input` or
+`hum input NAME --text VALUE`; text does not add a newline, and `--base64`
+requires strict padded base64 without whitespace. The bounded loop is observe with
+`wait --match` or `logs`, answer with `input`, then confirm with `wait --match`.

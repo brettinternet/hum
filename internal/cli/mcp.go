@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,11 +24,11 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 		Usage:     "serve project process lifecycle tools over stdio MCP",
 		ArgsUsage: "",
 		Description: "Run a stdio Model Context Protocol server for one-time coding-agent registration. " +
-			"Every tool requires an absolute existing project_root. start and up accept only resolved explicit or discovered definitions and may start the daemon; status, logs, wait, restart, and stop control existing declared or ad_hoc records and never start it. " +
+			"Every tool requires an absolute existing project_root. start and up accept only resolved explicit or discovered definitions and may start the daemon; status, logs, wait, input, restart, and stop control existing declared or ad_hoc records and never start it. " +
 			"A process handed off by hum run is available as ad_hoc while its daemon retains the record; daemon shutdown or replacement loses that launch definition. " +
 			"Bounded child-output logs and matches use terminal-control-stripped text, while system entries, stored bytes, cursors, and limit accounting remain raw; there is no --raw flag or other raw opt-out. " +
 			"Explicit definitions use deterministic argv-based environment activation with the MCP server environment. " +
-			"The nine tools are start, up, down, list, status, logs, wait, restart, and stop; run, serve, and shutdown are not MCP tools.",
+			"The eleven tools are start, up, down, list, status, logs, wait, input, restart, stop, and remove; run, serve, and shutdown are not MCP tools.",
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 			if err := requireNoArgs(cmd, "mcp"); err != nil {
 				return err
@@ -116,6 +117,17 @@ func (c *mcpDaemonClient) Wait(ctx context.Context, request protocol.WaitRequest
 		return protocol.WaitResponse{}, err
 	}
 	return protocol.NewWaitResponse(protocol.WaitOutcome(result.Outcome), protocol.Cursor(result.Cursor), mcpExit(result.Exit)), nil
+}
+func (c *mcpDaemonClient) Input(ctx context.Context, request mcpserver.InputRequest) (mcpserver.InputResult, error) {
+	result, err := c.client.Input(ctx, daemon.InputRequest{Name: request.Name, Cwd: request.Cwd, Root: request.Root, Data: append([]byte(nil), request.Data...)})
+	if err != nil {
+		var notRunning *daemon.SessionNotRunningError
+		if errors.As(err, &notRunning) {
+			return mcpserver.InputResult{}, &mcpserver.SessionNotRunningError{Name: request.Name}
+		}
+		return mcpserver.InputResult{}, err
+	}
+	return mcpserver.InputResult{Name: request.Name, Bytes: result.Bytes, LaunchCursor: result.LaunchCursor}, nil
 }
 func (c *mcpDaemonClient) Stop(ctx context.Context, request protocol.StopRequest) error {
 	return c.client.Stop(ctx, request)

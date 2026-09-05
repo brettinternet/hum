@@ -18,6 +18,7 @@ Use the bundled hum MCP tools when available. Pass the absolute current project 
 - After process-definition changes, use `restart`.
 - Use `remove` only to discard the runtime session, retained output, and launch state; it never edits `hum.yaml`.
 - Use `down` only when the developer asks you to stop everything in the project; a later `up` restarts only resolved definitions.
+- For a bounded prompt response, observe with `logs` or `wait --match`, answer with `input` (or CLI fallback `hum input NAME --text VALUE`), then confirm with `wait --match`. Text sends exact bytes without a newline; use `hum input NAME --base64 PADDED_VALUE` for awkward bytes, and require strict padded base64 (standard alphabet) without whitespace. Payloads are 1-32768 bytes. Input targets only a running TTY, is at-most-once with no resend across a launch race, writes once at its launch cursor, fails immediately on ownership conflict, and never starts, waits, queues, retries, retains, or explicitly echoes input.
 
 ## Conservative discovery
 
@@ -54,4 +55,4 @@ Ctrl-] detaches input, raw mode is restored after panic, terminal echo is
 child output, and Ctrl-C is forwarded only for TTY runs; Ctrl-D and Ctrl-Z are forwarded too; ordinary runs keep
 Ctrl-C observer detach. TTY output is merged as stdout and may contain ANSI
 controls. Stop/restart preserves the lease across launch cursors; remove and
-shutdown close it. MCP reports `tty` but has no input tool.
+shutdown close it. MCP reports `tty` and provides bounded `input` for exact prompt responses.

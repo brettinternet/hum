@@ -25,6 +25,7 @@ hum status <name> [--json]
 hum logs <name> [--stream stdout|stderr|both] [--tail N] [--after-cursor N]
            [--limit-bytes N] [--match REGEX] [--follow] [--json]
 hum wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
+hum input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
 hum restart <name>... [--json]
 hum stop <name>... [--json]
 hum remove <name>... [--json]
@@ -52,7 +53,8 @@ Combined short options are unsupported; MCP fields have no aliases.
 | `-f` | `--follow` | `logs` |
 
 `--no-wait`, `--stop-processes`, `--runtime-dir`, `--stop-grace`,
-`--output-bytes`, and `--completed-records` remain long-only.
+`--output-bytes`, and `--completed-records` remain long-only. The `input`
+command intentionally adds no short aliases, including for `--json`.
 
 Human-readable output is the default. JSON process snapshots include `name`,
 `source`, `argv`, and the integer `followers` count, plus identity, readiness,
@@ -95,7 +97,19 @@ restarted.
 `list` merges current definitions with all project runtime records. Without a
 daemon it reports resolved definitions as stopped. `status`, `logs`, `wait`,
 `restart`, `stop`, and `remove` operate on resolved and ad hoc records in the
-project. `stop` preserves the durable session; `remove` stops its child, closes
+project. `input` is the bounded request/response surface for an existing TTY
+record: `--text` sends exact non-empty text bytes without a newline, while
+`--base64` accepts only standard padded base64 without whitespace and decodes to
+at most 32 KiB. It attaches only to the initial running state, writes exactly
+once at that launch cursor, and releases the exclusive lease before returning.
+The client behavior is at-most-once: a launch race or lost acknowledgement is
+reported without resending to a successor. It never starts a daemon or process,
+waits for a launch, queues, retries,
+retains, or explicitly echoes bytes. The bounded prompt loop is observe with
+`logs` or `wait --match`, answer with `input`, then confirm with `wait --match`.
+A stopped initial state returns `session_not_running`; a non-TTY target returns `input_not_tty`; ownership,
+closed-session, and stale-cursor races return the existing input error codes.
+`stop` preserves the durable session; `remove` stops its child, closes
 followers, and discards runtime launch state and output without editing
 `hum.yaml`. The reported follower count is read-only: `remove` never warns,
 prompts, refuses, or otherwise gates behavior based on it.
@@ -241,9 +255,11 @@ environment, so definition edits take effect.
 ## MCP adapter
 
 `hum mcp` serves JSON-RPC over stdin/stdout. Every request requires an absolute,
-existing `project_root` chosen by the same root rule as the CLI. It exposes ten
-tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `restart`,
-`stop`, and `remove`.
+existing `project_root` chosen by the same root rule as the CLI. It exposes eleven
+tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `input`, `restart`,
+`stop`, and `remove`. `input` accepts exactly one non-empty `text` or `base64`
+payload, uses the same bounded one-shot TTY semantics as the CLI, and returns
+`name`, decoded `bytes`, and `launch_cursor`.
 
 The tools share CLI definition, readiness, cursor, collision, and aggregate
 semantics. Only `start` and `up` may create or replace a daemon. Without one,
@@ -252,17 +268,18 @@ tools return unavailable-daemon errors. Recorded environments are never
 returned. MCP `status` and `list` return the same `followers` integer as the CLI
 snapshot.
 
-MCP exposes no follow or other unbounded operation; agents use bounded `wait`
-and `logs`. The adapter receives a protocol-shaped daemon client and constructs
+MCP exposes no follow or other unbounded operation; agents use bounded `wait`,
+`logs`, and one-shot `input`. The adapter receives a protocol-shaped daemon client and constructs
 no app services, supervisors, or output stores in-process. It has no `run`,
 `serve`, or `shutdown`, HTTP transport, authentication, remote access, or arbitrary-command
 tool.
 
 ## Non-goals
 
-The foundation has no one-shot arbitrary input API, automatic crash
-restart/backoff, remote transport, authentication, web UI, persistent process
-history, plugin system, OS service installation, or environment literals/files.
+The foundation has no arbitrary or unbounded input API, queued input, automatic
+crash restart/backoff, remote transport, authentication, web UI, persistent
+process history, plugin system, OS service installation, or environment
+literals/files.
 The runtime directory contains only the socket, PID/startup state, and bounded
 daemon diagnostics.
 
@@ -279,11 +296,13 @@ strip described above, without terminal emulation.
 
 Exactly one attached `hum run` owns input. A second attachment follows output
 only, `logs --follow` never owns input, and the one-shot CLI/MCP input operation
-remains DRAFT-002. Input writes are bounded base64 payloads scoped to a launch
-cursor; state events identify stopped/running successors and the owner alone
+accepts exact text or strict padded base64 payloads bounded to 1-32768 bytes and
+scoped to the initial running launch cursor; state events identify
+stopped/running successors and the owner alone
 forwards SIGWINCH resize events from the attached terminal. Ctrl-] detaches
 input, local raw mode is restored on detach, panic, and transport-loss paths,
 terminal/application echo remains child output, and input is discarded while
 stopped. Ctrl-C, Ctrl-D, and Ctrl-Z are forwarded as input bytes; the child
 controls their terminal meaning. Ordinary exit preserves the lease; remove and
-daemon shutdown close it. MCP exposes `tty` snapshots but no MCP input tool.
+daemon shutdown close it. MCP exposes `tty` snapshots and the bounded `input`
+tool for exact prompt responses.

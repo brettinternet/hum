@@ -777,13 +777,22 @@ func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protoc
 	inputCtx, inputCancel := context.WithCancel(ctx)
 	defer inputCancel()
 	leaseDone := lease.Done()
+	// An explicit input_release keeps this connection alive long enough for the
+	// post-release acknowledgement. Other lease closures still cancel and
+	// close the transport so a blocked decoder is released promptly.
+	releaseRequested := make(chan struct{})
 	transportDone := make(chan struct{})
 	go func() {
 		defer close(transportDone)
 		select {
 		case <-leaseDone:
-			inputCancel()
-			_ = conn.Close()
+			select {
+			case <-releaseRequested:
+				return
+			default:
+				inputCancel()
+				_ = conn.Close()
+			}
 		case <-inputCtx.Done():
 		}
 	}()
@@ -862,10 +871,19 @@ func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protoc
 			})
 			ack = protocol.InputAckResponse{Op: protocol.OpInputResize, OK: response == nil, LaunchCursor: protocol.Cursor(wire.LaunchCursor)}
 		case "input_release":
+			// Release first: the acknowledgement is the one-shot client's proof
+			// that the server has cleared the durable lease. Mark the explicit
+			// path before closing the lease so the lease watcher does not close
+			// this connection before the acknowledgement is encoded.
+			close(releaseRequested)
+			lease.Release()
 			ack = protocol.InputAckResponse{Op: protocol.OpInputRelease, OK: true}
 			writeMu.Lock()
-			_ = encoder.EncodeResponse(ack)
+			writeErr := encoder.EncodeResponse(ack)
 			writeMu.Unlock()
+			if writeErr != nil {
+				return
+			}
 			return
 		default:
 			response = fmt.Errorf("%w: input connection does not accept %q", app.ErrInvalidRequest, wire.Op)

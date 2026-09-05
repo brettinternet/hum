@@ -15,9 +15,9 @@ func TestMCPHelp(t *testing.T) {
 	}
 	help := strings.ToLower(output.String())
 	for _, want := range []string{
-		"stdio", "one-time", "project_root", "absolute existing", "start and up", "resolved", "status, logs, wait, restart, and stop",
+		"stdio", "one-time", "project_root", "absolute existing", "start and up", "resolved", "status, logs, wait, input, restart, and stop",
 		"ad_hoc", "hum run", "daemon shutdown or replacement", "argv-based environment activation",
-		"nine tools", "run, serve, and shutdown are not mcp tools",
+		"eleven tools", "run, serve, and shutdown are not mcp tools",
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf("mcp help missing %q: %q", want, output.String())

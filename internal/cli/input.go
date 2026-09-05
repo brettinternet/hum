@@ -1,0 +1,202 @@
+package cli
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"unicode"
+
+	urfavecli "github.com/urfave/cli/v3"
+
+	"hum/internal/daemon"
+	"hum/internal/protocol"
+)
+
+// inputResult is the stable one-shot success shape. It intentionally contains
+// only the target name, acknowledged byte count, and selected launch cursor.
+type inputResult struct {
+	Name         string          `json:"name"`
+	Bytes        int             `json:"bytes"`
+	LaunchCursor protocol.Cursor `json:"launch_cursor"`
+}
+
+type inputErrorResult struct {
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
+func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	args := cmd.Args().Slice()
+	name := ""
+	if len(args) == 1 {
+		name = args[0]
+	}
+	if len(args) == 0 {
+		return inputCommandError(cmd, writer, name, inputInvalidRequestError("input requires exactly one process name"))
+	}
+	if len(args) != 1 {
+		return inputCommandError(cmd, writer, name, inputInvalidRequestError("input accepts exactly one process name"))
+	}
+	if strings.TrimSpace(name) == "" {
+		return inputCommandError(cmd, writer, name, inputInvalidRequestError("input process name must not be empty"))
+	}
+
+	data, err := inputPayload(cmd)
+	if err != nil {
+		return inputCommandError(cmd, writer, name, err)
+	}
+	ctx = nonNilContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return inputCommandError(cmd, writer, name, err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return inputCommandError(cmd, writer, name, fmt.Errorf("current directory: %w", err))
+	}
+	manifest, err := loadManifestOrEmpty(cwd)
+	if err != nil {
+		return inputCommandError(cmd, writer, name, err)
+	}
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return inputCommandError(cmd, writer, name, err)
+	}
+	client, err := daemonClient(ctx, cfg)
+	if err != nil {
+		if client != nil {
+			_ = client.Close()
+		}
+		if daemonUnavailable(err) {
+			return inputCommandError(cmd, writer, name, protocol.NewWireError(protocol.ErrorCode("unavailable"), runUnavailableMessage, nil))
+		}
+		return inputCommandError(cmd, writer, name, err)
+	}
+	defer client.Close()
+
+	definition, declared := manifest.byName[name]
+	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+	if err != nil {
+		if !isNotFound(err) {
+			return inputCommandError(cmd, writer, name, err)
+		}
+		if declared && !definition.TTY {
+			return inputCommandError(cmd, writer, name, inputNotTTYError(name, definition.TTY))
+		}
+		if declared {
+			return inputCommandError(cmd, writer, name, inputSessionNotRunningError(name))
+		}
+		return inputCommandError(cmd, writer, name, inputNotFoundError(name))
+	}
+	if declared && !definition.TTY {
+		return inputCommandError(cmd, writer, name, inputNotTTYError(name, false))
+	}
+	if !process.TTY {
+		return inputCommandError(cmd, writer, name, inputNotTTYError(name, declared && definition.TTY))
+	}
+
+	root := process.Root
+	if root == "" {
+		root = manifest.root
+	}
+	inputCwd := process.Cwd
+	if inputCwd == "" {
+		inputCwd = manifest.root
+	}
+	result, err := client.Input(ctx, daemon.InputRequest{Name: name, Cwd: inputCwd, Root: root, Data: data})
+	if err != nil {
+		var notRunning *daemon.SessionNotRunningError
+		if errors.As(err, &notRunning) {
+			err = inputSessionNotRunningError(name)
+		}
+		return inputCommandError(cmd, writer, name, err)
+	}
+	if cmd.Bool("json") {
+		return encodeJSON(writer, inputResult{Name: name, Bytes: result.Bytes, LaunchCursor: result.LaunchCursor})
+	}
+	_, err = fmt.Fprintf(writer, "wrote %d bytes to %s at launch cursor %d\n", result.Bytes, name, result.LaunchCursor)
+	return err
+}
+
+func inputPayload(cmd *urfavecli.Command) ([]byte, error) {
+	textSet := cmd.IsSet("text")
+	base64Set := cmd.IsSet("base64")
+	if textSet == base64Set {
+		return nil, inputInvalidRequestError("input requires exactly one of --text or --base64")
+	}
+	if textSet {
+		value := cmd.String("text")
+		if value == "" {
+			return nil, inputInvalidRequestError("--text must not be empty")
+		}
+		data := []byte(value)
+		if len(data) > protocol.MaxInputBytes {
+			return nil, protocol.NewWireError(protocol.ErrorInputTooLarge, fmt.Sprintf("input payload exceeds %d bytes", protocol.MaxInputBytes), nil)
+		}
+		return data, nil
+	}
+
+	value := cmd.String("base64")
+	data, err := decodeStrictInputBase64(value)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > protocol.MaxInputBytes {
+		return nil, protocol.NewWireError(protocol.ErrorInputTooLarge, fmt.Sprintf("input payload exceeds %d bytes", protocol.MaxInputBytes), nil)
+	}
+	return data, nil
+}
+
+func decodeStrictInputBase64(value string) ([]byte, error) {
+	if value == "" {
+		return nil, inputInvalidRequestError("--base64 must not be empty")
+	}
+	for _, runeValue := range value {
+		if unicode.IsSpace(runeValue) {
+			return nil, inputInvalidRequestError("--base64 must not contain whitespace")
+		}
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil {
+		return nil, inputInvalidRequestError("--base64 must be standard padded base64")
+	}
+	if len(decoded) == 0 {
+		return nil, inputInvalidRequestError("--base64 must decode to at least one byte")
+	}
+	return decoded, nil
+}
+
+func inputInvalidRequestError(message string) error {
+	return protocol.NewWireError(protocol.ErrorInvalidRequest, message, nil)
+}
+
+func inputNotFoundError(name string) error {
+	return protocol.NewWireError(protocol.ErrorNotFound,
+		fmt.Sprintf("process %q was not found; use hum start %s for a resolved name or hum run %s -- COMMAND", name, name, name), nil)
+}
+
+func inputSessionNotRunningError(name string) error {
+	return protocol.NewWireError(protocol.ErrorCode("session_not_running"),
+		fmt.Sprintf("session %q is not running; start it with hum start %s", name, name), nil)
+}
+
+func inputNotTTYError(name string, declaredTTY bool) error {
+	message := fmt.Sprintf("process %q is not a tty; set tty: true in hum.yaml or launch it with hum run %s --tty -- COMMAND", name, name)
+	if declaredTTY {
+		message = fmt.Sprintf("process %q is running without a tty; stop it and rerun with tty: true or --tty", name)
+	}
+	return protocol.NewWireError(protocol.ErrorInputNotTTY, message, nil)
+}
+
+func inputCommandError(cmd *urfavecli.Command, writer io.Writer, name string, err error) error {
+	if err == nil || !cmd.Bool("json") {
+		return err
+	}
+	if encodeErr := encodeJSON(writer, inputErrorResult{Name: name, Error: err.Error()}); encodeErr != nil {
+		return encodeErr
+	}
+	return err
+}

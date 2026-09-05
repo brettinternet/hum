@@ -9,6 +9,21 @@ import (
 	"testing"
 )
 
+func TestInputDocs(t *testing.T) {
+	for _, path := range []string{"SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(content)
+		for _, phrase := range []string{"hum input", "--base64", "without a newline", "strict padded base64", "without whitespace", "wait --match", "observe", "answer", "confirm", "ownership conflict", "never starts", "retains"} {
+			if !strings.Contains(text, phrase) {
+				t.Errorf("%s missing input guidance %q", path, phrase)
+			}
+		}
+	}
+}
+
 func TestSkillContentMatchesFileByteForByte(t *testing.T) {
 	want, err := os.ReadFile("SKILL.md")
 	if err != nil {

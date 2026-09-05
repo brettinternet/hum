@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,9 @@ modes:
       after the first half, then emit the remaining lines.
   terminal <gate>
       Emit colour, OSC, and CRLF output, wait for <gate>, then emit a live line.
+  prompt <marker>
+      Emit a colourised prompt, read exactly one newline-terminated response,
+      record it at <marker>.input, echo confirmation, and exit.
   tree <marker> <graceful|ignore-term>
       Create a parent/child/grandchild in the inherited process group and
       write PID/readiness markers. SIGTERM writes .parent.term, .child.term,
@@ -90,6 +94,11 @@ func run(args []string) (int, error) {
 			return 0, errors.New("terminal requires exactly one non-empty gate path")
 		}
 		return runTerminal(args[1])
+	case "prompt":
+		if len(args) != 2 || args[1] == "" {
+			return 0, errors.New("prompt requires exactly one non-empty marker path")
+		}
+		return runPrompt(args[1])
 	case "tree":
 		if len(args) != 3 || args[1] == "" {
 			return 0, errors.New("tree requires a marker path and graceful or ignore-term")
@@ -224,6 +233,23 @@ func writeBurstLines(start, end int) error {
 		}
 	}
 	return nil
+}
+
+func runPrompt(marker string) (int, error) {
+	if err := writeFile(os.Stdout, "\033[36mprompt>\033[0m "); err != nil {
+		return 0, fmt.Errorf("write prompt: %w", err)
+	}
+	response, err := bufio.NewReader(os.Stdin).ReadBytes('\n')
+	if err != nil {
+		return 0, fmt.Errorf("read prompt response: %w", err)
+	}
+	if err := writeMarker(marker+".input", string(response)); err != nil {
+		return 0, fmt.Errorf("write prompt response: %w", err)
+	}
+	if err := writeFile(os.Stdout, "confirmed:"+string(response)); err != nil {
+		return 0, fmt.Errorf("write prompt confirmation: %w", err)
+	}
+	return 0, nil
 }
 
 func runTerminal(gate string) (int, error) {

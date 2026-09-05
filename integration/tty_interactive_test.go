@@ -15,6 +15,79 @@ import (
 	"hum/internal/testutil"
 )
 
+func TestOneShotInputAnswersPrompt(t *testing.T) {
+	hum := testutil.BuildHum(t)
+	fixture := testutil.BuildFixture(t)
+	runtimeDir := testutil.RuntimeDir(t)
+	root := t.TempDir()
+	env := testutil.RuntimeEnv(runtimeDir)
+	marker := filepath.Join(t.TempDir(), "prompt")
+	t.Cleanup(func() { _ = testutil.Run(t, hum, root, env, "shutdown", "--stop-processes") })
+
+	started := testutil.Run(t, hum, root, env, "run", "prompt", "--tty", "--detach", "--", fixture, "prompt", marker)
+	if started.Err != nil {
+		t.Fatalf("detached prompt: %#v", started)
+	}
+	observed := testutil.Run(t, hum, root, env, "wait", "prompt", "--match", "^prompt>")
+	if observed.Err != nil || observed.Code != 0 {
+		t.Fatalf("observe prompt: %#v", observed)
+	}
+	answered := testutil.Run(t, hum, root, env, "input", "prompt", "--text", "yes\n")
+	if answered.Err != nil || answered.Code != 0 || !strings.Contains(answered.Stdout, "wrote 4 bytes to prompt at launch cursor") {
+		t.Fatalf("answer prompt: %#v", answered)
+	}
+	testutil.WaitForFile(t, marker+".input", 5*time.Second)
+	input, err := os.ReadFile(marker + ".input")
+	if err != nil || string(input) != "yes\n" {
+		t.Fatalf("fixture input=%q err=%v", input, err)
+	}
+	confirmed := testutil.Run(t, hum, root, env, "wait", "prompt", "--after-cursor", "0", "--match", "confirmed:yes")
+	if confirmed.Err != nil || confirmed.Code != 0 {
+		t.Fatalf("confirm prompt: %#v", confirmed)
+	}
+	logs := testutil.Run(t, hum, root, env, "logs", "prompt")
+	if logs.Err != nil || !strings.Contains(logs.Stdout, "confirmed:yes") {
+		t.Fatalf("prompt logs: %#v", logs)
+	}
+	if strings.Contains(logs.Stdout, "input payload") {
+		t.Fatalf("logs retained a daemon input diagnostic: %q", logs.Stdout)
+	}
+	stoppedInput := testutil.Run(t, hum, root, env, "input", "prompt", "--text", "again")
+	if stoppedInput.Code == 0 || !strings.Contains(stoppedInput.Stderr, "hum start prompt") {
+		t.Fatalf("stopped input: %#v", stoppedInput)
+	}
+
+	plain := testutil.Run(t, hum, root, env, "run", "plain", "--detach", "--", "/bin/sh", "-c", "sleep 5")
+	if plain.Err != nil {
+		t.Fatalf("plain launch: %#v", plain)
+	}
+	nonTTY := testutil.Run(t, hum, root, env, "input", "plain", "--text", "x")
+	if nonTTY.Code == 0 || (!strings.Contains(nonTTY.Stderr, "tty") && !strings.Contains(nonTTY.Stdout, "tty")) {
+		t.Fatalf("non-tty input: %#v", nonTTY)
+	}
+	_ = testutil.Run(t, hum, root, env, "stop", "plain")
+
+	owner := exec.Command(hum, "run", "owner", "--tty", "--", "/bin/sh", "-c", "printf owner-ready; sleep 5")
+	owner.Dir = root
+	owner.Env = env
+	ownerPTY, err := pty.Start(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readPTYUntil(t, ownerPTY, "owner-ready", 5*time.Second)
+	conflict := testutil.Run(t, hum, root, env, "input", "owner", "--text", "x")
+	if conflict.Code == 0 || !strings.Contains(conflict.Stderr+conflict.Stdout, "already owned") {
+		t.Fatalf("occupied input: %#v", conflict)
+	}
+	_, _ = ownerPTY.Write([]byte{0x1d})
+	_ = ownerPTY.Close()
+	if owner.Process != nil && testutil.ProcessAlive(owner.Process.Pid) {
+		_ = owner.Process.Signal(syscall.SIGTERM)
+	}
+	_ = owner.Wait()
+	_ = testutil.Run(t, hum, root, env, "stop", "owner")
+}
+
 func TestTTYInteractiveSession(t *testing.T) {
 	hum := testutil.BuildHum(t)
 	runtimeDir := testutil.RuntimeDir(t)

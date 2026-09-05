@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"hum/internal/protocol"
 )
@@ -37,6 +39,33 @@ type Resolution struct {
 	Definitions []Definition
 }
 
+// InputRequest is the protocol-independent one-shot input seam used by MCP.
+// Data is already decoded and is never retained by the adapter.
+type InputRequest struct {
+	Name string
+	Cwd  string
+	Root string
+	Data []byte
+}
+
+// InputResult is the stable result returned by the input tool.
+type InputResult struct {
+	Name         string          `json:"name"`
+	Bytes        int             `json:"bytes"`
+	LaunchCursor protocol.Cursor `json:"launch_cursor"`
+}
+
+// SessionNotRunningError is a client-facing result derived from the initial
+// stopped input_state event; it is not a daemon wire operation.
+type SessionNotRunningError struct{ Name string }
+
+func (e *SessionNotRunningError) Error() string {
+	if e == nil || e.Name == "" {
+		return "session is not running; start it with hum start NAME"
+	}
+	return fmt.Sprintf("session %q is not running; start it with hum start %s", e.Name, e.Name)
+}
+
 // Resolver applies the same nearest-Git-root-or-cwd fallback used by the CLI.
 type Resolver interface {
 	Resolve(context.Context, string) (Resolution, error)
@@ -49,6 +78,7 @@ type Client interface {
 	Get(context.Context, protocol.GetRequest) (protocol.Process, error)
 	Output(context.Context, protocol.OutputRequest) (protocol.OutputResult, error)
 	Wait(context.Context, protocol.WaitRequest) (protocol.WaitResponse, error)
+	Input(context.Context, InputRequest) (InputResult, error)
 	Stop(context.Context, protocol.StopRequest) error
 	Remove(context.Context, protocol.RemoveRequest) error
 	Restart(context.Context, protocol.RestartRequest) (protocol.Process, error)
@@ -103,6 +133,10 @@ func mapError(err error) *ToolError {
 	var wirePtr *protocol.WireError
 	if errors.As(err, &wirePtr) && wirePtr != nil {
 		return &ToolError{Code: string(wirePtr.Code), Message: wirePtr.Error(), Details: wirePtr.Details}
+	}
+	var notRunning *SessionNotRunningError
+	if errors.As(err, &notRunning) {
+		return &ToolError{Code: "session_not_running", Message: notRunning.Error()}
 	}
 	if unavailable(err) {
 		return &ToolError{Code: "unavailable", Message: err.Error()}
@@ -165,6 +199,24 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
 	output := objectSchema(map[string]any{"entries": map[string]any{"type": "array", "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}, "oldest": map[string]any{"type": "integer", "minimum": 0}, "latest": map[string]any{"type": "integer", "minimum": 0}, "evicted_through": map[string]any{"type": "integer", "minimum": 0}, "truncated": map[string]any{"type": "boolean"}, "more": map[string]any{"type": "boolean"}}, "entries")
 	wait := objectSchema(map[string]any{"op": map[string]any{"type": "string"}, "ok": map[string]any{"type": "boolean"}, "outcome": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "integer", "minimum": 0}}, "op", "ok", "cursor")
+	inputText := map[string]any{"type": "string", "minLength": 1, "description": "Exact UTF-8 text bytes; no newline is appended."}
+	inputBase64 := map[string]any{
+		"type": "string", "minLength": 1, "maxLength": 43692,
+		"pattern":         "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+		"contentEncoding": "base64", "description": "Standard padded base64 without whitespace for 1-32768 decoded bytes.",
+	}
+	inputSchema := objectSchema(map[string]any{
+		"project_root": root, "name": nameExisting, "text": inputText, "base64": inputBase64,
+	}, "project_root", "name")
+	inputSchema["oneOf"] = []any{
+		objectSchema(map[string]any{"project_root": root, "name": nameExisting, "text": inputText}, "project_root", "name", "text"),
+		objectSchema(map[string]any{"project_root": root, "name": nameExisting, "base64": inputBase64}, "project_root", "name", "base64"),
+	}
+	inputResult := objectSchema(map[string]any{
+		"name":          map[string]any{"type": "string"},
+		"bytes":         map[string]any{"type": "integer", "minimum": 1},
+		"launch_cursor": map[string]any{"type": "integer", "minimum": 0},
+	}, "name", "bytes", "launch_cursor")
 	return []toolDefinition{
 		{Name: "start", Description: "Start one resolved project definition through the hum daemon; waits for configured readiness by default.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
 		{Name: "up", Description: "Start every resolved project definition through the hum daemon; waits for configured readiness by default.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: map[string]any{"type": "array", "items": launch}},
@@ -173,6 +225,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
 		{Name: "logs", Description: "Read a bounded cursor-based output window for an existing declared or ad_hoc runtime record. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0}, "tail": map[string]any{"type": "integer", "minimum": 0}, "max_entries": map[string]any{"type": "integer", "minimum": 1}, "max_bytes": map[string]any{"type": "integer", "minimum": 1}}, "project_root", "name"), OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0}, "match": map[string]any{"type": "string"}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1}}, "project_root", "name"), OutputSchema: wait},
+		{Name: "input", Description: "Write one exact, bounded payload to an already-running TTY incarnation at its initial launch cursor with at-most-once behavior; never starts, waits, queues, retries, resends, retains, or explicitly echoes input and fails immediately on ownership conflict.", InputSchema: inputSchema, OutputSchema: inputResult},
 		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
 		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record while preserving its supervision session.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
 		{Name: "remove", Description: "Stop and discard one runtime supervision session, its retained launch specification, and output.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
@@ -197,6 +250,13 @@ type commonInput struct {
 	MaxEntries  int     `json:"max_entries,omitempty"`
 	MaxBytes    int     `json:"max_bytes,omitempty"`
 	Match       string  `json:"match,omitempty"`
+	Text        *string `json:"text,omitempty"`
+	Base64      *string `json:"base64,omitempty"`
+
+	textSet   bool
+	base64Set bool
+	fields    map[string]json.RawMessage
+	Data      []byte
 }
 
 func decodeInput(raw json.RawMessage) (commonInput, error) {
@@ -206,6 +266,13 @@ func decodeInput(raw json.RawMessage) (commonInput, error) {
 	if err := dec.Decode(&input); err != nil {
 		return input, &ToolError{Code: "invalid_request", Message: "invalid tool arguments: " + err.Error()}
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return input, &ToolError{Code: "invalid_request", Message: "invalid tool arguments: " + err.Error()}
+	}
+	input.fields = fields
+	_, input.textSet = fields["text"]
+	_, input.base64Set = fields["base64"]
 	if input.ProjectRoot == "" || !filepath.IsAbs(input.ProjectRoot) {
 		return input, &ToolError{Code: "invalid_request", Message: "project_root must be an absolute existing directory"}
 	}
@@ -214,6 +281,39 @@ func decodeInput(raw json.RawMessage) (commonInput, error) {
 		return input, &ToolError{Code: "invalid_request", Message: "project_root must be an absolute existing directory"}
 	}
 	return input, nil
+}
+
+func decodeInputPayload(input commonInput) ([]byte, error) {
+	if input.textSet == input.base64Set {
+		return nil, &ToolError{Code: "invalid_request", Message: "input requires exactly one of text or base64"}
+	}
+	if input.textSet {
+		if input.Text == nil || *input.Text == "" {
+			return nil, &ToolError{Code: "invalid_request", Message: "text must be a non-empty string"}
+		}
+		data := []byte(*input.Text)
+		if len(data) > protocol.MaxInputBytes {
+			return nil, &ToolError{Code: string(protocol.ErrorInputTooLarge), Message: fmt.Sprintf("input payload exceeds %d bytes", protocol.MaxInputBytes)}
+		}
+		return data, nil
+	}
+	if input.Base64 == nil || *input.Base64 == "" {
+		return nil, &ToolError{Code: "invalid_request", Message: "base64 must be a non-empty string"}
+	}
+	value := *input.Base64
+	for _, runeValue := range value {
+		if unicode.IsSpace(runeValue) {
+			return nil, &ToolError{Code: "invalid_request", Message: "base64 must not contain whitespace"}
+		}
+	}
+	data, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil || len(data) == 0 {
+		return nil, &ToolError{Code: "invalid_request", Message: "base64 must be standard padded base64 for at least one byte"}
+	}
+	if len(data) > protocol.MaxInputBytes {
+		return nil, &ToolError{Code: string(protocol.ErrorInputTooLarge), Message: fmt.Sprintf("input payload exceeds %d bytes", protocol.MaxInputBytes)}
+	}
+	return data, nil
 }
 
 func (s *Server) resolve(ctx context.Context, root string) (Resolution, error) {
@@ -300,6 +400,24 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
+	if name == "input" {
+		for field := range input.fields {
+			switch field {
+			case "project_root", "name", "text", "base64":
+			default:
+				return nil, &ToolError{Code: "invalid_request", Message: fmt.Sprintf("unknown input field %q", field)}
+			}
+		}
+		input.Data, err = decodeInputPayload(input)
+		if err != nil {
+			return nil, err
+		}
+	} else if input.textSet || input.base64Set {
+		return nil, &ToolError{Code: "invalid_request", Message: "text and base64 are only valid for the input tool"}
+	}
+	if name == "input" && strings.TrimSpace(input.Name) == "" {
+		return nil, &ToolError{Code: "invalid_request", Message: "name is required"}
+	}
 	resolution, err := s.resolve(ctx, input.ProjectRoot)
 	if err != nil {
 		return nil, mapError(err)
@@ -322,6 +440,8 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		return s.logs(ctx, resolution, input)
 	case "wait":
 		return s.wait(ctx, resolution, input)
+	case "input":
+		return s.input(ctx, resolution, input)
 	case "restart":
 		return s.restart(ctx, resolution, input.Name)
 	case "stop":
@@ -662,6 +782,62 @@ func (s *Server) wait(ctx context.Context, resolution Resolution, input commonIn
 		return nil, mapError(err)
 	}
 	return result, nil
+}
+
+func (s *Server) input(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
+	client, err := s.client(ctx, false)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer client.Close()
+
+	definition, declared := findDefinition(resolution, input.Name)
+	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Cwd: resolution.Root})
+	if err != nil {
+		mapped := mapError(err)
+		if mapped.Code != string(protocol.ErrorNotFound) {
+			return nil, mapped
+		}
+		if declared && !definition.TTY {
+			return nil, mcpInputNotTTYError(input.Name, false)
+		}
+		if declared {
+			return nil, mcpInputSessionNotRunningError(input.Name)
+		}
+		return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process %q was not found; use hum start %s for a resolved name or hum run %s -- COMMAND", input.Name, input.Name, input.Name)}
+	}
+	if declared && !definition.TTY {
+		return nil, mcpInputNotTTYError(input.Name, false)
+	}
+	if !process.TTY {
+		return nil, mcpInputNotTTYError(input.Name, declared && definition.TTY)
+	}
+
+	root := process.Root
+	if root == "" {
+		root = resolution.Root
+	}
+	cwd := process.Cwd
+	if cwd == "" {
+		cwd = resolution.Root
+	}
+	result, err := client.Input(ctx, InputRequest{Name: input.Name, Cwd: cwd, Root: root, Data: append([]byte(nil), input.Data...)})
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return InputResult{Name: input.Name, Bytes: result.Bytes, LaunchCursor: result.LaunchCursor}, nil
+}
+
+func mcpInputNotTTYError(name string, declaredTTY bool) *ToolError {
+	message := fmt.Sprintf("process %q is not a tty; set tty: true in hum.yaml or launch it with hum run %s --tty -- COMMAND", name, name)
+	if declaredTTY {
+		message = fmt.Sprintf("process %q is running without a tty; stop it and rerun with tty: true or --tty", name)
+	}
+	return &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: message}
+}
+
+func mcpInputSessionNotRunningError(name string) *ToolError {
+	return &ToolError{Code: "session_not_running", Message: fmt.Sprintf("session %q is not running; start it with hum start %s", name, name)}
 }
 
 type stopResult struct {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,6 +47,23 @@ type RestartRequest = protocol.RestartRequest
 type RemoveRequest = protocol.RemoveRequest
 type ShutdownRequest = protocol.ShutdownRequest
 type InputAttachRequest = protocol.InputAttachRequest
+
+// InputRequest describes one bounded, cursor-scoped one-shot write. The
+// daemon client resolves the initial input state, writes exactly once at its
+// initial launch cursor, and releases the input lease before returning.
+type InputRequest struct {
+	Name string
+	Cwd  string
+	Root string
+	Data []byte
+}
+
+// InputResult reports the bytes acknowledged by the daemon and the launch
+// cursor selected from the initial running state.
+type InputResult struct {
+	Bytes        int
+	LaunchCursor protocol.Cursor
+}
 
 // Dial connects to a socket, performs the mandatory hello, and returns the
 // connection even for VersionMismatchError so an idle older daemon can still
@@ -340,6 +358,12 @@ type InputSession struct {
 	state   string
 	cursor  protocol.Cursor
 
+	// initialState and initialCursor never change after attach. One-shot input
+	// uses these values rather than the mutable latest state so a successor
+	// event cannot move a write across an incarnation boundary.
+	initialState  string
+	initialCursor protocol.Cursor
+
 	events      chan protocol.InputStateEvent
 	eventMu     sync.Mutex
 	eventQueue  []protocol.InputStateEvent
@@ -349,6 +373,10 @@ type InputSession struct {
 	acks      chan json.RawMessage
 	done      chan struct{}
 	closeOnce sync.Once
+
+	releaseOnce sync.Once
+	releaseDone chan struct{}
+	releaseErr  error
 }
 
 // InputAttach opens an exclusive input lease. A known manifest or retained
@@ -391,12 +419,60 @@ func (c *Client) InputAttach(ctx context.Context, req InputAttachRequest) (*Inpu
 	}
 	session := &InputSession{
 		client: inputClient, state: event.State, cursor: event.LaunchCursor,
+		initialState: event.State, initialCursor: event.LaunchCursor,
 		events: make(chan protocol.InputStateEvent, 16), eventNotify: make(chan struct{}, 1),
-		acks: make(chan json.RawMessage, 4), done: make(chan struct{}),
+		acks: make(chan json.RawMessage, 4), done: make(chan struct{}), releaseDone: make(chan struct{}),
 	}
 	go session.dispatchInputEvents()
 	go session.readInputEvents()
 	return session, nil
+}
+
+// Input performs one bounded, at-most-once write against an already-running
+// TTY incarnation. It never starts a daemon or process, never waits for a
+// launch, and releases the exclusive input lease on every terminal path.
+func (c *Client) Input(ctx context.Context, req InputRequest) (InputResult, error) {
+	if err := validateInputRequest(req); err != nil {
+		return InputResult{}, err
+	}
+	session, err := c.InputAttach(ctx, InputAttachRequest{
+		Op: protocol.OpInputAttach, Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: true,
+	})
+	if err != nil {
+		return InputResult{}, err
+	}
+	defer session.releaseOneShot()
+
+	state, cursor := session.InitialState()
+	if state != "running" {
+		if err := session.releaseOneShot(); err != nil {
+			return InputResult{}, err
+		}
+		return InputResult{}, &SessionNotRunningError{Name: req.Name}
+	}
+	if err := session.WriteAt(ctx, cursor, req.Data); err != nil {
+		return InputResult{}, err
+	}
+	if err := session.releaseOneShot(); err != nil {
+		return InputResult{}, err
+	}
+	return InputResult{Bytes: len(req.Data), LaunchCursor: cursor}, nil
+}
+
+func validateInputRequest(req InputRequest) error {
+	if strings.TrimSpace(req.Name) == "" {
+		return protocol.NewWireError(protocol.ErrorInvalidRequest, "input name is required", nil)
+	}
+	if strings.TrimSpace(req.Cwd) == "" {
+		return protocol.NewWireError(protocol.ErrorInvalidRequest, "input cwd is required", nil)
+	}
+	if len(req.Data) == 0 {
+		return protocol.NewWireError(protocol.ErrorInvalidRequest, "input payload must not be empty", nil)
+	}
+	if len(req.Data) > protocol.MaxInputBytes {
+		return protocol.NewWireError(protocol.ErrorInputTooLarge, "input payload exceeds 32768 bytes", nil)
+	}
+	return nil
 }
 
 // State reports the latest durable state event and cursor.
@@ -408,6 +484,16 @@ func (s *InputSession) State() (string, protocol.Cursor) {
 	defer s.mu.Unlock()
 	return s.state, s.cursor
 }
+
+// InitialState reports the state event delivered as part of attach. It is
+// immutable even when a later launch or exit event has already been received.
+func (s *InputSession) InitialState() (string, protocol.Cursor) {
+	if s == nil {
+		return "", 0
+	}
+	return s.initialState, s.initialCursor
+}
+
 func (s *InputSession) Events() <-chan protocol.InputStateEvent {
 	if s == nil {
 		return nil
@@ -589,15 +675,43 @@ func (s *InputSession) ResizeAt(ctx context.Context, cursor protocol.Cursor, col
 	}
 	return s.writeRequest(ctx, wireRequest{Op: "input_resize", LaunchCursor: uint64(cursor), Columns: columns, Rows: rows}, protocol.OpInputResize)
 }
+
+// releaseOneShot sends the explicit input_release operation and waits for its
+// acknowledgement. The daemon sends that acknowledgement only after it has
+// cleared the durable lease, so a one-shot caller can attach the next owner
+// immediately. If the transport is already closed (including cancellation or
+// a lost write acknowledgement), closing it is the best available release
+// signal and the existing server disconnect path performs the cleanup.
+func (s *InputSession) releaseOneShot() error {
+	if s == nil {
+		return nil
+	}
+	s.releaseOnce.Do(func() {
+		err := s.writeRequest(context.Background(), wireRequest{Op: "input_release"}, protocol.OpInputRelease)
+		// A failed release acknowledgement cannot establish that the server
+		// received the request. Close the transport so its disconnect handler
+		// releases the lease, without ever retrying input. Transport failures
+		// are intentionally not returned: the server's disconnect path is the
+		// release signal available on that terminal path.
+		s.closeOnce.Do(func() { _ = s.client.Close() })
+		<-s.done
+		var wire *protocol.WireError
+		if err != nil && errors.As(err, &wire) {
+			s.releaseErr = err
+		}
+		close(s.releaseDone)
+	})
+	<-s.releaseDone
+	return s.releaseErr
+}
+
+// Release closes the transport, preserving the streaming input-session
+// detach behavior. One-shot input uses releaseOneShot so it can wait for the
+// server's explicit acknowledgement before returning.
 func (s *InputSession) Release() error {
 	if s == nil {
 		return nil
 	}
-	// Closing the transport is the release operation. It is deliberately done
-	// without taking writeMu: a pending write may be blocked in the daemon, and
-	// the close is what cancels that operation so the server can drain it before
-	// releasing the lease. The daemon treats transport loss exactly like an
-	// explicit input_release.
 	s.closeOnce.Do(func() { _ = s.client.Close() })
 	<-s.done
 	return nil

@@ -28,6 +28,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 		"status":   true,
 		"logs":     true,
 		"wait":     true,
+		"input":    true,
 		"restart":  true,
 		"stop":     true,
 		"remove":   true,

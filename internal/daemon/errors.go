@@ -26,6 +26,25 @@ var ErrVersionMismatch = errors.New("daemon protocol version mismatch")
 
 func (e *VersionMismatchError) Unwrap() error { return ErrVersionMismatch }
 
+// SessionNotRunningError is a client-facing result for a one-shot input
+// request whose initial input state is stopped. It is intentionally not a
+// protocol error: the daemon only sends the existing input_state event and
+// the client derives this result before releasing the lease.
+type SessionNotRunningError struct {
+	Name string
+}
+
+func (e *SessionNotRunningError) Error() string {
+	if e == nil || e.Name == "" {
+		return "session is not running; start it with hum start NAME"
+	}
+	return fmt.Sprintf("session %q is not running; start it with hum start %s", e.Name, e.Name)
+}
+
+var ErrSessionNotRunning = errors.New("session is not running")
+
+func (e *SessionNotRunningError) Unwrap() error { return ErrSessionNotRunning }
+
 func (e *VersionMismatchError) As(target any) bool {
 	if destination, ok := target.(**protocol.WireError); ok {
 		*destination = protocol.NewWireError(protocol.ErrorVersionMismatch, e.Error(), protocol.VersionMismatchDetails{Client: e.ClientVersion, Daemon: e.DaemonVersion})

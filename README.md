@@ -106,8 +106,8 @@ codex plugin marketplace add .
 codex plugin add hum@hum
 ```
 
-`hum mcp` exposes the same project processes and bounded output over MCP for
-manual registration with other coding agents.
+`hum mcp` exposes the same project processes, bounded output, and one-shot TTY
+input over MCP for manual registration with other coding agents.
 
 See [coding-agent setup](docs/coding-agents.md) for Claude Code, Cursor, the MCP
 tool surface, and the shell-only skill fallback.
@@ -136,8 +136,20 @@ existing Ctrl-C observer-detach behavior. A TTY lease survives ordinary stop
 and restart, targets each launch cursor, discards input while stopped, and is
 closed by remove or daemon shutdown. Bare `hum shutdown` still refuses while
 work is active; use `hum shutdown --stop-processes` to apply the normal grace
-sequence. MCP reports `tty` in process snapshots but deliberately has no input
-tool.
+sequence.
+
+For bounded request/response input, observe with `hum logs` or `hum wait --match`,
+answer with `hum input NAME --text 'value'` (or MCP `input`), then confirm with
+`hum wait --match`. Use `hum input NAME --base64 PADDED_VALUE` for exact binary
+bytes. Text sends exact bytes without a newline (it never adds one); base64 must
+be strict padded base64 (standard alphabet) without whitespace and decode to at most 32 KiB.
+`input` only targets an already-running TTY incarnation, writes once at its
+initial launch cursor (at-most-once, with no resend across a launch race), fails
+immediately on an ownership conflict when another client owns input, and never
+starts, waits, queues, retries, retains, or explicitly echoes the payload.
+Success prints the acknowledged byte count and launch cursor; `--json` emits
+`name`, `bytes`, and `launch_cursor`. MCP exposes the same bounded operation as
+its `input` tool.
 
 Bounded child-output reads (`hum logs`, including JSON and tail, and MCP `logs`)
 and child-output matches (`logs --match`, `wait --match`, and readiness matches)

@@ -196,6 +196,23 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 		},
 		{
+			Name:      "input",
+			Usage:     "write one bounded payload to a running TTY session",
+			ArgsUsage: "NAME",
+			Description: "Input writes exactly one payload to the initial running TTY incarnation at its launch cursor and returns after acknowledgement. It is at-most-once: a launch race or lost acknowledgement is returned without resend. " +
+				"It never starts a daemon or process, waits for a launch, queues input, retries, or retains or explicitly echoes bytes. " +
+				"--text sends exact bytes without a newline; --base64 requires strict padded base64 without whitespace and decodes to 1-32768 bytes. " +
+				"Observe with logs or wait --match, answer with input, then wait --match to confirm; an occupied owner fails immediately with an ownership conflict.",
+			Flags: []urfavecli.Flag{
+				&urfavecli.StringFlag{Name: "text", Usage: "write exact text bytes without appending a newline"},
+				&urfavecli.StringFlag{Name: "base64", Usage: "write strictly padded base64 bytes without whitespace"},
+				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
+			},
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return inputCommand(ctx, cmd, version, buildTime, writer)
+			},
+		},
+		{
 			Name:      "restart",
 			Usage:     "restart one or more processes by name",
 			ArgsUsage: "NAME...",
