@@ -559,7 +559,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		return wireResponseFromRead(req.Op, result), false
+		return wireResponseFromRead(req.Op, stripBoundedChildText(result)), false
 	case "wait":
 		response, err := s.executeWait(context.Background(), req)
 		if err != nil {
@@ -906,6 +906,27 @@ func runInputOperation(ctx context.Context, conn net.Conn, operation func(contex
 	<-watchDone
 	_ = conn.SetReadDeadline(time.Time{})
 	return err
+}
+
+func stripBoundedChildText(result output.ReadResult) output.ReadResult {
+	var entries []output.Entry
+	for index, entry := range result.Entries {
+		if entry.Stream != output.Stdout && entry.Stream != output.Stderr {
+			continue
+		}
+		stripped := output.StripTerminalControl(entry.Text)
+		if stripped == entry.Text {
+			continue
+		}
+		if entries == nil {
+			entries = append([]output.Entry(nil), result.Entries...)
+		}
+		entries[index].Text = stripped
+	}
+	if entries != nil {
+		result.Entries = entries
+	}
+	return result
 }
 
 func readOptionsFromWire(req wireRequest) (output.ReadOptions, error) {

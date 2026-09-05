@@ -403,10 +403,17 @@ func matchesRead(entry Entry, opts ReadOptions) bool {
 	if opts.Streams != 0 && opts.Streams&streamBit(entry.Stream) == 0 {
 		return false
 	}
-	if opts.Match != nil && !opts.Match.MatchString(entry.Text) {
+	if opts.Match != nil && !opts.Match.MatchString(matchText(entry)) {
 		return false
 	}
 	return true
+}
+
+func matchText(entry Entry) string {
+	if entry.Stream == Stdout || entry.Stream == Stderr {
+		return StripTerminalControl(entry.Text)
+	}
+	return entry.Text
 }
 
 func hasMatchingAfter(r *ring, opts ReadOptions, after Cursor) bool {

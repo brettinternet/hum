@@ -1,10 +1,11 @@
 ---
 id: HUM-023
 title: Strip terminal control sequences from bounded output reads and matches
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-05 14:57'
-updated_date: '2026-09-05 15:05'
+updated_date: '2026-09-05 21:21'
 labels:
   - output
   - daemon
@@ -49,20 +50,48 @@ Modified-file contract: internal/output/, internal/app/, internal/daemon/, inter
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/output -run "^TestStripTerminalControl$" -count=1 -v` exits 0, prints `--- PASS: TestStripTerminalControl`, and proves the function removes SGR/colour, cursor-movement, and erase CSI sequences, OSC terminated by BEL and by ST, DCS/APC terminated by ST, charset designations (ESC ( B), single-final sequences (ESC 7, ESC =, ESC M), and `\r` before `\n`; removes an unterminated ESC sequence to the end of the entry; preserves NUL, invalid UTF-8, tabs, backspace, BEL outside OSC, and lone `\r` byte-for-byte; and returns text without ESC or `\r` unchanged with zero allocations under `testing.AllocsPerRun`. The same test proves ring `Match` evaluates stripped stdout/stderr text but raw system text, returned and stored entries stay raw, cursors stay unchanged, and raw entry lengths still govern `MaxBytes`, including an ANSI-heavy entry whose stripped text would fit but whose stored text returns `EntryTooLargeError`.
-- [ ] #2 AC2 — `go test ./internal/app -run "^TestMatchUsesStrippedText$" -count=1 -v` exits 0, prints `--- PASS: TestMatchUsesStrippedText`, and proves readiness `match` and `Wait` fire on a colourised line whose first byte is ESC using a `^`-anchored pattern and on a CRLF-terminated line, a pattern containing a literal ESC no longer matches, the ready/wait cursor equals the raw entry cursor, and stored entry text is unchanged.
-- [ ] #3 AC3 — `go test ./internal/daemon -run "^TestOutputReadStripsTerminalControl$" -count=1 -v` exits 0, prints `--- PASS: TestOutputReadStripsTerminalControl`, and proves bounded `output` responses strip stdout/stderr copies while leaving system entries untouched; a control-only child entry remains present with empty text and unchanged stream/time/cursor metadata; raw stored lengths govern byte limits and entry-too-large errors; initial follow replay and later follow events return the same entries raw while `--match` selection uses stripped child text; and protocol shape and version are unchanged.
-- [ ] #4 AC4 — `go test ./internal/cli -run "^TestLogsStripTerminalControl$" -count=1 -v` and `go test ./internal/mcp -run "^TestLogsStripTerminalControl$" -count=1 -v` both exit 0 and print the corresponding named PASS line. The CLI test proves human, JSON, and tail bounded logs render daemon-returned stripped text, while `logs --follow` and attached `run` write daemon-returned raw bytes and no command exposes `--raw` or another opt-out. The MCP test proves the `logs` tool returns stripped entries supplied by the daemon client without changing text, cursors, or schema; daemon-owned stripping is proved in AC3 and end to end in AC5.
-- [ ] #5 AC5 — `go test ./integration -run "^TestBoundedLogsStripTerminalControl$" -count=1 -v` exits 0, prints `--- PASS: TestBoundedLogsStripTerminalControl`, and proves with the built binary and a fixture that emits SGR colour, an OSC title, and CRLF line endings that human `hum logs` is stripped; decoded `Text` fields from `hum logs --json` and the MCP `logs` result contain no ESC or `\r`; initial retained replay and later live output captured from `hum logs --follow` contain the raw ESC bytes; and `hum wait --match "^ready"` returns matched on a line whose raw form begins with ESC.
-- [ ] #6 AC6 — `go test ./internal/cli ./internal/skill -run "^TestTerminalControlDocs$" -count=1 -v` exits 0 and prints both named PASS lines. README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document that bounded child-output reads and matches use stripped text; system entries, follow, attached run, stored bytes, and cursor/limit accounting stay raw; follow `--match` selects stripped text but emits raw entries; control-only bounded entries are retained with empty text; stripping is per entry with split-sequence and redraw-frame limitations; no `--raw` flag exists; and the HUM-022 statement that bounded logs are not terminal-sanitized is removed.
+- [x] #1 AC1 — `go test ./internal/output -run "^TestStripTerminalControl$" -count=1 -v` exits 0, prints `--- PASS: TestStripTerminalControl`, and proves the function removes SGR/colour, cursor-movement, and erase CSI sequences, OSC terminated by BEL and by ST, DCS/APC terminated by ST, charset designations (ESC ( B), single-final sequences (ESC 7, ESC =, ESC M), and `\r` before `\n`; removes an unterminated ESC sequence to the end of the entry; preserves NUL, invalid UTF-8, tabs, backspace, BEL outside OSC, and lone `\r` byte-for-byte; and returns text without ESC or `\r` unchanged with zero allocations under `testing.AllocsPerRun`. The same test proves ring `Match` evaluates stripped stdout/stderr text but raw system text, returned and stored entries stay raw, cursors stay unchanged, and raw entry lengths still govern `MaxBytes`, including an ANSI-heavy entry whose stripped text would fit but whose stored text returns `EntryTooLargeError`.
+- [x] #2 AC2 — `go test ./internal/app -run "^TestMatchUsesStrippedText$" -count=1 -v` exits 0, prints `--- PASS: TestMatchUsesStrippedText`, and proves readiness `match` and `Wait` fire on a colourised line whose first byte is ESC using a `^`-anchored pattern and on a CRLF-terminated line, a pattern containing a literal ESC no longer matches, the ready/wait cursor equals the raw entry cursor, and stored entry text is unchanged.
+- [x] #3 AC3 — `go test ./internal/daemon -run "^TestOutputReadStripsTerminalControl$" -count=1 -v` exits 0, prints `--- PASS: TestOutputReadStripsTerminalControl`, and proves bounded `output` responses strip stdout/stderr copies while leaving system entries untouched; a control-only child entry remains present with empty text and unchanged stream/time/cursor metadata; raw stored lengths govern byte limits and entry-too-large errors; initial follow replay and later follow events return the same entries raw while `--match` selection uses stripped child text; and protocol shape and version are unchanged.
+- [x] #4 AC4 — `go test ./internal/cli -run "^TestLogsStripTerminalControl$" -count=1 -v` and `go test ./internal/mcp -run "^TestLogsStripTerminalControl$" -count=1 -v` both exit 0 and print the corresponding named PASS line. The CLI test proves human, JSON, and tail bounded logs render daemon-returned stripped text, while `logs --follow` and attached `run` write daemon-returned raw bytes and no command exposes `--raw` or another opt-out. The MCP test proves the `logs` tool returns stripped entries supplied by the daemon client without changing text, cursors, or schema; daemon-owned stripping is proved in AC3 and end to end in AC5.
+- [x] #5 AC5 — `go test ./integration -run "^TestBoundedLogsStripTerminalControl$" -count=1 -v` exits 0, prints `--- PASS: TestBoundedLogsStripTerminalControl`, and proves with the built binary and a fixture that emits SGR colour, an OSC title, and CRLF line endings that human `hum logs` is stripped; decoded `Text` fields from `hum logs --json` and the MCP `logs` result contain no ESC or `\r`; initial retained replay and later live output captured from `hum logs --follow` contain the raw ESC bytes; and `hum wait --match "^ready"` returns matched on a line whose raw form begins with ESC.
+- [x] #6 AC6 — `go test ./internal/cli ./internal/skill -run "^TestTerminalControlDocs$" -count=1 -v` exits 0 and prints both named PASS lines. README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document that bounded child-output reads and matches use stripped text; system entries, follow, attached run, stored bytes, and cursor/limit accounting stay raw; follow `--match` selects stripped text but emits raw entries; control-only bounded entries are retained with empty text; stripping is per entry with split-sequence and redraw-frame limitations; no `--raw` flag exists; and the HUM-022 statement that bounded logs are not terminal-sanitized is removed.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add a byte-preserving terminal-control stripper in internal/output and apply it only to stdout/stderr matching while keeping stored and returned ring entries raw.
+2. Strip child entry copies at the daemon bounded output boundary, leaving system entries and follow events raw.
+3. Add focused output, app, daemon, CLI, MCP, and integration coverage for stripping, matching, metadata, limits, and raw follow behavior.
+4. Update help, README, design, coding-agent, and bundled/plugin skill documentation with the bounded-versus-raw semantics and limitations.
+5. Run every acceptance command, independent review and verification, task ci, then commit implementation and authoritative task updates on main.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC#1 — `go test ./internal/output -run "^TestStripTerminalControl$" -count=1 -v` passed, including zero-allocation plain text, byte-preserving parser cases, child/system matching, raw entries/cursors, and raw byte limits.
+AC#2 — `go test ./internal/app -run "^TestMatchUsesStrippedText$" -count=1 -v` passed for readiness/Wait stripped matching, literal-ESC rejection, CRLF, raw cursor, and stored text.
+AC#3 — `go test ./internal/daemon -run "^TestOutputReadStripsTerminalControl$" -count=1 -v` passed for bounded-copy stripping, raw system/follow entries, empty retained entries, metadata, limits, and protocol invariance.
+AC#4 — `go test ./internal/cli -run "^TestLogsStripTerminalControl$" -count=1 -v` and `go test ./internal/mcp -run "^TestLogsStripTerminalControl$" -count=1 -v` passed.
+AC#5 — `go test ./integration -run "^TestBoundedLogsStripTerminalControl$" -count=1 -v` passed against the built binary and terminal-control fixture.
+AC#6 — `go test ./internal/cli ./internal/skill -run "^TestTerminalControlDocs$" -count=1 -v` passed in both packages.
+DoD — `task ci` passed (format, vet, staticcheck, all tests, race suites, build, smoke). Independent verifier run 34e02267-c958-40aa-9fda-6aca074bab42 returned PASS for AC1–AC6, task ci, scope, and test integrity. Independent review found four defects; all were fixed and affected acceptance tests rerun. No tests were deleted, skipped, or weakened and no protected gate file changed. The Backlog provider task file is the sole path outside the implementation contract; its changes are required authoritative claim, plan, evidence, and completion metadata rather than product implementation.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added byte-preserving per-entry terminal-control stripping for bounded child-output reads and child matching while preserving raw storage, cursors, limits, system entries, follow events, and attached rendering. Added focused unit, daemon, CLI, MCP, documentation, and built-binary integration coverage plus operator/agent documentation. All AC1–AC6 commands, independent review and verification, and `task ci` passed.
+<!-- SECTION:FINAL_SUMMARY:END -->

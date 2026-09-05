@@ -27,6 +27,22 @@ An absent `hum.yaml` is normal when conservative discovery resolves exactly one 
 
 Never derive or run underlying development commands, including npm, bun, yarn, or pnpm-style commands. The MCP server intentionally has no arbitrary-command tool. Never use raw `hum run ... -- ...`; use resolved definitions and the lifecycle operations above.
 
+## Bounded output
+
+Bounded child-output reads and matches use byte-wise terminal-control-stripped
+text, independently per entry for each stdout/stderr stream. This covers
+`hum logs` (including JSON and tail), `hum logs --match`, `hum wait --match`,
+readiness matches, and MCP `logs`. System entries remain raw; stored bytes remain raw;
+cursors and byte-limit accounting use raw stored lengths. Patterns containing
+raw ESC bytes no longer match stripped child text; a `^` anchor now matches
+colourised output whose raw first byte is ESC. A control-only bounded
+child entry remains present with empty text. `hum logs --follow --match` selects
+stripped child text but emits selected raw entries, while follow and attached
+`run` rendering remain raw. There is no `--raw` flag or other raw opt-out.
+Stripping is not terminal emulation or redraw collapsing: split sequences can
+leave a tail visible and carriage-return redraw
+frames remain separate.
+
 ## Optional TTY sessions
 
 Leave `tty` off unless a tool requires a controlling terminal; prefer a

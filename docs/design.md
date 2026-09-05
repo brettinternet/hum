@@ -199,16 +199,30 @@ at a new launch cursor, so old output cannot satisfy it. Definitions without
 are never reported ready. A CLI timeout overrides the manifest timeout.
 
 Each durable named session has one cursor sequence across stdout, stderr, and
-incarnations. Entries contain stream, timestamp, raw text, and cursor.
+incarnations. Entries contain stream, timestamp, raw stored text, stripped on
+bounded read and match as terminal-control-stripped text, and cursor.
+`StripTerminalControl` is the single
+byte-wise definition of stripped text: it removes recognized terminal control
+sequences and CR immediately before LF from child stdout/stderr per entry.
+System entries remain raw, as do all stored bytes. Bounded `logs`, MCP `logs`,
+`wait --match`, readiness matches, and ring predicates use stripped child text.
+Patterns containing raw ESC bytes no longer match stripped child text; a `^`
+anchor now matches colourised output whose raw first byte is ESC. `logs --follow --match` selects with stripped text but emits selected raw
+entries. Control-only bounded child entries remain present with empty text, while
+raw stored lengths govern `MaxBytes`, entry-too-large errors, retention, and
+cursor accounting. There is no `--raw` flag or other raw opt-out. Stripping is
+not terminal emulation or redraw collapsing: a sequence split across entries can
+leave its tail visible, and carriage-return redraw frames remain separate.
 Byte-bounded retention reports eviction explicitly; a live pre-launch or stopped
-follower reserves its session from completed-record eviction. Attached `run` and
-`logs --follow` may start before the first launch, return retained output, print
-exit/wait/launch boundaries, and remain open across stop/start and down/up until
-Ctrl+C, removal, or transport loss. Status, list, and their MCP equivalents
-report how many of these live followers the daemon currently holds open,
-including pre-launch and stopped-session followers; the count is not persisted
-and is zero when no session exists. Ctrl+C detaches only the observer. `wait`
-without an explicit cursor waits for the next incarnation when stopped or
+follower reserves its
+session from completed-record eviction. Attached `run` and `logs --follow` may
+start before the first launch, return retained output, print exit/wait/launch
+boundaries, and remain open across stop/start and down/up until Ctrl+C, removal,
+or transport loss; their rendering remains raw. Status, list, and their MCP
+equivalents report how many of these live followers the daemon currently holds
+open, including pre-launch and stopped-session followers; the count is not
+persisted and is zero when no session exists. Ctrl+C detaches only the observer.
+`wait` without an explicit cursor waits for the next incarnation when stopped or
 unlaunched and remains bounded (30 seconds by default). Exited and ad hoc
 records omit readiness.
 
@@ -260,7 +274,8 @@ COMMAND`; TTY remains opt-in and the default `/dev/null` stdin plus separate
 stdout/stderr pipes are unchanged. The daemon owns the PTY master, launches a
 session leader with `Setsid`/`Setctty`, and signals its process group during
 stop, restart, down, remove, and forced shutdown. PTY output is merged once as
-retained `stdout` without ANSI stripping or terminal emulation.
+raw retained `stdout`; bounded reads and matches apply the byte-wise child-output
+strip described above, without terminal emulation.
 
 Exactly one attached `hum run` owns input. A second attachment follows output
 only, `logs --follow` never owns input, and the one-shot CLI/MCP input operation

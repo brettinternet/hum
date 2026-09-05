@@ -77,13 +77,28 @@ When MCP is unavailable, `hum skill` prints the embedded Agent Skills file for
 installation in an agent's normal skill directory. MCP remains the preferred
 integration.
 
+### Bounded output
+
+Bounded child-output reads and matches use byte-wise terminal-control-stripped
+text, applied independently per entry to each stdout/stderr stream. This covers
+bounded `logs` (including JSON and tail), MCP `logs`, `logs --match`,
+`wait --match`, and readiness matches. System entries remain raw; stored bytes remain
+raw; cursors and `MaxBytes`/entry-limit accounting also use raw stored lengths.
+Patterns containing raw ESC bytes no longer match stripped child text; a `^`
+anchor now matches colourised output whose raw first byte is ESC. There is no
+`--raw` flag or other raw opt-out. A control-only bounded child entry
+is retained with empty text. `logs --follow --match` selects using stripped child
+text but emits selected raw entries, and follow plus attached `run` rendering
+stay raw. The strip does not collapse carriage-return redraw frames or emulate a
+terminal; a sequence split
+across entries can leave its tail visible.
+
 ### Interactive sessions
 
-Leave `tty` off unless a tool genuinely requires a controlling terminal;
-prefer its non-interactive mode (`npx --yes`, `CI=1`, or `--force`) because
-bounded logs are not terminal-sanitized. A manifest can opt in with
-`tty: true`, or an operator can use `hum run NAME --tty -- COMMAND`. Only one
-attached run forwards input; competing runs and `logs --follow` are
+Leave `tty` off unless a tool genuinely requires a controlling terminal; prefer
+its non-interactive mode (`npx --yes`, `CI=1`, or `--force`). A manifest can opt
+in with `tty: true`, or an operator can use `hum run NAME --tty -- COMMAND`. Only
+one attached run forwards input; competing runs and `logs --follow` are
 output-only. The owner uses raw mode and alone forwards SIGWINCH resizes;
 Ctrl-] detaches input, raw mode is restored after panic, terminal echo is
 controlled by the child, and Ctrl-C is forwarded only in TTY mode (normal

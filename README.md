@@ -137,5 +137,20 @@ and restart, targets each launch cursor, discards input while stopped, and is
 closed by remove or daemon shutdown. Bare `hum shutdown` still refuses while
 work is active; use `hum shutdown --stop-processes` to apply the normal grace
 sequence. MCP reports `tty` in process snapshots but deliberately has no input
-tool. Keep TTY off when a tool's non-interactive mode (`--yes`, `CI=1`, or
-`--force`) is sufficient because bounded logs are not terminal-sanitized.
+tool.
+
+Bounded child-output reads (`hum logs`, including JSON and tail, and MCP `logs`)
+and child-output matches (`logs --match`, `wait --match`, and readiness matches)
+use terminal-control-stripped text. The strip is byte-wise and per entry:
+stdout/stderr control sequences are removed, while system entries remain raw.
+Patterns containing raw ESC bytes no longer match stripped child text; a `^`
+anchor now matches colourised output whose raw first byte is ESC. Stored bytes,
+cursors, and limit accounting remain raw, so a control-only bounded
+child entry is retained with empty text and raw byte limits still apply.
+`logs --follow --match` selects child entries using stripped text but emits the selected
+raw entry; follow and attached `run` rendering remain raw. There is no `--raw`
+flag or other raw opt-out. Stripping does not emulate a terminal or collapse
+redraws: a sequence split across entries can leave its tail visible, and
+carriage-return redraw frames stay
+separate. Keep TTY off when a tool's non-interactive mode (`--yes`, `CI=1`, or
+`--force`) is sufficient.

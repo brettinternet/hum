@@ -26,6 +26,8 @@ modes:
   burst <gate> <count>
       Emit alternating stdout:NNNN and stderr:NNNN lines, wait for <gate>
       after the first half, then emit the remaining lines.
+  terminal <gate>
+      Emit colour, OSC, and CRLF output, wait for <gate>, then emit a live line.
   tree <marker> <graceful|ignore-term>
       Create a parent/child/grandchild in the inherited process group and
       write PID/readiness markers. SIGTERM writes .parent.term, .child.term,
@@ -83,6 +85,11 @@ func run(args []string) (int, error) {
 			return 0, errors.New("burst count must be a positive integer")
 		}
 		return runBurst(args[1], count)
+	case "terminal":
+		if len(args) != 2 || args[1] == "" {
+			return 0, errors.New("terminal requires exactly one non-empty gate path")
+		}
+		return runTerminal(args[1])
 	case "tree":
 		if len(args) != 3 || args[1] == "" {
 			return 0, errors.New("tree requires a marker path and graceful or ignore-term")
@@ -217,6 +224,25 @@ func writeBurstLines(start, end int) error {
 		}
 	}
 	return nil
+}
+
+func runTerminal(gate string) (int, error) {
+	if err := writeFile(os.Stdout, "\033[31minitial\033[0m\r\n"); err != nil {
+		return 0, fmt.Errorf("write terminal initial output: %w", err)
+	}
+	if err := writeFile(os.Stdout, "\033]0;hum-fixture title\a\033[33mready\033[0m\r\n"); err != nil {
+		return 0, fmt.Errorf("write terminal readiness output: %w", err)
+	}
+	if err := waitForFile(gate, 0); err != nil {
+		return 0, fmt.Errorf("wait for terminal gate: %w", err)
+	}
+	if err := writeFile(os.Stdout, "\033[32mlive\033[0m\r\n"); err != nil {
+		return 0, fmt.Errorf("write terminal live output: %w", err)
+	}
+	if err := writeFile(os.Stderr, "\033[35mlive-stderr\033[0m\r\n"); err != nil {
+		return 0, fmt.Errorf("write terminal stderr output: %w", err)
+	}
+	return 0, nil
 }
 
 func parseTreeMode(value string) (treeMode, error) {

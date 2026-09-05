@@ -158,7 +158,12 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:     "read retained process output (read-only)",
 			ArgsUsage: "NAME",
 			Description: "Logs reads bounded retained output without changing process state. " +
+				"Bounded child output and child-output matches use terminal-control-stripped text; system entries remain raw. " +
+				"Patterns containing raw ESC bytes no longer match stripped child text; a ^ anchor now matches colourised output whose raw first byte is ESC. " +
+				"Stored bytes, cursors, and limit accounting remain raw; control-only bounded child entries remain present with empty text. " +
 				"--follow ensures a daemon exists, may attach before the first launch, and follows the named session across exit, wait, and launch boundaries. " +
+				"With --follow --match, selection uses stripped child text but selected entries are emitted raw; attached run output is also raw. " +
+				"Stripping is per entry, so split sequences and carriage-return redraw frames are not collapsed; there is no --raw flag or other raw opt-out. " +
 				"Following is read-only, so Ctrl+C cancels only the follower and never signals the managed process. Without --follow, an unavailable daemon reports Nothing is running.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "select stdout, stderr, or both"},

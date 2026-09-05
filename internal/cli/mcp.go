@@ -25,6 +25,7 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 		Description: "Run a stdio Model Context Protocol server for one-time coding-agent registration. " +
 			"Every tool requires an absolute existing project_root. start and up accept only resolved explicit or discovered definitions and may start the daemon; status, logs, wait, restart, and stop control existing declared or ad_hoc records and never start it. " +
 			"A process handed off by hum run is available as ad_hoc while its daemon retains the record; daemon shutdown or replacement loses that launch definition. " +
+			"Bounded child-output logs and matches use terminal-control-stripped text, while system entries, stored bytes, cursors, and limit accounting remain raw; there is no --raw flag or other raw opt-out. " +
 			"Explicit definitions use deterministic argv-based environment activation with the MCP server environment. " +
 			"The nine tools are start, up, down, list, status, logs, wait, restart, and stop; run, serve, and shutdown are not MCP tools.",
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {

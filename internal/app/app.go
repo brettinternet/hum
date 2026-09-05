@@ -618,7 +618,14 @@ func newReadinessTracker(store *output.Store, pattern *regexp.Regexp, after outp
 }
 
 func (t *readinessTracker) observe(entry output.Entry) {
-	if t == nil || (t.hasAfter && entry.Cursor <= t.after) || !t.pattern.MatchString(entry.Text) {
+	if t == nil || (t.hasAfter && entry.Cursor <= t.after) {
+		return
+	}
+	text := entry.Text
+	if entry.Stream == output.Stdout || entry.Stream == output.Stderr {
+		text = output.StripTerminalControl(text)
+	}
+	if !t.pattern.MatchString(text) {
 		return
 	}
 	t.mu.Lock()
