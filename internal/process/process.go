@@ -17,6 +17,7 @@ import (
 	"hum/internal/output"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -24,6 +25,7 @@ const (
 	captureDrainTimeout      = 100 * time.Millisecond
 	captureHardTimeout       = time.Second
 	defaultIdleFlush         = 100 * time.Millisecond
+	ttyWriteChunkBytes       = 1024
 )
 
 // Spec describes one child process launch.
@@ -261,10 +263,9 @@ func (c *Child) Write(p []byte) (int, error) {
 }
 
 // WriteContext forwards bytes to the child pseudo-terminal until the write
-// completes or ctx is canceled. A PTY master write can block when the child is
-// not reading; the cancellation watcher turns that cancellation into a write
-// deadline and waits for the syscall to return before releasing ttyMu. This
-// prevents an abandoned write from racing a later input owner.
+// completes or ctx is canceled. Writes are temporarily made nonblocking so
+// cancellation does not depend on descriptor deadlines, which PTY ioctls can
+// silently disable by returning the descriptor to blocking mode.
 func (c *Child) WriteContext(ctx context.Context, p []byte) (int, error) {
 	if c == nil || !c.tty {
 		return 0, errors.New("process: child has no tty input")
@@ -294,40 +295,80 @@ func (c *Child) WriteContext(ctx context.Context, p []byte) (int, error) {
 		return 0, err
 	}
 
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = master.SetWriteDeadline(deadline)
+	raw, err := master.SyscallConn()
+	if err != nil {
+		return 0, fmt.Errorf("process: access tty descriptor: %w", err)
 	}
-	watchStop := make(chan struct{})
-	watchDone := make(chan struct{})
-	go func() {
-		defer close(watchDone)
-		select {
-		case <-ctx.Done():
-			// Closing the master would tear down an otherwise healthy
-			// incarnation. A write deadline aborts only this syscall.
-			_ = master.SetWriteDeadline(time.Now())
-		case <-c.groupGone:
-			// Group exit can race a blocked owner write before the
-			// supervisor publishes its stopped event. Abort now so
-			// capture cleanup cannot wait behind ttyMu forever.
-			_ = master.SetWriteDeadline(time.Now())
-		case <-watchStop:
+	written := 0
+	for written < len(p) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return written, ctxErr
 		}
-	}()
-	n, err := master.Write(p)
-	close(watchStop)
-	<-watchDone
-	_ = master.SetWriteDeadline(time.Time{})
-	c.mu.Lock()
-	groupEnded := c.groupEnded
-	c.mu.Unlock()
-	if groupEnded {
-		return n, os.ErrProcessDone
+		select {
+		case <-c.groupGone:
+			return written, os.ErrProcessDone
+		default:
+		}
+
+		end := min(written+ttyWriteChunkBytes, len(p))
+		n, writeErr := writeTTYNonblocking(raw, p[written:end])
+		written += n
+		if writeErr == nil {
+			continue
+		}
+		if errors.Is(writeErr, syscall.EINTR) {
+			continue
+		}
+		if !errors.Is(writeErr, syscall.EAGAIN) && !errors.Is(writeErr, syscall.EWOULDBLOCK) {
+			return written, writeErr
+		}
+		if waitErr := waitTTYWritable(raw); waitErr != nil && !errors.Is(waitErr, syscall.EINTR) {
+			return written, waitErr
+		}
+	}
+	select {
+	case <-c.groupGone:
+		return written, os.ErrProcessDone
+	default:
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return n, ctxErr
+		return written, ctxErr
 	}
-	return n, err
+	return written, nil
+}
+
+func writeTTYNonblocking(raw syscall.RawConn, p []byte) (int, error) {
+	var (
+		n        int
+		writeErr error
+	)
+	controlErr := raw.Control(func(fd uintptr) {
+		flags, err := unix.FcntlInt(fd, unix.F_GETFL, 0)
+		if err != nil {
+			writeErr = err
+			return
+		}
+		if _, err = unix.FcntlInt(fd, unix.F_SETFL, flags|unix.O_NONBLOCK); err != nil {
+			writeErr = err
+			return
+		}
+		n, writeErr = unix.Write(int(fd), p)
+		if _, err = unix.FcntlInt(fd, unix.F_SETFL, flags); err != nil {
+			writeErr = errors.Join(writeErr, fmt.Errorf("restore tty descriptor flags: %w", err))
+		}
+	})
+	if controlErr != nil {
+		return n, controlErr
+	}
+	return n, writeErr
+}
+
+func waitTTYWritable(raw syscall.RawConn) error {
+	var pollErr error
+	controlErr := raw.Control(func(fd uintptr) {
+		_, pollErr = unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}, int(processGroupPollInterval/time.Millisecond))
+	})
+	return errors.Join(controlErr, pollErr)
 }
 
 // WriteInput is an explicit alias for Write at input transport call sites.
@@ -632,7 +673,17 @@ type captureReader struct {
 }
 
 func (r captureReader) Read(p []byte) (int, error) {
-	return r.file.Read(p)
+	for {
+		n, err := r.file.Read(p)
+		if !errors.Is(err, syscall.EAGAIN) && !errors.Is(err, syscall.EWOULDBLOCK) {
+			return n, err
+		}
+		select {
+		case <-r.canceled:
+			return n, err
+		case <-time.After(processGroupPollInterval):
+		}
+	}
 }
 
 func (r captureReader) noteProgress() {
@@ -783,7 +834,8 @@ func capture(
 	}
 	isCanceledError := func(err error) bool {
 		return isCanceled() &&
-			(errors.Is(err, os.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded))
+			(errors.Is(err, os.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded) ||
+				errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK))
 	}
 	if setupErr != nil {
 		errs = append(errs, setupErr)

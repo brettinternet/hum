@@ -117,7 +117,9 @@ func runProcessHelper() {
 func runTTYBlockHelper() {
 	fmt.Fprint(os.Stdout, "block-ready\n")
 	signal.Ignore(syscall.SIGTERM, syscall.SIGINT)
-	select {}
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 func runTTYGroupHelper() {
@@ -549,6 +551,7 @@ ready:
 
 func TestTTYWriteContextCancellation(t *testing.T) {
 	store := newStore(t)
+	subscription := store.Subscribe(output.ReadOptions{})
 	spec := helperSpec(store, "tty-block")
 	spec.TTY = true
 	child, err := Start(spec)
@@ -559,6 +562,17 @@ func TestTTYWriteContextCancellation(t *testing.T) {
 		_ = child.Signal(syscall.SIGKILL)
 		<-child.Done()
 	}()
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readyCancel()
+	for {
+		event, nextErr := subscription.Next(readyCtx)
+		if nextErr != nil {
+			t.Fatalf("blocked tty readiness: %v", nextErr)
+		}
+		if event.Read != nil && len(event.Read.Entries) != 0 {
+			break
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() {
@@ -578,6 +592,12 @@ func TestTTYWriteContextCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("canceled tty write remained blocked")
+	}
+	if err := child.Resize(100, 40); err != nil {
+		t.Fatalf("resize after canceled write: %v", err)
+	}
+	if err := child.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("tty child ended after canceled write: %v", err)
 	}
 }
 
