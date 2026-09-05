@@ -7,8 +7,8 @@
 - Install the project toolchain and hooks with `task init`.
 - Use project `task` targets instead of reconstructing commands. Use `mise exec <tool> -- <command>` when a project-managed tool is not already on `PATH`.
 - Use the smallest verification loop that covers the change. Do not run `task check` by default.
-- Before committing, stage the intended files and run `task check:staged`. It runs only the applicable staged formatting and secret checks.
-- Run `task check` only for cross-project changes, before a release, or when explicitly requested.
+- Before committing, stage the intended files and run `task check:staged`. It formats and re-stages applicable Go files, then scans the staged snapshot for secrets. Use `task fix:staged` when only the staged formatter is needed.
+- Run `task check` only for cross-project changes, before a release, or when explicitly requested. The pre-push hook runs the full `task ci` gate.
 - Run relevant project-specific checks when they exist.
 
 ## Backlog.md

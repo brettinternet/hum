@@ -4,13 +4,19 @@
 glob_matcher: doublestar
 
 pre-commit:
-  parallel: true
   jobs:
-    - name: Check staged Go formatting
+    - name: Format staged Go files
       glob: "**/*.go"
-      run: test -z "$(mise exec go -- gofmt -l {staged_files})"
+      run: mise exec go -- gofmt -w {staged_files}
+      stage_fixed: true
+      tags: [fix]
     - name: Check for secret leaks
       run: mise exec gitleaks -- gitleaks git --pre-commit --redact --staged --verbose --no-banner
+
+pre-push:
+  jobs:
+    - name: Run the CI gate
+      run: task ci
 
 commit-msg:
   jobs:

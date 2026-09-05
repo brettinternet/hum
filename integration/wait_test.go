@@ -84,7 +84,7 @@ func TestWait(t *testing.T) {
 		testutil.WaitForFile(t, runtime.paths.PID, waitIntegrationTimeout)
 		daemonPID = lifecycleReadPID(t, runtime.paths.PID)
 
-		waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", name, "--match", "stdout:never-present", "--timeout", "2s", "--json")
+		waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", name, "--match", "stdout:never-present", "--json")
 		time.Sleep(100 * time.Millisecond)
 		if err := os.WriteFile(gate, []byte("release"), 0o600); err != nil {
 			t.Fatal(err)

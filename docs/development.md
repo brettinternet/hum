@@ -44,14 +44,18 @@ mise exec go -- go build \
 ## Project gates
 
 ```sh
+task fix:staged
+task check:staged
 task check
 task test
 task ci
 ```
 
+- `task fix:staged` formats staged Go files and re-stages the fixes.
+- `task check:staged` runs the pre-commit formatter and staged secret scan.
 - `task check` verifies Go formatting and runs `go vet ./...` and Staticcheck.
 - `task test` runs `go test ./...`.
-- `task ci` runs both the check and test gates.
+- `task ci` runs checks, tests, race-sensitive package tests, and the built-binary smoke test. The pre-push hook runs this same gate.
 
 ## Commit messages
 

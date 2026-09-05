@@ -34,9 +34,14 @@ tasks:
       - task: cli:check
 
   check:staged:
-    desc: Run checks only for staged files
+    desc: Format and run checks only for staged files
     aliases: [check-staged]
     cmd: mise exec lefthook -- lefthook run pre-commit
+
+  fix:staged:
+    desc: Format and re-stage staged files
+    aliases: [fix-staged]
+    cmd: mise exec lefthook -- lefthook run pre-commit --tag fix
 
   fix:
     desc: Fix all project files
