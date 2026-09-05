@@ -57,6 +57,7 @@ type Server struct {
 	shutdownDone      chan struct{}
 	shutdownErr       error
 	shutdownResponses sync.WaitGroup
+	followers         sync.WaitGroup
 	closing           chan struct{}
 }
 
@@ -335,6 +336,9 @@ func (s *Server) shutdown(force bool) error {
 	if err := s.supervisor.Shutdown(context.Background()); err != nil {
 		shutdownErr = errors.Join(shutdownErr, err)
 	}
+	// Follow handlers must flush the supervisor shutdown error before the
+	// daemon exits and tears down their connections.
+	s.followers.Wait()
 	_ = s.listener.Close()
 	if err := s.owner.cleanup(); err != nil {
 		shutdownErr = errors.Join(shutdownErr, err)
@@ -695,6 +699,16 @@ func waitOptionsFromWire(req wireRequest) (app.WaitOptions, time.Duration, error
 }
 
 func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *protocol.Encoder, req wireRequest) {
+	s.shutdownMu.Lock()
+	if s.shutdownStarted {
+		s.shutdownMu.Unlock()
+		_ = writeProtocolError(encoder, protocol.OpFollow, app.ErrSupervisorClosed)
+		return
+	}
+	s.followers.Add(1)
+	s.shutdownMu.Unlock()
+	defer s.followers.Done()
+
 	options, err := readOptionsFromWire(req)
 	if err != nil {
 		_ = writeProtocolError(encoder, protocol.OpFollow, err)
