@@ -4,7 +4,7 @@ title: Opt a supervised session into a pseudo-terminal for interactive devtools
 status: To Do
 assignee: []
 created_date: '2026-09-05 13:55'
-updated_date: '2026-09-05 14:42'
+updated_date: '2026-09-05 14:46'
 labels:
   - cli
   - daemon
@@ -13,6 +13,7 @@ labels:
   - protocol
   - config
   - docs
+milestone: m-2
 dependencies:
   - HUM-020
 modified_files:
