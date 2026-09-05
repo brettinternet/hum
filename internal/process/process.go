@@ -2,6 +2,7 @@
 package process
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"hum/internal/output"
+
+	"github.com/creack/pty"
 )
 
 const (
@@ -37,8 +40,18 @@ type Spec struct {
 	MaxLineBytes int
 	IdleFlush    time.Duration
 	Now          func() time.Time
+	// TTY opts the child into a controlling pseudo-terminal. TTYSize selects
+	// the initial terminal dimensions; a nil size uses 80 columns by 24 rows.
+	TTY     bool
+	TTYSize *TTYSize
 	// Started runs after the child is spawned but before output capture begins.
 	Started func() error
+}
+
+// TTYSize is a pseudo-terminal size in character cells.
+type TTYSize struct {
+	Columns uint16
+	Rows    uint16
 }
 
 // Result is the immutable terminal status of a child.
@@ -58,6 +71,9 @@ type Child struct {
 	pid  int
 	pgid int
 
+	ttyMaster *os.File
+	tty       bool
+
 	output       *output.Store
 	maxLineBytes int
 	idleFlush    time.Duration
@@ -67,6 +83,7 @@ type Child struct {
 	leaderDone   chan struct{}
 	groupGone    chan struct{}
 	mu           sync.Mutex
+	ttyMu        sync.Mutex
 	groupEnded   bool
 	groupEndedAt time.Time
 	res          Result
@@ -86,6 +103,9 @@ func Start(spec Spec) (*Child, error) {
 
 	if spec.IdleFlush < 0 {
 		return nil, errors.New("process: idle flush must not be negative")
+	}
+	if spec.TTYSize != nil && (spec.TTYSize.Columns == 0 || spec.TTYSize.Rows == 0) {
+		return nil, errors.New("process: tty size must have non-zero columns and rows")
 	}
 
 	argv := cloneStrings(spec.Argv)
@@ -107,6 +127,49 @@ func Start(spec Spec) (*Child, error) {
 		return nil, fmt.Errorf("process: resolve %q: %w", argv[0], err)
 	}
 
+	cmd := exec.Command(resolvedPath, argv[1:]...)
+	// Keep the caller's argv[0] while using the environment-resolved path for
+	// executable lookup.
+	cmd.Args = argv
+	cmd.Dir = spec.Dir
+	cmd.Env = env
+
+	if spec.TTY {
+		size := TTYSize{Columns: 80, Rows: 24}
+		if spec.TTYSize != nil {
+			size = *spec.TTYSize
+		}
+		master, err := pty.StartWithAttrs(cmd, &pty.Winsize{Cols: size.Columns, Rows: size.Rows}, &syscall.SysProcAttr{Setsid: true, Setctty: true})
+		if err != nil {
+			return nil, fmt.Errorf("process: start tty %q: %w", argv[0], err)
+		}
+		if spec.Started != nil {
+			if err := spec.Started(); err != nil {
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				_ = cmd.Wait()
+				_ = master.Close()
+				return nil, fmt.Errorf("process: started callback: %w", err)
+			}
+		}
+		child := &Child{
+			pid:          cmd.Process.Pid,
+			pgid:         cmd.Process.Pid,
+			ttyMaster:    master,
+			tty:          true,
+			output:       spec.Output,
+			maxLineBytes: spec.MaxLineBytes,
+			idleFlush:    idleFlush,
+			now:          now,
+			done:         make(chan struct{}),
+			leaderDone:   make(chan struct{}),
+			groupGone:    make(chan struct{}),
+			res:          Result{},
+		}
+		go child.observeGroupExit()
+		go child.runTTY(cmd, master)
+		return child, nil
+	}
+
 	stdin, err := os.Open(os.DevNull)
 	if err != nil {
 		return nil, fmt.Errorf("process: open stdin: %w", err)
@@ -124,12 +187,6 @@ func Start(spec Spec) (*Child, error) {
 		return nil, fmt.Errorf("process: create stderr pipe: %w", err)
 	}
 
-	cmd := exec.Command(resolvedPath, argv[1:]...)
-	// Keep the caller's argv[0] while using the environment-resolved path for
-	// executable lookup.
-	cmd.Args = argv
-	cmd.Dir = spec.Dir
-	cmd.Env = env
 	cmd.Stdin = stdin
 	cmd.Stdout = stdoutWriter
 	cmd.Stderr = stderrWriter
@@ -190,6 +247,128 @@ func (c *Child) PID() int {
 // PGID reports the process-group identifier assigned at launch.
 func (c *Child) PGID() int {
 	return c.pgid
+}
+
+// IsTTY reports whether the child owns a pseudo-terminal.
+func (c *Child) IsTTY() bool {
+	return c != nil && c.tty
+}
+
+// Write forwards bytes to the child pseudo-terminal. It is only valid for TTY
+// children; non-TTY children deliberately retain their /dev/null stdin.
+func (c *Child) Write(p []byte) (int, error) {
+	return c.WriteContext(context.Background(), p)
+}
+
+// WriteContext forwards bytes to the child pseudo-terminal until the write
+// completes or ctx is canceled. A PTY master write can block when the child is
+// not reading; the cancellation watcher turns that cancellation into a write
+// deadline and waits for the syscall to return before releasing ttyMu. This
+// prevents an abandoned write from racing a later input owner.
+func (c *Child) WriteContext(ctx context.Context, p []byte) (int, error) {
+	if c == nil || !c.tty {
+		return 0, errors.New("process: child has no tty input")
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	c.mu.Lock()
+	master := c.ttyMaster
+	ended := c.groupEnded
+	c.mu.Unlock()
+	if ended || master == nil {
+		return 0, os.ErrProcessDone
+	}
+
+	// Resize and final master close use the same mutex. In particular, do not
+	// clear a deadline while another operation is using this descriptor.
+	c.ttyMu.Lock()
+	defer c.ttyMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = master.SetWriteDeadline(deadline)
+	}
+	watchStop := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-ctx.Done():
+			// Closing the master would tear down an otherwise healthy
+			// incarnation. A write deadline aborts only this syscall.
+			_ = master.SetWriteDeadline(time.Now())
+		case <-c.groupGone:
+			// Group exit can race a blocked owner write before the
+			// supervisor publishes its stopped event. Abort now so
+			// capture cleanup cannot wait behind ttyMu forever.
+			_ = master.SetWriteDeadline(time.Now())
+		case <-watchStop:
+		}
+	}()
+	n, err := master.Write(p)
+	close(watchStop)
+	<-watchDone
+	_ = master.SetWriteDeadline(time.Time{})
+	c.mu.Lock()
+	groupEnded := c.groupEnded
+	c.mu.Unlock()
+	if groupEnded {
+		return n, os.ErrProcessDone
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, err
+}
+
+// WriteInput is an explicit alias for Write at input transport call sites.
+func (c *Child) WriteInput(p []byte) (int, error) { return c.Write(p) }
+
+// Resize applies a terminal size in character cells.
+func (c *Child) Resize(columns, rows uint16) error {
+	if c == nil || !c.tty {
+		return errors.New("process: child has no tty")
+	}
+	if columns == 0 || rows == 0 {
+		return errors.New("process: tty size must have non-zero columns and rows")
+	}
+	c.mu.Lock()
+	master := c.ttyMaster
+	ended := c.groupEnded
+	c.mu.Unlock()
+	if ended || master == nil {
+		return os.ErrProcessDone
+	}
+	c.ttyMu.Lock()
+	defer c.ttyMu.Unlock()
+	return pty.Setsize(master, &pty.Winsize{Cols: columns, Rows: rows})
+}
+
+// ResizeContext is the cancellation-aware input capability used by the
+// supervisor. The PTY ioctl is short and serialized with writes/close; checking
+// the context before and after the ioctl prevents a canceled resize from being
+// reported as a successful operation while an incarnation is ending.
+func (c *Child) ResizeContext(ctx context.Context, columns, rows uint16) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := c.Resize(columns, rows)
+	if err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 // Done is closed after the process has been waited for, the original process
@@ -263,11 +442,11 @@ func (c *Child) run(cmd *exec.Cmd, stdoutReader, stderrReader *os.File) {
 	stderrControl := &captureControl{}
 	go func() {
 		defer close(stdoutFinished)
-		stdoutDone <- capture(stdoutReader, stdoutWriter, stdoutSetupErr, c.groupGone, stdoutProgress, stdoutControl)
+		stdoutDone <- capture(stdoutReader, stdoutWriter, stdoutSetupErr, c.groupGone, stdoutProgress, stdoutControl, false)
 	}()
 	go func() {
 		defer close(stderrFinished)
-		stderrDone <- capture(stderrReader, stderrWriter, stderrSetupErr, c.groupGone, stderrProgress, stderrControl)
+		stderrDone <- capture(stderrReader, stderrWriter, stderrSetupErr, c.groupGone, stderrProgress, stderrControl, false)
 	}()
 
 	waitErr := cmd.Wait()
@@ -319,6 +498,68 @@ func (c *Child) run(cmd *exec.Cmd, stdoutReader, stderrReader *os.File) {
 	// record.
 	c.output.NotifyExit(output.Exit{Code: exitCode, Time: at})
 
+	c.mu.Lock()
+	c.res = result
+	c.mu.Unlock()
+	close(c.done)
+}
+
+func (c *Child) runTTY(cmd *exec.Cmd, master *os.File) {
+	stdoutWriter, stdoutSetupErr := output.NewLineWriter(
+		output.Stdout,
+		c.maxLineBytes,
+		c.idleFlush,
+		c.now,
+		c.output.Append,
+	)
+	stdoutDone := make(chan error, 1)
+	stdoutFinished := make(chan struct{})
+	stdoutProgress := make(chan struct{}, 1)
+	stdoutControl := &captureControl{}
+	go func() {
+		defer close(stdoutFinished)
+		stdoutDone <- capture(master, stdoutWriter, stdoutSetupErr, c.groupGone, stdoutProgress, stdoutControl, true)
+	}()
+
+	waitErr := cmd.Wait()
+	exitCode := -1
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	} else {
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) && exitErr.ProcessState != nil {
+			exitCode = exitErr.ProcessState.ExitCode()
+		}
+	}
+	close(c.leaderDone)
+	<-c.groupGone
+	c.mu.Lock()
+	at := c.groupEndedAt
+	c.mu.Unlock()
+	hardDeadline := time.Now().Add(captureHardTimeout)
+	stdoutControl.setHardDeadline(hardDeadline)
+	cancelDone := make(chan struct{})
+	go func() {
+		cancelCapture(master, stdoutFinished, stdoutProgress, stdoutControl, func() {
+			c.ttyMu.Lock()
+			_ = master.Close()
+			c.ttyMu.Unlock()
+		})
+		close(cancelDone)
+	}()
+	<-cancelDone
+	stdoutErr := <-stdoutDone
+	// The master stays open through process-group cleanup and capture. Closing
+	// it now is the final descriptor transition for the incarnation. Serialize
+	// the close with ioctl-based resize calls, which access the raw descriptor.
+	c.ttyMu.Lock()
+	_ = master.Close()
+	c.ttyMu.Unlock()
+	c.mu.Lock()
+	c.ttyMaster = nil
+	c.mu.Unlock()
+	result := Result{ExitCode: exitCode, Err: errors.Join(normalizeWaitError(waitErr), stdoutErr), ExitedAt: at}
+	c.output.NotifyExit(output.Exit{Code: exitCode, Time: at})
 	c.mu.Lock()
 	c.res = result
 	c.mu.Unlock()
@@ -414,7 +655,12 @@ func cancelCapture(
 	finished <-chan struct{},
 	progress <-chan struct{},
 	control *captureControl,
+	closeReader ...func(),
 ) {
+	closeFile := func() { _ = reader.Close() }
+	if len(closeReader) != 0 && closeReader[0] != nil {
+		closeFile = closeReader[0]
+	}
 	select {
 	case <-finished:
 		return
@@ -422,23 +668,42 @@ func cancelCapture(
 	}
 
 	hardDeadline := control.hardDeadlineAt()
-	hardTimer := time.NewTimer(time.Until(hardDeadline))
-	defer hardTimer.Stop()
-
-	if err := reader.SetReadDeadline(hardDeadline); err == nil {
-		select {
-		case <-finished:
-		case <-hardTimer.C:
+	if err := reader.SetReadDeadline(control.nextDeadline()); err == nil {
+		// A descriptor deadline lets capture finish as soon as the short drain
+		// window expires. Progress extends that window, but never beyond the
+		// hard deadline. Waiting unconditionally for the hard deadline made a
+		// quiet PTY take a full second to publish its exit under -race.
+		deadline := control.nextDeadline()
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		for {
 			select {
 			case <-finished:
-			default:
-				_ = reader.Close()
+				return
+			case <-progress:
+				deadline = control.nextDeadline()
+				_ = reader.SetReadDeadline(deadline)
+				resetCaptureTimer(timer, time.Until(deadline))
+			case <-timer.C:
+				select {
+				case <-finished:
+					return
+				default:
+				}
+				if !time.Now().Before(hardDeadline) {
+					closeFile()
+					return
+				}
+				deadline = control.nextDeadline()
+				_ = reader.SetReadDeadline(deadline)
+				resetCaptureTimer(timer, time.Until(deadline))
 			}
 		}
-		return
 	}
 
-	idleTimer := time.NewTimer(time.Until(hardDeadline))
+	hardTimer := time.NewTimer(time.Until(hardDeadline))
+	defer hardTimer.Stop()
+	idleTimer := time.NewTimer(time.Until(control.nextDeadline()))
 	defer idleTimer.Stop()
 	for {
 		select {
@@ -451,7 +716,7 @@ func cancelCapture(
 			case <-finished:
 				return
 			default:
-				_ = reader.Close()
+				closeFile()
 				return
 			}
 		case <-hardTimer.C:
@@ -459,7 +724,7 @@ func cancelCapture(
 			case <-finished:
 				return
 			default:
-				_ = reader.Close()
+				closeFile()
 				return
 			}
 		}
@@ -498,6 +763,7 @@ func capture(
 	canceled <-chan struct{},
 	progress chan<- struct{},
 	control *captureControl,
+	tty bool,
 ) error {
 	source := captureReader{
 		file:     reader,
@@ -546,7 +812,7 @@ func capture(
 				}
 			}
 			if readErr != nil {
-				if readErr != io.EOF && !isCanceledError(readErr) {
+				if readErr != io.EOF && !(tty && errors.Is(readErr, syscall.EIO)) && !isCanceledError(readErr) {
 					errs = append(errs, readErr)
 				}
 				break
@@ -556,9 +822,11 @@ func capture(
 			errs = append(errs, err)
 		}
 	}
-	if err := reader.Close(); err != nil {
-		if !isCanceledError(err) {
-			errs = append(errs, err)
+	if !tty {
+		if err := reader.Close(); err != nil {
+			if !isCanceledError(err) {
+				errs = append(errs, err)
+			}
 		}
 	}
 	return errors.Join(errs...)

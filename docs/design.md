@@ -246,8 +246,29 @@ tool.
 
 ## Non-goals
 
-The foundation has no PTY or arbitrary interactive input, automatic crash
+The foundation has no one-shot arbitrary input API, automatic crash
 restart/backoff, remote transport, authentication, web UI, persistent process
 history, plugin system, OS service installation, or environment literals/files.
 The runtime directory contains only the socket, PID/startup state, and bounded
 daemon diagnostics.
+
+## Optional pseudo-terminals
+
+A process may declare `tty: true` when an interactive devtool requires a
+controlling terminal. The ad-hoc equivalent is `hum run NAME --tty --
+COMMAND`; TTY remains opt-in and the default `/dev/null` stdin plus separate
+stdout/stderr pipes are unchanged. The daemon owns the PTY master, launches a
+session leader with `Setsid`/`Setctty`, and signals its process group during
+stop, restart, down, remove, and forced shutdown. PTY output is merged once as
+retained `stdout` without ANSI stripping or terminal emulation.
+
+Exactly one attached `hum run` owns input. A second attachment follows output
+only, `logs --follow` never owns input, and the one-shot CLI/MCP input operation
+remains DRAFT-002. Input writes are bounded base64 payloads scoped to a launch
+cursor; state events identify stopped/running successors and the owner alone
+forwards SIGWINCH resize events from the attached terminal. Ctrl-] detaches
+input, local raw mode is restored on detach, panic, and transport-loss paths,
+terminal/application echo remains child output, and input is discarded while
+stopped. Ctrl-C, Ctrl-D, and Ctrl-Z are forwarded as input bytes; the child
+controls their terminal meaning. Ordinary exit preserves the lease; remove and
+daemon shutdown close it. MCP exposes `tty` snapshots but no MCP input tool.

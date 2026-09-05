@@ -72,10 +72,13 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			StopOnNthArg: &runStopOnNthArg,
 			Description: "hum run automatically starts a detached daemon when none is available. " +
 				"Without --detach, it follows the named session across process exits and launches until Ctrl+C detaches the observer. " +
-				"With --detach, it starts the process, prints its name and PID (or JSON), and returns immediately; the daemon keeps owning it.",
+				"With --detach, it starts the process, prints its name and PID (or JSON), and returns immediately; the daemon keeps owning it. " +
+				"TTY mode uses raw mode, forwards terminal bytes including Ctrl+C, Ctrl+D, and Ctrl+Z, and consumes Ctrl-] to detach input; non-TTY Ctrl+C remains observer detach. " +
+				"TTY output merges child streams as stdout, exactly one owner forwards input and SIGWINCH resizes, and logs --follow is output-only; EOF or shutdown releases the owner.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, Usage: "start the process detached and return without attaching"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON for detached runs; attached runs stream raw child output"},
+				&urfavecli.BoolFlag{Name: "tty", Usage: "launch an ad-hoc command in a pseudo-terminal and forward attached input"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return runCommand(ctx, cmd, version, buildTime, writer, errWriter)
@@ -328,6 +331,14 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 		return args[0], argv, nil
 	}
 	if separator < 0 {
+		if cmd.Bool("tty") || cmd.IsSet("tty") {
+			return "", nil, errors.New("--tty requires an ad-hoc command after --")
+		}
+		for _, arg := range args[1:] {
+			if arg == "--tty" || arg == "--tty=true" {
+				return "", nil, errors.New("--tty requires an ad-hoc command after --")
+			}
+		}
 		if len(args) == 1 {
 			return args[0], nil, nil
 		}
@@ -351,7 +362,7 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 			}
 		}
 		switch name {
-		case "detach", "json":
+		case "detach", "json", "tty":
 			if hasValue {
 				return "", nil, fmt.Errorf("--%s does not take a value", name)
 			}
@@ -402,6 +413,9 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return err
 	}
 	definition, declared := manifest.byName[name]
+	if (cmd.Bool("tty") || cmd.IsSet("tty")) && len(argv) == 0 {
+		return errors.New("--tty requires an ad-hoc command after --")
+	}
 	if len(argv) != 0 && declared {
 		return fmt.Errorf("process %q is declared in hum.yaml; use hum start %s", name, name)
 	}
@@ -413,10 +427,10 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 
 	launch := func() (app.Process, error) {
 		if len(argv) != 0 {
-			return client.Start(ctx, daemon.StartRequest{Name: name, Source: "ad_hoc", Argv: argv, Cwd: cwd, Env: os.Environ()})
+			return client.Start(ctx, daemon.StartRequest{Name: name, Source: "ad_hoc", Argv: argv, Cwd: cwd, Env: os.Environ(), TTY: cmd.Bool("tty")})
 		}
 		if declared {
-			return client.Start(ctx, daemon.StartRequest{Name: name, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: os.Environ(), Ready: readinessConfig(definition)})
+			return client.Start(ctx, daemon.StartRequest{Name: name, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: os.Environ(), Ready: readinessConfig(definition), TTY: definition.TTY})
 		}
 		return client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root})
 	}
@@ -455,6 +469,56 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return err
 	}
 
+	current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+	// A supplied command defines a replacement incarnation, so only an
+	// explicit --tty reserves input for it. Existing/declared TTY definitions
+	// are attached automatically when merely observing or launching them.
+	wantTTY := cmd.Bool("tty") || len(argv) == 0 && ((declared && definition.TTY) || (!declared && getErr == nil && current.TTY))
+	var localInput *ttyInput
+	inputConflict := false
+	if wantTTY && !cmd.Bool("detach") {
+		inputRequest := ttyInputRequest(name, manifest.root, definition, argv)
+		if len(argv) != 0 {
+			inputRequest.Cwd = cwd
+			inputRequest.Root = manifest.root
+			inputRequest.Argv = append([]string(nil), argv...)
+			inputRequest.Source = "ad_hoc"
+		}
+		if declared {
+			inputRequest.Cwd = definition.Cwd
+			inputRequest.Root = manifest.root
+		}
+		if len(argv) == 0 && !declared && getErr == nil {
+			// The retained record is already fully staged. Do not send its
+			// argv back through PrepareTTY: input attach has no environment
+			// payload and would otherwise erase the retained cwd/environment.
+			inputRequest.Cwd = current.Cwd
+		}
+		session, attachErr := client.InputAttach(ctx, inputRequest)
+		if attachErr != nil {
+			if isInputConflict(attachErr) {
+				inputConflict = true
+				if _, writeErr := fmt.Fprintln(errWriter, "tty input is already owned; following output only"); writeErr != nil {
+					return writeErr
+				}
+			} else {
+				return attachErr
+			}
+		} else {
+			localInput, err = newTTYInput(session, errWriter)
+			if err != nil {
+				_ = session.Release()
+				return err
+			}
+			if _, writeErr := fmt.Fprintln(errWriter, "tty input attached; press Ctrl-] to detach input"); writeErr != nil {
+				localInput.close()
+				return writeErr
+			}
+			localInput.start()
+			defer localInput.close()
+		}
+	}
+
 	signals := notifyFollowSignals()
 	defer signal.Stop(signals)
 	follower, err := client.Follow(context.Background(), daemon.FollowRequest{Name: name, Cwd: manifest.root, Stream: protocol.StreamBoth, MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes)})
@@ -463,8 +527,12 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	}
 	defer follower.Close()
 
-	current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
-	shouldLaunch := len(argv) != 0 || declared && (getErr != nil || current.State != app.StateRunning)
+	// Follow creates unresolved durable records. Refresh after the follower is
+	// registered so the waiting message and launch decision preserve the
+	// pre-existing non-TTY lifecycle race guarantees.
+	current, getErr = client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+
+	shouldLaunch := !inputConflict && (len(argv) != 0 || declared && (getErr != nil || current.State != app.StateRunning))
 	if shouldLaunch {
 		if _, err := launch(); err != nil {
 			if isNameInUse(err) || errors.Is(err, app.ErrNameInUse) {
@@ -1094,6 +1162,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 			request.Env = manifestProcessEnv()
 			request.Source = definition.Source
 			request.Ready = readinessConfig(definition)
+			request.TTY = definition.TTY
 		}
 		process, err := client.Restart(ctx, request)
 		if err != nil {
@@ -1283,7 +1352,7 @@ func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command,
 				results[index] = manifestLaunchResultFor(definition, current, "already_running")
 				continue
 			}
-			process, startErr := client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root})
+			process, startErr := client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root, TTY: current.TTY})
 			if startErr != nil {
 				results[index] = manifestLaunchError(definition, startErr)
 			} else {

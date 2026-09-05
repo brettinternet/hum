@@ -163,18 +163,22 @@ type Request struct {
 	Payload json.RawMessage `json:"-"`
 	Raw     json.RawMessage `json:"-"`
 
-	Hello    *HelloRequest    `json:"-"`
-	Start    *StartRequest    `json:"-"`
-	List     *ListRequest     `json:"-"`
-	Get      *GetRequest      `json:"-"`
-	Output   *OutputRequest   `json:"-"`
-	Follow   *FollowRequest   `json:"-"`
-	Wait     *WaitRequest     `json:"-"`
-	Signal   *SignalRequest   `json:"-"`
-	Stop     *StopRequest     `json:"-"`
-	Restart  *RestartRequest  `json:"-"`
-	Remove   *RemoveRequest   `json:"-"`
-	Shutdown *ShutdownRequest `json:"-"`
+	Hello        *HelloRequest        `json:"-"`
+	Start        *StartRequest        `json:"-"`
+	List         *ListRequest         `json:"-"`
+	Get          *GetRequest          `json:"-"`
+	Output       *OutputRequest       `json:"-"`
+	Follow       *FollowRequest       `json:"-"`
+	Wait         *WaitRequest         `json:"-"`
+	Signal       *SignalRequest       `json:"-"`
+	Stop         *StopRequest         `json:"-"`
+	Restart      *RestartRequest      `json:"-"`
+	Remove       *RemoveRequest       `json:"-"`
+	Shutdown     *ShutdownRequest     `json:"-"`
+	InputAttach  *InputAttachRequest  `json:"-"`
+	InputRelease *InputReleaseRequest `json:"-"`
+	InputWrite   *InputWriteRequest   `json:"-"`
+	InputResize  *InputResizeRequest  `json:"-"`
 }
 
 // UnmarshalJSON dispatches a flattened request object into its operation DTO.
@@ -198,6 +202,7 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	r.Payload = append(r.Payload[:0], data...)
 	r.Version = 0
 	r.Hello, r.Start, r.List, r.Get, r.Output, r.Follow, r.Wait, r.Signal, r.Stop, r.Restart, r.Remove, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+	r.InputAttach, r.InputRelease, r.InputWrite, r.InputResize = nil, nil, nil, nil
 
 	var err error
 	switch header.Op {
@@ -238,6 +243,18 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	case OpShutdown:
 		r.Shutdown = new(ShutdownRequest)
 		err = json.Unmarshal(data, r.Shutdown)
+	case OpInputAttach:
+		r.InputAttach = new(InputAttachRequest)
+		err = json.Unmarshal(data, r.InputAttach)
+	case OpInputRelease:
+		r.InputRelease = new(InputReleaseRequest)
+		err = json.Unmarshal(data, r.InputRelease)
+	case OpInputWrite:
+		r.InputWrite = new(InputWriteRequest)
+		err = json.Unmarshal(data, r.InputWrite)
+	case OpInputResize:
+		r.InputResize = new(InputResizeRequest)
+		err = json.Unmarshal(data, r.InputResize)
 	}
 	return err
 }
@@ -299,6 +316,18 @@ func (r Request) MarshalJSON() ([]byte, error) {
 	}
 	if r.Shutdown != nil {
 		return json.Marshal(r.Shutdown)
+	}
+	if r.InputAttach != nil {
+		return json.Marshal(r.InputAttach)
+	}
+	if r.InputRelease != nil {
+		return json.Marshal(r.InputRelease)
+	}
+	if r.InputWrite != nil {
+		return json.Marshal(r.InputWrite)
+	}
+	if r.InputResize != nil {
+		return json.Marshal(r.InputResize)
 	}
 	if r.Op == "" {
 		return nil, MissingOperationError{}

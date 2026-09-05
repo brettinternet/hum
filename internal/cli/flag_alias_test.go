@@ -15,7 +15,7 @@ func TestFlagAliases(t *testing.T) {
 	expected := map[string]map[string][]string{
 		"serve":    {"daemon": {"d"}},
 		"init":     {"json": {"j"}},
-		"run":      {"detach": {"d"}, "json": {"j"}},
+		"run":      {"detach": {"d"}, "json": {"j"}, "tty": nil},
 		"start":    {"no-wait": nil, "timeout": {"t"}, "json": {"j"}},
 		"up":       {"no-wait": nil, "timeout": {"t"}, "json": {"j"}},
 		"down":     {"json": {"j"}},

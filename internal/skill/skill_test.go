@@ -189,3 +189,22 @@ func decodePluginJSON(t *testing.T, path string, target any) {
 		t.Fatalf("decode %s: %v", path, err)
 	}
 }
+
+func TestTTYInstructions(t *testing.T) {
+	for name, content := range map[string]string{"embedded": Content(), "plugin": string(mustReadSkillFile(t, "../../plugins/hum/skills/hum/SKILL.md"))} {
+		for _, want := range []string{"tty: true", "CLI TTY option with a command separator", "raw mode", "Ctrl-]", "terminal echo", "Ctrl-C", "logs --follow", "MCP", "shutdown"} {
+			if !strings.Contains(content, want) {
+				t.Errorf("%s skill missing %q", name, want)
+			}
+		}
+	}
+}
+
+func mustReadSkillFile(t *testing.T, path string) []byte {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
+}

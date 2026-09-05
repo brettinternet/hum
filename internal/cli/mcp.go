@@ -58,7 +58,7 @@ func (mcpResolver) Resolve(_ context.Context, root string) (mcpserver.Resolution
 		definitions = append(definitions, mcpserver.Definition{
 			Name: definition.Name, Source: definition.Source,
 			Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd,
-			Ready: readinessConfig(definition),
+			Ready: readinessConfig(definition), TTY: definition.TTY,
 		})
 	}
 	return mcpserver.Resolution{Root: manifest.root, Definitions: definitions}, nil
@@ -129,7 +129,7 @@ func (c *mcpDaemonClient) Restart(ctx context.Context, request protocol.RestartR
 
 func mcpProcess(process app.Process) protocol.Process {
 	result := protocol.Process{
-		Name: process.Name, Source: process.Source, Root: process.Root, PID: process.PID, PGID: process.PGID,
+		Name: process.Name, Source: process.Source, Root: process.Root, TTY: process.TTY, PID: process.PID, PGID: process.PGID,
 		Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...), Start: process.Start,
 		LaunchCursor: protocol.Cursor(process.LaunchCursor), State: string(process.State), Exit: mcpExit(process.Exit),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,

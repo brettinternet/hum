@@ -424,7 +424,7 @@ func statusAssertExactFields(t *testing.T, text string) {
 		t.Fatalf("decode status JSON fields %q: %v", text, err)
 	}
 	want := map[string]struct{}{
-		"name": {}, "project_root": {}, "pid": {}, "pgid": {}, "cwd": {},
+		"name": {}, "project_root": {}, "tty": {}, "pid": {}, "pgid": {}, "cwd": {},
 		"argv": {}, "started_at": {}, "state": {}, "exit_status": {},
 		"restart_count": {}, "followers": {}, "next_cursor": {},
 	}

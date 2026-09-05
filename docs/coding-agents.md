@@ -76,3 +76,19 @@ processes:
 When MCP is unavailable, `hum skill` prints the embedded Agent Skills file for
 installation in an agent's normal skill directory. MCP remains the preferred
 integration.
+
+### Interactive sessions
+
+Leave `tty` off unless a tool genuinely requires a controlling terminal;
+prefer its non-interactive mode (`npx --yes`, `CI=1`, or `--force`) because
+bounded logs are not terminal-sanitized. A manifest can opt in with
+`tty: true`, or an operator can use `hum run NAME --tty -- COMMAND`. Only one
+attached run forwards input; competing runs and `logs --follow` are
+output-only. The owner uses raw mode and alone forwards SIGWINCH resizes;
+Ctrl-] detaches input, raw mode is restored after panic, terminal echo is
+controlled by the child, and Ctrl-C is forwarded only in TTY mode (normal
+non-TTY runs still use Ctrl-C to detach
+observation); Ctrl-D and Ctrl-Z are forwarded in TTY mode. MCP reports `tty` but
+has no input tool. Stop/restart preserves the lease across successors,
+remove and shutdown close it, and `shutdown --stop-processes` is required when
+active work must be stopped.

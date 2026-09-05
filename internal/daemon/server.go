@@ -474,6 +474,10 @@ func (s *Server) serveConn(conn net.Conn) {
 			s.handleFollow(ctx, conn, encoder, req)
 			return
 		}
+		if req.Op == "input_attach" {
+			s.handleInput(ctx, conn, decoder, encoder, req)
+			return
+		}
 		if req.Op == "wait" {
 			s.handleWait(ctx, conn, encoder, req)
 			return
@@ -507,7 +511,11 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		if req.Cwd == "" {
 			req.Cwd = "."
 		}
-		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Source: req.Source, Root: req.Root, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...), Ready: appReadinessConfigFromWire(req.Ready)})
+		var ttySize *app.TTYSize
+		if req.Columns != 0 || req.Rows != 0 {
+			ttySize = &app.TTYSize{Columns: req.Columns, Rows: req.Rows}
+		}
+		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Source: req.Source, Root: req.Root, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...), Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize})
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
@@ -589,10 +597,14 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, app.ErrSupervisorClosed), false
 		}
+		var ttySize *app.TTYSize
+		if req.Columns != 0 || req.Rows != 0 {
+			ttySize = &app.TTYSize{Columns: req.Columns, Rows: req.Rows}
+		}
 		options := app.RestartOptions{
 			Update: req.Update, Source: req.Source, Root: req.Root, Cwd: req.Cwd,
 			Argv: append([]string(nil), req.Argv...), Env: append([]string(nil), req.Env...),
-			Ready: appReadinessConfigFromWire(req.Ready),
+			Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize,
 		}
 		process, err := s.supervisor.Restart(context.Background(), req.Cwd, req.Name, options)
 		if err != nil {
@@ -737,6 +749,165 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 	}
 }
 
+func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protocol.Decoder, encoder *protocol.Encoder, req wireRequest) {
+	if !req.TTY {
+		_ = writeProtocolError(encoder, protocol.OpInputAttach, app.ErrInputNotTTY)
+		return
+	}
+	var size *app.TTYSize
+	if req.Columns != 0 || req.Rows != 0 {
+		size = &app.TTYSize{Columns: req.Columns, Rows: req.Rows}
+	}
+	if len(req.Argv) != 0 {
+		if err := s.supervisor.PrepareTTY(app.StartRequest{Name: req.Name, Root: req.Root, Cwd: req.Cwd, Argv: req.Argv, Source: req.Source, TTY: true, TTYSize: size}); err != nil {
+			_ = writeProtocolError(encoder, protocol.OpInputAttach, err)
+			return
+		}
+	}
+	lease, err := s.supervisor.AcquireInputAt(req.Root, req.Cwd, req.Name, true, size)
+	if err != nil {
+		_ = writeProtocolError(encoder, protocol.OpInputAttach, err)
+		return
+	}
+
+	// inputCtx is canceled by lease closure as well as transport loss. Closing
+	// conn from the watcher is essential: the main goroutine may be blocked in
+	// DecodeRequest while Remove, detach, or daemon shutdown closes only the
+	// application lease.
+	inputCtx, inputCancel := context.WithCancel(ctx)
+	defer inputCancel()
+	leaseDone := lease.Done()
+	transportDone := make(chan struct{})
+	go func() {
+		defer close(transportDone)
+		select {
+		case <-leaseDone:
+			inputCancel()
+			_ = conn.Close()
+		case <-inputCtx.Done():
+		}
+	}()
+	defer func() {
+		inputCancel()
+		_ = conn.Close()
+		lease.Release()
+		<-transportDone
+	}()
+	if err := encoder.EncodeResponse(protocol.InputAttachResponse{Op: protocol.OpInputAttach, OK: true}); err != nil {
+		return
+	}
+	initial, err := lease.Next(inputCtx)
+	if err != nil {
+		return
+	}
+	writeMu := sync.Mutex{}
+	writeState := func(event app.InputEvent) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return encoder.EncodeResponse(protocol.InputStateEvent{Op: protocol.OpInputState, State: string(event.State), LaunchCursor: protocol.Cursor(event.LaunchCursor), TTY: event.TTY})
+	}
+	if err := writeState(initial); err != nil {
+		return
+	}
+	eventDone := make(chan struct{})
+	go func() {
+		defer close(eventDone)
+		for {
+			event, eventErr := lease.Next(inputCtx)
+			if eventErr != nil {
+				return
+			}
+			if writeState(event) != nil {
+				inputCancel()
+				_ = conn.Close()
+				return
+			}
+		}
+	}()
+	defer func() { inputCancel(); _ = conn.Close(); <-eventDone }()
+	for {
+		request, decodeErr := decoder.DecodeRequest()
+		if decodeErr != nil {
+			if errors.Is(decodeErr, io.EOF) {
+				return
+			}
+			// Decode-time validation (including a missing launch cursor) must
+			// be reported as a typed input error rather than silently closing
+			// the owner transport. No lease operation is invoked on this path.
+			_ = writeProtocolError(encoder, protocol.Operation(""), decodeErr)
+			return
+		}
+		wire, convertErr := wireRequestFromProtocol(request)
+		if convertErr != nil {
+			_ = writeProtocolError(encoder, request.Op, convertErr)
+			continue
+		}
+		var response error
+		ack := protocol.InputAckResponse{Op: protocol.Operation(wire.Op)}
+		switch wire.Op {
+		case "input_write":
+			inputRequest := protocol.InputWriteRequest{Op: protocol.OpInputWrite, LaunchCursor: protocol.Cursor(wire.LaunchCursor), Data: wire.Data}
+			data, decodeDataErr := inputRequest.InputBytes()
+			if decodeDataErr != nil {
+				response = decodeDataErr
+				break
+			}
+			response = runInputOperation(inputCtx, conn, func(operationCtx context.Context) error {
+				return lease.Write(operationCtx, output.Cursor(wire.LaunchCursor), data)
+			})
+			ack = protocol.InputAckResponse{Op: protocol.OpInputWrite, OK: response == nil, LaunchCursor: protocol.Cursor(wire.LaunchCursor), Written: len(data)}
+		case "input_resize":
+			response = runInputOperation(inputCtx, conn, func(operationCtx context.Context) error {
+				return lease.Resize(operationCtx, output.Cursor(wire.LaunchCursor), wire.Columns, wire.Rows)
+			})
+			ack = protocol.InputAckResponse{Op: protocol.OpInputResize, OK: response == nil, LaunchCursor: protocol.Cursor(wire.LaunchCursor)}
+		case "input_release":
+			ack = protocol.InputAckResponse{Op: protocol.OpInputRelease, OK: true}
+			writeMu.Lock()
+			_ = encoder.EncodeResponse(ack)
+			writeMu.Unlock()
+			return
+		default:
+			response = fmt.Errorf("%w: input connection does not accept %q", app.ErrInvalidRequest, wire.Op)
+		}
+		if response != nil {
+			ack.OK = false
+			ack.Error = wireErrorToProtocol(protocolWireError(response))
+		}
+		writeMu.Lock()
+		writeErr := encoder.EncodeResponse(ack)
+		writeMu.Unlock()
+		if writeErr != nil {
+			return
+		}
+	}
+}
+
+// runInputOperation watches the dedicated connection while a write or resize
+// may block in the child. The client sends requests serially and waits for an
+// acknowledgement, so peeking one byte here cannot consume a valid next
+// request; it lets a client close cancel a stalled operation without affecting
+// unrelated connections.
+func runInputOperation(ctx context.Context, conn net.Conn, operation func(context.Context) error) error {
+	operationCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		var one [1]byte
+		_, err := conn.Read(one[:])
+		if err != nil {
+			cancel()
+		}
+	}()
+	err := operation(operationCtx)
+	cancel()
+	_ = conn.SetReadDeadline(time.Now())
+	<-watchDone
+	_ = conn.SetReadDeadline(time.Time{})
+	return err
+}
+
 func readOptionsFromWire(req wireRequest) (output.ReadOptions, error) {
 	options := output.ReadOptions{Tail: req.Tail, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	if req.After != nil {
@@ -798,6 +969,11 @@ type wireRequest struct {
 	Source           string               `json:"source,omitempty"`
 	Ready            *wireReadinessConfig `json:"ready,omitempty"`
 	Update           bool                 `json:"update,omitempty"`
+	TTY              bool                 `json:"tty"`
+	Columns          uint16               `json:"columns,omitempty"`
+	Rows             uint16               `json:"rows,omitempty"`
+	LaunchCursor     uint64               `json:"launch_cursor,omitempty"`
+	Data             string               `json:"data,omitempty"`
 	All              bool                 `json:"all,omitempty"`
 	IncludeCompleted bool                 `json:"include_completed,omitempty"`
 	After            *uint64              `json:"after,omitempty"`
@@ -849,6 +1025,7 @@ type wireProcess struct {
 	Name         string           `json:"name"`
 	Source       string           `json:"source,omitempty"`
 	Root         string           `json:"root"`
+	TTY          bool             `json:"tty"`
 	PID          int              `json:"pid"`
 	PGID         int              `json:"pgid"`
 	Cwd          string           `json:"cwd"`
@@ -905,6 +1082,13 @@ func protocolWireError(err error) *wireError {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, app.ErrInputStopped) {
+		return &wireError{Code: string(protocol.ErrorInputClosed), Message: err.Error(), Details: map[string]any{"stopped": true}}
+	}
+	var protocolWire *protocol.WireError
+	if errors.As(err, &protocolWire) && protocolWire != nil {
+		return &wireError{Code: string(protocolWire.Code), Message: protocolWire.Message, Details: protocolWire.Details}
+	}
 	var version *VersionMismatchError
 	if errors.As(err, &version) {
 		return &wireError{Code: string(protocol.ErrorVersionMismatch), Message: version.Error(), Details: protocol.VersionMismatchDetails{Client: version.ClientVersion, Daemon: version.DaemonVersion}, DaemonVersion: version.DaemonVersion}
@@ -938,6 +1122,16 @@ func errorCode(err error) string {
 		return string(protocol.ErrorSupervisorClosed)
 	case errors.Is(err, output.ErrFutureCursor), errors.Is(err, output.ErrEntryTooLarge), errors.Is(err, output.ErrReadLimit):
 		return string(protocol.ErrorOutput)
+	case errors.Is(err, app.ErrInputConflict):
+		return string(protocol.ErrorInputConflict)
+	case errors.Is(err, app.ErrInputTooLarge):
+		return string(protocol.ErrorInputTooLarge)
+	case errors.Is(err, app.ErrInputClosed):
+		return string(protocol.ErrorInputClosed)
+	case errors.Is(err, app.ErrInputStale):
+		return string(protocol.ErrorInputStale)
+	case errors.Is(err, app.ErrInputNotTTY):
+		return string(protocol.ErrorInputNotTTY)
 	default:
 		return string(protocol.ErrorInternal)
 	}
@@ -953,7 +1147,7 @@ func wireProcessesFromApp(items []app.Process) []wireProcess {
 
 func wireProcessFromApp(item app.Process) wireProcess {
 	result := wireProcess{
-		Name: item.Name, Source: item.Source, Root: item.Root, PID: item.PID, PGID: item.PGID,
+		Name: item.Name, Source: item.Source, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: uint64(item.LaunchCursor), State: string(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,

@@ -117,3 +117,25 @@ tool surface, and the shell-only skill fallback.
 - [Design and command semantics](docs/design.md)
 - [Development setup and checks](docs/development.md)
 - [Coding-agent setup](docs/coding-agents.md)
+
+### Interactive TTY sessions
+
+TTY support is opt-in. Add `tty: true` to a process in `hum.yaml`, or use
+`hum run NAME --tty -- COMMAND...` (and optionally `--detach`) for an ad-hoc
+session. A TTY session has one attached input owner; other `hum run` clients
+follow output only, while `logs --follow` is always output-only. Attached TTY
+runs preserve terminal control sequences and retain the merged child stream as
+`stdout`; `stderr` has no child entries. Terminal echo is produced by the
+child, so password secrecy depends on the child disabling echo.
+
+The attached terminal is put in raw mode and restored on detach, transport
+loss, signals, panics, and errors. The owner alone forwards SIGWINCH resizes. Press
+Ctrl-] to detach only input; Ctrl-C, Ctrl-D, and Ctrl-Z are forwarded to the
+child in TTY mode. Non-TTY runs keep the
+existing Ctrl-C observer-detach behavior. A TTY lease survives ordinary stop
+and restart, targets each launch cursor, discards input while stopped, and is
+closed by remove or daemon shutdown. Bare `hum shutdown` still refuses while
+work is active; use `hum shutdown --stop-processes` to apply the normal grace
+sequence. MCP reports `tty` in process snapshots but deliberately has no input
+tool. Keep TTY off when a tool's non-interactive mode (`--yes`, `CI=1`, or
+`--force`) is sufficient because bounded logs are not terminal-sanitized.

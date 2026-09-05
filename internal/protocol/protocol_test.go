@@ -37,7 +37,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":6}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":7}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -355,7 +355,7 @@ func TestStatusGetRequestResponseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","root":"/work/project","pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0}}`+"\n"; got != want {
+	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","root":"/work/project","tty":false,"pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0}}`+"\n"; got != want {
 		t.Fatalf("get response JSON = %s, want %s", got, want)
 	}
 
@@ -509,7 +509,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":6}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":7}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError
@@ -662,7 +662,7 @@ func TestRestartProtocolRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(raw), `{"op":"restart","name":"api","cwd":"/project"}`; got != want {
+	if got, want := string(raw), `{"op":"restart","name":"api","cwd":"/project","tty":false}`; got != want {
 		t.Fatalf("restart request = %s, want %s", got, want)
 	}
 	decoded, err := NewDecoder(bytes.NewReader(append(raw, '\n'))).DecodeRequest()
@@ -782,5 +782,61 @@ func TestExplicitRootRequestRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(decodedRestart, restart) {
 		t.Fatalf("decoded restart = %#v, want %#v", decodedRestart, restart)
+	}
+}
+
+func TestTTYInputLaunchCursorRequired(t *testing.T) {
+	for _, raw := range []string{
+		`{"op":"input_write","data":"eA=="}`,
+		`{"op":"input_resize","columns":80,"rows":24}`,
+	} {
+		_, err := NewDecoder(strings.NewReader(raw + "\n")).DecodeRequest()
+		if err == nil {
+			t.Fatalf("omitted launch cursor accepted: %s", raw)
+		}
+		var wire *WireError
+		if !errors.As(err, &wire) || wire == nil || wire.Code != ErrorInvalidRequest {
+			t.Fatalf("omitted launch cursor error = %v", err)
+		}
+	}
+	for _, raw := range []string{
+		`{"op":"input_write","launch_cursor":0,"data":"eA=="}`,
+		`{"op":"input_resize","launch_cursor":0,"columns":80,"rows":24}`,
+	} {
+		if _, err := NewDecoder(strings.NewReader(raw + "\n")).DecodeRequest(); err != nil {
+			t.Fatalf("explicit zero launch cursor rejected: %v", err)
+		}
+	}
+}
+
+func TestTTYProtocol(t *testing.T) {
+	start := StartRequest{Name: "dev", Argv: []string{"dev"}, Cwd: "/tmp", Env: []string{}, TTY: true}
+	encoded, err := json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"tty":true`) {
+		t.Fatalf("start JSON = %s", encoded)
+	}
+	var decoded StartRequest
+	if err := json.Unmarshal(encoded, &decoded); err != nil || !decoded.TTY {
+		t.Fatalf("decoded start = %+v, err %v", decoded, err)
+	}
+	processJSON, err := json.Marshal(Process{Name: "dev", TTY: true})
+	if err != nil || !strings.Contains(string(processJSON), `"tty":true`) {
+		t.Fatalf("process JSON = %s, err %v", processJSON, err)
+	}
+	write := InputWriteRequest{Op: OpInputWrite, LaunchCursor: 9, Data: "AP8AeA=="}
+	data, err := write.InputBytes()
+	if err != nil || !reflect.DeepEqual(data, []byte{0, 0xff, 0, 0x78}) {
+		t.Fatalf("input bytes = %v, err %v", data, err)
+	}
+	if _, err := (InputWriteRequest{Data: strings.Repeat("A", 100000)}).InputBytes(); err == nil {
+		t.Fatal("oversized base64 payload was accepted")
+	}
+	for _, op := range []Operation{OpInputAttach, OpInputRelease, OpInputWrite, OpInputResize} {
+		if !IsKnown(op) {
+			t.Fatalf("input operation %q is not known", op)
+		}
 	}
 }

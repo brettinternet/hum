@@ -1,6 +1,7 @@
 package process
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -16,6 +18,9 @@ import (
 	"time"
 
 	"hum/internal/output"
+
+	"github.com/creack/pty"
+	"golang.org/x/term"
 )
 
 const (
@@ -74,6 +79,12 @@ func runProcessHelper() {
 	case "streams":
 		fmt.Fprint(os.Stdout, "stdout-tail")
 		fmt.Fprint(os.Stderr, "stderr-tail")
+	case "tty-session":
+		runTTYSessionHelper()
+	case "tty-block":
+		runTTYBlockHelper()
+	case "tty-group":
+		runTTYGroupHelper()
 	case "idle-fragment":
 		fmt.Fprint(os.Stdout, "idle-fragment")
 		signals := make(chan os.Signal, 1)
@@ -100,6 +111,68 @@ func runProcessHelper() {
 		fmt.Fprint(os.Stdout, "this-entry-is-too-large")
 	default:
 		os.Exit(2)
+	}
+}
+
+func runTTYBlockHelper() {
+	fmt.Fprint(os.Stdout, "block-ready\n")
+	signal.Ignore(syscall.SIGTERM, syscall.SIGINT)
+	select {}
+}
+
+func runTTYGroupHelper() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	cmd := exec.Command(helperBinary(), "-test.run=TestProcessHelper", "group-child")
+	cmd.Env = []string{helperEnv + "=1", helperMode + "=group-child"}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		os.Exit(2)
+	}
+	if ready := os.Getenv(helperReady); ready != "" {
+		if err := os.WriteFile(ready, []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			os.Exit(2)
+		}
+	}
+	fmt.Fprint(os.Stdout, "tty-group-ready\n")
+	<-signals
+	_ = cmd.Wait()
+}
+
+func runTTYSessionHelper() {
+	isatty := term.IsTerminal(int(os.Stdin.Fd()))
+	devTTY := false
+	if tty, err := os.Open("/dev/tty"); err == nil {
+		devTTY = true
+		_ = tty.Close()
+	}
+	pgid, _ := syscall.Getpgid(os.Getpid())
+	rows, cols, _ := pty.Getsize(os.Stdin)
+	fmt.Fprintf(os.Stdout, "tty=%t devtty=%t pid=%d pgid=%d size=%dx%d\n", isatty, devTTY, os.Getpid(), pgid, cols, rows)
+	fmt.Fprint(os.Stderr, "stderr-marker\n")
+	state, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		os.Exit(2)
+	}
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), state) }()
+	data := make([]byte, 3)
+	if _, err := io.ReadFull(os.Stdin, data); err != nil {
+		os.Exit(3)
+	}
+	fmt.Fprintf(os.Stdout, "bytes=%s\n", string(data))
+	sizes := make(chan os.Signal, 1)
+	signal.Notify(sizes, syscall.SIGWINCH)
+	defer signal.Stop(sizes)
+	fmt.Fprint(os.Stdout, "resize-ready\n")
+	select {
+	case <-sizes:
+		rows, cols, _ = pty.Getsize(os.Stdin)
+		fmt.Fprintf(os.Stdout, "resized=%dx%d\n", cols, rows)
+	case <-time.After(2 * time.Second):
+		fmt.Fprint(os.Stdout, "resized=timeout\n")
 	}
 }
 
@@ -322,6 +395,190 @@ func entries(t *testing.T, store *output.Store) []output.Entry {
 		t.Fatalf("read output: %v", err)
 	}
 	return result.Entries
+}
+
+func TestTTYProcess(t *testing.T) {
+	store := newStore(t)
+	subscription := store.Subscribe(output.ReadOptions{})
+	spec := helperSpec(store, "tty-session")
+	spec.TTY = true
+	spec.TTYSize = &TTYSize{Columns: 80, Rows: 24}
+	child, err := Start(spec)
+	if err != nil {
+		t.Fatalf("start tty child: %v", err)
+	}
+	if !child.IsTTY() || child.PID() != child.PGID() {
+		t.Fatalf("tty child pid/pgid = %d/%d", child.PID(), child.PGID())
+	}
+	next := func() (output.Event, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		return subscription.Next(ctx)
+	}
+	for {
+		event, nextErr := next()
+		if nextErr != nil {
+			t.Fatalf("tty initial subscription: %v", nextErr)
+		}
+		if event.Read != nil {
+			var initial string
+			for _, entry := range event.Read.Entries {
+				initial += entry.Text
+			}
+			if strings.Contains(initial, "tty=true") {
+				break
+			}
+		}
+	}
+	if _, err := child.Write([]byte{0, 0xff, 'x'}); err != nil {
+		t.Fatalf("write tty bytes: %v", err)
+	}
+	bytesSeen, resizeReady := false, false
+	for {
+		event, nextErr := next()
+		if nextErr != nil {
+			t.Fatalf("tty bytes subscription: %v", nextErr)
+		}
+		if event.Read != nil {
+			var outputText string
+			for _, entry := range event.Read.Entries {
+				outputText += entry.Text
+			}
+			bytesSeen = bytesSeen || strings.Contains(outputText, "bytes=")
+			resizeReady = resizeReady || strings.Contains(outputText, "resize-ready")
+			if bytesSeen && resizeReady {
+				break
+			}
+		}
+	}
+	if err := child.Resize(120, 40); err != nil {
+		t.Fatalf("resize tty child: %v", err)
+	}
+	if err := child.Signal(syscall.SIGWINCH); err != nil {
+		t.Fatalf("signal tty resize: %v", err)
+	}
+	result := child.Wait()
+	if result.Err != nil || result.ExitCode != 0 {
+		t.Fatalf("tty result = %+v", result)
+	}
+	child.mu.Lock()
+	master := child.ttyMaster
+	child.mu.Unlock()
+	if master != nil {
+		t.Fatal("TTY master remained open after child completion")
+	}
+	var text string
+	for _, entry := range entries(t, store) {
+		if entry.Stream != output.Stdout {
+			t.Fatalf("tty entry stream = %v, want stdout", entry.Stream)
+		}
+		text += entry.Text
+	}
+	for _, want := range []string{"tty=true", "devtty=true", "pgid=", "size=80x24", "stderr-marker", "bytes=", "resized=120x40"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("tty output %q missing %q", text, want)
+		}
+	}
+	if !strings.Contains(text, string([]byte{0, 0xff, 'x'})) {
+		t.Fatalf("tty output lost exact bytes: %q", text)
+	}
+	for {
+		event, nextErr := next()
+		if nextErr != nil {
+			t.Fatalf("tty subscription: %v", nextErr)
+		}
+		if event.Exit != nil {
+			break
+		}
+	}
+}
+
+func TestTTYProcessGroupCleanup(t *testing.T) {
+	store := newStore(t)
+	subscription := store.Subscribe(output.ReadOptions{})
+	readyPath := filepath.Join(t.TempDir(), "tty-group-ready")
+	spec := helperSpec(store, "tty-group")
+	spec.TTY = true
+	spec.Env = append(spec.Env, helperReady+"="+readyPath)
+	child, err := Start(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for {
+		event, nextErr := subscription.Next(ctx)
+		if nextErr != nil {
+			t.Fatalf("tty group readiness: %v", nextErr)
+		}
+		if event.Read != nil {
+			for _, entry := range event.Read.Entries {
+				if strings.Contains(entry.Text, "tty-group-ready") {
+					goto ready
+				}
+			}
+		}
+	}
+ready:
+	data, err := os.ReadFile(readyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descendantPID, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("descendant pid = %q: %v", data, err)
+	}
+	if err := child.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("terminate tty group: %v", err)
+	}
+	result := child.Wait()
+	if result.Err != nil || result.ExitCode != 0 {
+		t.Fatalf("tty group result = %+v", result)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		if err := syscall.Kill(descendantPID, 0); errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tty descendant %d remained after group termination", descendantPID)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestTTYWriteContextCancellation(t *testing.T) {
+	store := newStore(t)
+	spec := helperSpec(store, "tty-block")
+	spec.TTY = true
+	child, err := Start(spec)
+	if err != nil {
+		t.Fatalf("start blocked tty child: %v", err)
+	}
+	defer func() {
+		_ = child.Signal(syscall.SIGKILL)
+		<-child.Done()
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, writeErr := child.WriteContext(ctx, bytes.Repeat([]byte{'x'}, 8*1024*1024))
+		result <- writeErr
+	}()
+	select {
+	case <-time.After(100 * time.Millisecond):
+	case err := <-result:
+		t.Fatalf("blocked tty write completed early: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled tty write = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled tty write remained blocked")
+	}
 }
 
 func TestStartCapturesLiteralArguments(t *testing.T) {

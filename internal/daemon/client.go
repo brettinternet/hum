@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +45,7 @@ type StopRequest = protocol.StopRequest
 type RestartRequest = protocol.RestartRequest
 type RemoveRequest = protocol.RemoveRequest
 type ShutdownRequest = protocol.ShutdownRequest
+type InputAttachRequest = protocol.InputAttachRequest
 
 // Dial connects to a socket, performs the mandatory hello, and returns the
 // connection even for VersionMismatchError so an idle older daemon can still
@@ -169,11 +171,15 @@ func (c *Client) SocketPath() string {
 }
 
 func (c *Client) Start(ctx context.Context, req StartRequest) (app.Process, error) {
-	response, err := c.roundTrip(ctx, wireRequest{
+	request := wireRequest{
 		Op: "start", Name: req.Name, Source: req.Source, Root: req.Root,
 		Argv: append([]string(nil), req.Argv...), Cwd: req.Cwd,
-		Env: append([]string(nil), req.Env...), Ready: wireReadinessConfigFromProtocol(req.Ready),
-	})
+		Env: append([]string(nil), req.Env...), Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY,
+	}
+	if req.TTYSize != nil {
+		request.Columns, request.Rows = req.TTYSize.Columns, req.TTYSize.Rows
+	}
+	response, err := c.roundTrip(ctx, request)
 	if err != nil {
 		return app.Process{}, err
 	}
@@ -325,6 +331,279 @@ func (f *Follower) Close() error {
 	return f.client.Close()
 }
 
+// InputSession is the owner side of a dedicated duplex TTY connection. State
+// events are consumed independently from synchronous write/resize acks.
+type InputSession struct {
+	client  *Client
+	mu      sync.Mutex
+	writeMu sync.Mutex
+	state   string
+	cursor  protocol.Cursor
+
+	events      chan protocol.InputStateEvent
+	eventMu     sync.Mutex
+	eventQueue  []protocol.InputStateEvent
+	eventNotify chan struct{}
+	eventClosed bool
+
+	acks      chan json.RawMessage
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// InputAttach opens an exclusive input lease. A known manifest or retained
+// ad-hoc definition may include Argv/Source so the daemon can reserve the
+// lease before the first launch.
+func (c *Client) InputAttach(ctx context.Context, req InputAttachRequest) (*InputSession, error) {
+	if c == nil || c.socket == "" {
+		return nil, errors.New("client has no socket path for input")
+	}
+	inputClient, err := Dial(ctx, c.socket)
+	if err != nil {
+		return nil, err
+	}
+	request := wireRequest{Op: "input_attach", Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: req.TTY, Argv: append([]string(nil), req.Argv...), Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready), Columns: req.Columns, Rows: req.Rows}
+	if err := inputClient.writeOnly(ctx, request); err != nil {
+		_ = inputClient.Close()
+		return nil, err
+	}
+	var response protocol.InputAttachResponse
+	if err := inputClient.readInputJSON(ctx, &response); err != nil {
+		_ = inputClient.Close()
+		return nil, err
+	}
+	if response.Error != nil {
+		_ = inputClient.Close()
+		return nil, protocolErrorToError(response.Error)
+	}
+	if !response.OK {
+		_ = inputClient.Close()
+		return nil, errors.New("daemon input attach failed")
+	}
+	var event protocol.InputStateEvent
+	if err := inputClient.readInputJSON(ctx, &event); err != nil {
+		_ = inputClient.Close()
+		return nil, err
+	}
+	if event.Error != nil {
+		_ = inputClient.Close()
+		return nil, protocolErrorToError(event.Error)
+	}
+	session := &InputSession{
+		client: inputClient, state: event.State, cursor: event.LaunchCursor,
+		events: make(chan protocol.InputStateEvent, 16), eventNotify: make(chan struct{}, 1),
+		acks: make(chan json.RawMessage, 4), done: make(chan struct{}),
+	}
+	go session.dispatchInputEvents()
+	go session.readInputEvents()
+	return session, nil
+}
+
+// State reports the latest durable state event and cursor.
+func (s *InputSession) State() (string, protocol.Cursor) {
+	if s == nil {
+		return "", 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state, s.cursor
+}
+func (s *InputSession) Events() <-chan protocol.InputStateEvent {
+	if s == nil {
+		return nil
+	}
+	return s.events
+}
+func (s *InputSession) Next(ctx context.Context) (protocol.InputStateEvent, error) {
+	if s == nil {
+		return protocol.InputStateEvent{}, net.ErrClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-s.done:
+		return protocol.InputStateEvent{}, net.ErrClosed
+	default:
+	}
+	select {
+	case event, ok := <-s.events:
+		if !ok {
+			return protocol.InputStateEvent{}, net.ErrClosed
+		}
+		return event, nil
+	case <-s.done:
+		return protocol.InputStateEvent{}, net.ErrClosed
+	case <-ctx.Done():
+		return protocol.InputStateEvent{}, ctx.Err()
+	}
+}
+func (s *InputSession) readInputEvents() {
+	defer close(s.done)
+	defer s.closeInputEvents()
+	for {
+		var raw json.RawMessage
+		if err := s.client.readInputJSONUnlocked(context.Background(), &raw); err != nil {
+			return
+		}
+		var header struct {
+			Op protocol.Operation `json:"op"`
+		}
+		if err := json.Unmarshal(raw, &header); err != nil {
+			return
+		}
+		if header.Op != protocol.OpInputState {
+			select {
+			case s.acks <- raw:
+			case <-s.done:
+				return
+			}
+			continue
+		}
+		var event protocol.InputStateEvent
+		if err := json.Unmarshal(raw, &event); err != nil {
+			return
+		}
+		s.mu.Lock()
+		s.state, s.cursor = event.State, event.LaunchCursor
+		s.mu.Unlock()
+		s.enqueueInputEvent(event)
+	}
+}
+
+func (s *InputSession) enqueueInputEvent(event protocol.InputStateEvent) {
+	if s == nil {
+		return
+	}
+	s.eventMu.Lock()
+	if s.eventClosed {
+		s.eventMu.Unlock()
+		return
+	}
+	s.eventQueue = append(s.eventQueue, event)
+	select {
+	case s.eventNotify <- struct{}{}:
+	default:
+	}
+	s.eventMu.Unlock()
+}
+
+func (s *InputSession) closeInputEvents() {
+	if s == nil {
+		return
+	}
+	s.eventMu.Lock()
+	s.eventClosed = true
+	select {
+	case s.eventNotify <- struct{}{}:
+	default:
+	}
+	s.eventMu.Unlock()
+}
+
+func (s *InputSession) dispatchInputEvents() {
+	defer close(s.events)
+	for {
+		s.eventMu.Lock()
+		if len(s.eventQueue) != 0 {
+			event := s.eventQueue[0]
+			s.eventQueue = s.eventQueue[1:]
+			if len(s.eventQueue) == 0 {
+				s.eventQueue = nil
+			}
+			s.eventMu.Unlock()
+			select {
+			case s.events <- event:
+			case <-s.done:
+				return
+			}
+			continue
+		}
+		closed := s.eventClosed
+		s.eventMu.Unlock()
+		if closed {
+			return
+		}
+		select {
+		case <-s.eventNotify:
+		case <-s.done:
+			return
+		}
+	}
+}
+func (s *InputSession) writeRequest(ctx context.Context, req wireRequest, want protocol.Operation) error {
+	if s == nil || s.client == nil {
+		return net.ErrClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.client.writeOnly(ctx, req); err != nil {
+		return err
+	}
+	select {
+	case raw := <-s.acks:
+		var ack protocol.InputAckResponse
+		if err := json.Unmarshal(raw, &ack); err != nil {
+			return err
+		}
+		if ack.Op != want {
+			return fmt.Errorf("daemon input response operation %q does not match %q", ack.Op, want)
+		}
+		if ack.Error != nil {
+			return protocolErrorToError(ack.Error)
+		}
+		if !ack.OK {
+			return errors.New("daemon input operation failed")
+		}
+		return nil
+	case <-s.done:
+		return &protocol.WireError{Code: protocol.ErrorInputClosed, Message: "tty input connection is closed"}
+	case <-ctx.Done():
+		_ = s.client.Close()
+		return ctx.Err()
+	}
+}
+func (s *InputSession) Write(ctx context.Context, data []byte) error {
+	state, cursor := s.State()
+	if state != "running" {
+		return &protocol.WireError{Code: protocol.ErrorInputClosed, Message: "tty input is not running"}
+	}
+	return s.WriteAt(ctx, cursor, data)
+}
+func (s *InputSession) WriteAt(ctx context.Context, cursor protocol.Cursor, data []byte) error {
+	if len(data) > protocol.MaxInputBytes {
+		return &protocol.WireError{Code: protocol.ErrorInputTooLarge, Message: "input payload exceeds 32768 bytes"}
+	}
+	return s.writeRequest(ctx, wireRequest{Op: "input_write", LaunchCursor: uint64(cursor), Data: base64.StdEncoding.EncodeToString(data)}, protocol.OpInputWrite)
+}
+func (s *InputSession) Resize(ctx context.Context, columns, rows uint16) error {
+	_, cursor := s.State()
+	return s.ResizeAt(ctx, cursor, columns, rows)
+}
+func (s *InputSession) ResizeAt(ctx context.Context, cursor protocol.Cursor, columns, rows uint16) error {
+	if columns == 0 || rows == 0 {
+		return &protocol.WireError{Code: protocol.ErrorInvalidRequest, Message: "tty dimensions must be non-zero"}
+	}
+	return s.writeRequest(ctx, wireRequest{Op: "input_resize", LaunchCursor: uint64(cursor), Columns: columns, Rows: rows}, protocol.OpInputResize)
+}
+func (s *InputSession) Release() error {
+	if s == nil {
+		return nil
+	}
+	// Closing the transport is the release operation. It is deliberately done
+	// without taking writeMu: a pending write may be blocked in the daemon, and
+	// the close is what cancels that operation so the server can drain it before
+	// releasing the lease. The daemon treats transport loss exactly like an
+	// explicit input_release.
+	s.closeOnce.Do(func() { _ = s.client.Close() })
+	<-s.done
+	return nil
+}
+func (s *InputSession) Close() error { return s.Release() }
+
 func (c *Client) Signal(ctx context.Context, req SignalRequest) error {
 	_, err := c.roundTrip(ctx, wireRequest{Op: "signal", Name: req.Name, Cwd: req.Cwd, Signal: req.Signal})
 	return err
@@ -341,11 +620,15 @@ func (c *Client) Remove(ctx context.Context, req RemoveRequest) error {
 }
 
 func (c *Client) Restart(ctx context.Context, req RestartRequest) (app.Process, error) {
-	response, err := c.roundTrip(ctx, wireRequest{
+	request := wireRequest{
 		Op: "restart", Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
 		Argv: append([]string(nil), req.Argv...), Env: append([]string(nil), req.Env...),
-		Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready),
-	})
+		Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY,
+	}
+	if req.TTYSize != nil {
+		request.Columns, request.Rows = req.TTYSize.Columns, req.TTYSize.Rows
+	}
+	response, err := c.roundTrip(ctx, request)
 	if err != nil {
 		return app.Process{}, err
 	}
@@ -454,6 +737,33 @@ func (c *Client) writeOnly(ctx context.Context, req wireRequest) error {
 	return nil
 }
 
+func (c *Client) readInputJSON(ctx context.Context, value any) error {
+	if c == nil {
+		return net.ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.readInputJSONUnlocked(ctx, value)
+}
+
+func (c *Client) readInputJSONUnlocked(ctx context.Context, value any) error {
+	if c == nil {
+		return net.ErrClosed
+	}
+	if err := c.requestAllowed("input"); err != nil {
+		return err
+	}
+	cleanup, err := setConnContextWithCancel(c.conn, ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if err := c.decoder.Decode(value); err != nil {
+		return contextError(ctx, err)
+	}
+	return nil
+}
+
 func (c *Client) requestAllowed(op string) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
@@ -509,7 +819,12 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 	case "start":
 		value = protocol.StartRequest{
 			Op: protocol.OpStart, Name: req.Name, Argv: req.Argv, Cwd: req.Cwd, Root: req.Root, Env: req.Env,
-			Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready),
+			Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY,
+		}
+		if req.Columns != 0 || req.Rows != 0 {
+			start := value.(protocol.StartRequest)
+			start.TTYSize = &protocol.TTYSize{Columns: req.Columns, Rows: req.Rows}
+			value = start
 		}
 	case "list":
 		value = protocol.ListRequest{Op: protocol.OpList, Cwd: req.Cwd, All: req.All, IncludeCompleted: req.IncludeCompleted}
@@ -531,10 +846,23 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 		value = protocol.RestartRequest{
 			Op: protocol.OpRestart, Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
 			Argv: req.Argv, Env: req.Env, Source: req.Source,
-			Ready: protocolReadinessConfigFromWire(req.Ready),
+			Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY,
+		}
+		if req.Columns != 0 || req.Rows != 0 {
+			restart := value.(protocol.RestartRequest)
+			restart.TTYSize = &protocol.TTYSize{Columns: req.Columns, Rows: req.Rows}
+			value = restart
 		}
 	case "shutdown":
 		value = protocol.ShutdownRequest{Op: protocol.OpShutdown, Force: req.Force}
+	case "input_attach":
+		value = protocol.InputAttachRequest{Op: protocol.OpInputAttach, Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: req.TTY, Argv: req.Argv, Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), Columns: req.Columns, Rows: req.Rows}
+	case "input_release":
+		value = protocol.InputReleaseRequest{Op: protocol.OpInputRelease}
+	case "input_write":
+		value = protocol.InputWriteRequest{Op: protocol.OpInputWrite, LaunchCursor: protocol.Cursor(req.LaunchCursor), Data: req.Data}
+	case "input_resize":
+		value = protocol.InputResizeRequest{Op: protocol.OpInputResize, LaunchCursor: protocol.Cursor(req.LaunchCursor), Columns: req.Columns, Rows: req.Rows}
 	default:
 		value = protocol.Request{Op: protocol.Operation(req.Op)}
 	}
@@ -616,6 +944,13 @@ func wireRequestFromProtocolFollowRequest(req protocol.FollowRequest) wireReques
 	return wire
 }
 
+func protocolErrorToError(wire *protocol.WireError) error {
+	if wire == nil {
+		return nil
+	}
+	return &protocol.WireError{Code: wire.Code, Message: wire.Message, Details: wire.Details}
+}
+
 func wireErrorToError(wire *wireError) error {
 	if wire == nil {
 		return nil
@@ -651,7 +986,7 @@ func wireErrorToError(wire *wireError) error {
 
 func appProcessFromWire(item wireProcess) app.Process {
 	result := app.Process{
-		Name: item.Name, Source: item.Source, Root: item.Root, PID: item.PID, PGID: item.PGID,
+		Name: item.Name, Source: item.Source, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: output.Cursor(item.LaunchCursor), State: app.State(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,

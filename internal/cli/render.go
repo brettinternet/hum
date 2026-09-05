@@ -20,6 +20,7 @@ type listProcessJSON struct {
 	Name         string           `json:"name"`
 	Source       string           `json:"source"`
 	Root         string           `json:"root"`
+	TTY          bool             `json:"tty"`
 	PID          int              `json:"pid"`
 	PGID         int              `json:"pgid"`
 	Cwd          string           `json:"cwd"`
@@ -44,6 +45,7 @@ type statusJSON struct {
 	Name         string           `json:"name"`
 	Source       string           `json:"source,omitempty"`
 	ProjectRoot  string           `json:"project_root"`
+	TTY          bool             `json:"tty"`
 	PID          int              `json:"pid"`
 	PGID         int              `json:"pgid"`
 	Cwd          string           `json:"cwd"`
@@ -63,6 +65,7 @@ func statusJSONFor(process app.Process) statusJSON {
 		Name:         process.Name,
 		Source:       process.Source,
 		ProjectRoot:  process.Root,
+		TTY:          process.TTY,
 		PID:          process.PID,
 		PGID:         process.PGID,
 		Cwd:          process.Cwd,
@@ -154,6 +157,7 @@ func processJSON(process app.Process) listProcessJSON {
 		Name:         process.Name,
 		Source:       process.Source,
 		Root:         process.Root,
+		TTY:          process.TTY,
 		PID:          process.PID,
 		PGID:         process.PGID,
 		Cwd:          process.Cwd,
@@ -310,6 +314,9 @@ func renderListHuman(w io.Writer, processes []app.Process, all bool) error {
 		if process.Followers > 0 {
 			prefix += fmt.Sprintf("\tfollowers=%d", process.Followers)
 		}
+		if process.TTY {
+			prefix += "\ttty=true"
+		}
 		if readiness != "" {
 			prefix += "\treadiness=" + readiness
 			if readyCursor != nil {
@@ -435,8 +442,8 @@ func renderWaitHuman(w io.Writer, result app.WaitResult) error {
 func renderStatusHuman(w io.Writer, process app.Process) error {
 	status := statusJSONFor(process)
 	if _, err := fmt.Fprintf(w,
-		"name: %s\nsource: %s\nproject_root: %s\npid: %d\npgid: %d\ncwd: %s\nargv: %s\nstarted_at: %s\nstate: %s\n",
-		status.Name, status.Source, status.ProjectRoot, status.PID, status.PGID, status.Cwd,
+		"name: %s\nsource: %s\nproject_root: %s\ntty: %t\npid: %d\npgid: %d\ncwd: %s\nargv: %s\nstarted_at: %s\nstate: %s\n",
+		status.Name, status.Source, status.ProjectRoot, status.TTY, status.PID, status.PGID, status.Cwd,
 		shellJoin(status.Argv), status.StartedAt, status.State,
 	); err != nil {
 		return err

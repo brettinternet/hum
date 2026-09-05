@@ -403,3 +403,21 @@ func TestLoadDefinitionsAcceptsRootRelativeCwdSymlink(t *testing.T) {
 		t.Fatalf("definitions = %#v, want lexical symlink cwd", definitions)
 	}
 }
+
+func TestTTYManifest(t *testing.T) {
+	root := t.TempDir()
+	writeTestManifest(t, root, "version: 1\nprocesses:\n  dev:\n    argv: [dev]\n    tty: true\n")
+	definitions, err := LoadDefinitions(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(definitions) != 1 || !definitions[0].TTY {
+		t.Fatalf("definitions = %+v", definitions)
+	}
+	for _, value := range []string{"\"true\"", "yes", "1", "null"} {
+		writeTestManifest(t, root, "version: 1\nprocesses:\n  dev:\n    argv: [dev]\n    tty: "+value+"\n")
+		if _, err := LoadDefinitions(root); err == nil || !strings.Contains(err.Error(), "process \"dev\"") || !strings.Contains(err.Error(), "tty") {
+			t.Fatalf("tty=%s error = %v", value, err)
+		}
+	}
+}

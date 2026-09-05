@@ -549,3 +549,35 @@ func TestSortedToolNames(t *testing.T) {
 		t.Fatal("unreachable")
 	}
 }
+
+func TestTTYMCP(t *testing.T) {
+	client := &fakeClient{processes: map[string]protocol.Process{}, startErr: map[string]error{}, stopErr: map[string]error{}}
+	server, root, _ := newTestServer(t, []Definition{{Name: "dev", Source: "manifest", Argv: []string{"dev"}, TTY: true}}, client)
+	result, err := server.callTool(context.Background(), "start", args(root, "name", "dev", "no_wait", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.starts) != 1 || !client.starts[0].TTY {
+		t.Fatalf("start requests = %+v", client.starts)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || !strings.Contains(string(encoded), `"tty"`) {
+		t.Fatalf("TTY MCP result = %s, err %v", encoded, err)
+	}
+	for _, tool := range server.toolDefinitions() {
+		if tool.Name != "start" && tool.Name != "up" && tool.Name != "list" && tool.Name != "status" && tool.Name != "restart" {
+			continue
+		}
+		blob, _ := json.Marshal(tool)
+		if !strings.Contains(string(blob), "tty") {
+			t.Fatalf("tool %s omits tty schema", tool.Name)
+		}
+	}
+
+	runningWithoutTTY := client.processes["dev"]
+	runningWithoutTTY.TTY = false
+	client.processes["dev"] = runningWithoutTTY
+	if _, err := server.callTool(context.Background(), "start", args(root, "name", "dev", "no_wait", true)); mapError(err).Code != string(protocol.ErrorInputNotTTY) || !strings.Contains(err.Error(), "stop it and rerun") {
+		t.Fatalf("running non-tty upgrade error = %v", err)
+	}
+}

@@ -22,7 +22,10 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 			return wireRequest{}, errors.New("start request is missing payload")
 		}
 		wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env = req.Start.Name, req.Start.Argv, req.Start.Cwd, req.Start.Root, req.Start.Env
-		wire.Source, wire.Ready = req.Start.Source, wireReadinessConfigFromProtocol(req.Start.Ready)
+		wire.Source, wire.Ready, wire.TTY = req.Start.Source, wireReadinessConfigFromProtocol(req.Start.Ready), req.Start.TTY
+		if req.Start.TTYSize != nil {
+			wire.Columns, wire.Rows = req.Start.TTYSize.Columns, req.Start.TTYSize.Rows
+		}
 	case protocol.OpList:
 		if req.List == nil {
 			return wireRequest{}, errors.New("list request is missing payload")
@@ -64,7 +67,10 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		}
 		wire.Name, wire.Cwd, wire.Root = req.Restart.Name, req.Restart.Cwd, req.Restart.Root
 		wire.Update, wire.Argv, wire.Env = req.Restart.Update, req.Restart.Argv, req.Restart.Env
-		wire.Source, wire.Ready = req.Restart.Source, wireReadinessConfigFromProtocol(req.Restart.Ready)
+		wire.Source, wire.Ready, wire.TTY = req.Restart.Source, wireReadinessConfigFromProtocol(req.Restart.Ready), req.Restart.TTY
+		if req.Restart.TTYSize != nil {
+			wire.Columns, wire.Rows = req.Restart.TTYSize.Columns, req.Restart.TTYSize.Rows
+		}
 	case protocol.OpRemove:
 		if req.Remove == nil {
 			return wireRequest{}, errors.New("remove request is missing payload")
@@ -75,6 +81,27 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 			return wireRequest{}, errors.New("shutdown request is missing payload")
 		}
 		wire.Force = req.Shutdown.Force
+	case protocol.OpInputAttach:
+		if req.InputAttach == nil {
+			return wireRequest{}, errors.New("input attach request is missing payload")
+		}
+		wire.Name, wire.Cwd, wire.Root = req.InputAttach.Name, req.InputAttach.Cwd, req.InputAttach.Root
+		wire.TTY, wire.Argv, wire.Source, wire.Ready = req.InputAttach.TTY, req.InputAttach.Argv, req.InputAttach.Source, wireReadinessConfigFromProtocol(req.InputAttach.Ready)
+		wire.Columns, wire.Rows = req.InputAttach.Columns, req.InputAttach.Rows
+	case protocol.OpInputRelease:
+		if req.InputRelease == nil {
+			return wireRequest{}, errors.New("input release request is missing payload")
+		}
+	case protocol.OpInputWrite:
+		if req.InputWrite == nil {
+			return wireRequest{}, errors.New("input write request is missing payload")
+		}
+		wire.LaunchCursor, wire.Data = uint64(req.InputWrite.LaunchCursor), req.InputWrite.Data
+	case protocol.OpInputResize:
+		if req.InputResize == nil {
+			return wireRequest{}, errors.New("input resize request is missing payload")
+		}
+		wire.LaunchCursor, wire.Columns, wire.Rows = uint64(req.InputResize.LaunchCursor), req.InputResize.Columns, req.InputResize.Rows
 	default:
 		return wireRequest{}, fmt.Errorf("unsupported operation %q", req.Op)
 	}
@@ -122,6 +149,10 @@ func wireRequestFromProtocolWait(req *protocol.WaitRequest) wireRequest {
 func writeProtocolError(encoder *protocol.Encoder, op protocol.Operation, err error) error {
 	if err == nil {
 		return nil
+	}
+	var wire *protocol.WireError
+	if errors.As(err, &wire) && wire != nil {
+		return encoder.EncodeResponse(protocol.ErrorResponse{Op: op, OK: false, Error: wire})
 	}
 	if errors.Is(err, protocol.ErrMalformed) || errors.Is(err, protocol.ErrOversized) || errors.Is(err, protocol.ErrUnknownOperation) || errors.Is(err, protocol.ErrMissingOperation) {
 		return encoder.EncodeResponse(protocol.ErrorResponse{Op: op, OK: false, Error: protocol.WireErrorForDecode(err)})
@@ -177,7 +208,7 @@ func wireErrorToProtocol(wire *wireError) *protocol.WireError {
 
 func protocolProcessFromWire(item wireProcess) protocol.Process {
 	result := protocol.Process{
-		Name: item.Name, Source: item.Source, Root: item.Root, PID: item.PID, PGID: item.PGID,
+		Name: item.Name, Source: item.Source, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: protocol.Cursor(item.LaunchCursor), State: item.State,
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,

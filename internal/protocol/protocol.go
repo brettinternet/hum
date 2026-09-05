@@ -5,13 +5,14 @@
 package protocol
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"time"
 )
 
 // Version is the current private protocol version. The hello exchange carries
 // this value on every connection.
-const Version = 6
+const Version = 7
 
 // CurrentVersion is an explicit alias for Version for callers that prefer a
 // descriptive name.
@@ -50,22 +51,37 @@ const (
 	OpShutdown Operation = "shutdown"
 	// OpEvent marks a streaming event response. It is not a client request.
 	OpEvent Operation = "event"
+	// OpInputAttach opens the dedicated duplex TTY input connection.
+	OpInputAttach Operation = "input_attach"
+	// OpInputRelease releases the current input owner.
+	OpInputRelease Operation = "input_release"
+	// OpInputWrite forwards one bounded base64-encoded input payload.
+	OpInputWrite Operation = "input_write"
+	// OpInputResize applies one cursor-scoped terminal size.
+	OpInputResize Operation = "input_resize"
+	// OpInputState is a state event on an input connection.
+	OpInputState Operation = "input_state"
 
 	// OperationHello through OperationEvent are descriptive aliases for the
 	// Op-prefixed constants.
-	OperationHello    = OpHello
-	OperationStart    = OpStart
-	OperationList     = OpList
-	OperationGet      = OpGet
-	OperationOutput   = OpOutput
-	OperationFollow   = OpFollow
-	OperationWait     = OpWait
-	OperationSignal   = OpSignal
-	OperationStop     = OpStop
-	OperationRestart  = OpRestart
-	OperationRemove   = OpRemove
-	OperationShutdown = OpShutdown
-	OperationEvent    = OpEvent
+	OperationHello        = OpHello
+	OperationStart        = OpStart
+	OperationList         = OpList
+	OperationGet          = OpGet
+	OperationOutput       = OpOutput
+	OperationFollow       = OpFollow
+	OperationWait         = OpWait
+	OperationSignal       = OpSignal
+	OperationStop         = OpStop
+	OperationRestart      = OpRestart
+	OperationRemove       = OpRemove
+	OperationShutdown     = OpShutdown
+	OperationEvent        = OpEvent
+	OperationInputAttach  = OpInputAttach
+	OperationInputRelease = OpInputRelease
+	OperationInputWrite   = OpInputWrite
+	OperationInputResize  = OpInputResize
+	OperationInputState   = OpInputState
 )
 
 // WaitOutcome identifies the terminal condition returned by a wait request.
@@ -83,6 +99,7 @@ const (
 var knownOperations = map[Operation]struct{}{
 	OpHello: {}, OpStart: {}, OpList: {}, OpGet: {}, OpOutput: {},
 	OpFollow: {}, OpWait: {}, OpSignal: {}, OpStop: {}, OpRestart: {}, OpRemove: {}, OpShutdown: {},
+	OpInputAttach: {}, OpInputRelease: {}, OpInputWrite: {}, OpInputResize: {},
 }
 
 // IsKnown reports whether op is one of the protocol operations.
@@ -189,14 +206,22 @@ type ReadinessConfig struct {
 // Root is the explicit manifest project root used for supervisor keying; Cwd
 // remains the child working directory.
 type StartRequest struct {
-	Op     Operation        `json:"op"`
-	Name   string           `json:"name"`
-	Argv   []string         `json:"argv"`
-	Cwd    string           `json:"cwd"`
-	Root   string           `json:"root,omitempty"`
-	Env    []string         `json:"env"`
-	Source string           `json:"source,omitempty"`
-	Ready  *ReadinessConfig `json:"ready,omitempty"`
+	Op      Operation        `json:"op"`
+	Name    string           `json:"name"`
+	Argv    []string         `json:"argv"`
+	Cwd     string           `json:"cwd"`
+	Root    string           `json:"root,omitempty"`
+	Env     []string         `json:"env"`
+	Source  string           `json:"source,omitempty"`
+	Ready   *ReadinessConfig `json:"ready,omitempty"`
+	TTY     bool             `json:"tty"`
+	TTYSize *TTYSize         `json:"tty_size,omitempty"`
+}
+
+// TTYSize is a terminal size in character cells.
+type TTYSize struct {
+	Columns uint16 `json:"columns"`
+	Rows    uint16 `json:"rows"`
 }
 
 // NewStartRequest builds a process start request.
@@ -207,29 +232,33 @@ func NewStartRequest(name string, argv []string, cwd string, env []string) Start
 // MarshalJSON writes the stable start request fields in protocol order.
 func (r StartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op     Operation        `json:"op"`
-		Name   string           `json:"name"`
-		Argv   []string         `json:"argv"`
-		Cwd    string           `json:"cwd"`
-		Root   string           `json:"root,omitempty"`
-		Env    []string         `json:"env"`
-		Source string           `json:"source,omitempty"`
-		Ready  *ReadinessConfig `json:"ready,omitempty"`
-	}{Op: OpStart, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready})
+		Op      Operation        `json:"op"`
+		Name    string           `json:"name"`
+		Argv    []string         `json:"argv"`
+		Cwd     string           `json:"cwd"`
+		Root    string           `json:"root,omitempty"`
+		Env     []string         `json:"env"`
+		Source  string           `json:"source,omitempty"`
+		Ready   *ReadinessConfig `json:"ready,omitempty"`
+		TTY     bool             `json:"tty"`
+		TTYSize *TTYSize         `json:"tty_size,omitempty"`
+	}{Op: OpStart, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize})
 }
 
 // UnmarshalJSON decodes a start request and validates its operation when
 // present.
 func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op     Operation        `json:"op"`
-		Name   string           `json:"name"`
-		Argv   []string         `json:"argv"`
-		Cwd    string           `json:"cwd"`
-		Root   string           `json:"root"`
-		Env    []string         `json:"env"`
-		Source string           `json:"source"`
-		Ready  *ReadinessConfig `json:"ready"`
+		Op      Operation        `json:"op"`
+		Name    string           `json:"name"`
+		Argv    []string         `json:"argv"`
+		Cwd     string           `json:"cwd"`
+		Root    string           `json:"root"`
+		Env     []string         `json:"env"`
+		Source  string           `json:"source"`
+		Ready   *ReadinessConfig `json:"ready"`
+		TTY     bool             `json:"tty"`
+		TTYSize *TTYSize         `json:"tty_size"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -240,6 +269,7 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	r.Op = OpStart
 	r.Name, r.Argv, r.Cwd, r.Root, r.Env = wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env
 	r.Source, r.Ready = wire.Source, wire.Ready
+	r.TTY, r.TTYSize = wire.TTY, wire.TTYSize
 	return nil
 }
 
@@ -619,15 +649,17 @@ func (r *RemoveRequest) UnmarshalJSON(data []byte) error {
 // never echoed in a response. Root is the explicit manifest root used for
 // lookup and retained record keying; Cwd remains the update child directory.
 type RestartRequest struct {
-	Op     Operation        `json:"op"`
-	Name   string           `json:"name"`
-	Cwd    string           `json:"cwd"`
-	Root   string           `json:"root,omitempty"`
-	Update bool             `json:"update,omitempty"`
-	Argv   []string         `json:"argv,omitempty"`
-	Env    []string         `json:"env,omitempty"`
-	Source string           `json:"source,omitempty"`
-	Ready  *ReadinessConfig `json:"ready,omitempty"`
+	Op      Operation        `json:"op"`
+	Name    string           `json:"name"`
+	Cwd     string           `json:"cwd"`
+	Root    string           `json:"root,omitempty"`
+	Update  bool             `json:"update,omitempty"`
+	Argv    []string         `json:"argv,omitempty"`
+	Env     []string         `json:"env,omitempty"`
+	Source  string           `json:"source,omitempty"`
+	Ready   *ReadinessConfig `json:"ready,omitempty"`
+	TTY     bool             `json:"tty"`
+	TTYSize *TTYSize         `json:"tty_size,omitempty"`
 }
 
 // NewRestartRequest builds a restart request that preserves the retained
@@ -639,30 +671,34 @@ func NewRestartRequest(name, cwd string) RestartRequest {
 // MarshalJSON writes the stable restart request fields in protocol order.
 func (r RestartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op     Operation        `json:"op"`
-		Name   string           `json:"name"`
-		Cwd    string           `json:"cwd"`
-		Root   string           `json:"root,omitempty"`
-		Update bool             `json:"update,omitempty"`
-		Argv   []string         `json:"argv,omitempty"`
-		Env    []string         `json:"env,omitempty"`
-		Source string           `json:"source,omitempty"`
-		Ready  *ReadinessConfig `json:"ready,omitempty"`
-	}{Op: OpRestart, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready})
+		Op      Operation        `json:"op"`
+		Name    string           `json:"name"`
+		Cwd     string           `json:"cwd"`
+		Root    string           `json:"root,omitempty"`
+		Update  bool             `json:"update,omitempty"`
+		Argv    []string         `json:"argv,omitempty"`
+		Env     []string         `json:"env,omitempty"`
+		Source  string           `json:"source,omitempty"`
+		Ready   *ReadinessConfig `json:"ready,omitempty"`
+		TTY     bool             `json:"tty"`
+		TTYSize *TTYSize         `json:"tty_size,omitempty"`
+	}{Op: OpRestart, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize})
 }
 
 // UnmarshalJSON decodes a restart request.
 func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op     Operation        `json:"op"`
-		Name   string           `json:"name"`
-		Cwd    string           `json:"cwd"`
-		Root   string           `json:"root"`
-		Update bool             `json:"update"`
-		Argv   []string         `json:"argv"`
-		Env    []string         `json:"env"`
-		Source string           `json:"source"`
-		Ready  *ReadinessConfig `json:"ready"`
+		Op      Operation        `json:"op"`
+		Name    string           `json:"name"`
+		Cwd     string           `json:"cwd"`
+		Root    string           `json:"root"`
+		Update  bool             `json:"update"`
+		Argv    []string         `json:"argv"`
+		Env     []string         `json:"env"`
+		Source  string           `json:"source"`
+		Ready   *ReadinessConfig `json:"ready"`
+		TTY     bool             `json:"tty"`
+		TTYSize *TTYSize         `json:"tty_size"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -672,8 +708,135 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	}
 	r.Op, r.Name, r.Cwd, r.Root = OpRestart, wire.Name, wire.Cwd, wire.Root
 	r.Update, r.Argv, r.Env, r.Source, r.Ready = wire.Update, wire.Argv, wire.Env, wire.Source, wire.Ready
+	r.TTY, r.TTYSize = wire.TTY, wire.TTYSize
 	return nil
 }
+
+// InputAttachRequest opens the dedicated duplex input transport. Argv and
+// source are optional and are used only to stage a known definition before its
+// first launch; arbitrary bytes never appear in this request.
+type InputAttachRequest struct {
+	Op      Operation        `json:"op"`
+	Name    string           `json:"name"`
+	Cwd     string           `json:"cwd"`
+	Root    string           `json:"root,omitempty"`
+	TTY     bool             `json:"tty"`
+	Argv    []string         `json:"argv,omitempty"`
+	Source  string           `json:"source,omitempty"`
+	Ready   *ReadinessConfig `json:"ready,omitempty"`
+	Columns uint16           `json:"columns,omitempty"`
+	Rows    uint16           `json:"rows,omitempty"`
+}
+
+func NewInputAttachRequest(name, cwd string) InputAttachRequest {
+	return InputAttachRequest{Op: OpInputAttach, Name: name, Cwd: cwd, TTY: true}
+}
+
+// InputReleaseRequest closes the current input owner.
+type InputReleaseRequest struct {
+	Op Operation `json:"op"`
+}
+
+// InputWriteRequest carries base64 text so NDJSON remains valid for arbitrary
+// terminal bytes. LaunchCursor is required to prevent writes crossing a
+// process incarnation boundary.
+type InputWriteRequest struct {
+	Op           Operation `json:"op"`
+	LaunchCursor Cursor    `json:"launch_cursor"`
+	Data         string    `json:"data"`
+}
+
+// UnmarshalJSON rejects an omitted launch cursor before a write can reach the
+// daemon lease. A scalar cursor is still used publicly so cursor zero remains
+// a valid, explicitly supplied first-incarnation value.
+func (r *InputWriteRequest) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Op           Operation `json:"op"`
+		LaunchCursor *Cursor   `json:"launch_cursor"`
+		Data         string    `json:"data"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.Op != "" && wire.Op != OpInputWrite {
+		return &UnknownOperationError{Operation: wire.Op}
+	}
+	if wire.LaunchCursor == nil {
+		return NewWireError(ErrorInvalidRequest, "input write requires launch_cursor", nil)
+	}
+	r.Op, r.LaunchCursor, r.Data = OpInputWrite, *wire.LaunchCursor, wire.Data
+	return nil
+}
+
+// InputResizeRequest applies a cursor-scoped terminal size.
+type InputResizeRequest struct {
+	Op           Operation `json:"op"`
+	LaunchCursor Cursor    `json:"launch_cursor"`
+	Columns      uint16    `json:"columns"`
+	Rows         uint16    `json:"rows"`
+}
+
+// UnmarshalJSON rejects an omitted launch cursor before a resize can reach the
+// daemon lease. Zero is valid when the field is present.
+func (r *InputResizeRequest) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Op           Operation `json:"op"`
+		LaunchCursor *Cursor   `json:"launch_cursor"`
+		Columns      uint16    `json:"columns"`
+		Rows         uint16    `json:"rows"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.Op != "" && wire.Op != OpInputResize {
+		return &UnknownOperationError{Operation: wire.Op}
+	}
+	if wire.LaunchCursor == nil {
+		return NewWireError(ErrorInvalidRequest, "input resize requires launch_cursor", nil)
+	}
+	r.Op, r.LaunchCursor = OpInputResize, *wire.LaunchCursor
+	r.Columns, r.Rows = wire.Columns, wire.Rows
+	return nil
+}
+
+// InputAttachResponse acknowledges an input connection before state events.
+type InputAttachResponse struct {
+	Op    Operation  `json:"op"`
+	OK    bool       `json:"ok"`
+	Error *WireError `json:"error,omitempty"`
+}
+
+// InputAckResponse acknowledges a synchronous write or resize.
+type InputAckResponse struct {
+	Op           Operation  `json:"op"`
+	OK           bool       `json:"ok"`
+	LaunchCursor Cursor     `json:"launch_cursor,omitempty"`
+	Written      int        `json:"written,omitempty"`
+	Error        *WireError `json:"error,omitempty"`
+}
+
+// InputStateEvent identifies the current durable lease target.
+type InputStateEvent struct {
+	Op           Operation  `json:"op"`
+	State        string     `json:"state"`
+	LaunchCursor Cursor     `json:"launch_cursor"`
+	TTY          bool       `json:"tty"`
+	Error        *WireError `json:"error,omitempty"`
+}
+
+// InputBytes decodes the bounded base64 payload in a write request.
+func (r InputWriteRequest) InputBytes() ([]byte, error) {
+	decoded, err := base64.StdEncoding.DecodeString(r.Data)
+	if err != nil {
+		return nil, NewWireError(ErrorInvalidRequest, "input data must be valid base64", nil)
+	}
+	if len(decoded) > MaxInputBytes {
+		return nil, NewWireError(ErrorInputTooLarge, "input payload exceeds 32768 bytes", nil)
+	}
+	return decoded, nil
+}
+
+const MaxInputBytes = 32 * 1024
 
 // OutputEntry is one bounded output record carried over the wire.
 type OutputEntry struct {
@@ -730,6 +893,7 @@ type Process struct {
 	Name         string     `json:"name"`
 	Source       string     `json:"source,omitempty"`
 	Root         string     `json:"root"`
+	TTY          bool       `json:"tty"`
 	PID          int        `json:"pid"`
 	PGID         int        `json:"pgid"`
 	Cwd          string     `json:"cwd"`
@@ -1163,6 +1327,16 @@ const (
 	ErrorInternal ErrorCode = "internal"
 	// ErrorActiveProcesses reports shutdown refusal while processes run.
 	ErrorActiveProcesses ErrorCode = "active_processes"
+	// ErrorInputConflict reports another attached owner.
+	ErrorInputConflict ErrorCode = "input_conflict"
+	// ErrorInputTooLarge reports an atomic oversized input write.
+	ErrorInputTooLarge ErrorCode = "input_too_large"
+	// ErrorInputClosed reports a released, removed, or stopped target.
+	ErrorInputClosed ErrorCode = "input_closed"
+	// ErrorInputStale reports a write or resize for an earlier launch.
+	ErrorInputStale ErrorCode = "input_stale"
+	// ErrorInputNotTTY reports a session that was not opted into a TTY.
+	ErrorInputNotTTY ErrorCode = "input_not_tty"
 	// ErrorCodeMalformed through ErrorCodeActiveProcesses are aliases with an
 	// explicit type-oriented prefix.
 	ErrorCodeMalformed        = ErrorMalformed
@@ -1177,6 +1351,11 @@ const (
 	ErrorCodeOutput           = ErrorOutput
 	ErrorCodeInternal         = ErrorInternal
 	ErrorCodeActiveProcesses  = ErrorActiveProcesses
+	ErrorCodeInputConflict    = ErrorInputConflict
+	ErrorCodeInputTooLarge    = ErrorInputTooLarge
+	ErrorCodeInputClosed      = ErrorInputClosed
+	ErrorCodeInputStale       = ErrorInputStale
+	ErrorCodeInputNotTTY      = ErrorInputNotTTY
 )
 
 // WireError is the stable typed error representation sent in responses and

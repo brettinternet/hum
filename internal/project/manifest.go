@@ -32,6 +32,7 @@ var (
 		"argv":  {},
 		"cwd":   {},
 		"ready": {},
+		"tty":   {},
 	}
 	readyFields = map[string]struct{}{
 		"match":   {},
@@ -46,6 +47,7 @@ type Definition struct {
 	Argv   []string
 	Cwd    string
 	Ready  *ReadyDefinition
+	TTY    bool
 }
 
 // ReadyDefinition describes the output expression and timeout used to
@@ -216,7 +218,16 @@ func parseProcess(root, filename, context string, node *yaml.Node) (Definition, 
 			return Definition{}, err
 		}
 	}
-	return Definition{Argv: argv, Cwd: cwd, Ready: ready}, nil
+	tty := false
+	if ttyNode, ok := fields["tty"]; ok {
+		if ttyNode == nil || ttyNode.Kind != yaml.ScalarNode || ttyNode.ShortTag() != "!!bool" {
+			return Definition{}, manifestError(filename, context, "tty must be a boolean")
+		}
+		if err := ttyNode.Decode(&tty); err != nil {
+			return Definition{}, manifestError(filename, context, "tty must be a boolean: %v", err)
+		}
+	}
+	return Definition{Argv: argv, Cwd: cwd, Ready: ready, TTY: tty}, nil
 }
 
 func parseArgv(filename, context string, node *yaml.Node) ([]string, error) {

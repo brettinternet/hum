@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -55,13 +56,21 @@ const (
 // is the explicit manifest project root used for record keying; Cwd remains
 // only the child working directory.
 type StartRequest struct {
-	Name   string
-	Source string
-	Root   string
-	Cwd    string
-	Argv   []string
-	Env    []string
-	Ready  *ReadinessConfig
+	Name    string
+	Source  string
+	Root    string
+	Cwd     string
+	Argv    []string
+	Env     []string
+	Ready   *ReadinessConfig
+	TTY     bool
+	TTYSize *TTYSize
+}
+
+// TTYSize is a pseudo-terminal size in character cells.
+type TTYSize struct {
+	Columns uint16
+	Rows    uint16
 }
 
 // Process is an immutable read model. It intentionally has no environment or
@@ -70,6 +79,7 @@ type Process struct {
 	Name         string
 	Source       string
 	Root         string
+	TTY          bool
 	PID          int
 	PGID         int
 	Cwd          string
@@ -117,13 +127,15 @@ type WaitResult struct {
 // historical ad-hoc restart behavior. Root, when present, is the explicit
 // manifest root used to locate and retain the record key.
 type RestartOptions struct {
-	Update bool
-	Source string
-	Root   string
-	Cwd    string
-	Argv   []string
-	Env    []string
-	Ready  *ReadinessConfig
+	Update  bool
+	Source  string
+	Root    string
+	Cwd     string
+	Argv    []string
+	Env     []string
+	Ready   *ReadinessConfig
+	TTY     bool
+	TTYSize *TTYSize
 }
 
 // Options configures a Supervisor. A zero OutputLimits value delegates to the
@@ -159,6 +171,26 @@ type Child interface {
 	Signal(os.Signal) error
 }
 
+// InputChild is the optional child capability used by TTY input leases. The
+// legacy Child seam remains intentionally small so deterministic non-TTY test
+// children do not need to implement terminal methods.
+type InputChild interface {
+	Write([]byte) (int, error)
+	Resize(uint16, uint16) error
+}
+
+// ContextInputWriter is implemented by children whose PTY write can be
+// interrupted without closing the PTY. The legacy InputChild interface remains
+// supported for deterministic test children and other callers.
+type ContextInputWriter interface {
+	WriteContext(context.Context, []byte) (int, error)
+}
+
+// ContextInputResizer is the cancellation-aware form of terminal resize.
+type ContextInputResizer interface {
+	ResizeContext(context.Context, uint16, uint16) error
+}
+
 var (
 	ErrSupervisorClosed = errors.New("supervisor is shut down")
 	ErrProcessNotFound  = errors.New("supervised process not found")
@@ -166,7 +198,335 @@ var (
 	ErrInvalidName      = errors.New("invalid supervised process name")
 	ErrInvalidRequest   = errors.New("invalid process start request")
 	ErrInvalidSignal    = errors.New("invalid process signal")
+	ErrInputConflict    = errors.New("tty input is already owned")
+	ErrInputTooLarge    = errors.New("tty input is too large")
+	ErrInputClosed      = errors.New("tty input is closed")
+	ErrInputStopped     = errors.New("tty input incarnation has stopped")
+	ErrInputStale       = errors.New("tty input targets a stale incarnation")
+	ErrInputNotTTY      = errors.New("process does not have a tty")
 )
+
+const maxInputBytes = 32 * 1024
+
+// InputState identifies the incarnation currently targeted by an input lease.
+type InputState string
+
+const (
+	InputRunning InputState = "running"
+	InputStopped InputState = "stopped"
+)
+
+// InputEvent is emitted once on acquisition and whenever the retained session
+// crosses a launch or exit boundary.
+type InputEvent struct {
+	State        InputState
+	LaunchCursor output.Cursor
+	TTY          bool
+}
+
+// InputConflictError identifies the existing owner of a TTY input lease.
+type InputConflictError struct{ Name string }
+
+func (e *InputConflictError) Error() string {
+	if e == nil || e.Name == "" {
+		return ErrInputConflict.Error()
+	}
+	return fmt.Sprintf("%s: %q", ErrInputConflict, e.Name)
+}
+func (e *InputConflictError) Unwrap() error { return ErrInputConflict }
+
+// InputTooLargeError reports an atomic input write rejected before any bytes
+// reach the child.
+type InputTooLargeError struct{ Size, Limit int }
+
+func (e *InputTooLargeError) Error() string {
+	if e == nil {
+		return ErrInputTooLarge.Error()
+	}
+	return fmt.Sprintf("%s: %d bytes exceeds %d-byte limit", ErrInputTooLarge, e.Size, e.Limit)
+}
+func (e *InputTooLargeError) Unwrap() error { return ErrInputTooLarge }
+
+// InputStoppedError identifies input discarded because its process
+// incarnation exited. It remains an input-closed error for callers that only
+// need the stable closed classification, while allowing the CLI to retain the
+// durable lease instead of detaching it.
+type InputStoppedError struct{}
+
+func (InputStoppedError) Error() string { return ErrInputStopped.Error() }
+func (InputStoppedError) Unwrap() error { return ErrInputClosed }
+func (InputStoppedError) Is(target error) bool {
+	return target == ErrInputStopped || target == ErrInputClosed
+}
+
+// InputStaleError identifies a write or resize for an earlier launch cursor.
+type InputStaleError struct{ Want, Current output.Cursor }
+
+func (e *InputStaleError) Error() string {
+	if e == nil {
+		return ErrInputStale.Error()
+	}
+	return fmt.Sprintf("%s: launch cursor %d is not current cursor %d", ErrInputStale, e.Want, e.Current)
+}
+func (e *InputStaleError) Unwrap() error { return ErrInputStale }
+
+// InputLease owns one exclusive TTY attachment. Ordinary process exit leaves
+// the lease open so its owner can target a successor incarnation.
+type InputLease struct {
+	supervisor *Supervisor
+	rec        *record
+
+	// events is the public delivery channel. emit only appends to eventQueue;
+	// the dispatcher is the sole sender, so a slow owner never makes a
+	// supervisor lifecycle transition block and no transition is discarded.
+	events      chan InputEvent
+	eventMu     sync.Mutex
+	eventQueue  []InputEvent
+	eventNotify chan struct{}
+	eventClosed bool
+
+	closed            chan struct{}
+	mu                sync.Mutex
+	closedFlag        bool
+	incarnationDone   chan struct{}
+	incarnationClosed bool
+}
+
+func (l *InputLease) Events() <-chan InputEvent {
+	if l == nil {
+		return nil
+	}
+	return l.events
+}
+
+// Done is closed when the durable input lease is released. Process exit only
+// closes the current incarnation and intentionally leaves Done open.
+func (l *InputLease) Done() <-chan struct{} {
+	if l == nil {
+		return nil
+	}
+	return l.closed
+}
+
+func (l *InputLease) Next(ctx context.Context) (InputEvent, error) {
+	if l == nil {
+		return InputEvent{}, ErrInputClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-l.closed:
+		return InputEvent{}, ErrInputClosed
+	default:
+	}
+	select {
+	case event, ok := <-l.events:
+		if !ok {
+			return InputEvent{}, ErrInputClosed
+		}
+		return event, nil
+	case <-l.closed:
+		return InputEvent{}, ErrInputClosed
+	case <-ctx.Done():
+		return InputEvent{}, ctx.Err()
+	}
+}
+func (l *InputLease) Release() {
+	if l == nil || l.supervisor == nil || l.rec == nil {
+		return
+	}
+	l.supervisor.releaseInput(l)
+}
+func (l *InputLease) close() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	if !l.closedFlag {
+		l.closedFlag = true
+		close(l.closed)
+		if !l.incarnationClosed {
+			close(l.incarnationDone)
+			l.incarnationClosed = true
+		}
+	}
+	l.mu.Unlock()
+
+	l.eventMu.Lock()
+	l.eventClosed = true
+	select {
+	case l.eventNotify <- struct{}{}:
+	default:
+	}
+	l.eventMu.Unlock()
+}
+
+// dispatchEvents drains the unbounded-in-practice queue into the compatibility
+// channel returned by Events. A release may stop delivery of events that were
+// queued after the lease was closed, but every launch/exit event is retained
+// and delivered while the durable lease remains open.
+func (l *InputLease) dispatchEvents() {
+	defer close(l.events)
+	for {
+		l.eventMu.Lock()
+		if len(l.eventQueue) != 0 {
+			event := l.eventQueue[0]
+			l.eventQueue = l.eventQueue[1:]
+			if len(l.eventQueue) == 0 {
+				l.eventQueue = nil
+			}
+			l.eventMu.Unlock()
+			select {
+			case l.events <- event:
+			case <-l.closed:
+				return
+			}
+			continue
+		}
+		closed := l.eventClosed
+		l.eventMu.Unlock()
+		if closed {
+			return
+		}
+		select {
+		case <-l.eventNotify:
+		case <-l.closed:
+			return
+		}
+	}
+}
+
+func (l *InputLease) beginIncarnation() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closedFlag || !l.incarnationClosed {
+		return
+	}
+	l.incarnationDone = make(chan struct{})
+	l.incarnationClosed = false
+}
+
+func (l *InputLease) endIncarnation() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.incarnationClosed {
+		close(l.incarnationDone)
+		l.incarnationClosed = true
+	}
+}
+
+func (l *InputLease) incarnationChannel() <-chan struct{} {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.incarnationDone
+}
+
+func (l *InputLease) Close() { l.Release() }
+
+// Write forwards one cursor-scoped byte payload. The variadic form accepts
+// (cursor, bytes) and (context, cursor, bytes), keeping call sites concise.
+func (l *InputLease) Write(args ...any) error {
+	ctx, cursor, data, err := parseInputWriteArgs(args...)
+	if err != nil {
+		return err
+	}
+	return l.supervisor.writeInput(ctx, l, cursor, data)
+}
+
+// Resize applies one cursor-scoped terminal size. It accepts
+// (cursor, columns, rows) or (context, cursor, columns, rows).
+func (l *InputLease) Resize(args ...any) error {
+	ctx, cursor, columns, rows, err := parseInputResizeArgs(args...)
+	if err != nil {
+		return err
+	}
+	return l.supervisor.resizeInput(ctx, l, cursor, columns, rows)
+}
+
+func parseInputWriteArgs(args ...any) (context.Context, output.Cursor, []byte, error) {
+	ctx := context.Background()
+	if len(args) == 3 {
+		if value, ok := args[0].(context.Context); ok && value != nil {
+			ctx = value
+		}
+		args = args[1:]
+	}
+	if len(args) != 2 {
+		return nil, 0, nil, fmt.Errorf("%w: input write arguments", ErrInvalidRequest)
+	}
+	cursor, ok := inputCursor(args[0])
+	if !ok {
+		return nil, 0, nil, fmt.Errorf("%w: input cursor", ErrInvalidRequest)
+	}
+	data, ok := args[1].([]byte)
+	if !ok {
+		return nil, 0, nil, fmt.Errorf("%w: input bytes", ErrInvalidRequest)
+	}
+	return ctx, cursor, append([]byte(nil), data...), nil
+}
+func parseInputResizeArgs(args ...any) (context.Context, output.Cursor, uint16, uint16, error) {
+	ctx := context.Background()
+	if len(args) == 4 {
+		if value, ok := args[0].(context.Context); ok && value != nil {
+			ctx = value
+		}
+		args = args[1:]
+	}
+	if len(args) != 3 {
+		return nil, 0, 0, 0, fmt.Errorf("%w: input resize arguments", ErrInvalidRequest)
+	}
+	cursor, ok := inputCursor(args[0])
+	if !ok {
+		return nil, 0, 0, 0, fmt.Errorf("%w: input cursor", ErrInvalidRequest)
+	}
+	columns, ok := inputUint16(args[1])
+	if !ok {
+		return nil, 0, 0, 0, fmt.Errorf("%w: input columns", ErrInvalidRequest)
+	}
+	rows, ok := inputUint16(args[2])
+	if !ok {
+		return nil, 0, 0, 0, fmt.Errorf("%w: input rows", ErrInvalidRequest)
+	}
+	return ctx, cursor, columns, rows, nil
+}
+func inputCursor(value any) (output.Cursor, bool) {
+	switch typed := value.(type) {
+	case output.Cursor:
+		return typed, true
+	case uint64:
+		return output.Cursor(typed), true
+	case int:
+		if typed >= 0 {
+			return output.Cursor(typed), true
+		}
+	}
+	return 0, false
+}
+func inputUint16(value any) (uint16, bool) {
+	switch typed := value.(type) {
+	case uint16:
+		return typed, true
+	case int:
+		if typed >= 0 && typed <= 65535 {
+			return uint16(typed), true
+		}
+	case uint:
+		if typed <= 65535 {
+			return uint16(typed), true
+		}
+	}
+	return 0, false
+}
 
 // InvalidNameError identifies a rejected process name.
 type InvalidNameError struct {
@@ -304,6 +664,11 @@ type record struct {
 	readyConfig  *ReadinessConfig
 	readyPattern *regexp.Regexp
 	tracker      *readinessTracker
+	tty          bool
+	ttySize      *TTYSize
+	input        *InputLease
+	inputMu      sync.Mutex
+	inputOp      *inputOperation
 	// incarnation changes for every successful launch, including same-store
 	// restarts. Each incarnation owns one tracker; an old tracker can never
 	// update a later launch.
@@ -332,6 +697,71 @@ type record struct {
 	terminal   bool
 	done       chan struct{}
 	stopMu     sync.Mutex
+}
+
+// inputOperation represents one child write or resize. The done channel is
+// closed by the operation goroutine after the child call returns. Legacy
+// InputChild implementations cannot be interrupted, so their operation stays
+// registered until it drains; this prevents a later owner from observing the
+// lease as free while an old syscall can still touch the PTY.
+type inputOperation struct {
+	done   chan struct{}
+	legacy bool
+}
+
+func (r *record) currentInputOperation() *inputOperation {
+	if r == nil {
+		return nil
+	}
+	r.inputMu.Lock()
+	operation := r.inputOp
+	r.inputMu.Unlock()
+	return operation
+}
+
+func (r *record) beginInputOperation(lease *InputLease, incarnationDone <-chan struct{}, legacy bool) (*inputOperation, <-chan struct{}, bool) {
+	if r == nil || lease == nil || inputLeaseClosed(lease) || inputChannelClosed(incarnationDone) {
+		return nil, nil, false
+	}
+	r.inputMu.Lock()
+	defer r.inputMu.Unlock()
+	if inputLeaseClosed(lease) || inputChannelClosed(incarnationDone) {
+		return nil, nil, false
+	}
+	if r.inputOp != nil {
+		return nil, r.inputOp.done, true
+	}
+	operation := &inputOperation{done: make(chan struct{}), legacy: legacy}
+	r.inputOp = operation
+	return operation, nil, true
+}
+
+func (r *record) finishInputOperation(operation *inputOperation) {
+	if r == nil || operation == nil {
+		return
+	}
+	r.inputMu.Lock()
+	if r.inputOp == operation {
+		r.inputOp = nil
+		close(operation.done)
+	}
+	r.inputMu.Unlock()
+}
+
+// waitInputOperations waits without holding inputMu. It is used before a
+// replacement incarnation is launched, after the old incarnation is already
+// terminal, so an operation that was admitted before exit cannot reach the
+// successor. Remove and shutdown deliberately do not wait on non-context
+// legacy calls because their records are discarded and no successor can reuse
+// that child.
+func (r *record) waitInputOperations() {
+	for {
+		operation := r.currentInputOperation()
+		if operation == nil {
+			return
+		}
+		<-operation.done
+	}
 }
 
 // Supervisor owns all launches independently of client request lifetimes.
@@ -515,6 +945,10 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	}
 	if current := s.records[key]; current != nil && !current.terminal {
 		pid := current.pid
+		if req.TTY && !current.tty {
+			s.mu.Unlock()
+			return Process{}, fmt.Errorf("%w: %q is running without a tty; stop it and rerun with --tty", ErrInputNotTTY, req.Name)
+		}
 		s.mu.Unlock()
 		return Process{}, &DuplicateError{Root: root, Name: req.Name, PID: pid}
 	}
@@ -523,6 +957,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		return Process{}, fmt.Errorf("%w: %q is being started", ErrNameInUse, req.Name)
 	}
 	rec := s.records[key]
+	var inputToClose *InputLease
 	if rec == nil {
 		if len(req.Argv) == 0 || req.Argv[0] == "" {
 			s.mu.Unlock()
@@ -549,6 +984,30 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		rec.argv = append([]string(nil), req.Argv...)
 		rec.env = append([]string{}, req.Env...)
 		rec.readyConfig, rec.readyPattern = readyConfig, readyPattern
+		// An explicit argv replaces a stopped retained definition, including
+		// its TTY choice. Calls without argv intentionally retain it.
+		rec.tty = req.TTY
+		if !req.TTY {
+			rec.ttySize = nil
+		}
+		if req.TTYSize != nil {
+			size := *req.TTYSize
+			if size.Columns == 0 || size.Rows == 0 {
+				s.mu.Unlock()
+				return Process{}, fmt.Errorf("%w: tty size must have non-zero columns and rows", ErrInvalidRequest)
+			}
+			rec.ttySize = &size
+		}
+		if !req.TTY && rec.input != nil {
+			// Changing a retained TTY definition to non-TTY must retire its
+			// owner before the new incarnation is started. Keep this under the
+			// registry lock so no attach can observe the non-TTY record with an
+			// old lease.
+			inputToClose = rec.input
+			rec.input = nil
+			rec.ttySize = nil
+			inputToClose.close()
+		}
 	} else if len(rec.argv) == 0 {
 		s.mu.Unlock()
 		return Process{}, fmt.Errorf("%w: retained launch specification is empty", ErrInvalidRequest)
@@ -559,11 +1018,23 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	launchCwd := rec.cwd
 	pattern := rec.readyPattern
 	source := rec.source
+	tty := rec.tty
+	var ttySize *TTYSize
+	if rec.ttySize != nil {
+		size := *rec.ttySize
+		ttySize = &size
+	}
 	wasLaunched := rec.incarnation != 0
 	s.starting[key] = struct{}{}
 	s.launches.Add(1)
 	s.mu.Unlock()
 	defer s.launches.Done()
+	if inputToClose != nil {
+		closeInputLease(inputToClose)
+	}
+	// A stopped retained record may still have a legacy input call draining.
+	// Do not launch a successor until that call has returned.
+	rec.waitInputOperations()
 
 	launchCursor := output.Cursor(0)
 	launchBoundary := wasLaunched
@@ -577,7 +1048,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	)
 	markStarted := func() error {
 		markerOnce.Do(func() {
-			if wasLaunched || store.SubscriberCount() != 0 {
+			if wasLaunched || store.SubscriberCount() != 0 || tty {
 				marker := fmt.Sprintf("%s launched\n", req.Name)
 				launchCursor, markerErr = store.Append(output.System, s.now(), marker)
 				launchBoundary = markerErr == nil
@@ -589,7 +1060,11 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		return markerErr
 	}
 	startedAt := s.now()
-	child, err := s.startProcess(process.Spec{Dir: launchCwd, Argv: argv, Env: env, Output: store, MaxLineBytes: s.maxLineBytes, Now: s.now, Started: markStarted})
+	var processTTYSize *process.TTYSize
+	if ttySize != nil {
+		processTTYSize = &process.TTYSize{Columns: ttySize.Columns, Rows: ttySize.Rows}
+	}
+	child, err := s.startProcess(process.Spec{Dir: launchCwd, Argv: argv, Env: env, Output: store, MaxLineBytes: s.maxLineBytes, Now: s.now, Started: markStarted, TTY: tty, TTYSize: processTTYSize})
 	if err == nil && child != nil {
 		err = markStarted()
 	}
@@ -633,8 +1108,15 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	rec.done = make(chan struct{})
 	rec.incarnation++
 	rec.tracker = tracker
+	input := rec.input
+	if input != nil {
+		input.beginIncarnation()
+	}
 	started := rec.snapshotLocked()
 	s.mu.Unlock()
+	if input != nil {
+		input.emit(InputEvent{State: InputRunning, LaunchCursor: launchCursor, TTY: tty})
+	}
 	go s.reconcile(rec)
 	return started, nil
 }
@@ -663,6 +1145,8 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		updatedEnv      []string
 		updatedReady    *ReadinessConfig
 		updatedPattern  *regexp.Regexp
+		updatedTTY      bool
+		updatedTTYSize  *TTYSize
 		previousTracker *readinessTracker
 	)
 	if update.Update {
@@ -703,6 +1187,14 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 			updatedReady = &config
 			updatedPattern = compiled
 		}
+		updatedTTY = update.TTY
+		if update.TTYSize != nil {
+			size := *update.TTYSize
+			if size.Columns == 0 || size.Rows == 0 {
+				return Process{}, fmt.Errorf("%w: tty size must have non-zero columns and rows", ErrInvalidRequest)
+			}
+			updatedTTYSize = &size
+		}
 	}
 
 	s.mu.Lock()
@@ -726,6 +1218,7 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 	}
 	restartSucceeded := false
 	var launchTracker *readinessTracker
+	var inputToClose *InputLease
 	defer func() {
 		if !restartSucceeded && launchTracker != nil {
 			launchTracker.close()
@@ -759,6 +1252,10 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 	if err := s.stopRecord(ctx, rec); err != nil {
 		return Process{}, err
 	}
+	// stopRecord has reconciled the old incarnation and closed its cancellation
+	// channel. Drain any operation admitted before that boundary before a new
+	// child can be assigned to this record.
+	rec.waitInputOperations()
 
 	s.mu.Lock()
 	if s.closed {
@@ -779,12 +1276,36 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		rec.env = append([]string(nil), updatedEnv...)
 		rec.readyConfig = updatedReady
 		rec.readyPattern = updatedPattern
+		rec.tty = updatedTTY
+		if updatedTTYSize != nil {
+			rec.ttySize = updatedTTYSize
+		} else if !updatedTTY {
+			rec.ttySize = nil
+		}
+		if !updatedTTY && rec.input != nil {
+			// A manifest/update transition away from TTY must close the
+			// durable owner before this restart's non-TTY incarnation.
+			inputToClose = rec.input
+			rec.input = nil
+			rec.ttySize = nil
+			inputToClose.close()
+		}
 	}
 	store := rec.store
 	argv := append([]string(nil), rec.argv...)
 	env := append([]string(nil), rec.env...)
 	launchCwd := rec.cwd
+	tty := rec.tty
+	var ttySize *TTYSize
+	if rec.ttySize != nil {
+		size := *rec.ttySize
+		ttySize = &size
+	}
 	s.mu.Unlock()
+	if inputToClose != nil {
+		closeInputLease(inputToClose)
+	}
+	rec.waitInputOperations()
 	marker := fmt.Sprintf("%s restarted\n", rec.name)
 	if limit := s.outputLimits.RetainedBytes; limit > 0 && len(marker) > limit {
 		marker = "restarted"
@@ -800,6 +1321,10 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		launchTracker = newReadinessTracker(store, rec.readyPattern, launchCursor, true)
 	}
 	startedAt := s.now()
+	var processTTYSize *process.TTYSize
+	if ttySize != nil {
+		processTTYSize = &process.TTYSize{Columns: ttySize.Columns, Rows: ttySize.Rows}
+	}
 	child, err := s.startProcess(process.Spec{
 		Dir:          launchCwd,
 		Argv:         append([]string(nil), argv...),
@@ -807,6 +1332,8 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		Output:       store,
 		MaxLineBytes: s.maxLineBytes,
 		Now:          s.now,
+		TTY:          tty,
+		TTYSize:      processTTYSize,
 	})
 	if err != nil {
 		return Process{}, err
@@ -845,9 +1372,16 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 	rec.done = make(chan struct{})
 	rec.incarnation++
 	rec.tracker = launchTracker
+	input := rec.input
+	if input != nil {
+		input.beginIncarnation()
+	}
 	restarted := rec.snapshotLocked()
 	restartSucceeded = true
 	s.mu.Unlock()
+	if input != nil {
+		input.emit(InputEvent{State: InputRunning, LaunchCursor: launchCursor, TTY: tty})
+	}
 
 	go s.reconcile(rec)
 	return restarted, nil
@@ -899,10 +1433,19 @@ func (s *Supervisor) reconcile(rec *record) {
 	rec.pendingExit = false
 	tracker := rec.tracker
 	rec.tracker = nil
+	input := rec.input
+	cursor := rec.cursor
+	tty := rec.tty
+	if input != nil {
+		input.endIncarnation()
+	}
 	s.insertCompletedLocked(rec)
 	close(rec.done)
 	s.evictLocked()
 	s.mu.Unlock()
+	if input != nil {
+		input.emit(InputEvent{State: InputStopped, LaunchCursor: cursor, TTY: tty})
+	}
 	if tracker != nil {
 		tracker.close()
 	}
@@ -944,7 +1487,7 @@ func (s *Supervisor) evictLocked() {
 				index = i
 				break
 			}
-			if rec.restarting || rec.store != nil && rec.store.SubscriberCount() != 0 {
+			if rec.restarting || rec.input != nil || rec.store != nil && rec.store.SubscriberCount() != 0 {
 				continue
 			}
 			if _, reserved := s.starting[rec.key]; reserved {
@@ -1091,6 +1634,555 @@ func (s *Supervisor) ensureSession(cwd, name string) (*record, error) {
 // Subscribe attaches to a durable name rather than one process incarnation.
 // It may create an empty session before the first launch. Registration occurs
 // under the registry lock so launch and eviction cannot race the attachment.
+// PrepareTTY records a known TTY definition before its first launch. It is
+// used by an attached client so input ownership can be acquired before the
+// child exists without reserving unresolved names.
+func (s *Supervisor) PrepareTTY(req StartRequest) error {
+	if !req.TTY {
+		return ErrInputNotTTY
+	}
+	if err := ValidateName(req.Name); err != nil {
+		return err
+	}
+	requestCwd, err := absoluteClean(req.Cwd)
+	if err != nil {
+		return err
+	}
+	root := req.Root
+	if root == "" {
+		root, err = DiscoverProjectRoot(requestCwd)
+	} else {
+		root, err = absoluteClean(root)
+	}
+	if err != nil {
+		return err
+	}
+	key := keyFor(root, req.Name)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrSupervisorClosed
+	}
+	rec := s.records[key]
+	if rec == nil {
+		store, storeErr := output.NewStore(s.outputLimits)
+		if storeErr != nil {
+			return fmt.Errorf("output store: %w", storeErr)
+		}
+		done := make(chan struct{})
+		close(done)
+		rec = &record{key: key, name: req.Name, root: root, cwd: requestCwd, store: store, state: StateExited, terminal: true, done: done}
+		s.trackStore(key, store)
+		s.records[key] = rec
+	}
+	if !rec.terminal {
+		if !rec.tty {
+			return fmt.Errorf("%w: %q is running without a tty; stop it and rerun with --tty", ErrInputNotTTY, req.Name)
+		}
+		return nil
+	}
+	// A retained TTY record already has the authoritative launch
+	// specification. Input attach requests intentionally omit Env, so never
+	// restage that record (or replace its cwd) while merely acquiring input.
+	retained := rec.terminal && rec.tty && len(rec.argv) != 0
+	rec.tty = true
+	if !retained && req.Cwd != "" {
+		rec.cwd = requestCwd
+	}
+	if !retained && len(req.Argv) != 0 {
+		if req.Argv[0] == "" {
+			return fmt.Errorf("%w: argv must not be empty", ErrInvalidRequest)
+		}
+		rec.argv = append([]string(nil), req.Argv...)
+		rec.source = req.Source
+		rec.env = append([]string(nil), req.Env...)
+	}
+	if req.TTYSize != nil {
+		size := *req.TTYSize
+		if size.Columns == 0 || size.Rows == 0 {
+			return fmt.Errorf("%w: tty size must have non-zero columns and rows", ErrInvalidRequest)
+		}
+		rec.ttySize = &size
+	}
+	return nil
+}
+
+// EnsureTTY is a descriptive alias for PrepareTTY.
+func (s *Supervisor) EnsureTTY(req StartRequest) error { return s.PrepareTTY(req) }
+
+// AcquireInput claims the one input owner for an existing known TTY session.
+// The variadic arguments accept cwd, name, and an optional bool indicating a
+// known TTY definition, followed by an optional TTYSize.
+func (s *Supervisor) AcquireInput(args ...any) (*InputLease, error) {
+	cwd, name, requestedTTY, ttySet, size, err := parseInputAcquireArgs(args...)
+	if err != nil {
+		return nil, err
+	}
+	return s.acquireInput("", cwd, name, requestedTTY, ttySet, size)
+}
+
+// AcquireInputAt is the explicit-root form used by daemon requests whose
+// child working directory differs from the project root.
+func (s *Supervisor) AcquireInputAt(root, cwd, name string, requestedTTY bool, size *TTYSize) (*InputLease, error) {
+	return s.acquireInput(root, cwd, name, requestedTTY, true, size)
+}
+
+func (s *Supervisor) acquireInput(rootHint, cwd, name string, requestedTTY, ttySet bool, size *TTYSize) (*InputLease, error) {
+	if cwd == "" || name == "" {
+		return nil, fmt.Errorf("%w: input name and cwd are required", ErrInvalidRequest)
+	}
+	var err error
+	if rootHint == "" {
+		rootHint, err = DiscoverProjectRoot(cwd)
+	} else {
+		rootHint, err = absoluteClean(rootHint)
+	}
+	if err != nil {
+		return nil, err
+	}
+	key := keyFor(rootHint, name)
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, ErrSupervisorClosed
+	}
+	rec := s.records[key]
+	if rec == nil || !rec.tty || requestedTTY && !rec.tty {
+		s.mu.Unlock()
+		return nil, ErrInputNotTTY
+	}
+	if ttySet && !requestedTTY {
+		s.mu.Unlock()
+		return nil, ErrInputNotTTY
+	}
+	if rec.input != nil {
+		s.mu.Unlock()
+		return nil, &InputConflictError{Name: name}
+	}
+	if size != nil {
+		if size.Columns == 0 || size.Rows == 0 {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("%w: tty size must have non-zero columns and rows", ErrInvalidRequest)
+		}
+		copySize := *size
+		rec.ttySize = &copySize
+	}
+	lease := &InputLease{
+		supervisor: s, rec: rec, events: make(chan InputEvent, 16),
+		eventNotify: make(chan struct{}, 1), closed: make(chan struct{}),
+		incarnationDone: make(chan struct{}),
+	}
+	go lease.dispatchEvents()
+	rec.input = lease
+	state := InputStopped
+	if !rec.terminal {
+		state = InputRunning
+	}
+	cursor := rec.cursor
+	tty := rec.tty
+	child := rec.child
+	s.mu.Unlock()
+	lease.emit(InputEvent{State: state, LaunchCursor: cursor, TTY: tty})
+	if state == InputRunning && size != nil && child != nil {
+		if resizeErr := s.resizeInput(context.Background(), lease, cursor, size.Columns, size.Rows); resizeErr != nil {
+			// A child can exit after the lease is acquired but before its
+			// initial size is applied. Ordinary exit retains the lease so the
+			// owner can continue with the successor incarnation.
+			if errors.Is(resizeErr, os.ErrProcessDone) || errors.Is(resizeErr, syscall.EIO) || errors.Is(resizeErr, ErrInputStopped) {
+				return lease, nil
+			}
+			lease.Release()
+			return nil, resizeErr
+		}
+	}
+	return lease, nil
+}
+
+// AttachInput is the protocol-facing spelling of AcquireInput.
+func (s *Supervisor) AttachInput(args ...any) (*InputLease, error) { return s.AcquireInput(args...) }
+
+func parseInputAcquireArgs(args ...any) (cwd, name string, requestedTTY, ttySet bool, size *TTYSize, err error) {
+	for _, arg := range args {
+		switch value := arg.(type) {
+		case context.Context:
+		case string:
+			if cwd == "" {
+				cwd = value
+			} else if name == "" {
+				name = value
+			} else {
+				err = fmt.Errorf("%w: too many input strings", ErrInvalidRequest)
+			}
+		case bool:
+			requestedTTY, ttySet = value, true
+		case TTYSize:
+			copyValue := value
+			size = &copyValue
+		case *TTYSize:
+			if value != nil {
+				copyValue := *value
+				size = &copyValue
+			}
+		default:
+			err = fmt.Errorf("%w: unsupported input argument", ErrInvalidRequest)
+		}
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+func (l *InputLease) emit(event InputEvent) {
+	if l == nil {
+		return
+	}
+	l.eventMu.Lock()
+	if l.eventClosed {
+		l.eventMu.Unlock()
+		return
+	}
+	l.eventQueue = append(l.eventQueue, event)
+	select {
+	case l.eventNotify <- struct{}{}:
+	default:
+	}
+	l.eventMu.Unlock()
+}
+
+func (s *Supervisor) clearInputLease(lease *InputLease) {
+	if s == nil || lease == nil || lease.rec == nil {
+		return
+	}
+	s.mu.Lock()
+	if lease.rec.input == lease {
+		lease.rec.input = nil
+		// A terminal size belongs to the attached owner. A later launch
+		// without an owner must use the PTY default rather than a stale size.
+		lease.rec.ttySize = nil
+	}
+	s.mu.Unlock()
+}
+
+func (s *Supervisor) releaseInput(lease *InputLease) {
+	if lease == nil || lease.rec == nil {
+		return
+	}
+	// Close first so a pending cancellation-aware child write/resize is
+	// interrupted. Context-aware operations are drained synchronously; a legacy
+	// operation is kept registered and cleared asynchronously because waiting on
+	// an implementation that cannot observe cancellation would deadlock remove
+	// and shutdown. The record remains owned until that legacy call returns.
+	lease.close()
+	rec := lease.rec
+	operation := rec.currentInputOperation()
+	if operation == nil {
+		s.clearInputLease(lease)
+		return
+	}
+	if operation.legacy {
+		go func() {
+			<-operation.done
+			s.clearInputLease(lease)
+		}()
+		return
+	}
+	<-operation.done
+	s.clearInputLease(lease)
+}
+
+func closeInputLease(lease *InputLease) {
+	if lease == nil || lease.rec == nil {
+		return
+	}
+	lease.close()
+	operation := lease.rec.currentInputOperation()
+	if operation != nil && !operation.legacy {
+		<-operation.done
+	}
+}
+
+func acquireInputOperation(ctx context.Context, rec *record, lease *InputLease, incarnationDone <-chan struct{}, legacy bool) (*inputOperation, error) {
+	for {
+		operation, wait, ok := rec.beginInputOperation(lease, incarnationDone, legacy)
+		if !ok {
+			if inputLeaseClosed(lease) {
+				return nil, ErrInputClosed
+			}
+			return nil, InputStoppedError{}
+		}
+		if wait == nil {
+			return operation, nil
+		}
+		select {
+		case <-wait:
+			continue
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-lease.closed:
+			return nil, ErrInputClosed
+		case <-incarnationDone:
+			return nil, InputStoppedError{}
+		}
+	}
+}
+
+func inputOperationContext(ctx context.Context, lease *InputLease, incarnationDone <-chan struct{}) (context.Context, context.CancelFunc, <-chan struct{}) {
+	operationCtx, cancel := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-lease.closed:
+			cancel()
+		case <-incarnationDone:
+			cancel()
+		case <-operationCtx.Done():
+		}
+	}()
+	return operationCtx, cancel, watchDone
+}
+
+func (s *Supervisor) writeInput(ctx context.Context, lease *InputLease, cursor output.Cursor, data []byte) error {
+	if len(data) > maxInputBytes {
+		return &InputTooLargeError{Size: len(data), Limit: maxInputBytes}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if lease == nil || lease.supervisor != s {
+		return ErrInputClosed
+	}
+	rec := lease.rec
+	s.mu.RLock()
+	valid := s.records[rec.key] == rec && rec.input == lease && rec.tty
+	if !valid {
+		s.mu.RUnlock()
+		return ErrInputClosed
+	}
+	if rec.terminal {
+		s.mu.RUnlock()
+		return InputStoppedError{}
+	}
+	if cursor != rec.cursor {
+		current := rec.cursor
+		s.mu.RUnlock()
+		return &InputStaleError{Want: cursor, Current: current}
+	}
+	child := rec.child
+	s.mu.RUnlock()
+	inputChild, ok := child.(InputChild)
+	if !ok {
+		return ErrInputClosed
+	}
+	incarnationDone := lease.incarnationChannel()
+	_, contextWriter := child.(ContextInputWriter)
+	operation, err := acquireInputOperation(ctx, rec, lease, incarnationDone, !contextWriter)
+	if err != nil {
+		return err
+	}
+	operationCtx, cancel, watchDone := inputOperationContext(ctx, lease, incarnationDone)
+	defer func() {
+		cancel()
+		<-watchDone
+	}()
+
+	type writeResult struct {
+		n   int
+		err error
+	}
+	result := make(chan writeResult, 1)
+	go func() {
+		var n int
+		var callErr error
+		if writer, ok := child.(ContextInputWriter); ok {
+			n, callErr = writer.WriteContext(operationCtx, data)
+		} else {
+			n, callErr = inputChild.Write(data)
+		}
+		result <- writeResult{n: n, err: callErr}
+		rec.finishInputOperation(operation)
+	}()
+	finish := func(outcome writeResult) error {
+		if outcome.err == nil && outcome.n != len(data) {
+			outcome.err = io.ErrShortWrite
+		}
+		if errors.Is(outcome.err, os.ErrProcessDone) || errors.Is(outcome.err, syscall.EIO) {
+			if !inputLeaseClosed(lease) {
+				return InputStoppedError{}
+			}
+			return ErrInputClosed
+		}
+		return outcome.err
+	}
+	select {
+	case outcome := <-result:
+		<-operation.done
+		if inputLeaseClosed(lease) {
+			return ErrInputClosed
+		}
+		if inputIncarnationStopped(lease, incarnationDone) {
+			return InputStoppedError{}
+		}
+		return finish(outcome)
+	case <-ctx.Done():
+		if !operation.legacy {
+			<-result
+			<-operation.done
+		}
+		return ctx.Err()
+	case <-lease.closed:
+		if !operation.legacy {
+			<-result
+			<-operation.done
+		}
+		return ErrInputClosed
+	case <-incarnationDone:
+		if !operation.legacy {
+			<-result
+			<-operation.done
+		}
+		return InputStoppedError{}
+	}
+}
+
+func inputLeaseClosed(lease *InputLease) bool {
+	if lease == nil {
+		return true
+	}
+	return inputChannelClosed(lease.closed)
+}
+
+func inputChannelClosed(channel <-chan struct{}) bool {
+	if channel == nil {
+		return true
+	}
+	select {
+	case <-channel:
+		return true
+	default:
+		return false
+	}
+}
+
+func inputIncarnationStopped(lease *InputLease, incarnationDone <-chan struct{}) bool {
+	if inputLeaseClosed(lease) {
+		return false
+	}
+	return inputChannelClosed(incarnationDone)
+}
+
+func (s *Supervisor) resizeInput(ctx context.Context, lease *InputLease, cursor output.Cursor, columns, rows uint16) error {
+	if columns == 0 || rows == 0 {
+		return fmt.Errorf("%w: tty dimensions must be non-zero", ErrInvalidRequest)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if lease == nil || lease.supervisor != s {
+		return ErrInputClosed
+	}
+	rec := lease.rec
+	// The requested size is retained even when this incarnation has already
+	// stopped. The next launch uses the owner's most recent size.
+	s.mu.Lock()
+	valid := s.records[rec.key] == rec && rec.input == lease && rec.tty
+	if !valid {
+		s.mu.Unlock()
+		return ErrInputClosed
+	}
+	if cursor != rec.cursor {
+		current := rec.cursor
+		s.mu.Unlock()
+		return &InputStaleError{Want: cursor, Current: current}
+	}
+	size := TTYSize{Columns: columns, Rows: rows}
+	rec.ttySize = &size
+	if rec.terminal {
+		s.mu.Unlock()
+		return InputStoppedError{}
+	}
+	child := rec.child
+	s.mu.Unlock()
+	if child == nil {
+		return InputStoppedError{}
+	}
+	inputChild, ok := child.(InputChild)
+	if !ok {
+		return ErrInputClosed
+	}
+	incarnationDone := lease.incarnationChannel()
+	_, contextResizer := child.(ContextInputResizer)
+	operation, err := acquireInputOperation(ctx, rec, lease, incarnationDone, !contextResizer)
+	if err != nil {
+		return err
+	}
+	operationCtx, cancel, watchDone := inputOperationContext(ctx, lease, incarnationDone)
+	defer func() {
+		cancel()
+		<-watchDone
+	}()
+	result := make(chan error, 1)
+	go func() {
+		var callErr error
+		if resizer, ok := child.(ContextInputResizer); ok {
+			callErr = resizer.ResizeContext(operationCtx, columns, rows)
+		} else {
+			callErr = inputChild.Resize(columns, rows)
+		}
+		result <- callErr
+		rec.finishInputOperation(operation)
+	}()
+	finish := func(callErr error) error {
+		if errors.Is(callErr, os.ErrProcessDone) || errors.Is(callErr, syscall.EIO) {
+			if !inputLeaseClosed(lease) {
+				return InputStoppedError{}
+			}
+			return ErrInputClosed
+		}
+		return callErr
+	}
+	select {
+	case callErr := <-result:
+		<-operation.done
+		if inputLeaseClosed(lease) {
+			return ErrInputClosed
+		}
+		if inputIncarnationStopped(lease, incarnationDone) {
+			return InputStoppedError{}
+		}
+		return finish(callErr)
+	case <-ctx.Done():
+		if !operation.legacy {
+			<-result
+			<-operation.done
+		}
+		return ctx.Err()
+	case <-lease.closed:
+		if !operation.legacy {
+			<-result
+			<-operation.done
+		}
+		return ErrInputClosed
+	case <-incarnationDone:
+		if !operation.legacy {
+			<-result
+			<-operation.done
+		}
+		return InputStoppedError{}
+	}
+}
+
 func (s *Supervisor) Subscribe(cwd, name string, opts output.ReadOptions) (*Follower, error) {
 	rec, err := s.ensureSession(cwd, name)
 	if err != nil {
@@ -1363,8 +2455,18 @@ func (s *Supervisor) Remove(ctx context.Context, cwd, name string) error {
 	delete(s.records, rec.key)
 	s.removeCompletedLocked(rec)
 	store := rec.store
+	input := rec.input
+	if input != nil {
+		// Close while the record is still registry-visible so a writer that
+		// validated just before removal cannot start after ownership is cleared.
+		input.close()
+	}
+	rec.input = nil
 	rec.store, rec.env, rec.argv, rec.child = nil, nil, nil, nil
 	s.mu.Unlock()
+	if input != nil {
+		closeInputLease(input)
+	}
 	if store != nil {
 		store.Close(nil)
 	}
@@ -1429,14 +2531,23 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	stores := make([]*output.Store, 0, len(s.records))
+	leases := make([]*InputLease, 0, len(s.records))
 	for _, rec := range s.records {
 		if rec.store != nil {
 			stores = append(stores, rec.store)
+		}
+		if rec.input != nil {
+			leases = append(leases, rec.input)
+			rec.input.close()
+			rec.input = nil
 		}
 	}
 	s.shutdownErr = shutdownErr
 	close(s.shutdownDone)
 	s.mu.Unlock()
+	for _, lease := range leases {
+		closeInputLease(lease)
+	}
 	for _, store := range stores {
 		store.Close(ErrSupervisorClosed)
 	}
@@ -1451,6 +2562,7 @@ func (r *record) snapshotLocked() Process {
 		Name:         r.name,
 		Source:       r.source,
 		Root:         r.root,
+		TTY:          r.tty,
 		PID:          r.pid,
 		PGID:         r.pgid,
 		Cwd:          r.cwd,

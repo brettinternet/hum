@@ -76,6 +76,7 @@ func manifestProcess(definition project.Definition, root string) app.Process {
 		Name:   definition.Name,
 		Source: definition.Source,
 		Root:   root,
+		TTY:    definition.TTY,
 		Cwd:    definition.Cwd,
 		Argv:   append([]string(nil), definition.Argv...),
 		State:  app.State("stopped"),
@@ -181,6 +182,13 @@ func manifestLaunchError(definition project.Definition, err error) manifestLaunc
 
 func definitionMatchesProcess(definition project.Definition, process app.Process) bool {
 	return process.Source == definition.Source
+}
+
+func manifestTTYUpgradeError(definition project.Definition, process app.Process) error {
+	if definition.TTY && !process.TTY {
+		return fmt.Errorf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)
+	}
+	return nil
 }
 
 func manifestUnavailableMessage(definition project.Definition) error {
@@ -384,6 +392,9 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 	current, err := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd})
 	if err == nil {
 		if current.State == app.StateRunning {
+			if ttyErr := manifestTTYUpgradeError(definition, current); ttyErr != nil {
+				return manifestLaunchError(definition, ttyErr), current, false, nil
+			}
 			if !definitionMatchesProcess(definition, current) {
 				return manifestLaunchError(definition, fmt.Errorf("declared process %q is occupied by an ad-hoc launch", definition.Name)), current, false, nil
 			}
@@ -401,6 +412,7 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 		Argv:   append([]string(nil), definition.Argv...),
 		Env:    append([]string(nil), env...),
 		Ready:  readinessConfig(definition),
+		TTY:    definition.TTY,
 	})
 	if startErr == nil {
 		outcome := "started"
@@ -420,6 +432,9 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 	for {
 		current, getErr := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd})
 		if getErr == nil && current.State == app.StateRunning {
+			if ttyErr := manifestTTYUpgradeError(definition, current); ttyErr != nil {
+				return manifestLaunchError(definition, ttyErr), current, false, nil
+			}
 			if definitionMatchesProcess(definition, current) {
 				return manifestLaunchResultFor(definition, current, "already_running"), current, true, nil
 			}

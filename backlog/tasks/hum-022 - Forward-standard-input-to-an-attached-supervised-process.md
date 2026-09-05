@@ -1,10 +1,11 @@
 ---
 id: HUM-022
 title: Opt a supervised session into a pseudo-terminal for interactive devtools
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-05 13:55'
-updated_date: '2026-09-05 14:46'
+updated_date: '2026-09-05 19:40'
 labels:
   - cli
   - daemon
@@ -66,30 +67,50 @@ Modified-file contract: internal/process/, internal/app/, internal/protocol/, in
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/process -run '^TestTTYProcess$' -count=1 -v` exits 0, prints `--- PASS: TestTTYProcess`, and proves a tty launch gives the child a controlling terminal (`test -t 0` and opening `/dev/tty` succeed), uses `Setsid`/`Setctty` with PGID=PID, merges stdout/stderr once as stdout, applies initial/late-owner/SIGWINCH sizes, delivers written bytes exactly including NUL and invalid UTF-8, treats post-exit EIO/EOF as normal capture completion without descriptor or goroutine leaks, terminates the entire group through SIGTERM/SIGKILL, keeps the PTY master open through group cleanup, and leaves non-tty `/dev/null` stdin and separate streams unchanged.
-- [ ] #2 AC2 — `go test ./internal/app -run '^TestTTYSessionInput$' -count=1 -v` exits 0, prints `--- PASS: TestTTYSessionInput`, and proves a known tty definition can acquire one lease before launch or while running; unresolved/non-tty sessions do not reserve one; a second owner is refused without disruption; retained ad hoc launches remember tty; running non-tty incarnations cannot be upgraded; state events identify stopped/running successors and launch cursors; writes/resizes are cursor-scoped and stale operations never reach a successor; exit/restart/remove/cancellation/shutdown unblock pending operations with typed errors; removal/shutdown close the lease while ordinary exit preserves it; snapshots report tty; and successful shutdown uses the existing grace sequence for tty and non-tty groups without closing a PTY master early.
-- [ ] #3 AC3 — `go test ./internal/protocol -run '^TestTTYProtocol$' -count=1 -v` and `go test ./internal/daemon -run '^TestTTYInputTransport$' -count=1 -v` both exit 0 and print the corresponding named PASS line. They prove the bumped protocol carries required boolean tty fields; a dedicated duplex input connection implements exclusive attach/release, launch/exit state events, acknowledgements, at-most-32-KiB base64 byte writes, and validated uint16 resize; arbitrary input bytes round-trip exactly; oversize requests fail atomically; conflict/too-large/closed/stale errors remain typed; stalled writes are unblocked by cancellation, exit, restart, remove, and shutdown without cleanup races; and unrelated connections remain responsive.
-- [ ] #4 AC4 — `go test ./internal/project -run '^TestTTYManifest$' -count=1 -v`, `go test ./internal/cli -run '^TestTTYCLI$' -count=1 -v`, and `go test ./internal/mcp -run '^TestTTYMCP$' -count=1 -v` all exit 0 and print the corresponding named PASS line. They prove tty accepts only YAML booleans with file/entry context on errors; canonical ad hoc `--tty` forms and declared-name rejection; CLI/MCP start, up, and restart propagation; retained definitions; required JSON/MCP snapshot booleans and human rendering; merged stdout with no tty stderr entries; raw-mode restoration after detach, transport loss, signals, and panic; Ctrl+] consumption; tty Ctrl+C forwarding versus non-tty detach; owner-only resize; output-only conflict attachment with one notice; piped EOF lease release; stopped-session discard and successor resume; unchanged control-bearing bounded output/readiness semantics; and no MCP input tool.
-- [ ] #5 AC5 — `go test ./integration -run '^TestTTYInteractiveSession$' -count=1 -v`, `go test ./internal/cli -run '^TestTTYHelpAndDocs$' -count=1 -v`, and `go test ./internal/skill -run '^TestTTYInstructions$' -count=1 -v` all exit 0 and print the corresponding named PASS line. The built-binary test proves a TTY-gated fixture prompts under ad hoc and manifest tty modes, receives typed input, reports tty, exposes merged control-bearing logs and possible terminal echo, keeps the process alive after Ctrl+] detach, attaches a second client output-only, preserves one owner across stop/start with a fresh terminal, makes bare shutdown refuse active work, makes `shutdown --stop-processes` stop the tty group, and leaves non-tty behavior unchanged. The contract tests prove README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document the complete operator and agent contract.
+- [x] #1 AC1 — `go test ./internal/process -run '^TestTTYProcess$' -count=1 -v` exits 0, prints `--- PASS: TestTTYProcess`, and proves a tty launch gives the child a controlling terminal (`test -t 0` and opening `/dev/tty` succeed), uses `Setsid`/`Setctty` with PGID=PID, merges stdout/stderr once as stdout, applies initial/late-owner/SIGWINCH sizes, delivers written bytes exactly including NUL and invalid UTF-8, treats post-exit EIO/EOF as normal capture completion without descriptor or goroutine leaks, terminates the entire group through SIGTERM/SIGKILL, keeps the PTY master open through group cleanup, and leaves non-tty `/dev/null` stdin and separate streams unchanged.
+- [x] #2 AC2 — `go test ./internal/app -run '^TestTTYSessionInput$' -count=1 -v` exits 0, prints `--- PASS: TestTTYSessionInput`, and proves a known tty definition can acquire one lease before launch or while running; unresolved/non-tty sessions do not reserve one; a second owner is refused without disruption; retained ad hoc launches remember tty; running non-tty incarnations cannot be upgraded; state events identify stopped/running successors and launch cursors; writes/resizes are cursor-scoped and stale operations never reach a successor; exit/restart/remove/cancellation/shutdown unblock pending operations with typed errors; removal/shutdown close the lease while ordinary exit preserves it; snapshots report tty; and successful shutdown uses the existing grace sequence for tty and non-tty groups without closing a PTY master early.
+- [x] #3 AC3 — `go test ./internal/protocol -run '^TestTTYProtocol$' -count=1 -v` and `go test ./internal/daemon -run '^TestTTYInputTransport$' -count=1 -v` both exit 0 and print the corresponding named PASS line. They prove the bumped protocol carries required boolean tty fields; a dedicated duplex input connection implements exclusive attach/release, launch/exit state events, acknowledgements, at-most-32-KiB base64 byte writes, and validated uint16 resize; arbitrary input bytes round-trip exactly; oversize requests fail atomically; conflict/too-large/closed/stale errors remain typed; stalled writes are unblocked by cancellation, exit, restart, remove, and shutdown without cleanup races; and unrelated connections remain responsive.
+- [x] #4 AC4 — `go test ./internal/project -run '^TestTTYManifest$' -count=1 -v`, `go test ./internal/cli -run '^TestTTYCLI$' -count=1 -v`, and `go test ./internal/mcp -run '^TestTTYMCP$' -count=1 -v` all exit 0 and print the corresponding named PASS line. They prove tty accepts only YAML booleans with file/entry context on errors; canonical ad hoc `--tty` forms and declared-name rejection; CLI/MCP start, up, and restart propagation; retained definitions; required JSON/MCP snapshot booleans and human rendering; merged stdout with no tty stderr entries; raw-mode restoration after detach, transport loss, signals, and panic; Ctrl+] consumption; tty Ctrl+C forwarding versus non-tty detach; owner-only resize; output-only conflict attachment with one notice; piped EOF lease release; stopped-session discard and successor resume; unchanged control-bearing bounded output/readiness semantics; and no MCP input tool.
+- [x] #5 AC5 — `go test ./integration -run '^TestTTYInteractiveSession$' -count=1 -v`, `go test ./internal/cli -run '^TestTTYHelpAndDocs$' -count=1 -v`, and `go test ./internal/skill -run '^TestTTYInstructions$' -count=1 -v` all exit 0 and print the corresponding named PASS line. The built-binary test proves a TTY-gated fixture prompts under ad hoc and manifest tty modes, receives typed input, reports tty, exposes merged control-bearing logs and possible terminal echo, keeps the process alive after Ctrl+] detach, attaches a second client output-only, preserves one owner across stop/start with a fresh terminal, makes bare shutdown refuse active work, makes `shutdown --stop-processes` stop the tty group, and leaves non-tty behavior unchanged. The contract tests prove README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document the complete operator and agent contract.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-- [ ] T1 — Add strict manifest/ad hoc `tty` propagation, retained-definition state, protocol snapshots, and CLI/MCP presentation without changing non-tty behavior.
-- [ ] T2 — Add the PTY launch path, controlling-terminal/process-group setup, merged capture, resize, descriptor cleanup, and shutdown ordering.
-- [ ] T3 — Add the app-level exclusive lease and launch-cursor-scoped write/resize lifecycle, including successor state events and race-free cancellation.
-- [ ] T4 — Add the dedicated daemon/client input connection and versioned protocol operations with bounded base64 payloads and typed errors.
-- [ ] T5 — Add attached-run raw-mode, signal, detach-chord, piped-input, stopped-session discard, conflict-notice, and terminal-restoration behavior.
-- [ ] T6 — Update operator/agent documentation and prove the complete workflow with focused package suites and a built-binary integration test.
+- [x] T1 — Add strict manifest/ad hoc `tty` propagation, retained-definition state, protocol snapshots, and CLI/MCP presentation without changing non-tty behavior.
+- [x] T2 — Add the PTY launch path, controlling-terminal/process-group setup, merged capture, resize, descriptor cleanup, and shutdown ordering.
+- [x] T3 — Add the app-level exclusive lease and launch-cursor-scoped write/resize lifecycle, including successor state events and race-free cancellation.
+- [x] T4 — Add the dedicated daemon/client input connection and versioned protocol operations with bounded base64 payloads and typed errors.
+- [x] T5 — Add attached-run raw-mode, signal, detach-chord, piped-input, stopped-session discard, conflict-notice, and terminal-restoration behavior.
+- [x] T6 — Update operator/agent documentation and prove the complete workflow with focused package suites and a built-binary integration test.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-09-05: Implemented on main; release explicitly deferred by the user.
+
+AC#1 evidence: `go test ./internal/process -run '^TestTTYProcess$' -count=1 -v` exited 0 with `--- PASS: TestTTYProcess`; independent verifier PASS.
+AC#2 evidence: `go test ./internal/app -run '^TestTTYSessionInput$' -count=1 -v` exited 0 with `--- PASS: TestTTYSessionInput`; independent verifier PASS.
+AC#3 evidence: `go test ./internal/protocol -run '^TestTTYProtocol$' -count=1 -v` and `go test ./internal/daemon -run '^TestTTYInputTransport$' -count=1 -v` exited 0 with both named PASS lines; independent verifier PASS.
+AC#4 evidence: `go test ./internal/project -run '^TestTTYManifest$' -count=1 -v`, `go test ./internal/cli -run '^TestTTYCLI$' -count=1 -v`, and `go test ./internal/mcp -run '^TestTTYMCP$' -count=1 -v` exited 0 with all named PASS lines; independent verifier also reproduced the non-TTY-to-TTY actionable error and returned PASS.
+AC#5 evidence: `go test ./integration -run '^TestTTYInteractiveSession$' -count=1 -v`, `go test ./internal/cli -run '^TestTTYHelpAndDocs$' -count=1 -v`, and `go test ./internal/skill -run '^TestTTYInstructions$' -count=1 -v` exited 0 with all named PASS lines; independent verifier also reproduced competing attach behavior and returned PASS.
+Gate evidence: `task ci` exited 0, including gofmt, go vet, staticcheck, `go test ./...`, race suites, build, and smoke coverage. Independent verifier returned PASS for AC1-AC5 and confirmed no tests were deleted, skipped, or weakened and no protected gate file changed.
+Modified-file deviation: the authoritative `backlog/tasks/hum-022 - Forward-standard-input-to-an-attached-supervised-process.md` changed only through required Backlog.md provider claim, evidence, and completion writes; implementation changes remain within the declared modified-file contract.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented opt-in PTY supervision with durable exclusive input ownership, cursor-scoped byte/resize transport, terminal-safe attached CLI behavior, manifest and MCP propagation, merged retained output, lifecycle cleanup, documentation, and comprehensive focused/integration coverage. All AC commands and task ci passed; an independent verifier returned PASS for AC1-AC5.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -28,6 +28,7 @@ type Definition struct {
 	Argv   []string
 	Cwd    string
 	Ready  *protocol.ReadinessConfig
+	TTY    bool
 }
 
 // Resolution is the canonical project root and its process definitions.
@@ -148,7 +149,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}, "code", "time")
 	process := objectSchema(map[string]any{
 		"name": map[string]any{"type": "string"}, "source": map[string]any{"type": "string"},
-		"root": map[string]any{"type": "string"}, "pid": map[string]any{"type": "integer"},
+		"root": map[string]any{"type": "string"}, "tty": map[string]any{"type": "boolean"}, "pid": map[string]any{"type": "integer"},
 		"pgid": map[string]any{"type": "integer"}, "cwd": map[string]any{"type": "string"},
 		"argv":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"start": map[string]any{"type": "string"}, "launch_cursor": map[string]any{"type": "integer", "minimum": 0},
@@ -157,7 +158,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"restart_count": map[string]any{"type": "integer", "minimum": 0},
 		"followers":     map[string]any{"type": "integer", "minimum": 0, "description": "Live run and logs --follow clients attached to this supervision session."},
 		"readiness":     readiness,
-	}, "name", "source", "root", "cwd", "argv", "state", "launch_cursor", "followers")
+	}, "name", "source", "root", "tty", "cwd", "argv", "state", "launch_cursor", "followers")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError}, "name", "outcome")
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
@@ -254,7 +255,7 @@ func normalizeProcess(process protocol.Process) protocol.Process {
 }
 
 func stoppedProcess(root string, definition Definition) protocol.Process {
-	return protocol.Process{Name: definition.Name, Source: definition.Source, Root: root, Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: "stopped"}
+	return protocol.Process{Name: definition.Name, Source: definition.Source, Root: root, TTY: definition.TTY, Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: "stopped"}
 }
 
 func (s *Server) environment() []string {
@@ -334,6 +335,9 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution Resolution, definition Definition) (protocol.Process, bool, error) {
 	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: definition.Name, Cwd: resolution.Root})
 	if err == nil && process.State == "running" {
+		if definition.TTY && !process.TTY {
+			return protocol.Process{}, false, &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: fmt.Sprintf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)}
+		}
 		if process.Source == definition.Source {
 			return process, true, nil
 		}
@@ -342,7 +346,7 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 	if err != nil && mapError(err).Code != string(protocol.ErrorNotFound) {
 		return protocol.Process{}, false, mapError(err)
 	}
-	process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: definition.Name, Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd, Root: resolution.Root, Env: s.environment(), Source: definition.Source, Ready: definition.Ready})
+	process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: definition.Name, Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd, Root: resolution.Root, Env: s.environment(), Source: definition.Source, Ready: definition.Ready, TTY: definition.TTY})
 	if err == nil || mapError(err).Code != string(protocol.ErrorNameInUse) {
 		return process, false, err
 	}
@@ -350,6 +354,9 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 	for time.Now().Before(deadline) {
 		current, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: definition.Name, Cwd: resolution.Root})
 		if getErr == nil && current.State == "running" {
+			if definition.TTY && !current.TTY {
+				return protocol.Process{}, false, &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: fmt.Sprintf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)}
+			}
 			if current.Source == definition.Source {
 				return current, true, nil
 			}
@@ -460,7 +467,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		}
 		outcome := "already_running"
 		if process.State != "running" {
-			process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: input.Name, Cwd: resolution.Root, Root: resolution.Root})
+			process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: input.Name, Cwd: resolution.Root, Root: resolution.Root, TTY: process.TTY})
 			if err != nil {
 				return nil, mapError(err)
 			}
@@ -724,7 +731,7 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, name string
 	request := protocol.RestartRequest{Op: protocol.OpRestart, Name: name, Cwd: resolution.Root}
 	if definition, ok := findDefinition(resolution, name); ok {
 		request.Root, request.Cwd, request.Update = resolution.Root, definition.Cwd, true
-		request.Argv, request.Env, request.Source, request.Ready = append([]string(nil), definition.Argv...), s.environment(), definition.Source, definition.Ready
+		request.Argv, request.Env, request.Source, request.Ready, request.TTY = append([]string(nil), definition.Argv...), s.environment(), definition.Source, definition.Ready, definition.TTY
 	} else {
 		if _, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: resolution.Root}); err != nil {
 			return nil, mapError(err)
