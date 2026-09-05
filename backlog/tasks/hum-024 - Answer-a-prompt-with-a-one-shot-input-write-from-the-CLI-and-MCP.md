@@ -1,10 +1,11 @@
 ---
 id: HUM-024
 title: Answer a prompt with a one-shot input write from the CLI and MCP
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-05 14:24'
-updated_date: '2026-09-05 15:21'
+updated_date: '2026-09-05 23:30'
 labels:
   - cli
   - daemon
@@ -51,27 +52,60 @@ Non-goals: input to non-tty sessions; resize over CLI or MCP; streaming or multi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/cli -run "^TestInputCommand$" -count=1 -v` exits 0 and prints `--- PASS: TestInputCommand`. It proves exactly one NAME and exactly one of `--text`/`--base64` are required; extra names, empty text, malformed or unpadded base64, base64 whitespace, and decoded payloads over 32768 bytes fail before daemon discovery/dial; text bytes have no implicit newline; base64 carries NUL and control bytes; success human/JSON output includes the decoded byte count and launch cursor; JSON errors follow the existing convention; unavailable, not-found, non-tty, not-running, conflict, closed, and stale cases exit 1 with actionable messages; and the command never starts a daemon or process and has no short payload alias.
-- [ ] #2 AC2 — `go test ./internal/daemon -run "^TestOneShotInputWrite$" -count=1 -v` exits 0 and prints `--- PASS: TestOneShotInputWrite`. Against the daemon client/transport it proves a running tty attach receives an initial cursor, sends exactly one write at that cursor, receives acknowledgement, releases, and returns the decoded byte count; an occupied lease fails immediately; a stopped initial state releases without writing and maps to `session_not_running`; non-tty maps to `input_not_tty`; exit/restart races map to `input_closed`/`input_stale` without retrying a successor; cancellation and lost acknowledgement cause no resend; every terminal path closes or releases the lease so a later owner can attach; submitted bytes are not appended to the ring; and protocol shape/version are unchanged.
-- [ ] #3 AC3 — `go test ./internal/mcp -run "^TestInputTool$" -count=1 -v` exits 0 and prints `--- PASS: TestInputTool`. It proves the tool list contains eleven tools including `input`; the closed input schema requires `project_root` and `name` and uses `oneOf` to accept exactly one non-empty `text` or `base64`; missing/both payloads, malformed or unpadded base64, whitespace, and decoded oversize are rejected before a fake client invocation; text is converted to its exact JSON-string UTF-8 bytes; success contains `name`, decoded `bytes`, and `launch_cursor`; and not-found/conflict/not-tty/not-running/too-large/closed/stale map to typed tool errors while the fake records only the expected daemon-client calls.
-- [ ] #4 AC4 — `go test ./integration -run "^TestOneShotInputAnswersPrompt$" -count=1 -v` exits 0 and prints `--- PASS: TestOneShotInputAnswersPrompt`. With the built binary and a tty-gated fixture launched detached with `--tty`, it proves `hum wait --match` sees a stripped prompt, `hum input NAME --text $'yes\n'` returns 0 with the launch cursor, the fixture receives exactly `yes\n` and prints confirmation, input is absent from retained output except for child-controlled terminal echo, a second input after exit returns `session_not_running`, a non-tty target returns `input_not_tty`, and an occupied attached-run lease returns immediate `input_conflict` without disrupting the owner.
-- [ ] #5 AC5 — `go test ./internal/cli ./internal/skill -run "^TestInputDocs$" -count=1 -v` exits 0 and prints both named PASS lines. README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document the CLI/MCP input surface, exact-bytes/no-newline and strict-base64 rules, 32 KiB bound, running/tty constraints, immediate ownership conflict, launch-race and at-most-once behavior, the observe-answer-confirm loop, and that hum neither retains nor explicitly echoes input.
+- [x] #1 AC1 — `go test ./internal/cli -run "^TestInputCommand$" -count=1 -v` exits 0 and prints `--- PASS: TestInputCommand`. It proves exactly one NAME and exactly one of `--text`/`--base64` are required; extra names, empty text, malformed or unpadded base64, base64 whitespace, and decoded payloads over 32768 bytes fail before daemon discovery/dial; text bytes have no implicit newline; base64 carries NUL and control bytes; success human/JSON output includes the decoded byte count and launch cursor; JSON errors follow the existing convention; unavailable, not-found, non-tty, not-running, conflict, closed, and stale cases exit 1 with actionable messages; and the command never starts a daemon or process and has no short payload alias.
+- [x] #2 AC2 — `go test ./internal/daemon -run "^TestOneShotInputWrite$" -count=1 -v` exits 0 and prints `--- PASS: TestOneShotInputWrite`. Against the daemon client/transport it proves a running tty attach receives an initial cursor, sends exactly one write at that cursor, receives acknowledgement, releases, and returns the decoded byte count; an occupied lease fails immediately; a stopped initial state releases without writing and maps to `session_not_running`; non-tty maps to `input_not_tty`; exit/restart races map to `input_closed`/`input_stale` without retrying a successor; cancellation and lost acknowledgement cause no resend; every terminal path closes or releases the lease so a later owner can attach; submitted bytes are not appended to the ring; and protocol shape/version are unchanged.
+- [x] #3 AC3 — `go test ./internal/mcp -run "^TestInputTool$" -count=1 -v` exits 0 and prints `--- PASS: TestInputTool`. It proves the tool list contains eleven tools including `input`; the closed input schema requires `project_root` and `name` and uses `oneOf` to accept exactly one non-empty `text` or `base64`; missing/both payloads, malformed or unpadded base64, whitespace, and decoded oversize are rejected before a fake client invocation; text is converted to its exact JSON-string UTF-8 bytes; success contains `name`, decoded `bytes`, and `launch_cursor`; and not-found/conflict/not-tty/not-running/too-large/closed/stale map to typed tool errors while the fake records only the expected daemon-client calls.
+- [x] #4 AC4 — `go test ./integration -run "^TestOneShotInputAnswersPrompt$" -count=1 -v` exits 0 and prints `--- PASS: TestOneShotInputAnswersPrompt`. With the built binary and a tty-gated fixture launched detached with `--tty`, it proves `hum wait --match` sees a stripped prompt, `hum input NAME --text $'yes\n'` returns 0 with the launch cursor, the fixture receives exactly `yes\n` and prints confirmation, input is absent from retained output except for child-controlled terminal echo, a second input after exit returns `session_not_running`, a non-tty target returns `input_not_tty`, and an occupied attached-run lease returns immediate `input_conflict` without disrupting the owner.
+- [x] #5 AC5 — `go test ./internal/cli ./internal/skill -run "^TestInputDocs$" -count=1 -v` exits 0 and prints both named PASS lines. README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document the CLI/MCP input surface, exact-bytes/no-newline and strict-base64 rules, 32 KiB bound, running/tty constraints, immediate ownership conflict, launch-race and at-most-once behavior, the observe-answer-confirm loop, and that hum neither retains nor explicitly echoes input.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-- [ ] T1 — Add one shared daemon-client one-shot helper with exact target-state, cursor, at-most-once, error-mapping, and cleanup semantics.
-- [ ] T2 — Add the strict CLI and MCP surfaces and focused fake-client tests without changing the private protocol.
-- [ ] T3 — Update operator/agent documentation and prove the built-binary prompt-answering loop.
+- [x] T1 — Add one shared daemon-client one-shot helper with exact target-state, cursor, at-most-once, error-mapping, and cleanup semantics.
+- [x] T2 — Add the strict CLI and MCP surfaces and focused fake-client tests without changing the private protocol.
+- [x] T3 — Update operator/agent documentation and prove the built-binary prompt-answering loop.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC#1 — `go test ./internal/cli -run "^TestInputCommand$" -count=1 -v` passed, including CLI arity/payload validation, strict base64, exact bytes, success/error output, target errors, and no daemon/process startup.
+AC#2 — `go test ./internal/daemon -run "^TestOneShotInputWrite$" -count=1 -v` passed; the verifier also passed `-count=100`. It covers initial-state/cursor writes, explicit release acknowledgement, conflict, stopped/non-tty, closed/stale races, cancellation/lost acknowledgement without resend, cleanup, ring non-retention, and protocol invariance.
+AC#3 — `go test ./internal/mcp -run "^TestInputTool$" -count=1 -v` passed for the eleven-tool surface, closed oneOf schema, exact text/base64 validation, success result, typed errors, and fake-client calls.
+AC#4 — `go test ./integration -run "^TestOneShotInputAnswersPrompt$" -count=1 -v` passed against the built binary for the observe-answer-confirm flow, stopped/non-tty errors, and occupied-lease conflict.
+AC#5 — `go test ./internal/cli ./internal/skill -run "^TestInputDocs$" -count=1 -v` passed in both packages.
+DoD — `task ci` passed on implementation commit 787c58b (format, vet, staticcheck, all tests, race suites, build, smoke). Independent verifier run 11fc84c9-2920-4649-9601-95b555d439dc returned PASS for AC1–AC5, task ci, scope, test integrity, and protected files. Independent review found a lease-release acknowledgement race and acceptance/documentation gaps; all were fixed before verification. No tests were deleted, skipped, or weakened; protocol shape/version stayed unchanged; no protected gate file changed. The Backlog provider task file is the sole path outside the implementation contract, required for authoritative claim, evidence, completion, and commit metadata.
+<!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: brett
+created: 2026-09-05 21:22
+---
+Claimed for implementation on main.
+---
+
+author: brett
+created: 2026-09-05 23:30
+---
+Completed implementation and verification on main in commit 787c58b.
+---
+<!-- COMMENTS:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added bounded one-shot TTY input through the CLI and MCP with exact text/strict base64 payloads, launch-cursor scoping, at-most-once writes, explicit lease-release acknowledgement, typed errors, and no input retention. Added focused daemon, CLI, MCP, integration, documentation, and skill coverage. All AC commands, independent review and verification, and `task ci` passed. Implementation commit: 787c58b.
+<!-- SECTION:FINAL_SUMMARY:END -->
