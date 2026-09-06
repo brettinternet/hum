@@ -463,6 +463,23 @@ func TestOneShotInputWrite(t *testing.T) {
 	}
 }
 
+func TestInputSessionAcknowledgementWinsConnectionClose(t *testing.T) {
+	raw, err := json.Marshal(protocol.InputAckResponse{Op: protocol.OpInputRelease, OK: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	close(done)
+	for range 100 {
+		acks := make(chan json.RawMessage, 1)
+		acks <- raw
+		session := &InputSession{acks: acks, done: done}
+		if err := session.waitForAck(context.Background(), protocol.OpInputRelease); err != nil {
+			t.Fatalf("buffered acknowledgement after close: %v", err)
+		}
+	}
+}
+
 func TestTTYInputTransport(t *testing.T) {
 	runtimeDir := t.TempDir()
 	root := t.TempDir()

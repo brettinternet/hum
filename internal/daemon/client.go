@@ -626,11 +626,18 @@ func (s *InputSession) writeRequest(ctx context.Context, req wireRequest, want p
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	return s.writeRequestLocked(ctx, req, want)
+}
+
+func (s *InputSession) writeRequestLocked(ctx context.Context, req wireRequest, want protocol.Operation) error {
 	if err := s.client.writeOnly(ctx, req); err != nil {
 		return err
 	}
-	select {
-	case raw := <-s.acks:
+	return s.waitForAck(ctx, want)
+}
+
+func (s *InputSession) waitForAck(ctx context.Context, want protocol.Operation) error {
+	handle := func(raw json.RawMessage) error {
 		var ack protocol.InputAckResponse
 		if err := json.Unmarshal(raw, &ack); err != nil {
 			return err
@@ -645,8 +652,19 @@ func (s *InputSession) writeRequest(ctx context.Context, req wireRequest, want p
 			return errors.New("daemon input operation failed")
 		}
 		return nil
+	}
+	select {
+	case raw := <-s.acks:
+		return handle(raw)
 	case <-s.done:
-		return &protocol.WireError{Code: protocol.ErrorInputClosed, Message: "tty input connection is closed"}
+		// The reader queues a final acknowledgement before it can observe EOF
+		// and close done. Prefer that acknowledgement when both are ready.
+		select {
+		case raw := <-s.acks:
+			return handle(raw)
+		default:
+			return &protocol.WireError{Code: protocol.ErrorInputClosed, Message: "tty input connection is closed"}
+		}
 	case <-ctx.Done():
 		_ = s.client.Close()
 		return ctx.Err()
@@ -687,7 +705,11 @@ func (s *InputSession) releaseOneShot() error {
 		return nil
 	}
 	s.releaseOnce.Do(func() {
-		err := s.writeRequest(context.Background(), wireRequest{Op: "input_release"}, protocol.OpInputRelease)
+		var err error
+		if s.writeMu.TryLock() {
+			err = s.writeRequestLocked(context.Background(), wireRequest{Op: "input_release"}, protocol.OpInputRelease)
+			s.writeMu.Unlock()
+		}
 		// A failed release acknowledgement cannot establish that the server
 		// received the request. Close the transport so its disconnect handler
 		// releases the lease, without ever retrying input. Transport failures
@@ -705,15 +727,14 @@ func (s *InputSession) releaseOneShot() error {
 	return s.releaseErr
 }
 
-// Release closes the transport, preserving the streaming input-session
-// detach behavior. One-shot input uses releaseOneShot so it can wait for the
-// server's explicit acknowledgement before returning.
+// Release uses an acknowledged detach when idle, so the caller may acquire a
+// successor owner immediately. A concurrent operation is canceled by closing
+// the transport instead of waiting behind its write lock.
 func (s *InputSession) Release() error {
 	if s == nil {
 		return nil
 	}
-	s.closeOnce.Do(func() { _ = s.client.Close() })
-	<-s.done
+	_ = s.releaseOneShot()
 	return nil
 }
 func (s *InputSession) Close() error { return s.Release() }
