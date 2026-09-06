@@ -10,22 +10,22 @@ Use MCP as the primary integration. Use this skill only for shell-only fallback 
 ## Start and inspect
 
 - Try `hum up` first; when `hum.yaml` declares `after`, it starts independent roots concurrently and launches each dependent only after every direct prerequisite is observed `ready`. It waits for readiness by default; each process's readiness timeout starts at its own launch or first running observation; results settle in lexical order.
-- Use `hum start <name>` for one resolved process; it waits for readiness unless you opt out. `start NAME...` is explicit-only and never pulls in `after` prerequisites.
+- Use `hum start <name>` for one resolved process; it waits for readiness unless you opt out. `start NAME...` is explicit-only and never pulls in `after` prerequisites. For a running or recovery-capable manifest record, changed argv, canonical cwd, readiness matcher, TTY, or normalized restart policy returns `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance; CLI `up` exits 1 for drift and the drift cannot satisfy an `after` gate.
 - `after` lists must name unique same-manifest processes that declare `ready`; cycles, unknown names, duplicates, self-reference, malformed lists, and dependencies without readiness are manifest errors. `up --no-wait` is rejected before daemon contact when any `after` is declared.
 - Use `hum list` for discovery, and to inspect each process's source and readiness.
 - Read bounded output with `hum logs --tail 100 <name>` or `hum logs --after-cursor <cursor> --json <name>`.
 - Use `hum wait <name>` for a bounded later condition, including before another client starts the name.
 - Never use unbounded `hum logs <name> --follow`; it is for interactive terminals.
 - For intermediate work, use `hum stop <name>`, run the work, then `hum start <name>`; the durable session keeps observers attached.
-- After process-definition changes, use `hum restart <name>`.
+- After process-definition changes, use `hum restart <name>`. `hum up` and `hum start <name>` report active or recovery-capable definition drift instead of silently adopting edits; CLI `up` exits 1 and only restart applies a changed definition.
 - A manifest process may opt into `restart: on-failure`; the default is `never`.
 - If an `after` prerequisite exits before readiness, `up` reports the prerequisite failure and returns dependents as `skipped` with sorted direct `blocked_by` names; it does not follow an automatic successor. A skip may include read-only `existing_state` and process snapshot data, but it still means no launch occurred and still blocks dependents. Read the failure, then rerun `hum up` after the prerequisite is ready. Skips do not change aggregate exit precedence (1 request error, 3 early exit, 2 timeout, 0 success).
-  It retries unexpected non-zero or signal exits after 1s, 2s, 4s, 8s, and 16s,
-  for at most five automatic attempts. Read `hum status NAME` and the retained
+  It retries unexpected non-zero or signal exits after 1s, 2s, 4s, 8s, and 16s, for at most five automatic attempts. Read `hum status NAME` and the retained
   `hum logs NAME` output before editing a failing/crashing process again; recovery does
   not replace diagnosis.
 - Use `hum remove <name>` only to discard the runtime session, retained output, and launch state; it never edits `hum.yaml`.
 - Use `hum down` to stop everything in the current project; a later `hum up` restarts only resolved definitions.
+- If `hum up` reports a manifest-sourced running, pending-recovery, or exhausted record as `removed_definition`, explicitly use `hum stop <name>` or `hum remove <name>`. Removed warnings are lexical, do not change aggregate status, and exclude ad-hoc and discovered sessions; removed records require an explicit stop or remove.
 - To answer a bounded TTY prompt, observe with `hum logs` or `hum wait --match`, answer with `hum input <name> --text <value>`, then confirm with `hum wait --match`. Text is sent as exact bytes without a newline. Use `--base64 <value>` for exact binary bytes; it requires strict padded base64 (standard alphabet) without whitespace. Payloads are 1-32768 bytes. Input requires a running TTY, is at-most-once with no resend across a launch race, writes once at its initial launch cursor, fails immediately on ownership conflict, and never starts, waits, queues, retries, retains, or explicitly echoes bytes.
 
 ## Crash relaunch policy

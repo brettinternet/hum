@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -176,7 +177,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	startProps := cloneProperties(waitProps)
 	startProps["name"] = nameResolved
 	readiness := objectSchema(map[string]any{
-		"state":  stringProperty("starting, ready, or running_unverified"),
+		"state":  stringProperty("starting, ready, or running_unverified; recovery records retain starting with their configured matcher"),
 		"cursor": map[string]any{"type": "integer", "minimum": 0},
 		"time":   map[string]any{"type": "string"},
 		"match":  map[string]any{"type": "string"},
@@ -202,7 +203,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"readiness":      readiness,
 	}, "name", "source", "root", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
-	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "exited"}}}, "name", "outcome")
+	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
 	output := objectSchema(map[string]any{"entries": map[string]any{"type": "array", "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}, "oldest": map[string]any{"type": "integer", "minimum": 0}, "latest": map[string]any{"type": "integer", "minimum": 0}, "evicted_through": map[string]any{"type": "integer", "minimum": 0}, "truncated": map[string]any{"type": "boolean"}, "more": map[string]any{"type": "boolean"}}, "entries")
@@ -226,8 +227,8 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 	}, "name", "bytes", "launch_cursor")
 	return []toolDefinition{
-		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; it never pulls in after prerequisites and waits for that definition's configured readiness by default. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
-		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: map[string]any{"type": "array", "items": launch}},
+		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; it never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
+		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: map[string]any{"type": "array", "items": launch}},
 		{Name: "down", Description: "Stop every running runtime record in the project and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: map[string]any{"type": "array", "items": stop}},
 		{Name: "list", Description: "Merge resolved definitions with all daemon runtime records in the project, including ad_hoc records. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: map[string]any{"type": "array", "items": process}},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
@@ -366,12 +367,114 @@ func normalizeProcess(process protocol.Process) protocol.Process {
 	if process.Source == "" {
 		process.Source = "ad_hoc"
 	}
-	if process.Source != "manifest" && !strings.HasPrefix(process.Source, "manifest:") {
+	if !isManifestSource(process.Source) {
 		process.Restart = protocol.RestartNever
 	} else {
 		process.Restart = effectiveRestart(process.Restart)
 	}
 	return process
+}
+
+func isManifestSource(source string) bool {
+	return source == "manifest" || source == "hum.yaml" || strings.HasPrefix(source, "manifest:") || strings.HasPrefix(source, "hum.yaml:")
+}
+
+func sameManifestSource(left, right string) bool {
+	return left == right || isManifestSource(left) && isManifestSource(right)
+}
+
+func canonicalManifestCwd(root, cwd string) string {
+	if cwd == "" {
+		cwd = root
+	}
+	if !filepath.IsAbs(cwd) {
+		cwd = filepath.Join(root, cwd)
+	}
+	absolute, err := filepath.Abs(cwd)
+	if err != nil {
+		absolute = filepath.Clean(cwd)
+	}
+	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(absolute)
+}
+
+func processReadinessMatch(process protocol.Process) (bool, string) {
+	if process.Readiness == nil || process.Readiness.State == protocol.ReadinessRunningUnverified {
+		return false, ""
+	}
+	return true, process.Readiness.Match
+}
+
+func definitionChangedFields(root string, definition Definition, process protocol.Process) []string {
+	changed := make([]string, 0, 5)
+	if !slices.Equal(definition.Argv, process.Argv) {
+		changed = append(changed, "argv")
+	}
+	if canonicalManifestCwd(root, definition.Cwd) != canonicalManifestCwd(root, process.Cwd) {
+		changed = append(changed, "cwd")
+	}
+	definitionReady, definitionMatch := false, ""
+	if definition.Ready != nil {
+		definitionReady, definitionMatch = true, definition.Ready.Match
+	}
+	processReady, processMatch := processReadinessMatch(process)
+	if definitionReady != processReady || definitionMatch != processMatch {
+		changed = append(changed, "readiness_match")
+	}
+	if definition.TTY != process.TTY {
+		changed = append(changed, "tty")
+	}
+	if effectiveRestart(definition.Restart) != effectiveRestart(process.Restart) {
+		changed = append(changed, "restart")
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+func processSupportsDrift(process protocol.Process) bool {
+	if process.State == "running" {
+		return true
+	}
+	return process.State == "exited" && (process.NextLaunchAt != nil || process.Restart == protocol.RestartOnFailure && process.Relaunches >= automaticRelaunchLimit)
+}
+
+func definitionDriftResult(resolution Resolution, definition Definition, process protocol.Process) launchResult {
+	process = normalizeProcess(process)
+	return launchResult{
+		Name:          definition.Name,
+		Outcome:       "definition_drift",
+		Process:       &process,
+		ChangedFields: definitionChangedFields(resolution.Root, definition, process),
+		Guidance:      fmt.Sprintf("hum restart %s", definition.Name),
+	}
+}
+
+func removedDefinitionResults(resolution Resolution, processes []protocol.Process) []launchResult {
+	declared := make(map[string]struct{}, len(resolution.Definitions))
+	for _, definition := range resolution.Definitions {
+		declared[definition.Name] = struct{}{}
+	}
+	results := make([]launchResult, 0)
+	for _, process := range processes {
+		if process.Name == "" || !isManifestSource(process.Source) || !processSupportsDrift(process) {
+			continue
+		}
+		if _, ok := declared[process.Name]; ok {
+			continue
+		}
+		if process.Root != "" && canonicalManifestCwd(resolution.Root, process.Root) != canonicalManifestCwd(resolution.Root, resolution.Root) {
+			continue
+		}
+		process = normalizeProcess(process)
+		results = append(results, launchResult{
+			Name: process.Name, Outcome: "removed_definition", Process: &process,
+			Guidance: fmt.Sprintf("hum stop %s or hum remove %s", process.Name, process.Name),
+		})
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+	return results
 }
 
 func recoveryOutcome(process protocol.Process) (string, bool) {
@@ -511,15 +614,23 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution Resolution, definition Definition, preserveRecovery bool) (protocol.Process, bool, string, error) {
 	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: definition.Name, Cwd: resolution.Root})
 	if err == nil && process.State == "running" {
+		if !sameManifestSource(process.Source, definition.Source) {
+			return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorNameInUse), Message: fmt.Sprintf("declared process %q is occupied by an ad_hoc launch", definition.Name)}
+		}
+		if changed := definitionChangedFields(resolution.Root, definition, process); len(changed) != 0 {
+			return normalizeProcess(process), true, "definition_drift", nil
+		}
 		if definition.TTY && !process.TTY {
 			return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: fmt.Sprintf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)}
 		}
-		if process.Source == definition.Source {
-			return process, true, "", nil
-		}
-		return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorNameInUse), Message: fmt.Sprintf("declared process %q is occupied by an ad_hoc launch", definition.Name)}
+		return process, true, "", nil
 	}
-	if err == nil && preserveRecovery && process.Source == definition.Source {
+	if err == nil && sameManifestSource(process.Source, definition.Source) && processSupportsDrift(process) {
+		if changed := definitionChangedFields(resolution.Root, definition, process); len(changed) != 0 {
+			return normalizeProcess(process), true, "definition_drift", nil
+		}
+	}
+	if err == nil && preserveRecovery && sameManifestSource(process.Source, definition.Source) {
 		if outcome, ok := recoveryOutcome(process); ok {
 			return normalizeProcess(process), true, outcome, nil
 		}
@@ -535,13 +646,16 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 	for time.Now().Before(deadline) {
 		current, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: definition.Name, Cwd: resolution.Root})
 		if getErr == nil && current.State == "running" {
+			if !sameManifestSource(current.Source, definition.Source) {
+				return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorNameInUse), Message: fmt.Sprintf("declared process %q is occupied by an ad_hoc launch", definition.Name)}
+			}
+			if changed := definitionChangedFields(resolution.Root, definition, current); len(changed) != 0 {
+				return normalizeProcess(current), true, "definition_drift", nil
+			}
 			if definition.TTY && !current.TTY {
 				return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: fmt.Sprintf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)}
 			}
-			if current.Source == definition.Source {
-				return current, true, "", nil
-			}
-			return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorNameInUse), Message: fmt.Sprintf("declared process %q is occupied by an ad_hoc launch", definition.Name)}
+			return current, true, "", nil
 		}
 		timer := time.NewTimer(5 * time.Millisecond)
 		select {
@@ -694,9 +808,12 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	process, already, _, err := s.ensureDefinition(ctx, client, resolution, definition, false)
+	process, already, classification, err := s.ensureDefinition(ctx, client, resolution, definition, false)
 	if err != nil {
 		return nil, mapError(err)
+	}
+	if classification == "definition_drift" {
+		return definitionDriftResult(resolution, definition, process), nil
 	}
 	outcome := launchOutcome(already, definition)
 	if definition.Ready == nil {
@@ -718,6 +835,8 @@ type launchResult struct {
 	Error         *ToolError        `json:"error,omitempty"`
 	BlockedBy     []string          `json:"blocked_by,omitempty"`
 	ExistingState string            `json:"existing_state,omitempty"`
+	ChangedFields []string          `json:"changed_fields,omitempty"`
+	Guidance      string            `json:"guidance,omitempty"`
 }
 
 func (s *Server) up(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
@@ -730,7 +849,19 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		return nil, &ToolError{Code: "invalid_request", Message: "up no_wait is not allowed when definitions declare after dependencies"}
 	}
 	if len(definitions) == 0 {
-		return []launchResult{}, nil
+		client, err := s.client(ctx, false)
+		if err != nil {
+			if unavailable(err) {
+				return []launchResult{}, nil
+			}
+			return nil, mapError(err)
+		}
+		defer client.Close()
+		processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, IncludeCompleted: true})
+		if err != nil {
+			return nil, mapError(err)
+		}
+		return removedDefinitionResults(resolution, processes), nil
 	}
 	client, err := s.client(ctx, true)
 	if err != nil {
@@ -832,12 +963,14 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 				} else {
 					result.Outcome = launchOutcome(already, definition)
 				}
-				if definition.Ready == nil && process.State == "running" {
+				if recovery == "definition_drift" {
+					result = definitionDriftResult(resolution, definition, process)
+				} else if definition.Ready == nil && process.State == "running" {
 					process.Readiness = &protocol.Readiness{State: protocol.ReadinessRunningUnverified}
 				}
 				process = normalizeProcess(process)
 				result.Process = &process
-				if !input.NoWait && definition.Ready != nil && process.State == "running" {
+				if result.Outcome != "definition_drift" && !input.NoWait && definition.Ready != nil && process.State == "running" {
 					timeout, timeoutErr := readinessTimeout(input.TimeoutMS, definition)
 					if timeoutErr != nil {
 						result.Process = nil
@@ -866,6 +999,12 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		}(index, definition)
 	}
 	workers.Wait()
+	processes, listErr := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, IncludeCompleted: true})
+	if listErr != nil {
+		return nil, mapError(listErr)
+	}
+	results = append(results, removedDefinitionResults(resolution, processes)...)
+	sort.SliceStable(results, func(i, j int) bool { return results[i].Name < results[j].Name })
 	return results, nil
 }
 

@@ -44,10 +44,27 @@ type upRecoveryIntegrationResult struct {
 	NextLaunchAt *time.Time `json:"next_launch_at"`
 }
 
+type mcpRecoveryReadiness struct {
+	State string `json:"state"`
+	Match string `json:"match"`
+}
+
+type mcpUpRecoveryIntegrationProcess struct {
+	Name         string                `json:"name"`
+	Source       string                `json:"source"`
+	Argv         []string              `json:"argv"`
+	State        string                `json:"state"`
+	Readiness    *mcpRecoveryReadiness `json:"readiness"`
+	LaunchCursor uint64                `json:"launch_cursor"`
+	Restart      string                `json:"restart"`
+	Relaunches   int                   `json:"relaunches"`
+	NextLaunchAt *time.Time            `json:"next_launch_at"`
+}
+
 type mcpUpRecoveryIntegrationResult struct {
-	Name    string                     `json:"name"`
-	Outcome string                     `json:"outcome"`
-	Process *relaunchIntegrationStatus `json:"process"`
+	Name    string                           `json:"name"`
+	Outcome string                           `json:"outcome"`
+	Process *mcpUpRecoveryIntegrationProcess `json:"process"`
 }
 
 type mcpRestartIntegrationProcess struct {
@@ -248,7 +265,15 @@ processes:
 		if len(results) != 1 || results[0].Name != "crash" || results[0].Outcome != "recovery_pending" || results[0].Process == nil {
 			t.Fatalf("MCP up attempt %d result = %s, want one recovery_pending process", attempt, raw)
 		}
-		assertPending(fmt.Sprintf("MCP up attempt %d", attempt), *results[0].Process)
+		mcpProcess := results[0].Process
+		if mcpProcess.Readiness == nil || mcpProcess.Readiness.State != "starting" || mcpProcess.Readiness.Match != "ready" {
+			t.Fatalf("MCP up attempt %d readiness = %#v, want retained ready matcher", attempt, mcpProcess.Readiness)
+		}
+		assertPending(fmt.Sprintf("MCP up attempt %d", attempt), relaunchIntegrationStatus{
+			Name: mcpProcess.Name, Source: mcpProcess.Source, Argv: mcpProcess.Argv, State: mcpProcess.State,
+			LaunchCursor: mcpProcess.LaunchCursor, Restart: mcpProcess.Restart, Relaunches: mcpProcess.Relaunches,
+			NextLaunchAt: mcpProcess.NextLaunchAt,
+		})
 	}
 
 	for attempt := 1; attempt <= 2; attempt++ {

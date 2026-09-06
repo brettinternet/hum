@@ -234,8 +234,22 @@ func TestDiscoveryErrors(t *testing.T) {
 		assertRuntimeDirEmpty(t, runtimeDir)
 	})
 
+	t.Run("no-candidate up remains inert", func(t *testing.T) {
+		_ = stopShutdownTestProject(t)
+		runtimeDir := filepath.Join(t.TempDir(), "runtime")
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+
+		stdout, stderr, err := stopShutdownRun(t, "up")
+		if err != nil {
+			t.Fatalf("no-candidate up: %v", err)
+		}
+		if stdout != "No processes are declared in hum.yaml.\n" || stderr != "" {
+			t.Fatalf("no-candidate up output = stdout %q stderr %q", stdout, stderr)
+		}
+		assertRuntimeDirEmpty(t, runtimeDir)
+	})
+
 	strictNoCandidateCommands := [][]string{
-		{"up"},
 		{"start", "dev"},
 	}
 	for _, args := range strictNoCandidateCommands {
@@ -362,7 +376,7 @@ func TestDiscoveryErrors(t *testing.T) {
 				filename: "Makefile",
 				contents: "dev: FOO = bar\n",
 				args:     []string{"up"},
-				kind:     "no-candidate",
+				kind:     "no-candidate-up",
 			},
 		} {
 			t.Run(test.name, func(t *testing.T) {
@@ -373,10 +387,7 @@ func TestDiscoveryErrors(t *testing.T) {
 				runtimeDir := filepath.Join(t.TempDir(), "runtime")
 				t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 
-				_, _, err := stopShutdownRun(t, test.args...)
-				if err == nil {
-					t.Fatalf("%s unexpectedly succeeded", strings.Join(test.args, " "))
-				}
+				stdout, stderr, err := stopShutdownRun(t, test.args...)
 				switch test.kind {
 				case "configuration":
 					var configuration *project.ConfigurationError
@@ -390,12 +401,22 @@ func TestDiscoveryErrors(t *testing.T) {
 						t.Fatalf("configuration path = %q, want %q", configuration.Path, filepath.Join(root, test.filename))
 					}
 				case "no-candidate":
+					if err == nil {
+						t.Fatalf("%s unexpectedly succeeded", strings.Join(test.args, " "))
+					}
 					var noCandidate *project.NoCandidateError
 					if !errors.As(err, &noCandidate) {
 						t.Fatalf("%s error = %v, want NoCandidateError", strings.Join(test.args, " "), err)
 					}
 					if noCandidate.Root != root {
 						t.Fatalf("no-candidate root = %q, want %q", noCandidate.Root, root)
+					}
+				case "no-candidate-up":
+					if err != nil {
+						t.Fatalf("%s error = %v, want inert success", strings.Join(test.args, " "), err)
+					}
+					if stdout != "No processes are declared in hum.yaml.\n" || stderr != "" {
+						t.Fatalf("%s output = stdout %q stderr %q", strings.Join(test.args, " "), stdout, stderr)
 					}
 				default:
 					t.Fatalf("unknown expected error kind %q", test.kind)

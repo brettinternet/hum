@@ -1469,7 +1469,34 @@ func TestHelloVersion(t *testing.T) {
 		}
 	})
 
-	t.Run("v3 client to v2 daemon rejects wait during hello but permits frozen shutdown", func(t *testing.T) {
+	t.Run("v9 client rejects a v8 daemon before terminal-readiness reconciliation", func(t *testing.T) {
+		const oldDaemonVersion = 8
+		server := testServer(t, Config{Version: strconv.Itoa(oldDaemonVersion)})
+		client, err := Dial(context.Background(), server.Paths().Socket)
+		if client == nil {
+			t.Fatalf("legacy daemon dial returned nil client: %v", err)
+		}
+		t.Cleanup(func() { _ = client.Close() })
+		var mismatch *VersionMismatchError
+		if !errors.As(err, &mismatch) || mismatch == nil {
+			t.Fatalf("legacy daemon hello error = %v, want version mismatch", err)
+		}
+		if mismatch.ClientVersion != protocol.Version || mismatch.DaemonVersion != oldDaemonVersion {
+			t.Fatalf("legacy daemon mismatch versions = client %d daemon %d, want client %d daemon %d", mismatch.ClientVersion, mismatch.DaemonVersion, protocol.Version, oldDaemonVersion)
+		}
+		if _, listErr := client.List(context.Background(), protocol.NewListRequest(t.TempDir(), false, true)); !errors.As(listErr, &mismatch) {
+			t.Fatalf("list against legacy daemon = %v, want cached version mismatch", listErr)
+		}
+		if err := client.Shutdown(context.Background(), protocol.NewShutdownRequest(false)); err != nil {
+			t.Fatalf("frozen shutdown against legacy daemon: %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Fatalf("legacy daemon Serve after frozen shutdown: %v", err)
+		}
+		assertShutdownArtifactsAbsent(t, server.Paths())
+	})
+
+	t.Run("current client to v2 daemon rejects wait during hello but permits frozen shutdown", func(t *testing.T) {
 		const oldDaemonVersion = 2
 		server := testServer(t, Config{Version: strconv.Itoa(oldDaemonVersion)})
 		conn, err := net.Dial("unix", server.Paths().Socket)

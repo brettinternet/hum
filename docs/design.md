@@ -62,7 +62,13 @@ cursors, and errors when applicable. Human `status` always prints `followers`;
 human `list` adds `followers=N` only to followed records, leaving ordinary
 unfollowed list output unchanged. `start` and `up` emit one NDJSON launch result per name. `up` uses
 lexical declaration order, attempts every entry, and applies this exit-code
-precedence: request error (1), early exit (3), timeout (2), success (0).
+precedence: request error or `definition_drift` (1), early exit (3), timeout
+(2), success (0). `definition_drift` includes sorted `changed_fields` for
+argv, canonical cwd, readiness matcher, TTY, or normalized restart changes and
+never satisfies an `after` gate; CLI `up` exits 1 for drift. A removed
+manifest-sourced running or recovery-capable record is emitted as
+`removed_definition` with stop/remove guidance. Removed records require an
+explicit stop or remove; the warning does not alter aggregate exit status.
 Attached `run --json` still streams raw child output; `logs --json --follow`
 emits bounded NDJSON events. `logs` accepts optional, repeatable names in selection
 order. With no names, it resolves the current declaration set once in lexical order,
@@ -174,10 +180,11 @@ process is active unless `--stop-processes` is given.
 
 The nearest Git project root may contain one authoritative `hum.yaml`. A valid
 empty manifest resolves to no definitions; an invalid manifest is an error.
-`hum up` on an empty manifest does not contact or create a daemon: human output
-is exactly `No processes are declared in hum.yaml.` and `--json` emits no NDJSON
-records. Discovery occurs only when the file is absent. Alternate filenames are
-ignored.
+`hum up` on an empty manifest does not create a daemon when none exists: it
+may inspect an existing daemon for removed manifest-sourced recovery sessions.
+With no such records, human output is exactly `No processes are declared in
+hum.yaml.` and `--json` emits no NDJSON records. Discovery occurs only when the
+file is absent. Alternate filenames are ignored.
 
 ```yaml
 version: 1
@@ -326,8 +333,9 @@ equivalents report how many of these live followers the daemon currently holds
 open, including pre-launch and stopped-session followers; the count is not
 persisted and is zero when no session exists. Ctrl+C detaches only the observer.
 `wait` without an explicit cursor waits for the next incarnation when stopped or
-unlaunched and remains bounded (30 seconds by default). Exited and ad hoc
-records omit readiness.
+unlaunched and remains bounded (30 seconds by default). Ordinary exited and
+ad hoc records omit readiness; terminal recovery records retain their configured
+readiness matcher for drift classification.
 
 ### Crash relaunch policy
 
@@ -345,16 +353,20 @@ and supervisor lock linearize exit, timer claim, and operator intent, so stale
 timers never launch and a manual start/restart wins without two children.
 
 Automatic attempts reuse the last effective argv, cwd, environment, readiness,
-and TTY and do not reread the manifest. Explicit start and restart adopt changed
-definitions; up adopts them only when no automatic recovery is pending or
-exhausted. Readiness and client timeout do not trigger relaunch.
+and TTY and do not reread the manifest. For a running, pending-recovery, or
+exhausted manifest record, `start` and `up` report `definition_drift` rather
+than silently adopting changed argv, canonical cwd, readiness matcher, TTY, or
+normalized restart policy; only explicit `restart` applies a changed
+definition. Readiness and client timeout do not trigger relaunch.
 `restart`, `relaunches`, and optional whole-second `next_launch_at` appear in
 process, CLI JSON, and MCP snapshots. During backoff, CLI and MCP `up` preserve
 that state and report `recovery_pending` without consuming an attempt; after the
 budget is exhausted they report `recovery_exhausted` without reviving the loop.
 Pending records resist completed-record eviction. Followers stay attached through
 the exit/wait boundary, backoff, and exhaustion; bounded logs retain child
-failures and relaunch/gave-up boundaries.
+failures and relaunch/gave-up boundaries. Recovery snapshots retain the
+response-safe readiness matcher without exposing environment so drift can be
+classified after exit.
 Agents should read the failing incarnation's retained output before editing
 again.
 
@@ -368,7 +380,11 @@ Foreground daemon exit and `shutdown --stop-processes` stop all managed groups.
 The launching client supplies cwd and its full environment. Manifest `cwd`
 changes only the child directory; discovered definitions use the project root.
 Resolved restarts use the current argv, cwd, readiness, and requesting client's
-environment, so definition edits take effect.
+environment, so definition edits take effect through explicit `restart`. A
+running or recovery-capable manifest record with changed argv, canonical cwd,
+readiness matcher, TTY, or normalized restart policy returns `definition_drift`
+with sorted `changed_fields` and `hum restart NAME` guidance from `start` or
+`up`; CLI exits 1 for this result and it is not silently replaced.
 
 ## MCP adapter
 
@@ -383,9 +399,12 @@ The tools share CLI definition, readiness, cursor, collision, and aggregate
 semantics. `up` applies the same client-side `after` DAG scheduler and lexical
 results as the CLI; independent roots launch concurrently, dependents wait for
 all direct prerequisites to be ready, and skipped entries include sorted direct
-`blocked_by`. `up` with `no_wait: true` is rejected before daemon contact when
-any dependency is declared. `start` remains singular and explicit-only. Only
-`start` and `up` may create or replace a daemon. Without one,
+`blocked_by`. Drifted entries never satisfy a dependency gate. `up` reports
+removed manifest-sourced running or recovery-capable records as lexical
+`removed_definition` warnings with stop/remove guidance; warnings do not change
+aggregate status and omit ad-hoc/discovered records. `up` with `no_wait: true`
+is rejected before daemon contact when any dependency is declared. `start`
+remains singular and explicit-only. Only `start` and `up` may create or replace a daemon. Without one,
 `list` reports stopped definitions; `stop` and `down` succeed; the other control
 tools return unavailable-daemon errors. Recorded environments are never
 returned. MCP `status` and `list` return the same `followers` integer as the CLI

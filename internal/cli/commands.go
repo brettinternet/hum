@@ -88,7 +88,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:        "start",
 			Usage:       "ensure one or more named sessions are running",
 			ArgsUsage:   "NAME...",
-			Description: "Start is idempotent for running sessions and relaunches retained stopped sessions. Absent names resolve from hum.yaml or conventional discovery. It launches only the explicitly named processes, never pulls in transitive after prerequisites, and waits for each resolved readiness unless --no-wait is set. Declared restart: on-failure sessions recover unexpected crashes with five bounded attempts; explicit start cancels pending backoff and uses the current definition.",
+			Description: "Start is idempotent for running sessions and relaunches retained stopped sessions. Absent names resolve from hum.yaml or conventional discovery. It launches only the explicitly named processes, never pulls in transitive after prerequisites, and waits for each resolved readiness unless --no-wait is set. A running or recovery-capable manifest session whose argv, canonical cwd, readiness matcher, tty mode, or normalized restart policy differs from the current declaration returns definition_drift with sorted changed_fields and hum restart NAME guidance; CLI exits 1 for drift (`exit 1`). Start does not adopt the changed definition; only restart applies a changed definition. Declared restart: on-failure sessions recover unexpected crashes with five bounded attempts; explicit start cancels pending backoff only when the retained definition matches.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after the process is spawned"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
@@ -102,7 +102,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:        "up",
 			Usage:       "ensure every manifest process is running",
 			ArgsUsage:   "",
-			Description: "Up resolves every hum.yaml declaration in lexical order, launches independent roots concurrently, and gates each after dependency on all direct prerequisites observed as ready. It waits per process from that process's launch or running observation, continues after launch failures, continues after failures, and reports skipped direct blockers plus any retained existing process state without mutating it; --no-wait is rejected before daemon contact when after is declared. During bounded recovery, up observes an exited declaration as recovery_pending or recovery_exhausted without sending a start request or waiting for an automatic successor; these outcomes make up exit 3 because the declaration is not running. Use targeted start NAME or restart NAME to cancel recovery and launch immediately. One invocation does not follow an automatic prerequisite successor; rerun hum up after recovery. A declared restart: on-failure session retries unexpected crashes with bounded 1s/2s/4s/8s/16s backoff; automatic attempts retain their effective launch spec. Human-only up without --json or --no-wait writes bounded startup progress to stderr in transition-completion order, with at most two lines per declaration; final summaries stay on stdout, and timeout or early-exit lines point to hum logs NAME without streaming child output.",
+			Description: "Up resolves every hum.yaml declaration in lexical order, launches independent roots concurrently, and gates each after dependency on all direct prerequisites observed as ready. It waits per process from that process's launch or running observation, continues after launch failures, continues after failures, and reports skipped direct blockers plus any retained existing process state without mutating it; --no-wait is rejected before daemon contact when after is declared. A running or recovery-capable declaration whose argv, canonical cwd, readiness matcher, tty mode, or normalized restart policy differs returns definition_drift with sorted changed_fields and hum restart NAME guidance; CLI exits 1 for drift (`exit 1`). Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are also reported lexically as removed_definition with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate exit status and exclude ad-hoc or conventionally discovered records; removed records require an explicit stop or remove. During bounded recovery, up observes an exited declaration as recovery_pending or recovery_exhausted without sending a start request or waiting for an automatic successor; these outcomes make up exit 3 because the declaration is not running. Use targeted start NAME or restart NAME to cancel recovery and launch immediately. One invocation does not follow an automatic prerequisite successor; rerun hum up after recovery. A declared restart: on-failure session retries unexpected crashes with bounded 1s/2s/4s/8s/16s backoff; automatic attempts retain their effective launch spec. Human-only up without --json or --no-wait writes bounded startup progress to stderr in transition-completion order, with at most two lines per declaration; final summaries stay on stdout, and timeout or early-exit lines point to hum logs NAME without streaming child output.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after processes are spawned"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
@@ -1710,7 +1710,7 @@ func loadManifestForCommand() (manifestState, error) {
 	if err != nil {
 		return manifestState{}, fmt.Errorf("current directory: %w", err)
 	}
-	return loadManifest(cwd)
+	return loadManifestOrEmpty(cwd)
 }
 
 func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery bool) error {
@@ -1729,20 +1729,30 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	if err != nil {
 		return err
 	}
-	if ordered && len(manifest.defs) == 0 {
-		if cmd.Bool("json") {
-			return nil
-		}
-		_, err = fmt.Fprintln(writer, "No processes are declared in hum.yaml.")
-		return err
-	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
 	}
-	client, err := runDaemonClient(ctx, cfg)
-	if err != nil {
-		return err
+	var client *daemon.Client
+	if ordered && len(manifest.defs) == 0 {
+		// An empty manifest must remain inert when no daemon exists, but an
+		// existing daemon may still retain removed manifest sessions to report.
+		client, err = daemonClient(ctx, cfg)
+		if err != nil {
+			if daemonUnavailable(err) {
+				if cmd.Bool("json") {
+					return nil
+				}
+				_, printErr := fmt.Fprintln(writer, "No processes are declared in hum.yaml.")
+				return printErr
+			}
+			return err
+		}
+	} else {
+		client, err = runDaemonClient(ctx, cfg)
+		if err != nil {
+			return err
+		}
 	}
 	defer client.Close()
 	cwd, err := os.Getwd()
@@ -1757,10 +1767,20 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	}
 	if ordered {
 		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, env, timeoutOverride, preserveRecovery, progress)
+		if err == nil {
+			var removed []manifestLaunchResult
+			removed, err = removedManifestResults(ctx, client, manifest)
+			results = append(results, removed...)
+			sort.SliceStable(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+		}
 	} else {
 		results, err = manifestStartConcurrent(ctx, cmd, client, cwd, manifest, names, env, timeoutOverride)
 	}
 	if err != nil {
+		return err
+	}
+	if ordered && len(results) == 0 && len(manifest.defs) == 0 && !cmd.Bool("json") {
+		_, err = fmt.Fprintln(writer, "No processes are declared in hum.yaml.")
 		return err
 	}
 	for _, result := range results {
@@ -1838,7 +1858,7 @@ func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client
 	var waits sync.WaitGroup
 	for index := range states {
 		state := states[index]
-		if cmd.Bool("no-wait") || state.result.Outcome == "error" {
+		if cmd.Bool("no-wait") || (state.result.Outcome != "started" && state.result.Outcome != "already_running") {
 			continue
 		}
 		if state.process.State != app.StateRunning {
@@ -2018,7 +2038,7 @@ func manifestUpScheduleWithOps(ctx context.Context, cmd *urfavecli.Command, mani
 			if progress != nil {
 				progress.writeInitial(definition, result)
 			}
-			if result.Outcome != "error" && !cmd.Bool("no-wait") && definition.Ready != nil && process.State == app.StateRunning {
+			if (result.Outcome == "started" || result.Outcome == "already_running") && !cmd.Bool("no-wait") && definition.Ready != nil && process.State == app.StateRunning {
 				timeout, timeoutErr := manifestTimeoutForResult(cmd, definition, timeoutOverride)
 				if timeoutErr != nil {
 					result = manifestLaunchError(definition, timeoutErr)

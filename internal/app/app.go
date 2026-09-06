@@ -67,7 +67,9 @@ type ReadinessConfig struct {
 }
 
 // Readiness is the response-safe readiness state of a running resolved
-// process. Cursor is the first matching output cursor for this incarnation.
+// process or a terminal record that can still relaunch. Cursor is the first
+// matching output cursor for this incarnation; Match remains available on
+// terminal recovery records for definition reconciliation.
 type Readiness struct {
 	State  string
 	Cursor *output.Cursor
@@ -2942,6 +2944,12 @@ func (r *record) snapshotLocked() Process {
 				}
 			}
 		}
+	}
+	// Keep the effective readiness matcher on terminal records that can still
+	// relaunch. It is needed to reconcile the retained launch specification
+	// without exposing the launch environment.
+	if r.terminal && (r.relaunchPending || r.relaunchExhausted) && r.readyConfig != nil {
+		model.Readiness = &Readiness{State: ReadinessStarting, Match: r.readyConfig.Match}
 	}
 	if r.terminal {
 		result := r.result

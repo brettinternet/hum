@@ -62,7 +62,11 @@ func manifestCLIExitCode(err error) int {
 
 func manifestCLIRecoveryStubDaemon(t *testing.T, processes map[string]protocol.Process) (string, <-chan protocol.Operation, <-chan struct{}) {
 	t.Helper()
-	runtimeDir := t.TempDir()
+	runtimeDir, err := os.MkdirTemp("/tmp", "h-")
+	if err != nil {
+		t.Fatalf("create recovery runtime directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
 	listener, err := net.Listen("unix", daemon.NewRuntimePaths(runtimeDir).Socket)
 	if err != nil {
 		t.Fatalf("listen for recovery stub daemon: %v", err)
@@ -126,6 +130,14 @@ func manifestCLIRecoveryStubDaemon(t *testing.T, processes map[string]protocol.P
 				}
 			case protocol.OpWait:
 				if encodeErr := encoder.EncodeResponse(protocol.NewWaitResponse(protocol.WaitExited, 0, nil)); encodeErr != nil {
+					return
+				}
+			case protocol.OpList:
+				listed := make([]protocol.Process, 0, len(processes))
+				for _, process := range processes {
+					listed = append(listed, process)
+				}
+				if encodeErr := encoder.EncodeResponse(protocol.NewListResponse(listed)); encodeErr != nil {
 					return
 				}
 			case protocol.OpStart:
@@ -254,6 +266,60 @@ func TestUpEmptyManifestValidatesInput(t *testing.T) {
 	}
 }
 
+func TestManifestLaunchResultPreservesEmptyReadinessMatcher(t *testing.T) {
+	definition := project.Definition{Name: "worker", Source: "manifest", Cwd: "/project", Argv: []string{"worker"}, Ready: &project.ReadyDefinition{Match: ""}}
+	process := app.Process{
+		Name: "worker", Source: "manifest", Root: "/project", Cwd: "/project", Argv: []string{"worker"},
+		State: app.StateExited, Readiness: &app.Readiness{State: app.ReadinessStarting, Match: ""},
+	}
+	result := manifestLaunchResultFor(definition, process, "recovery_pending")
+	if !result.ReadinessConfigured || result.ReadinessMatch != "" {
+		t.Fatalf("empty readiness matcher result = %#v, want configured empty matcher", result)
+	}
+	encoded, err := json.Marshal(manifestResultJSON(result))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"readiness_match":""`)) {
+		t.Fatalf("empty readiness matcher JSON = %s, want explicit empty readiness_match", encoded)
+	}
+}
+
+func TestUpPreservesEmptyReadinessMatcherInNDJSON(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
+	nextCursor := protocol.Cursor(1)
+	processes := map[string]protocol.Process{
+		"worker": {
+			Name: "worker", Source: "manifest", Root: root, Cwd: root, Argv: []string{"worker"},
+			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting},
+			NextCursor: &nextCursor, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
+		},
+	}
+	runtimeDir, _, done := manifestCLIRecoveryStubDaemon(t, processes)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  worker:
+    argv: [worker]
+    ready: {match: ""}
+    restart: on-failure
+`)
+
+	stdout, stderr, err := stopShutdownRun(t, "up", "--json")
+	if manifestCLIExitCode(err) != 3 || stderr != "" {
+		t.Fatalf("empty readiness recovery up: code %d err=%v stdout=%q stderr=%q", manifestCLIExitCode(err), err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `"readiness_match":""`) {
+		t.Fatalf("empty readiness recovery NDJSON = %q, want explicit empty readiness_match", stdout)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("recovery stub daemon did not observe CLI connection close")
+	}
+}
+
 func TestUpPreservesCrashRecovery(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
@@ -262,11 +328,11 @@ func TestUpPreservesCrashRecovery(t *testing.T) {
 	processes := map[string]protocol.Process{
 		"pending": {
 			Name: "pending", Source: "manifest", Root: root, Cwd: root, Argv: []string{"pending"},
-			State: "exited", LaunchCursor: 11, NextCursor: &pendingNextCursor, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
+			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}, LaunchCursor: 11, NextCursor: &pendingNextCursor, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
 		},
 		"exhausted": {
 			Name: "exhausted", Source: "manifest", Root: root, Cwd: root, Argv: []string{"exhausted"},
-			State: "exited", LaunchCursor: 19, NextCursor: &exhaustedNextCursor, Restart: protocol.RestartOnFailure, Relaunches: 5,
+			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}, LaunchCursor: 19, NextCursor: &exhaustedNextCursor, Restart: protocol.RestartOnFailure, Relaunches: 5,
 		},
 	}
 	runtimeDir, operations, done := manifestCLIRecoveryStubDaemon(t, processes)
@@ -299,7 +365,7 @@ processes:
 		t.Fatalf("up order = %#v, want lexical order", results)
 	}
 	for _, result := range results {
-		if result.Source != "manifest" || result.State != "exited" || result.Restart != protocol.RestartOnFailure || result.Readiness != "" {
+		if result.Source != "manifest" || result.State != "exited" || result.Restart != protocol.RestartOnFailure || result.Readiness != "" || result.ReadinessMatch != "ready" {
 			t.Fatalf("recovery result = %#v, want exited manifest on-failure without readiness", result)
 		}
 		if result.LaunchCursor == nil {
@@ -329,8 +395,8 @@ processes:
 		case operation := <-operations:
 			got = append(got, operation)
 		default:
-			if len(got) != 2 || got[0] != protocol.OpGet || got[1] != protocol.OpGet {
-				t.Fatalf("CLI up daemon operations = %v, want two get requests only", got)
+			if len(got) != 3 || got[0] != protocol.OpGet || got[1] != protocol.OpGet || got[2] != protocol.OpList {
+				t.Fatalf("CLI up daemon operations = %v, want two get requests and one list", got)
 			}
 			return
 		}
@@ -1432,6 +1498,226 @@ processes:
 	}
 }
 
+func TestUpReportsManifestRuntimeDrift(t *testing.T) {
+	cases := []struct {
+		name      string
+		edit      string
+		wantField string
+	}{
+		{name: "argv", edit: `version: 1
+processes:
+  web:
+    argv: [/bin/sh, -c, "sleep 31"]
+    cwd: .
+    restart: never
+`, wantField: "argv"},
+		{name: "cwd", edit: `version: 1
+processes:
+  web:
+    argv: [/bin/sh, -c, "sleep 30"]
+    cwd: sub
+    restart: never
+`, wantField: "cwd"},
+		{name: "readiness", edit: `version: 1
+processes:
+  web:
+    argv: [/bin/sh, -c, "sleep 30"]
+    cwd: .
+    ready: {match: ready}
+    restart: never
+`, wantField: "readiness_match"},
+		{name: "tty", edit: `version: 1
+processes:
+  web:
+    argv: [/bin/sh, -c, "sleep 30"]
+    cwd: .
+    tty: true
+    restart: never
+`, wantField: "tty"},
+		{name: "restart", edit: `version: 1
+processes:
+  web:
+    argv: [/bin/sh, -c, "sleep 30"]
+    cwd: .
+    restart: on-failure
+`, wantField: "restart"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			root := stopShutdownTestProject(t)
+			_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+			t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+			if test.name == "cwd" {
+				if err := os.Mkdir(filepath.Join(root, "sub"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeManifestCLITestFile(t, root, `version: 1
+processes:
+  web:
+    argv: [/bin/sh, -c, "sleep 30"]
+    cwd: .
+    restart: never
+`)
+			if stdout, stderr, err := stopShutdownRun(t, "start", "--json", "--no-wait", "web"); err != nil {
+				t.Fatalf("initial start: %v stdout=%q stderr=%q", err, stdout, stderr)
+			}
+			stdout, stderr, err := stopShutdownRun(t, "up", "--json", "--no-wait")
+			if err != nil || stderr != "" {
+				t.Fatalf("matching up: %v stdout=%q stderr=%q", err, stdout, stderr)
+			}
+			matching := manifestCLILaunchResults(t, stdout)
+			if len(matching) != 1 || matching[0].Outcome != "already_running" {
+				t.Fatalf("matching up result = %#v", matching)
+			}
+			pid := matching[0].PID
+			writeManifestCLITestFile(t, root, test.edit)
+			for _, command := range []string{"up", "start"} {
+				args := []string{command, "--json", "--no-wait"}
+				if command == "start" {
+					args = append(args, "web")
+				}
+				stdout, stderr, err = stopShutdownRun(t, args...)
+				if err == nil || manifestCLIExitCode(err) != 1 || stderr != "" {
+					t.Fatalf("%s drift: code %d err=%v stdout=%q stderr=%q", command, manifestCLIExitCode(err), err, stdout, stderr)
+				}
+				results := manifestCLILaunchResults(t, stdout)
+				if len(results) != 1 || results[0].Outcome != "definition_drift" || !reflect.DeepEqual(results[0].ChangedFields, []string{test.wantField}) || results[0].Guidance != "hum restart web" {
+					t.Fatalf("%s drift result = %#v", command, results)
+				}
+				if pid != nil && (results[0].PID == nil || *results[0].PID != *pid) {
+					t.Fatalf("%s changed process PID: before=%v after=%v", command, *pid, results[0].PID)
+				}
+			}
+			if stdout, stderr, err := stopShutdownRun(t, "stop", "web"); err != nil || stderr != "" {
+				t.Fatalf("cleanup stop: %v stdout=%q stderr=%q", err, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestUpRejectsDriftedReadinessGate(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  db:
+    argv: [/bin/sh, -c, "sleep 30"]
+    ready: {match: old}
+  api:
+    argv: [/bin/sh, -c, "touch api-launched; sleep 30"]
+    ready: {match: api-ready}
+    after: [db]
+`)
+	if stdout, stderr, err := stopShutdownRun(t, "start", "--json", "--no-wait", "db"); err != nil {
+		t.Fatalf("initial db start: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  db:
+    argv: [/bin/sh, -c, "sleep 30"]
+    ready: {match: new}
+  api:
+    argv: [/bin/sh, -c, "touch api-launched; sleep 30"]
+    ready: {match: api-ready}
+    after: [db]
+`)
+	stdout, stderr, err := stopShutdownRun(t, "up", "--json")
+	if err == nil || manifestCLIExitCode(err) != 1 || stderr != "" {
+		t.Fatalf("drifted gate up: code %d err=%v stdout=%q stderr=%q", manifestCLIExitCode(err), err, stdout, stderr)
+	}
+	results := manifestCLILaunchResults(t, stdout)
+	if len(results) != 2 || results[0].Name != "api" || results[0].Outcome != "skipped" || !reflect.DeepEqual(results[0].BlockedBy, []string{"db"}) || results[1].Name != "db" || results[1].Outcome != "definition_drift" {
+		t.Fatalf("drifted gate results = %#v", results)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "api-launched")); !os.IsNotExist(statErr) {
+		t.Fatalf("drifted gate launched dependent: %v", statErr)
+	}
+	if stdout, stderr, stopErr := stopShutdownRun(t, "stop", "db"); stopErr != nil || stderr != "" {
+		t.Fatalf("cleanup stop: %v stdout=%q stderr=%q", stopErr, stdout, stderr)
+	}
+}
+
+func TestUpReportsRemovedManifestSessions(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
+	otherRoot := filepath.Join(root, "other")
+	if err := os.Mkdir(otherRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	currentNextCursor := protocol.Cursor(10)
+	processes := map[string]protocol.Process{
+		"current":    {Name: "current", Source: "manifest", Root: root, Cwd: root, Argv: []string{"current"}, State: "running", PID: 10, LaunchCursor: 1, NextCursor: &currentNextCursor},
+		"running":    {Name: "running", Source: "manifest", Root: root, Cwd: root, Argv: []string{"running"}, State: "running", PID: 11, LaunchCursor: 2},
+		"pending":    {Name: "pending", Source: "manifest", Root: root, Cwd: root, Argv: []string{"pending"}, State: "exited", LaunchCursor: 3, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next},
+		"exhausted":  {Name: "exhausted", Source: "manifest", Root: root, Cwd: root, Argv: []string{"exhausted"}, State: "exited", LaunchCursor: 4, Restart: protocol.RestartOnFailure, Relaunches: 5},
+		"stopped":    {Name: "stopped", Source: "manifest", Root: root, Cwd: root, Argv: []string{"stopped"}, State: "exited", LaunchCursor: 5},
+		"ad_hoc":     {Name: "ad_hoc", Source: "ad_hoc", Root: root, Cwd: root, Argv: []string{"ad_hoc"}, State: "running", PID: 12, LaunchCursor: 6},
+		"discovered": {Name: "discovered", Source: "package_json", Root: root, Cwd: root, Argv: []string{"discovered"}, State: "running", PID: 13, LaunchCursor: 7},
+		"other":      {Name: "other", Source: "manifest", Root: otherRoot, Cwd: otherRoot, Argv: []string{"other"}, State: "running", PID: 14, LaunchCursor: 8},
+	}
+	runtimeDir, _, done := manifestCLIRecoveryStubDaemon(t, processes)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  current:
+    argv: [current]
+`)
+	stdout, stderr, err := stopShutdownRun(t, "up", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("removed up: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	results := manifestCLILaunchResults(t, stdout)
+	if len(results) != 4 {
+		t.Fatalf("removed up results = %#v", results)
+	}
+	for index, name := range []string{"current", "exhausted", "pending", "running"} {
+		if results[index].Name != name {
+			t.Fatalf("removed up order = %#v", results)
+		}
+	}
+	if results[0].Outcome != "already_running" {
+		t.Fatalf("current result = %#v", results[0])
+	}
+	for _, result := range results[1:] {
+		if result.Outcome != "removed_definition" || !strings.Contains(result.Guidance, "hum stop "+result.Name) || !strings.Contains(result.Guidance, "hum remove "+result.Name) {
+			t.Fatalf("removed result = %#v", result)
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("removed stub daemon did not observe CLI connection close")
+	}
+}
+
+func TestUpReportsRemovedManifestSessionsWithoutManifest(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	processes := map[string]protocol.Process{
+		"removed": {
+			Name: "removed", Source: "manifest", Root: root, Cwd: root, Argv: []string{"removed"},
+			State: "running", PID: 11, LaunchCursor: 2,
+		},
+	}
+	runtimeDir, _, done := manifestCLIRecoveryStubDaemon(t, processes)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+
+	stdout, stderr, err := stopShutdownRun(t, "up", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("removed up without manifest: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	results := manifestCLILaunchResults(t, stdout)
+	if len(results) != 1 || results[0].Name != "removed" || results[0].Outcome != "removed_definition" || !strings.Contains(results[0].Guidance, "hum stop removed") || !strings.Contains(results[0].Guidance, "hum remove removed") {
+		t.Fatalf("removed up without manifest results = %#v", results)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("removed stub daemon did not observe CLI connection close")
+	}
+}
+
 func TestManifestStartRetainsRecordedReadinessAfterManifestEdit(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1480,20 +1766,52 @@ processes:
 
 			writeManifestCLITestFile(t, root, test.edited)
 			stdout, stderr, err = stopShutdownRun(t, "start", "--json", "--timeout", "1s", "web")
-			if err != nil {
-				t.Fatalf("start after manifest edit: %v (stderr: %s)", err, stderr)
+			if err == nil || manifestCLIExitCode(err) != 1 {
+				t.Fatalf("start after manifest edit: code %d err=%v stderr=%q, want definition drift", manifestCLIExitCode(err), err, stderr)
 			}
 			results := manifestCLILaunchResults(t, stdout)
 			if len(results) != 1 {
 				t.Fatalf("start after manifest edit returned %d results: %s", len(results), stdout)
 			}
-			if results[0].Outcome != "already_running" || results[0].Readiness != app.ReadinessReady {
-				t.Fatalf("start after %s result = %+v, want already_running/ready", test.name, results[0])
+			if results[0].Outcome != "definition_drift" || !reflect.DeepEqual(results[0].ChangedFields, []string{"readiness_match"}) {
+				t.Fatalf("start after %s result = %+v, want definition_drift/readiness_match", test.name, results[0])
+			}
+			if results[0].Guidance != "hum restart web" || results[0].ReadinessMatch != "old" {
+				t.Fatalf("start after %s guidance/readiness = %+v", test.name, results[0])
 			}
 			if results[0].Source != "manifest" || !reflect.DeepEqual(results[0].Argv, []string{"/bin/sh", "-c", "echo new; sleep 0.3; echo old; sleep 30"}) {
 				t.Fatalf("start after %s identity = %+v", test.name, results[0])
 			}
 		})
+	}
+}
+
+func TestUpDriftDocs(t *testing.T) {
+	paths := []string{"../../README.md", "../../docs/design.md", "../../docs/coding-agents.md", "../skill/SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := strings.ToLower(string(contents))
+		for _, phrase := range []string{"definition_drift", "removed_definition", "changed_fields", "hum restart", "hum stop", "hum remove", "argv", "readiness matcher", "restart policy"} {
+			if !strings.Contains(text, phrase) {
+				t.Errorf("%s missing drift guidance %q", path, phrase)
+			}
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if err := NewRootCommand("test", "test", &stdout, &stderr).Run(context.Background(), []string{"hum", "up", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	help := strings.ToLower(stdout.String())
+	for _, phrase := range []string{"definition_drift", "removed_definition", "changed_fields", "hum restart", "hum stop", "hum remove", "exit 1"} {
+		if !strings.Contains(help, phrase) {
+			t.Errorf("CLI up help missing drift guidance %q", phrase)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("CLI up help stderr = %q", stderr.String())
 	}
 }
 

@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+func TestUpDriftDocs(t *testing.T) {
+	paths := []string{"../../README.md", "../../docs/design.md", "../../docs/coding-agents.md", "SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := strings.ToLower(string(contents))
+		for _, phrase := range []string{"definition_drift", "removed_definition", "changed_fields", "restart", "stop", "remove", "argv", "readiness matcher", "restart policy"} {
+			if !strings.Contains(text, phrase) {
+				t.Errorf("%s missing drift guidance %q", path, phrase)
+			}
+		}
+	}
+	if Content() != string(mustReadSkillDocs(t, "SKILL.md")) {
+		t.Fatal("embedded skill differs from source skill")
+	}
+}
+
 func TestAfterDocs(t *testing.T) {
 	paths := []string{"../../README.md", "../../docs/design.md", "../../docs/coding-agents.md", "SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
 	var all strings.Builder

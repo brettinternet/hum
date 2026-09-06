@@ -295,10 +295,12 @@ func TestUpPreservesCrashRecovery(t *testing.T) {
 	client := &fakeClient{processes: map[string]protocol.Process{
 		"pending": {
 			Name: "pending", Source: "manifest", State: "exited", Argv: []string{"pending"},
+			Readiness:    &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"},
 			LaunchCursor: 11, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
 		},
 		"exhausted": {
 			Name: "exhausted", Source: "manifest", State: "exited", Argv: []string{"exhausted"},
+			Readiness:    &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"},
 			LaunchCursor: 19, Restart: protocol.RestartOnFailure, Relaunches: 5,
 		},
 	}}
@@ -330,8 +332,8 @@ func TestUpPreservesCrashRecovery(t *testing.T) {
 				t.Fatalf("up attempt %d result %q omitted process", attempt+1, result.Name)
 			}
 			process := result.Process
-			if process.State != "exited" || process.Source != "manifest" || process.Restart != protocol.RestartOnFailure || process.Readiness != nil {
-				t.Fatalf("up attempt %d process %q = %#v, want exited manifest on-failure without readiness", attempt+1, result.Name, process)
+			if process.State != "exited" || process.Source != "manifest" || process.Restart != protocol.RestartOnFailure || process.Readiness == nil || process.Readiness.Match != "ready" {
+				t.Fatalf("up attempt %d process %q = %#v, want exited manifest on-failure with retained readiness matcher", attempt+1, result.Name, process)
 			}
 			if result.Name == "exhausted" {
 				if result.Outcome != "recovery_exhausted" || process.Relaunches != 5 || process.NextLaunchAt != nil || process.LaunchCursor != 19 {
@@ -352,6 +354,161 @@ func TestUpPreservesCrashRecovery(t *testing.T) {
 	}
 	if len(client.waits) != 0 {
 		t.Fatalf("up waited on exited recovery: %#v", client.waits)
+	}
+}
+
+func TestUpReportsManifestRuntimeDrift(t *testing.T) {
+	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
+	baseProcesses := map[string]protocol.Process{
+		"running":   {Name: "running", Source: "manifest", State: "running", Argv: []string{"running"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}},
+		"pending":   {Name: "pending", Source: "manifest", State: "exited", Argv: []string{"pending"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next},
+		"exhausted": {Name: "exhausted", Source: "manifest", State: "exited", Argv: []string{"exhausted"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}, Restart: protocol.RestartOnFailure, Relaunches: 5},
+	}
+	definitions := []Definition{
+		{Name: "exhausted", Source: "manifest", Cwd: ".", Argv: []string{"exhausted"}, Ready: &protocol.ReadinessConfig{Match: "old"}, Restart: protocol.RestartOnFailure},
+		{Name: "pending", Source: "manifest", Cwd: ".", Argv: []string{"pending"}, Ready: &protocol.ReadinessConfig{Match: "old"}, Restart: protocol.RestartOnFailure},
+		{Name: "running", Source: "manifest", Cwd: ".", Argv: []string{"running"}, Ready: &protocol.ReadinessConfig{Match: "old"}},
+	}
+	client := &fakeClient{processes: baseProcesses}
+	server, root, _ := newTestServer(t, definitions, client)
+	for name, process := range client.processes {
+		process.Root, process.Cwd = root, root
+		client.processes[name] = process
+	}
+	value, err := server.callTool(context.Background(), "up", args(root, "no_wait", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	matching := value.([]launchResult)
+	if len(matching) != 3 || matching[0].Outcome != "recovery_exhausted" || matching[1].Outcome != "recovery_pending" || matching[2].Outcome != "already_running" {
+		t.Fatalf("matching MCP up = %#v", matching)
+	}
+
+	for _, name := range []string{"running", "pending", "exhausted"} {
+		changed := append([]Definition(nil), definitions...)
+		for index := range changed {
+			if changed[index].Name == name {
+				changed[index].Ready = &protocol.ReadinessConfig{Match: "new"}
+			}
+		}
+		changedClient := &fakeClient{processes: make(map[string]protocol.Process, len(baseProcesses))}
+		for processName, process := range baseProcesses {
+			process.Root, process.Cwd = root, root
+			changedClient.processes[processName] = process
+		}
+		changedServer, changedRoot, _ := newTestServer(t, changed, changedClient)
+		for processName, process := range changedClient.processes {
+			process.Root, process.Cwd = changedRoot, changedRoot
+			changedClient.processes[processName] = process
+		}
+		changedValue, changedErr := changedServer.callTool(context.Background(), "up", args(changedRoot, "no_wait", true))
+		if changedErr != nil {
+			t.Fatalf("%s changed up: %v", name, changedErr)
+		}
+		changedResults := changedValue.([]launchResult)
+		for _, result := range changedResults {
+			if result.Name == name {
+				if result.Outcome != "definition_drift" || !reflect.DeepEqual(result.ChangedFields, []string{"readiness_match"}) || result.Guidance != "hum restart "+name || result.Process == nil || result.Process.Readiness == nil || result.Process.Readiness.Match != "old" {
+					t.Fatalf("%s changed result = %#v", name, result)
+				}
+			}
+		}
+		startValue, startErr := changedServer.callTool(context.Background(), "start", args(changedRoot, "name", name, "no_wait", true))
+		if startErr != nil {
+			t.Fatalf("%s changed start: %v", name, startErr)
+		}
+		startResult := startValue.(launchResult)
+		if startResult.Outcome != "definition_drift" || !reflect.DeepEqual(startResult.ChangedFields, []string{"readiness_match"}) || len(changedClient.starts) != 0 {
+			t.Fatalf("%s changed start result = %#v starts=%#v", name, startResult, changedClient.starts)
+		}
+	}
+}
+
+func TestUpRejectsDriftedReadinessGate(t *testing.T) {
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"db": {Name: "db", Source: "manifest", State: "running", Argv: []string{"db"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}},
+	}}
+	definitions := []Definition{
+		{Name: "api", Source: "manifest", Cwd: ".", Argv: []string{"api"}, Ready: &protocol.ReadinessConfig{Match: "api-ready"}, After: []string{"db"}},
+		{Name: "db", Source: "manifest", Cwd: ".", Argv: []string{"db"}, Ready: &protocol.ReadinessConfig{Match: "new"}},
+	}
+	server, root, _ := newTestServer(t, definitions, client)
+	process := client.processes["db"]
+	process.Root, process.Cwd = root, root
+	client.processes["db"] = process
+	value, err := server.callTool(context.Background(), "up", args(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := value.([]launchResult)
+	if len(results) != 2 || results[0].Name != "api" || results[0].Outcome != "skipped" || !reflect.DeepEqual(results[0].BlockedBy, []string{"db"}) || results[1].Name != "db" || results[1].Outcome != "definition_drift" {
+		t.Fatalf("drifted MCP gate results = %#v", results)
+	}
+	if len(client.starts) != 0 {
+		t.Fatalf("drifted MCP gate starts = %#v", client.starts)
+	}
+}
+
+func TestUpReportsRemovedManifestSessions(t *testing.T) {
+	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"current":    {Name: "current", Source: "manifest", State: "running", Argv: []string{"current"}},
+		"running":    {Name: "running", Source: "manifest", State: "running", Argv: []string{"running"}},
+		"pending":    {Name: "pending", Source: "manifest", State: "exited", Argv: []string{"pending"}, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next},
+		"exhausted":  {Name: "exhausted", Source: "manifest", State: "exited", Argv: []string{"exhausted"}, Restart: protocol.RestartOnFailure, Relaunches: 5},
+		"stopped":    {Name: "stopped", Source: "manifest", State: "exited", Argv: []string{"stopped"}},
+		"ad_hoc":     {Name: "ad_hoc", Source: "ad_hoc", State: "running", Argv: []string{"ad_hoc"}},
+		"discovered": {Name: "discovered", Source: "package_json", State: "running", Argv: []string{"discovered"}},
+	}}
+	definitions := []Definition{{Name: "current", Source: "manifest", Cwd: ".", Argv: []string{"current"}}}
+	server, root, _ := newTestServer(t, definitions, client)
+	for name, process := range client.processes {
+		process.Root, process.Cwd = root, root
+		client.processes[name] = process
+	}
+	value, err := server.callTool(context.Background(), "up", args(root, "no_wait", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := value.([]launchResult)
+	if len(results) != 4 {
+		t.Fatalf("removed MCP results = %#v", results)
+	}
+	for index, name := range []string{"current", "exhausted", "pending", "running"} {
+		if results[index].Name != name {
+			t.Fatalf("removed MCP order = %#v", results)
+		}
+	}
+	if results[0].Outcome != "already_running" {
+		t.Fatalf("current MCP result = %#v", results[0])
+	}
+	for _, result := range results[1:] {
+		if result.Outcome != "removed_definition" || !strings.Contains(result.Guidance, "hum stop "+result.Name) || !strings.Contains(result.Guidance, "hum remove "+result.Name) || result.Process == nil {
+			t.Fatalf("removed MCP result = %#v", result)
+		}
+	}
+}
+
+func TestUpReportsRemovedManifestSessionsWithoutDefinitions(t *testing.T) {
+	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"removed": {
+			Name: "removed", Source: "manifest", State: "exited", Argv: []string{"removed"},
+			Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
+		},
+	}}
+	server, root, _ := newTestServer(t, nil, client)
+	process := client.processes["removed"]
+	process.Root, process.Cwd = root, root
+	client.processes["removed"] = process
+
+	value, err := server.callTool(context.Background(), "up", args(root, "no_wait", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := value.([]launchResult)
+	if len(results) != 1 || results[0].Name != "removed" || results[0].Outcome != "removed_definition" || results[0].Process == nil || !strings.Contains(results[0].Guidance, "hum stop removed") || !strings.Contains(results[0].Guidance, "hum remove removed") {
+		t.Fatalf("removed MCP up without definitions = %#v", results)
 	}
 }
 
@@ -1010,7 +1167,12 @@ func TestTTYMCP(t *testing.T) {
 	runningWithoutTTY := client.processes["dev"]
 	runningWithoutTTY.TTY = false
 	client.processes["dev"] = runningWithoutTTY
-	if _, err := server.callTool(context.Background(), "start", args(root, "name", "dev", "no_wait", true)); mapError(err).Code != string(protocol.ErrorInputNotTTY) || !strings.Contains(err.Error(), "stop it and rerun") {
-		t.Fatalf("running non-tty upgrade error = %v", err)
+	value, err := server.callTool(context.Background(), "start", args(root, "name", "dev", "no_wait", true))
+	if err != nil {
+		t.Fatalf("running non-tty drift error = %v", err)
+	}
+	drift, ok := value.(launchResult)
+	if !ok || drift.Outcome != "definition_drift" || !reflect.DeepEqual(drift.ChangedFields, []string{"tty"}) || !strings.Contains(drift.Guidance, "hum restart dev") {
+		t.Fatalf("running non-tty drift result = %#v", value)
 	}
 }

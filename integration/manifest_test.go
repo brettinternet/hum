@@ -36,16 +36,20 @@ type manifestTestDefinition struct {
 // and up use one JSON object per declared name, while optional process identity
 // fields are useful when present but are not part of every outcome.
 type manifestLaunchResult struct {
-	Name         string          `json:"name"`
-	Outcome      string          `json:"outcome"`
-	Source       string          `json:"source"`
-	Argv         []string        `json:"argv"`
-	PID          *int            `json:"pid,omitempty"`
-	LaunchCursor *uint64         `json:"launch_cursor,omitempty"`
-	Readiness    string          `json:"readiness,omitempty"`
-	ReadyCursor  *uint64         `json:"ready_cursor,omitempty"`
-	BlockedBy    []string        `json:"blocked_by,omitempty"`
-	Error        json.RawMessage `json:"error,omitempty"`
+	Name           string          `json:"name"`
+	Outcome        string          `json:"outcome"`
+	Source         string          `json:"source"`
+	Argv           []string        `json:"argv"`
+	State          string          `json:"state,omitempty"`
+	PID            *int            `json:"pid,omitempty"`
+	LaunchCursor   *uint64         `json:"launch_cursor,omitempty"`
+	Readiness      string          `json:"readiness,omitempty"`
+	ReadinessMatch string          `json:"readiness_match,omitempty"`
+	ReadyCursor    *uint64         `json:"ready_cursor,omitempty"`
+	BlockedBy      []string        `json:"blocked_by,omitempty"`
+	ChangedFields  []string        `json:"changed_fields,omitempty"`
+	Guidance       string          `json:"guidance,omitempty"`
+	Error          json.RawMessage `json:"error,omitempty"`
 }
 
 type manifestProcess struct {
@@ -62,6 +66,96 @@ type manifestProcess struct {
 
 type manifestListResponse struct {
 	Processes []manifestProcess `json:"processes"`
+}
+
+func TestUpReportsManifestRuntimeDrift(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := testutil.BuildHum(t)
+	projectRoot := t.TempDir()
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
+	marker := filepath.Join(projectRoot, "api-launched")
+	initial := `version: 1
+processes:
+  db:
+    argv: [/bin/sh, -c, "sleep 30"]
+    ready: {match: old}
+  api:
+    argv: [/bin/sh, -c, "touch api-launched; sleep 30"]
+    ready: {match: api-ready}
+    after: [db]
+`
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cleanup := func() {
+		_ = testutil.Run(t, hum, projectRoot, env, "stop", "db")
+		_ = testutil.Run(t, hum, projectRoot, env, "stop", "api")
+		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
+	}
+	t.Cleanup(cleanup)
+
+	started := testutil.Run(t, hum, projectRoot, env, "start", "--json", "--no-wait", "db")
+	if started.Code != 0 || started.Err != nil || started.Stderr != "" {
+		t.Fatalf("initial start = code %d err=%v stdout=%q stderr=%q", started.Code, started.Err, started.Stdout, started.Stderr)
+	}
+	initialResults := manifestDecodeLaunchResults(t, started.Stdout)
+	if len(initialResults) != 1 || initialResults[0].PID == nil {
+		t.Fatalf("initial start results = %#v", initialResults)
+	}
+	pid := *initialResults[0].PID
+	changed := strings.Replace(initial, "match: old", "match: new", 1)
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(changed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if stale.Code != 1 || stale.Err == nil || stale.Stderr != "" {
+		t.Fatalf("stale gate up = code %d err=%v stdout=%q stderr=%q", stale.Code, stale.Err, stale.Stdout, stale.Stderr)
+	}
+	staleResults := manifestDecodeLaunchResults(t, stale.Stdout)
+	if len(staleResults) != 2 || staleResults[0].Name != "api" || staleResults[0].Outcome != "skipped" || !reflect.DeepEqual(staleResults[0].BlockedBy, []string{"db"}) || staleResults[1].Name != "db" || staleResults[1].Outcome != "definition_drift" || !reflect.DeepEqual(staleResults[1].ChangedFields, []string{"readiness_match"}) || staleResults[1].Guidance != "hum restart db" {
+		t.Fatalf("stale gate results = %#v", staleResults)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("stale gate launched api: %v", err)
+	}
+	status := testutil.Run(t, hum, projectRoot, env, "status", "--json", "db")
+	if status.Code != 0 || status.Err != nil {
+		t.Fatalf("status after drift = code %d err=%v stdout=%q stderr=%q", status.Code, status.Err, status.Stdout, status.Stderr)
+	}
+	var unchanged manifestProcess
+	if err := json.Unmarshal([]byte(status.Stdout), &unchanged); err != nil {
+		t.Fatalf("decode status after drift: %v", err)
+	}
+	if unchanged.PID != pid || !reflect.DeepEqual(unchanged.Argv, []string{"/bin/sh", "-c", "sleep 30"}) || unchanged.State != "running" {
+		t.Fatalf("process mutated by drift: before pid=%d after=%#v", pid, unchanged)
+	}
+
+	human := testutil.Run(t, hum, projectRoot, env, "up")
+	if human.Code != 1 || human.Err == nil || !strings.Contains(human.Stdout, "definition_drift db") || !strings.Contains(human.Stdout, "hum restart db") || !strings.Contains(human.Stdout, "skipped (blocked by db)") {
+		t.Fatalf("human drift up = code %d err=%v stdout=%q stderr=%q", human.Code, human.Err, human.Stdout, human.Stderr)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte("version: 1\nprocesses: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if removed.Code != 0 || removed.Err != nil || removed.Stderr != "" {
+		t.Fatalf("removed up = code %d err=%v stdout=%q stderr=%q", removed.Code, removed.Err, removed.Stdout, removed.Stderr)
+	}
+	removedResults := manifestDecodeLaunchResults(t, removed.Stdout)
+	if len(removedResults) != 1 || removedResults[0].Name != "db" || removedResults[0].Outcome != "removed_definition" || !strings.Contains(removedResults[0].Guidance, "hum stop db") || !strings.Contains(removedResults[0].Guidance, "hum remove db") {
+		t.Fatalf("removed results = %#v", removedResults)
+	}
+	status = testutil.Run(t, hum, projectRoot, env, "status", "--json", "db")
+	if status.Code != 0 || status.Err != nil {
+		t.Fatalf("status after removal warning = code %d err=%v stdout=%q stderr=%q", status.Code, status.Err, status.Stdout, status.Stderr)
+	}
+	if err := json.Unmarshal([]byte(status.Stdout), &unchanged); err != nil {
+		t.Fatalf("decode status after removal warning: %v", err)
+	}
+	if unchanged.PID != pid || unchanged.State != "running" {
+		t.Fatalf("process mutated by removal warning: before pid=%d after=%#v", pid, unchanged)
+	}
 }
 
 type manifestOutputEntry struct {

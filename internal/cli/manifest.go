@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -90,8 +93,16 @@ func effectiveAppRestart(policy app.RestartPolicy) app.RestartPolicy {
 	return policy
 }
 
+func isManifestSource(source string) bool {
+	return source == "manifest" || source == "hum.yaml" || strings.HasPrefix(source, "manifest:") || strings.HasPrefix(source, "hum.yaml:")
+}
+
+func sameManifestSource(left, right string) bool {
+	return left == right || isManifestSource(left) && isManifestSource(right)
+}
+
 func effectiveProcessRestart(process app.Process) app.RestartPolicy {
-	if process.Source != "manifest" && !strings.HasPrefix(process.Source, "manifest:") {
+	if !isManifestSource(process.Source) {
 		return app.RestartNever
 	}
 	return effectiveAppRestart(process.Restart)
@@ -140,21 +151,43 @@ func mergeManifestProcesses(manifest manifestState, running []app.Process) []app
 // Error is deliberately a string so every result remains easy to consume as
 // one NDJSON object without exposing daemon internals.
 type manifestLaunchResult struct {
-	Name          string     `json:"name"`
-	Outcome       string     `json:"outcome"`
-	Source        string     `json:"source"`
-	Argv          []string   `json:"argv"`
-	State         string     `json:"state,omitempty"`
-	PID           *int       `json:"pid,omitempty"`
-	LaunchCursor  *uint64    `json:"launch_cursor,omitempty"`
-	Readiness     string     `json:"readiness,omitempty"`
-	ReadyCursor   *uint64    `json:"ready_cursor,omitempty"`
-	BlockedBy     []string   `json:"blocked_by,omitempty"`
-	ExistingState string     `json:"existing_state,omitempty"`
-	Restart       string     `json:"restart"`
-	Relaunches    int        `json:"relaunches"`
-	NextLaunchAt  *time.Time `json:"next_launch_at,omitempty"`
-	Error         string     `json:"error,omitempty"`
+	Name                string     `json:"name"`
+	Outcome             string     `json:"outcome"`
+	Source              string     `json:"source"`
+	Argv                []string   `json:"argv"`
+	State               string     `json:"state,omitempty"`
+	PID                 *int       `json:"pid,omitempty"`
+	LaunchCursor        *uint64    `json:"launch_cursor,omitempty"`
+	Readiness           string     `json:"readiness,omitempty"`
+	ReadinessMatch      string     `json:"readiness_match,omitempty"`
+	ReadinessConfigured bool       `json:"-"`
+	ReadyCursor         *uint64    `json:"ready_cursor,omitempty"`
+	BlockedBy           []string   `json:"blocked_by,omitempty"`
+	ExistingState       string     `json:"existing_state,omitempty"`
+	ChangedFields       []string   `json:"changed_fields,omitempty"`
+	Guidance            string     `json:"guidance,omitempty"`
+	Restart             string     `json:"restart"`
+	Relaunches          int        `json:"relaunches"`
+	NextLaunchAt        *time.Time `json:"next_launch_at,omitempty"`
+	Error               string     `json:"error,omitempty"`
+}
+
+// MarshalJSON keeps a configured empty readiness matcher visible. The matcher
+// is omitted for processes without readiness, but an empty regular expression
+// is a valid configured value and must remain distinguishable from omission.
+func (result manifestLaunchResult) MarshalJSON() ([]byte, error) {
+	type plainManifestLaunchResult manifestLaunchResult
+	if !result.ReadinessConfigured || result.ReadinessMatch != "" {
+		return json.Marshal(plainManifestLaunchResult(result))
+	}
+	match := result.ReadinessMatch
+	return json.Marshal(struct {
+		plainManifestLaunchResult
+		ReadinessMatch *string `json:"readiness_match"`
+	}{
+		plainManifestLaunchResult: plainManifestLaunchResult(result),
+		ReadinessMatch:            &match,
+	})
 }
 
 func undefinedManifestDefinition(name string) project.Definition {
@@ -202,6 +235,10 @@ func manifestLaunchResultFor(definition project.Definition, process app.Process,
 	}
 	cursor := uint64(process.LaunchCursor)
 	result.LaunchCursor = &cursor
+	if process.Readiness != nil && process.Readiness.State != app.ReadinessRunningUnverified {
+		result.ReadinessMatch = process.Readiness.Match
+		result.ReadinessConfigured = true
+	}
 	if process.State != app.StateRunning {
 		return result
 	}
@@ -226,7 +263,99 @@ func manifestLaunchError(definition project.Definition, err error) manifestLaunc
 }
 
 func definitionMatchesProcess(definition project.Definition, process app.Process) bool {
-	return process.Source == definition.Source
+	return sameManifestSource(process.Source, definition.Source)
+}
+
+func canonicalManifestCwd(root, cwd string) string {
+	if cwd == "" {
+		cwd = root
+	}
+	if !filepath.IsAbs(cwd) {
+		cwd = filepath.Join(root, cwd)
+	}
+	absolute, err := filepath.Abs(cwd)
+	if err != nil {
+		absolute = filepath.Clean(cwd)
+	}
+	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(absolute)
+}
+
+func processReadinessMatch(process app.Process) (bool, string) {
+	if process.Readiness == nil || process.Readiness.State == app.ReadinessRunningUnverified {
+		return false, ""
+	}
+	return true, process.Readiness.Match
+}
+
+func manifestChangedFields(root string, definition project.Definition, process app.Process) []string {
+	changed := make([]string, 0, 5)
+	if !slices.Equal(definition.Argv, process.Argv) {
+		changed = append(changed, "argv")
+	}
+	if canonicalManifestCwd(root, definition.Cwd) != canonicalManifestCwd(root, process.Cwd) {
+		changed = append(changed, "cwd")
+	}
+	definitionReady, definitionMatch := false, ""
+	if definition.Ready != nil {
+		definitionReady, definitionMatch = true, definition.Ready.Match
+	}
+	processReady, processMatch := processReadinessMatch(process)
+	if definitionReady != processReady || definitionMatch != processMatch {
+		changed = append(changed, "readiness_match")
+	}
+	if definition.TTY != process.TTY {
+		changed = append(changed, "tty")
+	}
+	if restartPolicy(definition) != string(effectiveProcessRestart(process)) {
+		changed = append(changed, "restart")
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+func manifestDefinitionDriftResult(root string, definition project.Definition, process app.Process) manifestLaunchResult {
+	result := manifestLaunchResultFor(definition, process, "definition_drift")
+	result.ChangedFields = manifestChangedFields(root, definition, process)
+	result.Guidance = fmt.Sprintf("hum restart %s", definition.Name)
+	return result
+}
+
+func manifestProcessSupportsDrift(process app.Process) bool {
+	if process.State == app.StateRunning {
+		return true
+	}
+	return process.State == app.StateExited && (process.NextLaunchAt != nil || effectiveProcessRestart(process) == app.RestartOnFailure && process.Relaunches >= manifestAutomaticRelaunchLimit)
+}
+
+func manifestRemovedProcessEligible(process app.Process) bool {
+	return manifestProcessSupportsDrift(process)
+}
+
+func removedManifestResults(ctx context.Context, client *daemon.Client, manifest manifestState) ([]manifestLaunchResult, error) {
+	processes, err := client.List(ctx, daemon.ListRequest{Op: protocol.OpList, Cwd: manifest.root, IncludeCompleted: true})
+	if err != nil {
+		return nil, err
+	}
+	results := make([]manifestLaunchResult, 0)
+	for _, process := range processes {
+		if process.Name == "" || !isManifestSource(process.Source) || !manifestRemovedProcessEligible(process) {
+			continue
+		}
+		if _, ok := manifest.byName[process.Name]; ok {
+			continue
+		}
+		if process.Root != "" && canonicalManifestCwd(manifest.root, process.Root) != canonicalManifestCwd(manifest.root, manifest.root) {
+			continue
+		}
+		result := manifestLaunchResultFor(undefinedManifestDefinition(process.Name), process, "removed_definition")
+		result.Guidance = fmt.Sprintf("hum stop %s or hum remove %s", process.Name, process.Name)
+		results = append(results, result)
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+	return results, nil
 }
 
 func manifestTTYUpgradeError(definition project.Definition, process app.Process) error {
@@ -494,13 +623,21 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 	current, err := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd})
 	if err == nil {
 		if current.State == app.StateRunning {
-			if ttyErr := manifestTTYUpgradeError(definition, current); ttyErr != nil {
-				return manifestLaunchError(definition, ttyErr), current, false, nil
-			}
 			if !definitionMatchesProcess(definition, current) {
 				return manifestLaunchError(definition, fmt.Errorf("declared process %q is occupied by an ad-hoc launch", definition.Name)), current, false, nil
 			}
+			if changed := manifestChangedFields(root, definition, current); len(changed) != 0 {
+				return manifestDefinitionDriftResult(root, definition, current), current, true, nil
+			}
+			if ttyErr := manifestTTYUpgradeError(definition, current); ttyErr != nil {
+				return manifestLaunchError(definition, ttyErr), current, false, nil
+			}
 			return manifestLaunchResultFor(definition, current, "already_running"), current, true, nil
+		}
+		if definitionMatchesProcess(definition, current) && manifestProcessSupportsDrift(current) {
+			if changed := manifestChangedFields(root, definition, current); len(changed) != 0 {
+				return manifestDefinitionDriftResult(root, definition, current), current, true, nil
+			}
 		}
 		if preserveRecovery {
 			if outcome, ok := manifestRecoveryOutcome(definition, current); ok {
@@ -540,14 +677,17 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 	for {
 		current, getErr := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd})
 		if getErr == nil && current.State == app.StateRunning {
+			if !definitionMatchesProcess(definition, current) {
+				collision := manifestLaunchError(definition, fmt.Errorf("declared process %q is occupied by an ad-hoc launch", definition.Name))
+				return collision, current, false, nil
+			}
+			if changed := manifestChangedFields(root, definition, current); len(changed) != 0 {
+				return manifestDefinitionDriftResult(root, definition, current), current, true, nil
+			}
 			if ttyErr := manifestTTYUpgradeError(definition, current); ttyErr != nil {
 				return manifestLaunchError(definition, ttyErr), current, false, nil
 			}
-			if definitionMatchesProcess(definition, current) {
-				return manifestLaunchResultFor(definition, current, "already_running"), current, true, nil
-			}
-			collision := manifestLaunchError(definition, fmt.Errorf("declared process %q is occupied by an ad-hoc launch", definition.Name))
-			return collision, current, false, nil
+			return manifestLaunchResultFor(definition, current, "already_running"), current, true, nil
 		}
 		if time.Now().After(deadline) {
 			break
@@ -581,7 +721,7 @@ func manifestTimeoutOverride(cmd *urfavecli.Command) (time.Duration, error) {
 }
 func aggregateManifestExit(results []manifestLaunchResult) error {
 	for _, result := range results {
-		if result.Outcome == "error" {
+		if result.Outcome == "error" || result.Outcome == "definition_drift" {
 			return urfavecli.Exit("", 1)
 		}
 	}

@@ -54,7 +54,15 @@ each process timeout starts at its launch or first running observation; final
 results are lexical. `up` reports `skipped` with sorted direct
 `blocked_by` names when a prerequisite fails. A skip may include read-only
 `existing_state` and process snapshot data; it still means no launch occurred
-and still blocks dependents. CLI `up --no-wait` and MCP
+and still blocks dependents. A changed running or recovery-capable manifest
+record returns `definition_drift` with sorted `changed_fields` and
+`hum restart NAME` guidance; CLI `up` exits 1 for drift and it never satisfies
+an `after` gate. The readiness matcher and normalized restart policy are
+comparison boundaries; environment and readiness timeout are not compared. A removed
+manifest-sourced running or recovery-capable record returns
+`removed_definition` with `hum stop NAME` or `hum remove NAME` guidance; it is
+lexical and does not change aggregate status, and ad-hoc/discovered records are
+excluded; removed records require an explicit stop or remove. CLI `up --no-wait` and MCP
 `no_wait: true` are rejected before daemon contact for such a manifest. `start` remains explicitly named and never
 pulls in prerequisites. If an `on-failure` prerequisite is recovering, rerun
 `up` after it is ready rather than expecting the same invocation to follow its
@@ -101,7 +109,12 @@ most five times. Spawn failures consume an attempt. An automatic child alive for
 30 seconds resets the counter; stop, down, restart, remove, shutdown, and a
 manual start cancel pending work. Automatic launches retain their last argv,
 cwd, environment, readiness, and TTY, so explicitly restart after changing a
-definition. Read `restart`, `relaunches`, and `next_launch_at` in status/list
+definition. `start` and `up` report active/recovery-capable definition drift
+instead of silently adopting those edits; CLI `up` exits 1 and only `restart`
+adopts them. Only restart applies a changed definition. The readiness matcher
+and normalized restart policy are compared; environment and readiness timeout
+are not. Read
+`restart`, `relaunches`, and `next_launch_at` in status/list
 snapshots. Followers stay attached and bounded logs retain failure and relaunch
 boundaries. Always read the failing incarnation's retained output with `logs`
 before editing again.

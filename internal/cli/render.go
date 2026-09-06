@@ -601,16 +601,25 @@ func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
 	if result.Readiness != "" {
 		line += " readiness=" + result.Readiness
 	}
+	if result.ReadinessConfigured {
+		line += " readiness_match=" + result.ReadinessMatch
+	}
 	if result.ReadyCursor != nil {
 		line += fmt.Sprintf(" ready_cursor=%d", *result.ReadyCursor)
 	}
-	if result.Outcome == "recovery_pending" || result.Outcome == "recovery_exhausted" {
+	if result.Outcome == "recovery_pending" || result.Outcome == "recovery_exhausted" || result.Outcome == "removed_definition" {
 		line += fmt.Sprintf(" restart=%s relaunches=%d", result.Restart, result.Relaunches)
 		if result.NextLaunchAt == nil {
 			line += " next_launch_at=null"
 		} else {
 			line += " next_launch_at=" + result.NextLaunchAt.Format(time.RFC3339Nano)
 		}
+	}
+	if len(result.ChangedFields) != 0 {
+		line += " changed_fields=" + strings.Join(result.ChangedFields, ",")
+	}
+	if result.Guidance != "" {
+		line += " guidance=" + result.Guidance
 	}
 	if result.Error != "" {
 		line += " error=" + result.Error

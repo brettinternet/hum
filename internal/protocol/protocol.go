@@ -11,8 +11,9 @@ import (
 )
 
 // Version is the current private protocol version. The hello exchange carries
-// this value on every connection.
-const Version = 8
+// this value on every connection. Version 9 is required for readiness matchers
+// on terminal recovery snapshots.
+const Version = 9
 
 const (
 	RestartNever     = "never"
@@ -891,7 +892,8 @@ type Exit struct {
 }
 
 // Readiness describes process readiness state and, when ready, the matching
-// output cursor.
+// output cursor. Recovery-capable terminal records retain Match so clients can
+// reconcile the effective declaration without exposing the environment.
 type Readiness struct {
 	State  string    `json:"state"`
 	Cursor *Cursor   `json:"cursor,omitempty"`

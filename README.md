@@ -101,17 +101,25 @@ incarnation that survives 30 seconds resets the counter; exit zero and
 operator controls also reset it. Backoff is generation-guarded, so a stop or
 manual start/restart wins cleanly and no stale timer can launch a child.
 Automatic relaunches reuse the last effective argv, cwd, environment, readiness,
-and TTY rather than rereading the manifest; use an explicit start/restart to
-adopt edits. Readiness timeout never triggers a relaunch.
+and TTY rather than rereading the manifest; `hum restart NAME` is the explicit
+operation that adopts definition edits: only restart applies a changed
+definition. While a manifest-sourced process is
+running or recovery-capable, `hum up` and `hum start NAME` report
+`definition_drift` with sorted `changed_fields` and restart guidance instead of
+silently adopting the edit. The readiness matcher and normalized restart policy
+are comparison boundaries; environment and readiness timeout are not compared.
+Readiness timeout never triggers a relaunch.
 
 Status, list, CLI JSON, and MCP snapshots expose `restart`, `relaunches`, and
 `next_launch_at` while backoff is pending. During this bounded recovery,
 `hum up` and MCP `up` observe an exited declaration as `recovery_pending`; after
 all five attempts they report `recovery_exhausted`. These observations do not
 send a start request or wait for an automatic successor, and CLI `hum up` exits
-3 because the declaration is not running. Use targeted `hum start NAME` or
-`hum restart NAME` (or the matching MCP tool) to cancel pending recovery and
-launch immediately. Retained logs include each failed incarnation and the
+3 because the declaration is not running. Use targeted `hum restart NAME` (or
+the matching MCP tool) to adopt changed definitions; `hum start NAME` cancels
+matching pending recovery. A changed running or recovery-capable declaration
+returns `definition_drift` with sorted `changed_fields` and `hum restart NAME`
+guidance. Retained logs include each failed incarnation and the
 `relaunching`, spawn-failure, and final `gave up` boundaries; followers remain
 attached through backoff and exhaustion. Before editing again, agents should
 read the failing incarnation's retained output with `hum logs` (or MCP `logs`)
@@ -126,7 +134,15 @@ manifest errors with indexed `process "name".after[index]` context. Readiness is
 the gate, and each process's timeout starts when that process launches (or is
 first observed already running). Independent roots overlap.
 
-`hum up` emits stable lexical results after all definitions settle. A failed or
+`hum up` emits stable lexical results after all definitions settle. A changed
+running or recovery-capable declaration produces `outcome: definition_drift`,
+sorted `changed_fields`, and `hum restart NAME` guidance; CLI exits 1 and the
+result cannot satisfy an `after` gate. A manifest-sourced running,
+pending-recovery, or exhausted record absent from the current declarations
+produces `outcome: removed_definition` with `hum stop NAME or hum remove NAME`
+guidance. Removed records require an explicit stop or remove. Removed
+warnings are lexical, do not change aggregate exit status, and exclude ad-hoc
+and conventionally discovered records. A failed or
 unready prerequisite produces `outcome: skipped` with every direct unsatisfied
 `blocked_by` name sorted; skips do not add an exit code, so aggregate precedence
 remains request error 1, exited before ready 3, timed out 2, and success 0. Before
