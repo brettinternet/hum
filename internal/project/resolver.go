@@ -3,6 +3,7 @@ package project
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -27,13 +29,6 @@ var ErrConfiguration = errors.New("project discovery configuration is malformed"
 
 // ErrIntrospection reports malformed or failed command-backed discovery.
 var ErrIntrospection = errors.New("project discovery introspection failed")
-
-// These aliases keep the error vocabulary easy to discover for callers while
-// retaining one sentinel for each category.
-var (
-	ErrAmbiguity = ErrAmbiguous
-	ErrMalformed = ErrConfiguration
-)
 
 // NoCandidateError identifies a root without a supported development entrypoint.
 type NoCandidateError struct {
@@ -127,10 +122,6 @@ func (e *IntrospectionError) Error() string {
 }
 
 func (e *IntrospectionError) Unwrap() error { return ErrIntrospection }
-
-// Alternative names are aliases, not separate error categories.
-type AmbiguousError = AmbiguityError
-type MalformedError = ConfigurationError
 
 var supportedDiscoveryConventions = []string{
 	"mise task dev",
@@ -237,13 +228,24 @@ func discoveredDefinition(root, source string, argv ...string) Definition {
 	}
 }
 
+// discoveryCommandTimeout bounds each introspection command so a hung task
+// runner cannot stall CLI resolution or the single-threaded MCP server.
+var discoveryCommandTimeout = 10 * time.Second
+
 func runDiscoveryCommand(root string, argv ...string) ([]byte, error) {
 	if len(argv) == 0 || argv[0] == "" {
 		return nil, errors.New("empty discovery command")
 	}
-	command := exec.Command(argv[0], argv[1:]...)
+	ctx, cancel := context.WithTimeout(context.Background(), discoveryCommandTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Dir = root
-	return command.Output()
+	command.WaitDelay = time.Second
+	out, err := command.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("%s did not finish within %s", strings.Join(argv, " "), discoveryCommandTimeout)
+	}
+	return out, err
 }
 
 func commandOutput(root, source, path string, skipEmptyFailure bool, argv ...string) ([]byte, bool, error) {

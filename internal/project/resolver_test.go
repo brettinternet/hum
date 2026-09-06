@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 type discoveryStub struct {
@@ -683,4 +684,19 @@ func TestDiscoveryAmbiguity(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestRunDiscoveryCommandTimesOut(t *testing.T) {
+	previous := discoveryCommandTimeout
+	discoveryCommandTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { discoveryCommandTimeout = previous })
+
+	start := time.Now()
+	_, err := runDiscoveryCommand(t.TempDir(), "sleep", "30")
+	if err == nil || !strings.Contains(err.Error(), "sleep 30 did not finish within 50ms") {
+		t.Fatalf("runDiscoveryCommand error = %v, want timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("runDiscoveryCommand took %s, want prompt timeout", elapsed)
+	}
 }
