@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"unicode"
 
@@ -53,10 +52,12 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	if err := ctx.Err(); err != nil {
 		return inputCommandError(cmd, writer, name, err)
 	}
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return inputCommandError(cmd, writer, name, fmt.Errorf("current directory: %w", err))
+		return inputCommandError(cmd, writer, name, err)
 	}
+	cwd := selection.cwd
+	selector := selection.selector
 	manifest, err := loadManifestOrEmpty(cwd)
 	if err != nil {
 		return inputCommandError(cmd, writer, name, err)
@@ -84,18 +85,18 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 			return inputCommandError(cmd, writer, name, err)
 		}
 		if declared && !definition.TTY {
-			return inputCommandError(cmd, writer, name, inputNotTTYError(name, definition.TTY))
+			return inputCommandError(cmd, writer, name, inputNotTTYError(name, definition.TTY, selector))
 		}
 		if declared {
-			return inputCommandError(cmd, writer, name, inputSessionNotRunningError(name))
+			return inputCommandError(cmd, writer, name, inputSessionNotRunningError(name, selector))
 		}
-		return inputCommandError(cmd, writer, name, inputNotFoundError(name))
+		return inputCommandError(cmd, writer, name, inputNotFoundError(name, selector))
 	}
 	if declared && !definition.TTY {
-		return inputCommandError(cmd, writer, name, inputNotTTYError(name, false))
+		return inputCommandError(cmd, writer, name, inputNotTTYError(name, false, selector))
 	}
 	if !process.TTY {
-		return inputCommandError(cmd, writer, name, inputNotTTYError(name, declared && definition.TTY))
+		return inputCommandError(cmd, writer, name, inputNotTTYError(name, declared && definition.TTY, selector))
 	}
 
 	root := process.Root
@@ -110,7 +111,7 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	if err != nil {
 		var notRunning *daemon.SessionNotRunningError
 		if errors.As(err, &notRunning) {
-			err = inputSessionNotRunningError(name)
+			err = inputSessionNotRunningError(name, selector)
 		}
 		return inputCommandError(cmd, writer, name, err)
 	}
@@ -173,20 +174,36 @@ func inputInvalidRequestError(message string) error {
 	return protocol.NewWireError(protocol.ErrorInvalidRequest, message, nil)
 }
 
-func inputNotFoundError(name string) error {
+func inputNotFoundError(name string, selectors ...string) error {
+	selector := ""
+	if len(selectors) != 0 {
+		selector = selectors[0]
+	}
 	return protocol.NewWireError(protocol.ErrorNotFound,
-		fmt.Sprintf("process %q was not found; use hum start %s for a resolved name or hum run %s -- COMMAND", name, name, name), nil)
+		fmt.Sprintf("process %q was not found; use %s for a resolved name or %s", name, projectCommand(selector, "start "+name), projectCommand(selector, "run "+name+" -- COMMAND")), nil)
 }
 
-func inputSessionNotRunningError(name string) error {
+func inputSessionNotRunningError(name string, selectors ...string) error {
+	selector := ""
+	if len(selectors) != 0 {
+		selector = selectors[0]
+	}
 	return protocol.NewWireError(protocol.ErrorCode("session_not_running"),
-		fmt.Sprintf("session %q is not running; start it with hum start %s", name, name), nil)
+		fmt.Sprintf("session %q is not running; start it with %s", name, projectCommand(selector, "start "+name)), nil)
 }
 
-func inputNotTTYError(name string, declaredTTY bool) error {
-	message := fmt.Sprintf("process %q is not a tty; set tty: true in hum.yaml or launch it with hum run %s --tty -- COMMAND", name, name)
+func inputNotTTYError(name string, declaredTTY bool, selectors ...string) error {
+	selector := ""
+	if len(selectors) != 0 {
+		selector = selectors[0]
+	}
+	message := fmt.Sprintf("process %q is not a tty; set tty: true in hum.yaml or launch it with %s", name, projectCommand(selector, "run "+name+" --tty -- COMMAND"))
 	if declaredTTY {
-		message = fmt.Sprintf("process %q is running without a tty; stop it and rerun with tty: true or --tty", name)
+		if selector == "" {
+			message = fmt.Sprintf("process %q is running without a tty; stop it and rerun with tty: true or --tty", name)
+		} else {
+			message = fmt.Sprintf("process %q is running without a tty; stop it with %s and rerun with tty: true or --tty", name, projectCommand(selector, "stop "+name))
+		}
 	}
 	return protocol.NewWireError(protocol.ErrorInputNotTTY, message, nil)
 }

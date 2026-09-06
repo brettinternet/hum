@@ -30,6 +30,9 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 			"Explicit definitions use deterministic argv-based environment activation with the MCP server environment. " +
 			"The eleven tools are start, up, down, list, status, logs, wait, input, restart, stop, and remove; run, serve, and shutdown are not MCP tools.",
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+			if err := rejectProjectOverride(cmd, "mcp"); err != nil {
+				return err
+			}
 			if err := requireNoArgs(cmd, "mcp"); err != nil {
 				return err
 			}

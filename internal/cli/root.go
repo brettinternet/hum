@@ -2,8 +2,11 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -29,6 +32,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		Writer:    writer,
 		ErrWriter: errWriter,
 		Flags: []urfavecli.Flag{
+			&urfavecli.StringFlag{Name: "project", Aliases: []string{"C"}, Usage: "project directory; ad-hoc run uses it as cwd, manifest process cwd remains relative to the resolved project root"},
 			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon [$HUM_RUNTIME_DIR, then $XDG_RUNTIME_DIR/hum]", DefaultText: "$TMPDIR/hum-UID"},
 			&urfavecli.StringFlag{Name: "stop-grace", Usage: "grace period between SIGTERM and SIGKILL when stopping a process [$HUM_STOP_GRACE]", DefaultText: config.DefaultStopGrace.String()},
 			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained output bytes per process, at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
@@ -50,6 +54,73 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		panic(err)
 	}
 	return root
+}
+
+type projectSelection struct {
+	cwd      string
+	selector string
+}
+
+// selectedProjectDirectory resolves the optional project override against the
+// invocation directory and validates it before any daemon operation. Without
+// an override it returns the caller's existing working directory unchanged.
+func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) {
+	invocationCwd, err := os.Getwd()
+	if err != nil {
+		return projectSelection{}, fmt.Errorf("current directory: %w", err)
+	}
+	if !cmd.IsSet("project") {
+		return projectSelection{cwd: invocationCwd}, nil
+	}
+
+	value := cmd.String("project")
+	if value == "" {
+		return projectSelection{}, errors.New("--project requires a non-empty directory")
+	}
+	selected := value
+	if !filepath.IsAbs(selected) {
+		selected = filepath.Join(invocationCwd, selected)
+	}
+	selected = filepath.Clean(selected)
+	info, err := os.Stat(selected)
+	if err != nil {
+		return projectSelection{}, fmt.Errorf("--project directory %q: %w", selected, err)
+	}
+	if !info.IsDir() {
+		return projectSelection{}, fmt.Errorf("--project path %q is not a directory", selected)
+	}
+	return projectSelection{cwd: selected, selector: "--project " + shellEscape(selected)}, nil
+}
+
+func rejectProjectOverride(cmd *urfavecli.Command, commandName string) error {
+	if !cmd.IsSet("project") {
+		return nil
+	}
+	return fmt.Errorf("hum %s does not accept --project/-C", commandName)
+}
+
+// projectCommand returns the canonical follow-up command. An explicit
+// override is rendered as an absolute, shell-safe --project selector.
+func projectCommand(selector, command string) string {
+	if selector == "" {
+		return "hum " + command
+	}
+	return "hum " + selector + " " + command
+}
+
+func logsUnavailableMessageFor(selector string) string {
+	if selector == "" {
+		return logsUnavailableMessage
+	}
+	return fmt.Sprintf("Nothing is running. Start a process with %s.", projectCommand(selector, "run <name> -- <command>"))
+}
+
+func projectGuidanceError(err error, selector string) error {
+	if err == nil || selector == "" {
+		return err
+	}
+	message := strings.ReplaceAll(err.Error(), "hum init", projectCommand(selector, "init"))
+	return wrapUserFacingError(err, message)
 }
 
 // onUsageError formats a flag-parsing usage error as a single line naming

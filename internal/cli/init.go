@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	"hum/internal/project"
 
@@ -13,6 +12,10 @@ import (
 )
 
 const initNextCommand = "hum up"
+
+func initNextCommandFor(selector string) string {
+	return projectCommand(selector, "up")
+}
 
 type initCandidateJSON struct {
 	Name   string   `json:"name"`
@@ -34,12 +37,12 @@ func initCommand(ctx context.Context, cmd *urfavecli.Command, writer io.Writer) 
 	if err := nonNilContext(ctx).Err(); err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
 
-	result, err := project.InitManifest(cwd)
+	result, err := project.InitManifest(selection.cwd)
 	if err != nil {
 		var existsErr *project.ManifestExistsError
 		if !errors.As(err, &existsErr) {
@@ -50,27 +53,35 @@ func initCommand(ctx context.Context, cmd *urfavecli.Command, writer io.Writer) 
 		}
 		result.Outcome = project.InitOutcomeExists
 		if !cmd.Bool("json") {
-			return newUserFacingError(fmt.Sprintf("hum.yaml already exists at %s; edit it, or remove it before running hum init again", result.Path))
+			return newUserFacingError(fmt.Sprintf("hum.yaml already exists at %s; edit it, or remove it before running %s again", result.Path, projectCommand(selection.selector, "init")))
 		}
-		if err := renderInitResult(writer, result, cmd.Bool("json")); err != nil {
+		if err := renderInitResult(writer, result, cmd.Bool("json"), selection.selector); err != nil {
 			return err
 		}
 		return urfavecli.Exit("", 1)
 	}
-	if err := renderInitResult(writer, result, cmd.Bool("json")); err != nil {
+	if err := renderInitResult(writer, result, cmd.Bool("json"), selection.selector); err != nil {
 		return err
 	}
 	return nil
 }
 
-func renderInitResult(writer io.Writer, result project.InitResult, jsonOutput bool) error {
-	if jsonOutput {
-		return encodeJSON(writer, initJSONFor(result))
+func renderInitResult(writer io.Writer, result project.InitResult, jsonOutput bool, selectors ...string) error {
+	selector := ""
+	if len(selectors) != 0 {
+		selector = selectors[0]
 	}
-	return renderInitHuman(writer, result)
+	if jsonOutput {
+		return encodeJSON(writer, initJSONFor(result, selector))
+	}
+	return renderInitHuman(writer, result, selector)
 }
 
-func initJSONFor(result project.InitResult) initJSON {
+func initJSONFor(result project.InitResult, selectors ...string) initJSON {
+	selector := ""
+	if len(selectors) != 0 {
+		selector = selectors[0]
+	}
 	candidates := make([]initCandidateJSON, len(result.Candidates))
 	for index, definition := range result.Candidates {
 		argv := append([]string(nil), definition.Argv...)
@@ -86,13 +97,17 @@ func initJSONFor(result project.InitResult) initJSON {
 	return initJSON{
 		Path:        result.Path,
 		Outcome:     result.Outcome,
-		NextCommand: initNextCommand,
+		NextCommand: initNextCommandFor(selector),
 		Candidates:  candidates,
 	}
 }
 
-func renderInitHuman(writer io.Writer, result project.InitResult) error {
-	if _, err := fmt.Fprintf(writer, "path: %s\noutcome: %s\nnext_command: %s\n", result.Path, result.Outcome, initNextCommand); err != nil {
+func renderInitHuman(writer io.Writer, result project.InitResult, selectors ...string) error {
+	selector := ""
+	if len(selectors) != 0 {
+		selector = selectors[0]
+	}
+	if _, err := fmt.Fprintf(writer, "path: %s\noutcome: %s\nnext_command: %s\n", result.Path, result.Outcome, initNextCommandFor(selector)); err != nil {
 		return err
 	}
 	for _, definition := range result.Candidates {

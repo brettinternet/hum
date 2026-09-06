@@ -14,27 +14,27 @@ not.
 ## CLI
 
 ```text
-hum init [--json]
+hum [--project DIR|-C DIR] init [--json]
 hum serve [--daemon]
-hum start <name>... [--no-wait] [--timeout DURATION] [--json]
-hum up [--no-wait] [--timeout DURATION] [--json]
-hum down [--json]
-hum run <name> [--detach] [--json] [-- <command> [args...]]
-hum list [--all] [--json]
-hum status <name> [--json]
-hum logs [<name>...] [--stream stdout|stderr|both] [--tail N] [--after-cursor N]
+hum [--project DIR|-C DIR] start <name>... [--no-wait] [--timeout DURATION] [--json]
+hum [--project DIR|-C DIR] up [--no-wait] [--timeout DURATION] [--json]
+hum [--project DIR|-C DIR] down [--json]
+hum run [--project DIR|-C DIR] <name> [--detach] [--json] [-- <command> [args...]]
+hum [--project DIR|-C DIR] list [--all] [--json]
+hum [--project DIR|-C DIR] status <name> [--json]
+hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|both] [--tail N] [--after-cursor N]
            [--limit-bytes N] [--match REGEX] [--follow] [--json]
-hum wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
-hum input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
-hum restart <name>... [--json]
-hum stop <name>... [--json]
-hum remove <name>... [--json]
+hum [--project DIR|-C DIR] wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
+hum [--project DIR|-C DIR] input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
+hum [--project DIR|-C DIR] restart <name>... [--json]
+hum [--project DIR|-C DIR] stop <name>... [--json]
+hum [--project DIR|-C DIR] remove <name>... [--json]
 hum shutdown [--stop-processes] [--json]
 hum mcp
 hum skill
 ```
 
-Short aliases are command-local except the global help and version aliases.
+Short aliases are command-local except the global help and version aliases. Project-scoped commands also accept the persistent `-C DIR` alias for `--project DIR`; the selector may appear before or after the subcommand, and `run` accepts it after the process name before `--`.
 Long options remain canonical in documentation, scripts, output, and errors.
 Combined short options are unsupported; MCP fields have no aliases.
 
@@ -42,6 +42,7 @@ Combined short options are unsupported; MCP fields have no aliases.
 | --- | --- | --- |
 | `-h` | `--help` | global |
 | `-v` | `--version` | global |
+| `-C` | `--project` | project-scoped commands |
 | `-j` | `--json` | all supporting commands |
 | `-d` | `--daemon`, `--detach` | `serve`, `run` |
 | `-t` | `--timeout` | `start`, `up`, `wait` |
@@ -57,6 +58,8 @@ Combined short options are unsupported; MCP fields have no aliases.
 `--output-bytes`, and `--completed-records` remain long-only. The `input`
 command intentionally adds no short aliases, including for `--json`.
 
+`--project DIR` resolves DIR relative to the invocation directory, requires an existing directory, cleans it to an absolute path, and applies the nearest-Git-root-or-directory-fallback rule. The resolved project root scopes names and manifests. An ad-hoc `run` keeps the selected DIR as the child cwd; a manifest definition keeps its declared root-relative `cwd`. `init` writes at the resolved root, and `list --all` uses the selected project while merging unlaunched declarations. Guidance and stable next-command fields preserve a canonical shell-safe absolute `--project` selector, including paths with spaces. `serve`, `shutdown`, `mcp`, and `skill` reject an explicit project selector because their scope is daemon-global, request-scoped, or static. Existing `-d` remains `serve --daemon` and `run --detach`.
+
 Human-readable output is the default. JSON process snapshots include `name`,
 `source`, `argv`, and the integer `followers` count, plus identity, readiness,
 cursors, and errors when applicable. Human `status` always prints `followers`;
@@ -68,8 +71,9 @@ precedence: request error or `definition_drift` (1), early exit (3), timeout
 argv, canonical cwd, readiness matcher, TTY, or normalized restart changes and
 never satisfies an `after` gate; CLI `up` exits 1 for drift. A removed
 manifest-sourced running or recovery-capable record is emitted as
-`removed_definition` with stop/remove guidance. Removed records require an
-explicit stop or remove; the warning does not alter aggregate exit status.
+`removed_definition` with stop/remove guidance such as `hum stop NAME` or
+`hum remove NAME`. Removed records require an explicit stop or remove; the
+warning does not alter aggregate exit status.
 Attached `run --json` still streams raw child output; `logs --json --follow`
 emits bounded NDJSON events. `logs` accepts optional, repeatable names in selection
 order. With no names, it resolves the current declaration set once in lexical order,

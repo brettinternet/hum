@@ -59,6 +59,18 @@ hum down
 
 `start` is explicit and does not start dependencies. `down` stops project processes concurrently. See [design and command semantics](docs/design.md) for validation and exit details.
 
+### Operate from anywhere
+
+Project-scoped commands accept a persistent `--project DIR` selector (or `-C DIR`) before or after the subcommand:
+
+```sh
+hum --project /path/to/checkout up
+hum status -C ../checkout api
+hum run preview --project /path/to/checkout -- bun run preview
+```
+
+A relative selector is resolved from the invocation directory, cleaned to an existing directory, and then resolved to the nearest Git root (or that directory when no Git marker exists). The selected directory is the cwd for ad-hoc `run`; manifest process `cwd` values remain relative to the resolved project root. `init` writes at that root, and `list --all` still merges declarations from the selected project. Follow-up guidance uses an absolute, shell-safe `--project` selector when the path needs spaces. The selector is not applicable to `serve`, `shutdown`, `mcp`, or `skill`. Existing `-d` aliases remain `serve --daemon` and `run --detach`.
+
 ## Sessions
 
 Run a named process without a manifest:

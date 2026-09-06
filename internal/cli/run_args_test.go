@@ -54,9 +54,21 @@ func TestParseRunArgsAcceptsOptionsAfterName(t *testing.T) {
 	if got.err != nil || got.name != "web" || !got.json || strings.Join(got.argv, " ") != "sleep 1" {
 		t.Fatalf("run web --json -- sleep 1 = %+v", got)
 	}
+	got = parseRunArgsFor(t, "web", "--project", ".", "--", "sleep", "1")
+	if got.err != nil || got.name != "web" || strings.Join(got.argv, " ") != "sleep 1" {
+		t.Fatalf("run web --project . -- sleep 1 = %+v", got)
+	}
+	got = parseRunArgsFor(t, "web", "-C", ".", "--", "sleep", "1")
+	if got.err != nil || got.name != "web" || strings.Join(got.argv, " ") != "sleep 1" {
+		t.Fatalf("run web -C . -- sleep 1 = %+v", got)
+	}
 	got = parseRunArgsFor(t, "web", "--detach", "sleep")
 	if got.err == nil || !strings.Contains(got.err.Error(), "run requires -- before the command") {
 		t.Fatalf("run web --detach sleep error = %v, want separator guidance", got.err)
+	}
+	got = parseRunArgsFor(t, "web", "--project")
+	if got.err == nil || !strings.Contains(got.err.Error(), "--project requires a value") {
+		t.Fatalf("run web --project error = %v", got.err)
 	}
 	got = parseRunArgsFor(t, "web", "--tty")
 	if got.err == nil || !strings.Contains(got.err.Error(), "--tty requires an ad-hoc command after --") {

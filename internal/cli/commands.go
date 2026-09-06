@@ -292,6 +292,9 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 }
 
 func serveCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, errWriter io.Writer) error {
+	if err := rejectProjectOverride(cmd, "serve"); err != nil {
+		return err
+	}
 	if err := requireNoArgs(cmd, "serve"); err != nil {
 		return err
 	}
@@ -408,6 +411,8 @@ func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool
 			name = "detach"
 		case "-j":
 			name = "json"
+		case "-C":
+			name = "project"
 		default:
 			if strings.HasPrefix(flagName, "--") {
 				name = strings.TrimPrefix(flagName, "--")
@@ -421,7 +426,7 @@ func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool
 			if err := cmd.Set(name, "true"); err != nil {
 				return err
 			}
-		case "runtime-dir", "stop-grace", "output-bytes", "completed-records":
+		case "runtime-dir", "stop-grace", "output-bytes", "completed-records", "project":
 			if !hasValue {
 				i++
 				if i >= len(options) {
@@ -434,7 +439,15 @@ func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool
 			}
 		default:
 			if !hasSeparator && !strings.HasPrefix(flag, "-") {
-				return newUserFacingError(fmt.Sprintf("run requires -- before the command: hum run NAME [options] -- %s ...", flag))
+				selector := ""
+				if cmd.IsSet("project") {
+					selection, selectionErr := selectedProjectDirectory(cmd)
+					if selectionErr != nil {
+						return selectionErr
+					}
+					selector = selection.selector
+				}
+				return newUserFacingError(fmt.Sprintf("run requires -- before the command: %s", projectCommand(selector, "run NAME [options] -- "+flag+" ...")))
 			}
 			return fmt.Errorf("unknown run option %q", flag)
 		}
@@ -451,24 +464,26 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	cfg, err := cliConfig(cmd, version, buildTime)
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	cwd := selection.cwd
+	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
 	manifest, err := loadManifestOrEmpty(cwd)
 	if err != nil {
 		return err
 	}
+	manifest.selector = selection.selector
 	definition, declared := manifest.byName[name]
 	if (cmd.Bool("tty") || cmd.IsSet("tty")) && len(argv) == 0 {
 		return errors.New("--tty requires an ad-hoc command after --")
 	}
 	if len(argv) != 0 && declared {
-		return fmt.Errorf("process %q is declared in hum.yaml; use hum start %s", name, name)
+		return fmt.Errorf("process %q is declared in hum.yaml; use %s", name, projectCommand(selection.selector, "start "+name))
 	}
 	client, err := runDaemonClient(ctx, cfg)
 	if err != nil {
@@ -496,7 +511,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		process, startErr := launch()
 		if startErr != nil {
 			if isNameInUse(startErr) || errors.Is(startErr, app.ErrNameInUse) {
-				return fmt.Errorf("%w; watch it with hum logs %s --follow", startErr, name)
+				return fmt.Errorf("%w; watch it with %s", startErr, projectCommand(selection.selector, "logs "+name+" --follow"))
 			}
 			return startErr
 		}
@@ -587,13 +602,13 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	if shouldLaunch {
 		if _, err := launch(); err != nil {
 			if isNameInUse(err) || errors.Is(err, app.ErrNameInUse) {
-				return fmt.Errorf("%w; watch it with hum logs %s --follow", err, name)
+				return fmt.Errorf("%w; watch it with %s", err, projectCommand(selection.selector, "logs "+name+" --follow"))
 			}
 			return err
 		}
 	} else if getErr == nil && current.State != app.StateRunning {
 		if len(current.Argv) == 0 && !declared {
-			_, err = fmt.Fprintf(writer, "%s waiting for first launch (name does not resolve; hum run %s -- COMMAND may create it)\n", name, name)
+			_, err = fmt.Fprintf(writer, "%s waiting for first launch (name does not resolve; %s may create it)\n", name, projectCommand(selection.selector, "run "+name+" -- COMMAND"))
 		} else if len(current.Argv) == 0 {
 			_, err = fmt.Fprintf(writer, "%s waiting for first launch\n", name)
 		} else {
@@ -625,14 +640,16 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	ctx = nonNilContext(ctx)
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
+	cwd := selection.cwd
 	manifest, err := loadManifestOrEmpty(cwd)
 	if err != nil {
 		return err
 	}
+	manifest.selector = selection.selector
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -681,14 +698,16 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	name := args[0]
 	ctx = nonNilContext(ctx)
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
+	cwd := selection.cwd
 	manifest, err := loadManifestOrEmpty(cwd)
 	if err != nil {
 		return err
 	}
+	manifest.selector = selection.selector
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -700,9 +719,9 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		}
 		if daemonUnavailable(err) {
 			if definition, ok := manifest.byName[name]; ok {
-				return manifestUnavailableMessage(definition)
+				return manifestUnavailableMessage(definition, manifest.selector)
 			}
-			return newUserFacingError(logsUnavailableMessage)
+			return newUserFacingError(logsUnavailableMessageFor(manifest.selector))
 		}
 		return err
 	}
@@ -714,7 +733,7 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		}
 		definition, declared := manifest.byName[name]
 		if !declared {
-			return wrapUserFacingError(err, err.Error()+". Run hum list --all to see known processes.")
+			return wrapUserFacingError(err, err.Error()+". Run "+projectCommand(manifest.selector, "list --all")+" to see known processes.")
 		}
 		// A declared process that has never launched has no daemon record yet;
 		// report it stopped, exactly as list does, instead of a raw lookup error.
@@ -745,14 +764,16 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	name := args[0]
 	ctx = nonNilContext(ctx)
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
+	cwd := selection.cwd
 	manifest, err := loadManifestOrEmpty(cwd)
 	if err != nil {
 		return err
 	}
+	manifest.selector = selection.selector
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -766,9 +787,9 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err != nil {
 		if daemonUnavailable(err) {
 			if definition, ok := manifest.byName[name]; ok {
-				return manifestUnavailableMessage(definition)
+				return manifestUnavailableMessage(definition, manifest.selector)
 			}
-			return newUserFacingError(logsUnavailableMessage)
+			return newUserFacingError(logsUnavailableMessageFor(manifest.selector))
 		}
 		return err
 	}
@@ -869,10 +890,11 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 	if cmd.IsSet("after-cursor") {
 		return errors.New("logs --after-cursor is only supported for one explicit process name")
 	}
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
+	cwd := selection.cwd
 
 	var manifest manifestState
 	if len(args) == 0 {
@@ -883,8 +905,9 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 		manifest, err = loadManifestOrEmpty(cwd)
 	}
 	if err != nil {
-		return err
+		return projectGuidanceError(err, selection.selector)
 	}
+	manifest.selector = selection.selector
 	names := append([]string(nil), args...)
 	if len(args) == 0 {
 		names = make([]string, 0, len(manifest.defs))
@@ -893,7 +916,7 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 		}
 	}
 	if len(names) == 0 {
-		return newUserFacingError("No process declarations resolve for logs. Define processes in hum.yaml or run hum init.")
+		return newUserFacingError(fmt.Sprintf("No process declarations resolve for logs. Define processes in hum.yaml or run %s.", projectCommand(selection.selector, "init")))
 	}
 
 	cfg, err := cliConfig(cmd, version, buildTime)
@@ -952,9 +975,9 @@ func renderAggregateLogsUnavailable(writer, errWriter io.Writer, jsonOutput bool
 	renderer := newAggregateLogRenderer(writer, errWriter, jsonOutput)
 	var firstErr error
 	for _, name := range names {
-		nameErr := newUserFacingError(logsUnavailableMessage)
+		nameErr := newUserFacingError(logsUnavailableMessageFor(manifest.selector))
 		if definition, ok := manifest.byName[name]; ok {
-			nameErr = manifestUnavailableMessage(definition)
+			nameErr = manifestUnavailableMessage(definition, manifest.selector)
 		}
 		if firstErr == nil {
 			firstErr = aggregateLogNamedError(name, nameErr)
@@ -1177,7 +1200,7 @@ func logsWaitingMessage(name string, process app.Process, manifest manifestState
 	if len(process.Argv) == 0 {
 		message = fmt.Sprintf("%s waiting for first launch\n", name)
 		if _, declared := manifest.byName[name]; !declared {
-			message = fmt.Sprintf("%s waiting for first launch (name does not resolve; hum run %s -- COMMAND may create it)\n", name, name)
+			message = fmt.Sprintf("%s waiting for first launch (name does not resolve; %s may create it)\n", name, projectCommand(manifest.selector, "run "+name+" -- COMMAND"))
 		}
 	}
 	return message
@@ -1266,10 +1289,11 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
+	cwd := selection.cwd
 	if _, err := loadManifestOrEmpty(cwd); err != nil {
 		return err
 	}
@@ -1324,6 +1348,11 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return errors.New("stop requires at least one process name")
 	}
 	ctx = nonNilContext(ctx)
+	selection, err := selectedProjectDirectory(cmd)
+	if err != nil {
+		return err
+	}
+	cwd := selection.cwd
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -1345,10 +1374,6 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	defer client.Close()
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
-	}
 	processes, err := client.List(ctx, daemon.ListRequest{Cwd: cwd})
 	if err != nil {
 		if daemonUnavailable(err) {
@@ -1411,6 +1436,11 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return errors.New("remove requires at least one process name")
 	}
 	ctx = nonNilContext(ctx)
+	selection, err := selectedProjectDirectory(cmd)
+	if err != nil {
+		return err
+	}
+	cwd := selection.cwd
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -1432,10 +1462,6 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return err
 	}
 	defer client.Close()
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
-	}
 	for _, name := range names {
 		if err := client.Remove(context.Background(), daemon.RemoveRequest{Name: name, Cwd: cwd}); err != nil {
 			return err
@@ -1461,10 +1487,11 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	ctx = nonNilContext(ctx)
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
+	cwd := selection.cwd
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -1491,6 +1518,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err != nil {
 		return err
 	}
+	manifest.selector = selection.selector
 	processes = mergeManifestProcesses(manifest, processes)
 	byName := make(map[string]app.Process, len(processes))
 	for _, process := range processes {
@@ -1576,14 +1604,16 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		return errors.New("restart requires at least one process name")
 	}
 	ctx = nonNilContext(ctx)
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
+	cwd := selection.cwd
 	manifest, err := loadManifestOrEmpty(cwd)
 	if err != nil {
 		return err
 	}
+	manifest.selector = selection.selector
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -1593,10 +1623,10 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		if daemonUnavailable(err) {
 			for _, name := range names {
 				if definition, ok := manifest.byName[name]; ok {
-					return manifestUnavailableMessage(definition)
+					return manifestUnavailableMessage(definition, manifest.selector)
 				}
 			}
-			return newUserFacingError(logsUnavailableMessage)
+			return newUserFacingError(logsUnavailableMessageFor(manifest.selector))
 		}
 		return err
 	}
@@ -1654,6 +1684,9 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 }
 
 func shutdownCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	if err := rejectProjectOverride(cmd, "shutdown"); err != nil {
+		return err
+	}
 	if err := requireNoArgs(cmd, "shutdown"); err != nil {
 		return err
 	}
@@ -1722,10 +1755,11 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	if err := requireNoArgs(cmd, "up"); err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
+	cwd := selection.cwd
 	// A genuinely empty hum.yaml stays inert (HUM-033). No hum.yaml and no
 	// discovered convention is an error when there is nothing to report: the
 	// error is deferred so an existing daemon can still surface removed manifest
@@ -1747,6 +1781,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	for _, definition := range manifest.defs {
 		names = append(names, definition.Name)
 	}
+	manifest.selector = selection.selector
 	if cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
 		return errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies")
 	}
@@ -1754,10 +1789,11 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 }
 
 func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, names []string) error {
-	cwd, err := os.Getwd()
+	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
+		return err
 	}
+	cwd := selection.cwd
 	manifest, err := loadManifest(cwd)
 	if err != nil {
 		var noCandidate *project.NoCandidateError
@@ -1773,13 +1809,14 @@ func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version,
 			_ = client.Close()
 		}
 		if dialErr != nil {
-			return err
+			return projectGuidanceError(err, selection.selector)
 		}
 		manifest, err = loadManifestOrEmpty(cwd)
 		if err != nil {
 			return err
 		}
 	}
+	manifest.selector = selection.selector
 	return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifest, names, false)
 }
 
@@ -1791,6 +1828,14 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	selection, err := selectedProjectDirectory(cmd)
+	if err != nil {
+		return err
+	}
+	cwd := selection.cwd
+	if manifest.selector == "" {
+		manifest.selector = selection.selector
 	}
 	if ordered && cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
 		return errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies")
@@ -1811,7 +1856,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		if err != nil {
 			if daemonUnavailable(err) {
 				if noCandidateErr != nil {
-					return noCandidateErr
+					return projectGuidanceError(noCandidateErr, manifest.selector)
 				}
 				if cmd.Bool("json") {
 					return nil
@@ -1828,15 +1873,11 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		}
 	}
 	defer client.Close()
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("current directory: %w", err)
-	}
 	env := manifestProcessEnv()
 	var results []manifestLaunchResult
 	var progress *manifestProgressRenderer
 	if ordered && !cmd.Bool("json") && !cmd.Bool("no-wait") && progressWriter != nil {
-		progress = newManifestProgressRenderer(progressWriter, len(names))
+		progress = newManifestProgressRenderer(progressWriter, len(names), manifest.selector)
 	}
 	if ordered {
 		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, env, timeoutOverride, preserveRecovery, progress)
@@ -1852,9 +1893,12 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	if err != nil {
 		return err
 	}
+	for index := range results {
+		results[index] = manifestResultWithSelector(results[index], manifest.selector)
+	}
 	if ordered && len(results) == 0 && len(manifest.defs) == 0 {
 		if noCandidateErr != nil {
-			return noCandidateErr
+			return projectGuidanceError(noCandidateErr, manifest.selector)
 		}
 		if cmd.Bool("json") {
 			return nil
@@ -2242,6 +2286,9 @@ func followLoop(parent context.Context, follower *daemon.Follower, signals <-cha
 }
 
 func skillCommand(_ context.Context, cmd *urfavecli.Command, writer io.Writer) error {
+	if err := rejectProjectOverride(cmd, "skill"); err != nil {
+		return err
+	}
 	if err := requireNoArgs(cmd, "skill"); err != nil {
 		return err
 	}

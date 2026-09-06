@@ -489,15 +489,21 @@ func shellEscape(value string) string {
 }
 
 type manifestProgressRenderer struct {
-	lines chan string
-	done  chan struct{}
-	err   error
+	lines    chan string
+	done     chan struct{}
+	err      error
+	selector string
 }
 
-func newManifestProgressRenderer(writer io.Writer, declarationCount int) *manifestProgressRenderer {
+func newManifestProgressRenderer(writer io.Writer, declarationCount int, selectors ...string) *manifestProgressRenderer {
+	selector := ""
+	if len(selectors) != 0 {
+		selector = selectors[0]
+	}
 	r := &manifestProgressRenderer{
-		lines: make(chan string, 2*declarationCount),
-		done:  make(chan struct{}),
+		lines:    make(chan string, 2*declarationCount),
+		done:     make(chan struct{}),
+		selector: selector,
 	}
 	go func() {
 		defer close(r.done)
@@ -517,10 +523,12 @@ func newManifestProgressRenderer(writer io.Writer, declarationCount int) *manife
 }
 
 func (r *manifestProgressRenderer) writeInitial(definition project.Definition, result manifestLaunchResult) {
+	result = manifestResultWithSelector(result, r.selector)
 	r.writeLine(manifestProgressInitialLine(definition, result))
 }
 
 func (r *manifestProgressRenderer) writeTerminal(result manifestLaunchResult) {
+	result = manifestResultWithSelector(result, r.selector)
 	r.writeLine(manifestProgressTerminalLine(result))
 }
 
@@ -544,9 +552,9 @@ func manifestProgressInitialLine(definition project.Definition, result manifestL
 	case "error":
 		return prefix + "error: " + manifestProgressText(result.Error)
 	case "exited_before_ready":
-		return prefix + "exited before readiness; inspect retained logs: hum logs " + manifestProgressText(result.Name)
+		return prefix + "exited before readiness; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "timed_out":
-		return prefix + "readiness timed out; inspect retained logs: hum logs " + manifestProgressText(result.Name)
+		return prefix + "readiness timed out; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "started", "already_running":
 		action := manifestProgressAction(result)
 		if manifestProgressWaitsForReadiness(definition, result) {
@@ -573,9 +581,9 @@ func manifestProgressTerminalLine(result manifestLaunchResult) string {
 	case "error":
 		return prefix + "error: " + manifestProgressText(result.Error)
 	case "exited_before_ready":
-		return prefix + "exited before readiness; inspect retained logs: hum logs " + manifestProgressText(result.Name)
+		return prefix + "exited before readiness; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "timed_out":
-		return prefix + "readiness timed out; inspect retained logs: hum logs " + manifestProgressText(result.Name)
+		return prefix + "readiness timed out; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "started", "already_running":
 		if result.Readiness == app.ReadinessReady {
 			return prefix + "ready"

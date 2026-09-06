@@ -21,9 +21,10 @@ import (
 )
 
 type manifestState struct {
-	root   string
-	defs   []project.Definition
-	byName map[string]project.Definition
+	root     string
+	defs     []project.Definition
+	byName   map[string]project.Definition
+	selector string
 }
 
 func loadManifest(cwd string) (manifestState, error) {
@@ -152,6 +153,7 @@ func mergeManifestProcesses(manifest manifestState, running []app.Process) []app
 // one NDJSON object without exposing daemon internals.
 type manifestLaunchResult struct {
 	Name                string     `json:"name"`
+	ProjectSelector     string     `json:"-"`
 	Outcome             string     `json:"outcome"`
 	Source              string     `json:"source"`
 	Argv                []string   `json:"argv"`
@@ -193,6 +195,14 @@ func (result manifestLaunchResult) MarshalJSON() ([]byte, error) {
 
 func undefinedManifestDefinition(name string) project.Definition {
 	return project.Definition{Name: name, Source: "manifest", Argv: []string{}, After: []string{}}
+}
+
+func manifestResultWithSelector(result manifestLaunchResult, selector string) manifestLaunchResult {
+	result.ProjectSelector = selector
+	if selector != "" && result.Guidance != "" {
+		result.Guidance = strings.ReplaceAll(result.Guidance, "hum ", "hum "+selector+" ")
+	}
+	return result
 }
 
 func newManifestLaunchResult(definition project.Definition, outcome string) manifestLaunchResult {
@@ -379,8 +389,12 @@ func manifestTTYUpgradeError(definition project.Definition, process app.Process)
 	return nil
 }
 
-func manifestUnavailableMessage(definition project.Definition) error {
-	return newUserFacingError(fmt.Sprintf("Nothing is running in this project. Start it with hum start %s.", definition.Name))
+func manifestUnavailableMessage(definition project.Definition, selectors ...string) error {
+	selector := ""
+	if len(selectors) != 0 {
+		selector = selectors[0]
+	}
+	return newUserFacingError(fmt.Sprintf("Nothing is running in this project. Start it with %s.", projectCommand(selector, "start "+definition.Name)))
 }
 
 func parseManifestTimeout(cmd *urfavecli.Command, definition project.Definition) (time.Duration, error) {

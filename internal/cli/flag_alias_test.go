@@ -34,6 +34,7 @@ func TestFlagAliases(t *testing.T) {
 
 	root := NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{})
 	rootExpected := map[string][]string{
+		"project":           {"C"},
 		"runtime-dir":       nil,
 		"stop-grace":        nil,
 		"output-bytes":      nil,
