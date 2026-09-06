@@ -1,10 +1,10 @@
 ---
 id: HUM-027
 title: Show startup progress while up waits for readiness
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-06 00:13'
-updated_date: '2026-09-06 05:08'
+updated_date: '2026-09-06 06:51'
 labels:
   - cli
   - human
@@ -44,28 +44,51 @@ Non-goals: streaming or tailing child output; copying retained diagnostics into 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/cli -run "^TestUpHumanProgress$" -count=1 -v` exits 0 and prints `--- PASS: TestUpHumanProgress`. Against deterministic fake-client barriers it proves every declaration emits its exact initial human stderr line as soon as its launch, observation, error, or skipped result is known; only `starting` declarations emit a second exact ready, exited, or timeout line; output is bounded to two newline-terminated lines per declaration; concurrent transitions never interleave bytes; progress follows completion time rather than lexical order; and the final detailed human stdout summaries remain lexical and unchanged.
-- [ ] #2 AC2 — `go test ./integration -run "^TestUpStartupProgress$" -count=1 -v` exits 0 and prints `--- PASS: TestUpStartupProgress`. With the built binary, a fast-ready declaration, and a gated never-ready declaration, it observes started/waiting progress and the fast ready transition on stderr while `hum up` is still running and before the other readiness timeout, proves child output is not copied into progress, and then observes the unchanged lexical stdout summaries.
-- [ ] #3 AC3 — `go test ./integration -run "^TestUpReadinessTimeoutDiagnostics$" -count=1 -v` exits 0 and prints `--- PASS: TestUpReadinessTimeoutDiagnostics`. With the built binary it proves timeout and early-exit progress each name the declaration and print `hum logs NAME`, the timeout invocation exits 2 with its existing final result, the early-exit invocation preserves exit 3, and the advertised logs command reads retained child diagnostics without `up` streaming them.
-- [ ] #4 AC4 — `go test ./internal/cli -run "^TestUpProgressOutputModes$" -count=1 -v` exits 0 and prints `--- PASS: TestUpProgressOutputModes`. It proves `up --json` writes no progress to stderr and stdout remains exactly one parseable, unchanged NDJSON result per declaration in lexical order; `up --no-wait`, human and JSON `start`, aggregate exit precedence, and final human stdout rendering remain unchanged.
-- [ ] #5 AC5 — `go test ./internal/cli -run "^TestUpProgressDocs$" -count=1 -v` exits 0 and prints `--- PASS: TestUpProgressDocs`. It proves `hum up --help` and docs/design.md describe human-only stderr progress, unchanged final stdout and JSON behavior, the maximum of two lines per declaration, temporal progress order, no child-output streaming, and `hum logs NAME` guidance for timeout and early exit.
-- [ ] #6 AC6 — `go test ./internal/cli -run "^TestUpProgressBlockedExistingState$" -count=1 -v` exits 0 and prints `--- PASS: TestUpProgressBlockedExistingState`. It proves dependency-blocked progress exactly distinguishes a retained running record, a retained exited record, and no record while preserving sorted direct blockers and the two-line bound.
+- [x] #1 AC1 — `go test ./internal/cli -run "^TestUpHumanProgress$" -count=1 -v` exits 0 and prints `--- PASS: TestUpHumanProgress`. Against deterministic fake-client barriers it proves every declaration emits its exact initial human stderr line as soon as its launch, observation, error, or skipped result is known; only `starting` declarations emit a second exact ready, exited, or timeout line; output is bounded to two newline-terminated lines per declaration; concurrent transitions never interleave bytes; progress follows completion time rather than lexical order; and the final detailed human stdout summaries remain lexical and unchanged.
+- [x] #2 AC2 — `go test ./integration -run "^TestUpStartupProgress$" -count=1 -v` exits 0 and prints `--- PASS: TestUpStartupProgress`. With the built binary, a fast-ready declaration, and a gated never-ready declaration, it observes started/waiting progress and the fast ready transition on stderr while `hum up` is still running and before the other readiness timeout, proves child output is not copied into progress, and then observes the unchanged lexical stdout summaries.
+- [x] #3 AC3 — `go test ./integration -run "^TestUpReadinessTimeoutDiagnostics$" -count=1 -v` exits 0 and prints `--- PASS: TestUpReadinessTimeoutDiagnostics`. With the built binary it proves timeout and early-exit progress each name the declaration and print `hum logs NAME`, the timeout invocation exits 2 with its existing final result, the early-exit invocation preserves exit 3, and the advertised logs command reads retained child diagnostics without `up` streaming them.
+- [x] #4 AC4 — `go test ./internal/cli -run "^TestUpProgressOutputModes$" -count=1 -v` exits 0 and prints `--- PASS: TestUpProgressOutputModes`. It proves `up --json` writes no progress to stderr and stdout remains exactly one parseable, unchanged NDJSON result per declaration in lexical order; `up --no-wait`, human and JSON `start`, aggregate exit precedence, and final human stdout rendering remain unchanged.
+- [x] #5 AC5 — `go test ./internal/cli -run "^TestUpProgressDocs$" -count=1 -v` exits 0 and prints `--- PASS: TestUpProgressDocs`. It proves `hum up --help` and docs/design.md describe human-only stderr progress, unchanged final stdout and JSON behavior, the maximum of two lines per declaration, temporal progress order, no child-output streaming, and `hum logs NAME` guidance for timeout and early exit.
+- [x] #6 AC6 — `go test ./internal/cli -run "^TestUpProgressBlockedExistingState$" -count=1 -v` exits 0 and prints `--- PASS: TestUpProgressBlockedExistingState`. It proves dependency-blocked progress exactly distinguishes a retained running record, a retained exited record, and no record while preserving sorted direct blockers and the two-line bound.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-- [ ] T1 — Add a serialized, human-only `up` progress renderer and emit launch plus terminal readiness transitions from the HUM-026 scheduler without changing final result collection.
-- [ ] T2 — Add deterministic CLI and built-binary coverage for prompt progress, concurrency, exact bounded lines, retained-log diagnostics, and unchanged output modes.
-- [ ] T3 — Update CLI help and the design contract, then verify every focused acceptance command and the project gate.
+1. Add a mutex-serialized human progress writer and thread transition callbacks through the dependency-aware up scheduler.
+2. Add deterministic CLI and built-binary tests for temporal progress, bounded exact lines, output-mode compatibility, blocked states, and retained-log diagnostics.
+3. Update up help and docs/design.md, then run every acceptance command and task ci.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation started on main as explicitly requested; selected by task backlog:next.
+
+AC#1 PASS — go test ./internal/cli -run "^TestUpHumanProgress$" -count=1 -v; exact test and deterministic barrier/blocking-stderr subtests passed.
+AC#2 PASS — go test ./integration -run "^TestUpStartupProgress$" -count=1 -v; exact built-binary progress test passed.
+AC#3 PASS — go test ./integration -run "^TestUpReadinessTimeoutDiagnostics$" -count=1 -v; exact retained-diagnostics test passed.
+AC#4 PASS — go test ./internal/cli -run "^TestUpProgressOutputModes$" -count=1 -v; exact mode, precedence, and final-rendering test passed.
+AC#5 PASS — go test ./internal/cli -run "^TestUpProgressDocs$" -count=1 -v; exact help/design test passed.
+AC#6 PASS — go test ./internal/cli -run "^TestUpProgressBlockedExistingState$" -count=1 -v; exact blocked-state test passed.
+Gate PASS — task ci passed on the implementation tree committed as 7a544e7. task check:staged passed before commit.
+Independent verification — verifier PASS for AC1–AC6; its separate task ci attempts hit the pre-existing flaky TestAttachedRun size bound, while the authoritative local task ci rerun passed.
+Review — fixed the reviewer finding that synchronous stderr writes could consume readiness timeout by queueing bounded progress events to one renderer goroutine; added a blocking-stderr regression.
+Scope — implementation commit 7a544e7 touches exactly the five declared implementation paths. No test was deleted, skipped, or weakened; no protected gate file changed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented bounded temporal startup progress for human hum up on stderr while preserving lexical final stdout, JSON/no-wait/start/MCP behavior, exit precedence, readiness timing, and retained-log diagnostics. Added deterministic CLI and built-binary coverage plus docs. Verified all six exact AC commands and task ci; committed as 7a544e7.
+<!-- SECTION:FINAL_SUMMARY:END -->
