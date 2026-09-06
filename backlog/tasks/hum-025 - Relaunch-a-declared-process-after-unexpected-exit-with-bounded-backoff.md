@@ -1,10 +1,10 @@
 ---
 id: HUM-025
 title: Relaunch a declared process after unexpected exit with bounded backoff
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-05 15:14'
-updated_date: '2026-09-05 15:30'
+updated_date: '2026-09-06 03:10'
 labels:
   - config
   - process
@@ -62,28 +62,50 @@ Non-goals: relaunch for ad hoc or discovered definitions; CLI/MCP flags to set p
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/project -run "^TestRestartPolicyManifest$" -count=1 -v` exits 0 and prints `--- PASS: TestRestartPolicyManifest`. It proves `restart` accepts `never` and `on-failure`, defaults to `never`, rejects other strings and non-strings with file/entry context, remains `never` for discovered definitions, and appears as an inert commented line in generated `init` templates without making those manifests invalid.
-- [ ] #2 AC2 — `go test ./internal/app -run "^TestRelaunchOnFailure$" -count=1 -v` exits 0 and prints `--- PASS: TestRelaunchOnFailure`. With injected clock/launcher and race barriers it proves unexpected non-zero and foreign-signal exits schedule at most five attempts after 1s/2s/4s/8s/16s; child exit before 30s and spawn failure consume attempts; attempt-5 failure exhausts with one boundary; exit zero and `never` stay stopped; surviving 30s resets; explicit controls cancel/reset according to which exit/intent/timer linearizes first; generation checks make stale timers no-ops; a timer racing start/up/restart creates at most one child under existing launch semantics; readiness/timeouts do not trigger policy; automatic launches reuse the last effective spec, continue cursors, reset readiness, and increment `restart_count`; snapshots obey the visibility contract; and pending records resist completed-record eviction.
-- [ ] #3 AC3 — `go test ./internal/protocol -run "^TestRestartPolicyProtocol$" -count=1 -v`, `go test ./internal/cli -run "^TestRestartPolicyCLI$" -count=1 -v`, and `go test ./internal/mcp -run "^TestRestartPolicyMCP$" -count=1 -v` all exit 0 and print the corresponding named PASS line. They prove one protocol-version bump; policy propagation on start/restart requests and process snapshots; synthetic stopped, discovered, and ad hoc values; exact status/list pending and exhausted forms with ceiling countdown; stable JSON/MCP fields; existing start/up early-exit behavior; and durable followers receive exactly one ordinary exit/wait boundary plus the applicable relaunching, launch, or gave-up boundaries, remain open across pending/exhausted/operator-stop states, resume after a later launch, and close only on remove or daemon/transport shutdown.
-- [ ] #4 AC4 — `go test ./integration -run "^TestRelaunchAfterCrash$" -count=1 -v` exits 0 and prints `--- PASS: TestRelaunchAfterCrash`. With the built binary and a declared fixture that exits 1 on its first two launches and then stays up, it proves `hum up` returns exit 3 for the first incarnation, status observes pending relaunch, the third incarnation reaches ready, bounded logs retain both failures and boundaries, `relaunches` is 2 before stability reset, and followers remain attached. Race cases prove stop-before-exit prevents scheduling, exit-before-stop schedules then cancels, start-before-timer launches explicitly, timer-before-start yields one idempotent launch, exhaustion leaves a follower waiting and a later explicit start resumes it, and `restart: never` stays stopped after exit 1.
-- [ ] #5 AC5 — `go test ./internal/cli ./internal/skill -run "^TestRestartPolicyDocs$" -count=1 -v` exits 0 and prints both named PASS lines. README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document manifest validation, five-attempt schedule and 30-second reset, spawn failures, race linearization and operator override, last-effective-spec behavior, snapshot fields, retention/durable-follower semantics, and guidance to inspect failing output; docs/design.md no longer lists restart policy or crash restart/backoff as exclusions.
+- [x] #1 AC1 — `go test ./internal/project -run "^TestRestartPolicyManifest$" -count=1 -v` exits 0 and prints `--- PASS: TestRestartPolicyManifest`. It proves `restart` accepts `never` and `on-failure`, defaults to `never`, rejects other strings and non-strings with file/entry context, remains `never` for discovered definitions, and appears as an inert commented line in generated `init` templates without making those manifests invalid.
+- [x] #2 AC2 — `go test ./internal/app -run "^TestRelaunchOnFailure$" -count=1 -v` exits 0 and prints `--- PASS: TestRelaunchOnFailure`. With injected clock/launcher and race barriers it proves unexpected non-zero and foreign-signal exits schedule at most five attempts after 1s/2s/4s/8s/16s; child exit before 30s and spawn failure consume attempts; attempt-5 failure exhausts with one boundary; exit zero and `never` stay stopped; surviving 30s resets; explicit controls cancel/reset according to which exit/intent/timer linearizes first; generation checks make stale timers no-ops; a timer racing start/up/restart creates at most one child under existing launch semantics; readiness/timeouts do not trigger policy; automatic launches reuse the last effective spec, continue cursors, reset readiness, and increment `restart_count`; snapshots obey the visibility contract; and pending records resist completed-record eviction.
+- [x] #3 AC3 — `go test ./internal/protocol -run "^TestRestartPolicyProtocol$" -count=1 -v`, `go test ./internal/cli -run "^TestRestartPolicyCLI$" -count=1 -v`, and `go test ./internal/mcp -run "^TestRestartPolicyMCP$" -count=1 -v` all exit 0 and print the corresponding named PASS line. They prove one protocol-version bump; policy propagation on start/restart requests and process snapshots; synthetic stopped, discovered, and ad hoc values; exact status/list pending and exhausted forms with ceiling countdown; stable JSON/MCP fields; existing start/up early-exit behavior; and durable followers receive exactly one ordinary exit/wait boundary plus the applicable relaunching, launch, or gave-up boundaries, remain open across pending/exhausted/operator-stop states, resume after a later launch, and close only on remove or daemon/transport shutdown.
+- [x] #4 AC4 — `go test ./integration -run "^TestRelaunchAfterCrash$" -count=1 -v` exits 0 and prints `--- PASS: TestRelaunchAfterCrash`. With the built binary and a declared fixture that exits 1 on its first two launches and then stays up, it proves `hum up` returns exit 3 for the first incarnation, status observes pending relaunch, the third incarnation reaches ready, bounded logs retain both failures and boundaries, `relaunches` is 2 before stability reset, and followers remain attached. Race cases prove stop-before-exit prevents scheduling, exit-before-stop schedules then cancels, start-before-timer launches explicitly, timer-before-start yields one idempotent launch, exhaustion leaves a follower waiting and a later explicit start resumes it, and `restart: never` stays stopped after exit 1.
+- [x] #5 AC5 — `go test ./internal/cli ./internal/skill -run "^TestRestartPolicyDocs$" -count=1 -v` exits 0 and prints both named PASS lines. README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document manifest validation, five-attempt schedule and 30-second reset, spawn failures, race linearization and operator override, last-effective-spec behavior, snapshot fields, retention/durable-follower semantics, and guidance to inspect failing output; docs/design.md no longer lists restart policy or crash restart/backoff as exclusions.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-- [ ] T1 — Add strict manifest policy propagation and stable protocol/snapshot fields.
-- [ ] T2 — Add a generation-guarded, cancellation-safe crash-loop scheduler with retained-spec relaunch, eviction protection, and deterministic clock/launcher/race tests.
-- [ ] T3 — Integrate operator linearization, durable follower boundaries, CLI/MCP rendering, and existing restart-count semantics.
-- [ ] T4 — Update operator/agent documentation and prove recovery, cancellation, race, exhaustion, and later resume with the built binary.
+- [x] T1 — Add strict manifest policy propagation and stable protocol/snapshot fields.
+- [x] T2 — Add a generation-guarded, cancellation-safe crash-loop scheduler with retained-spec relaunch, eviction protection, and deterministic clock/launcher/race tests.
+- [x] T3 — Integrate operator linearization, durable follower boundaries, CLI/MCP rendering, and existing restart-count semantics.
+- [x] T4 — Update operator/agent documentation and prove recovery, cancellation, race, exhaustion, and later resume with the built binary.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in commit 1c822c8 (feat: add bounded crash relaunch policy).
+
+AC#1 — PASS: `go test ./internal/project -run "^TestRestartPolicyManifest$" -count=1 -v` exited 0 and printed PASS.
+AC#2 — PASS: `go test ./internal/app -run "^TestRelaunchOnFailure$" -count=1 -v` exited 0 and printed PASS; `go test -race ./internal/app -run "^TestRelaunchOnFailure$" -count=1 -v` also passed.
+AC#3 — PASS: `go test ./internal/protocol -run "^TestRestartPolicyProtocol$" -count=1 -v`, `go test ./internal/cli -run "^TestRestartPolicyCLI$" -count=1 -v`, and `go test ./internal/mcp -run "^TestRestartPolicyMCP$" -count=1 -v` each exited 0 and printed PASS.
+AC#4 — PASS: `go test ./integration -run "^TestRelaunchAfterCrash$" -count=1 -v` exited 0 and printed PASS.
+AC#5 — PASS: `go test ./internal/cli ./internal/skill -run "^TestRestartPolicyDocs$" -count=1 -v` exited 0 and printed both PASS lines.
+
+Final gate: `task ci` passed on commit 1c822c8, including staticcheck, all tests, race tests, build, and smoke test. Independent verifier returned PASS for AC1-AC5 and DoD #3-#6; its sole pre-finalization failure was the then-missing Implementation Notes recorded here. All 34 changed paths are within the declared modified-file contract. No test was deleted, skipped, or weakened, and no protected gate file changed.
+
+Modified-file contract deviation: the authoritative backlog task file is updated only for required completion evidence/status and is committed separately as provider metadata; implementation commit 1c822c8 remains entirely within the declared product paths.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added opt-in manifest on-failure relaunch with bounded exponential backoff, stability reset, serialized operator controls, retained launch specs/output/followers, protocol/CLI/MCP visibility, integration coverage, and operator/agent documentation. Delivered in commit 1c822c8; task ci and independent AC verification pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
