@@ -24,7 +24,7 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 		Usage:     "serve project process lifecycle tools over stdio MCP",
 		ArgsUsage: "",
 		Description: "Run a stdio Model Context Protocol server for one-time coding-agent registration. " +
-			"Every tool requires an absolute existing project_root. start and up accept only resolved explicit or discovered definitions and may start the daemon; status, logs, wait, input, restart, and stop control existing declared or ad_hoc records and never start it. " +
+			"Every tool requires an absolute existing project_root. up honors manifest after readiness dependencies with concurrent roots, lexical results, and sorted direct blocked_by skips; no_wait is rejected before daemon contact when after is declared. start is explicitly named and never pulls in prerequisites. start and up accept only resolved explicit or discovered definitions and may start the daemon; status, logs, wait, input, restart, and stop control existing declared or ad_hoc records and never start it. " +
 			"A process handed off by hum run is available as ad_hoc while its daemon retains the record; daemon shutdown or replacement loses that launch definition. " +
 			"Bounded child-output logs and matches use terminal-control-stripped text, while system entries, stored bytes, cursors, and limit accounting remain raw; there is no --raw flag or other raw opt-out. " +
 			"Explicit definitions use deterministic argv-based environment activation with the MCP server environment. " +
@@ -60,7 +60,7 @@ func (mcpResolver) Resolve(_ context.Context, root string) (mcpserver.Resolution
 		definitions = append(definitions, mcpserver.Definition{
 			Name: definition.Name, Source: definition.Source,
 			Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd,
-			Ready: readinessConfig(definition), TTY: definition.TTY, Restart: restartPolicy(definition),
+			Ready: readinessConfig(definition), After: append([]string{}, definition.After...), TTY: definition.TTY, Restart: restartPolicy(definition),
 		})
 	}
 	return mcpserver.Resolution{Root: manifest.root, Definitions: definitions}, nil

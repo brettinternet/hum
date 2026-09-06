@@ -9,8 +9,9 @@ Use MCP as the primary integration. Use this skill only for shell-only fallback 
 
 ## Start and inspect
 
-- Try `hum up` first; it starts every resolved process and waits for readiness by default.
-- Use `hum start <name>` for one resolved process; it waits for readiness unless you opt out.
+- Try `hum up` first; when `hum.yaml` declares `after`, it starts independent roots concurrently and launches each dependent only after every direct prerequisite is observed `ready`. It waits for readiness by default; each process's readiness timeout starts at its own launch or first running observation; results settle in lexical order.
+- Use `hum start <name>` for one resolved process; it waits for readiness unless you opt out. `start NAME...` is explicit-only and never pulls in `after` prerequisites.
+- `after` lists must name unique same-manifest processes that declare `ready`; cycles, unknown names, duplicates, self-reference, malformed lists, and dependencies without readiness are manifest errors. `up --no-wait` is rejected before daemon contact when any `after` is declared.
 - Use `hum list` for discovery, and to inspect each process's source and readiness.
 - Read bounded output with `hum logs --tail 100 <name>` or `hum logs --after-cursor <cursor> --json <name>`.
 - Use `hum wait <name>` for a bounded later condition, including before another client starts the name.
@@ -18,6 +19,7 @@ Use MCP as the primary integration. Use this skill only for shell-only fallback 
 - For intermediate work, use `hum stop <name>`, run the work, then `hum start <name>`; the durable session keeps observers attached.
 - After process-definition changes, use `hum restart <name>`.
 - A manifest process may opt into `restart: on-failure`; the default is `never`.
+- If an `after` prerequisite exits before readiness, `up` reports the prerequisite failure and returns dependents as `skipped` with sorted direct `blocked_by` names; it does not follow an automatic successor. A skip may include read-only `existing_state` and process snapshot data, but it still means no launch occurred and still blocks dependents. Read the failure, then rerun `hum up` after the prerequisite is ready. Skips do not change aggregate exit precedence (1 request error, 3 early exit, 2 timeout, 0 success).
   It retries unexpected non-zero or signal exits after 1s, 2s, 4s, 8s, and 16s,
   for at most five automatic attempts. Read `hum status NAME` and the retained
   `hum logs NAME` output before editing a failing/crashing process again; recovery does

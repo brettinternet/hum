@@ -486,6 +486,115 @@ processes:
 	}
 }
 
+func TestUpOrdersByAfter(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  db:
+    argv: [/bin/sh, -c, "printf db-ready; sleep 30"]
+    ready: {match: db-ready}
+  api:
+    argv: [/bin/sh, -c, "printf api-ready; sleep 30"]
+    after: [db]
+    ready: {match: api-ready}
+  web:
+    argv: [/bin/sh, -c, "printf web-ready; sleep 30"]
+    after: [api]
+    ready: {match: web-ready}
+  root:
+    argv: [/bin/sh, -c, "printf root-ready; sleep 30"]
+    ready: {match: root-ready}
+`)
+	stdout, stderr, err := stopShutdownRun(t, "up", "--json")
+	if err != nil {
+		t.Fatalf("ordered up: %v (stdout=%s stderr=%s)", err, stdout, stderr)
+	}
+	results := manifestCLILaunchResults(t, stdout)
+	if got := []string{results[0].Name, results[1].Name, results[2].Name, results[3].Name}; !reflect.DeepEqual(got, []string{"api", "db", "root", "web"}) {
+		t.Fatalf("ordered up names = %v", got)
+	}
+	for _, result := range results {
+		if result.Outcome != "started" || result.Readiness != app.ReadinessReady {
+			t.Fatalf("ordered up result = %+v", result)
+		}
+	}
+	stdout, stderr, err = stopShutdownRun(t, "up", "--json")
+	if err != nil {
+		t.Fatalf("idempotent ordered up: %v (stdout=%s stderr=%s)", err, stdout, stderr)
+	}
+	results = manifestCLILaunchResults(t, stdout)
+	for _, result := range results {
+		if result.Outcome != "already_running" || result.Readiness != app.ReadinessReady {
+			t.Fatalf("idempotent ordered up result = %+v", result)
+		}
+	}
+}
+
+func TestUpReportsBlockedExistingState(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  db:
+    argv: [/bin/sh, -c, "exit 4"]
+    ready: {match: db-ready}
+  api:
+    argv: [/bin/sh, -c, "sleep 30"]
+    after: [db]
+    ready: {match: api-ready}
+  web:
+    argv: [/bin/sh, -c, "sleep 30"]
+    after: [api]
+    ready: {match: web-ready}
+`)
+
+	startedOut, startedErr, err := stopShutdownRun(t, "start", "--json", "--no-wait", "api")
+	if err != nil || startedErr != "" {
+		t.Fatalf("seed running api: %v (stdout=%s stderr=%s)", err, startedOut, startedErr)
+	}
+	started := manifestCLILaunchResults(t, startedOut)[0]
+
+	stdout, stderr, err := stopShutdownRun(t, "up", "--json")
+	if err == nil || manifestCLIExitCode(err) != 3 || stderr != "" {
+		t.Fatalf("up with running blocked record: %v (stdout=%s stderr=%s)", err, stdout, stderr)
+	}
+	results := manifestCLILaunchResults(t, stdout)
+	if results[0].Name != "api" || results[0].Outcome != "skipped" || results[0].ExistingState != "running" || results[0].PID == nil || started.PID == nil || *results[0].PID != *started.PID {
+		t.Fatalf("running blocked api = %+v, seeded %+v", results[0], started)
+	}
+	if !reflect.DeepEqual(results[0].BlockedBy, []string{"db"}) || results[2].Name != "web" || results[2].Outcome != "skipped" || results[2].ExistingState != "" || results[2].PID != nil {
+		t.Fatalf("running blocked results = %+v", results)
+	}
+
+	if _, stopErr, stopRunErr := stopShutdownRun(t, "stop", "api"); stopRunErr != nil || stopErr != "" {
+		t.Fatalf("stop seeded api: %v (stderr=%s)", stopRunErr, stopErr)
+	}
+	stdout, stderr, err = stopShutdownRun(t, "up", "--json")
+	if err == nil || manifestCLIExitCode(err) != 3 || stderr != "" {
+		t.Fatalf("up with exited blocked record: %v (stdout=%s stderr=%s)", err, stdout, stderr)
+	}
+	results = manifestCLILaunchResults(t, stdout)
+	if results[0].Outcome != "skipped" || results[0].ExistingState != "exited" || results[0].LaunchCursor == nil || started.LaunchCursor == nil || *results[0].LaunchCursor != *started.LaunchCursor {
+		t.Fatalf("exited blocked api = %+v, seeded %+v", results[0], started)
+	}
+	if results[2].Outcome != "skipped" || results[2].ExistingState != "" {
+		t.Fatalf("absent blocked web = %+v", results[2])
+	}
+
+	human, humanErr, humanRunErr := stopShutdownRun(t, "up")
+	if humanRunErr == nil || manifestCLIExitCode(humanRunErr) != 3 || humanErr != "" {
+		t.Fatalf("human blocked up: %v (stdout=%s stderr=%s)", humanRunErr, human, humanErr)
+	}
+	for _, phrase := range []string{"api: skipped (blocked by db); existing process exited", "web: skipped (blocked by api); not launched"} {
+		if !strings.Contains(human, phrase) {
+			t.Fatalf("human blocked output missing %q: %s", phrase, human)
+		}
+	}
+}
+
 func TestManifestList(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	runtimeDir := filepath.Join(t.TempDir(), "runtime")

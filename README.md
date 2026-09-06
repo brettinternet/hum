@@ -21,17 +21,25 @@ hum logs clock --follow
 With no configuration, `hum up` finds one conventional `dev` task in Mise,
 Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or Phoenix.
 
-For projects with multiple processes, commit a `hum.yaml`:
+For projects with multiple processes, commit a `hum.yaml`. Declare readiness before using a process as an `after` dependency; `hum up` starts independent roots concurrently and then gates dependents:
 
 ```yaml
 version: 1
 processes:
+  db:
+    argv: [docker, compose, up, db]
+    ready:
+      match: "ready"
+  api:
+    argv: [bun, run, api]
+    after: [db]
+    ready:
+      match: "Listening"
   web:
     argv: [bun, run, dev]
+    after: [api]
     ready:
       match: "Local:"
-  worker:
-    argv: [bun, run, worker]
 ```
 
 Existing Task or Just definitions can remain the source of truth; `hum.yaml`
@@ -49,13 +57,13 @@ processes:
 ```
 
 ```sh
-hum up
+hum up                         # ordered readiness gates; output is lexical
 hum status web
 hum logs web worker --tail 50
 hum stop web
 # run migrations, installs, or other intermediate work
-hum start web
-hum down
+hum start web                  # starts only the explicitly named process
+hum down                       # stops project processes concurrently
 ```
 
 Run a one-off named process without a manifest:
@@ -108,6 +116,29 @@ launch immediately. Retained logs include each failed incarnation and the
 attached through backoff and exhaustion. Before editing again, agents should
 read the failing incarnation's retained output with `hum logs` (or MCP `logs`)
 so the crash is diagnosed rather than hidden by recovery.
+
+### Ordered startup
+
+A process may declare `after: [db, queue]`. Every dependency must be a unique
+name in the same manifest, must not be the owner, and must declare `ready`;
+unknown names, duplicates, cycles, non-lists, and non-string elements are
+manifest errors with indexed `process "name".after[index]` context. Readiness is
+the gate, and each process's timeout starts when that process launches (or is
+first observed already running). Independent roots overlap.
+
+`hum up` emits stable lexical results after all definitions settle. A failed or
+unready prerequisite produces `outcome: skipped` with every direct unsatisfied
+`blocked_by` name sorted; skips do not add an exit code, so aggregate precedence
+remains request error 1, exited before ready 3, timed out 2, and success 0. Before
+finalizing a skip, `up` observes any retained record without changing it: JSON
+reports `existing_state: running|exited` with its snapshot, while human output
+says `existing process running`, `existing process exited`, or `not launched`.
+A skipped node still blocks dependents even when its retained record is running.
+`up --no-wait` is rejected before daemon contact when any `after` is declared.
+`start NAME...` remains explicit-only and never pulls in prerequisites; `down`
+remains concurrent. If an `on-failure` prerequisite is recovering, that
+invocation records its early exit and skips dependents rather than following the
+successor; rerun `hum up` after the prerequisite is ready.
 
 ### Aggregate logs
 

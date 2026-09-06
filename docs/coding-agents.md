@@ -48,6 +48,17 @@ Cursor and other clients that accept an `mcpServers` configuration:
 ```
 
 Every tool call requires `project_root`, set to the project's absolute path.
+Prefer `up` over sequencing `start` calls when `hum.yaml` declares `after`:
+independent roots launch concurrently, each dependency waits for readiness, and
+each process timeout starts at its launch or first running observation; final
+results are lexical. `up` reports `skipped` with sorted direct
+`blocked_by` names when a prerequisite fails. A skip may include read-only
+`existing_state` and process snapshot data; it still means no launch occurred
+and still blocks dependents. CLI `up --no-wait` and MCP
+`no_wait: true` are rejected before daemon contact for such a manifest. `start` remains explicitly named and never
+pulls in prerequisites. If an `on-failure` prerequisite is recovering, rerun
+`up` after it is ready rather than expecting the same invocation to follow its
+successor.
 The server exposes `start`, `up`, `down`, `list`, `status`, `logs`, `wait`,
 `input`, `restart`, `stop`, and `remove`. Its bounded `input` tool accepts
 exact non-empty text or strict padded base64 without whitespace for an
@@ -81,7 +92,9 @@ processes:
 ## Crash relaunch policy
 
 A manifest process can opt in with `restart: on-failure`; `never` is the
-strict default and the only other accepted value. Discovery and ad-hoc sessions
+strict default and the only other accepted value. A manifest `after` list must
+contain unique same-manifest names that declare `ready`; malformed values,
+unknown names, self-reference, duplicates, and cycles are rejected. Discovery and ad-hoc sessions
 always use `never`, and invalid or non-string values fail manifest validation.
 The policy retries non-zero or signal exits after 1s, 2s, 4s, 8s, and 16s, at
 most five times. Spawn failures consume an attempt. An automatic child alive for

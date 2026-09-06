@@ -151,6 +151,7 @@ func renderInitManifest(candidates []Definition, outcome InitOutcome, reason str
 		document.WriteString("#     argv:\n")
 		document.WriteString("#       - \"command\"\n")
 		document.WriteString("#     # restart: on-failure\n")
+		document.WriteString("#     # after: [db]\n")
 		document.WriteString("version: 1\n")
 		document.WriteString("processes: {}\n")
 		return []byte(document.String())
@@ -169,6 +170,7 @@ func renderInitManifest(candidates []Definition, outcome InitOutcome, reason str
 	document.WriteString("    #   match: \"Local:\"\n")
 	document.WriteString("    #   timeout: 30s\n")
 	document.WriteString("    # restart: on-failure\n")
+	document.WriteString("    # after: [db]\n")
 	return []byte(document.String())
 }
 
@@ -192,6 +194,8 @@ func cloneDefinitions(definitions []Definition) []Definition {
 	for i, definition := range definitions {
 		cloned[i] = definition
 		cloned[i].Argv = append([]string(nil), definition.Argv...)
+		cloned[i].After = make([]string, len(definition.After))
+		copy(cloned[i].After, definition.After)
 		if definition.Ready != nil {
 			ready := *definition.Ready
 			cloned[i].Ready = &ready

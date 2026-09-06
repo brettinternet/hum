@@ -9,14 +9,16 @@ Use the bundled hum MCP tools when available. Pass the absolute current project 
 
 ## Start and inspect
 
-- Try `up` first; it starts every resolved process and waits for readiness by default. The CLI equivalent is `hum up`.
-- Use `start` for one resolved process. The CLI equivalent is `hum start <name>`.
+- Try `up` first; when `hum.yaml` declares `after`, it starts independent roots concurrently and launches each dependent only after every direct prerequisite is observed `ready`; each process timeout starts at its own launch or first running observation, with lexical final results. The CLI equivalent is `hum up`.
+- Use `start` for one explicitly named resolved process. It never pulls in `after` prerequisites. The CLI equivalent is `hum start <name>`.
+- `after` must be a unique same-manifest name list whose dependencies declare `ready`; unknown names, duplicates, self-reference, malformed values, cycles, and dependencies without readiness fail manifest validation. `up --no-wait` is rejected before daemon contact when any `after` is declared.
 - Use `list` to discover processes and inspect source and readiness.
 - Read bounded output with `logs`. For CLI fallback, use `hum logs --tail 100 <name>` or continue from a cursor with `hum logs --after-cursor <cursor> --json <name>`.
 - Use `wait` for a bounded later condition, including before another client starts the name.
 - For intermediate work, use `stop`, run the work, then `start`; the durable session keeps terminal observers attached.
 - After process-definition changes, use `restart`.
 - A manifest process may opt into `restart: on-failure`; the default is `never`.
+- If an `after` prerequisite exits before readiness, `up` returns the failure and returns dependents as `skipped` with sorted direct `blocked_by` names rather than following its automatic successor. A skip may include read-only `existing_state` and process snapshot data, but it still means no launch occurred and still blocks dependents. Read the retained failure, then rerun `up` after the prerequisite is ready; skips keep aggregate exit precedence unchanged (1 request error, 3 early exit, 2 timeout, 0 success).
   Unexpected exits retry after 1s, 2s, 4s, 8s, and 16s, at most five times.
   Inspect retained `logs` before editing a crashing process again.
 - Use `remove` only to discard the runtime session, retained output, and launch state; it never edits `hum.yaml`.
