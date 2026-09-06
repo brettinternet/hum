@@ -1176,3 +1176,23 @@ func TestTTYMCP(t *testing.T) {
 		t.Fatalf("running non-tty drift result = %#v", value)
 	}
 }
+
+func TestInitializeNegotiatesProtocolVersion(t *testing.T) {
+	cases := map[string]string{
+		`{"protocolVersion":"2024-11-05"}`: "2024-11-05",
+		`{"protocolVersion":"2025-03-26"}`: "2025-03-26",
+		`{"protocolVersion":"2025-06-18"}`: "2025-06-18",
+		`{"protocolVersion":"1999-01-01"}`: "2025-06-18",
+		`{}`:                               "2025-06-18",
+	}
+	for params, want := range cases {
+		var in, out bytes.Buffer
+		in.WriteString(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":` + params + "}\n")
+		if err := NewServer(Options{}).Serve(context.Background(), &in, &out); err != nil {
+			t.Fatalf("params %s: %v", params, err)
+		}
+		if !strings.Contains(out.String(), `"protocolVersion":"`+want+`"`) {
+			t.Errorf("params %s: response %s, want protocolVersion %s", params, out.String(), want)
+		}
+	}
+}

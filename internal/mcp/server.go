@@ -113,7 +113,7 @@ func (s *Server) handleRequest(ctx context.Context, request rpcRequest) (any, *r
 			version = s.opts.Version
 		}
 		return map[string]any{
-			"protocolVersion": mcpProtocolVersion,
+			"protocolVersion": negotiateProtocolVersion(request.Params),
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]string{"name": "hum", "version": version},
 		}, nil
@@ -143,4 +143,27 @@ func (s *Server) handleRequest(ctx context.Context, request rpcRequest) (any, *r
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found"}
 	}
+}
+
+// supportedProtocolVersions lists the MCP revisions this server can speak.
+// The tool surface (tools/list, tools/call, ping) is identical across them;
+// newer-only fields such as structuredContent are ignored by older clients.
+var supportedProtocolVersions = []string{"2024-11-05", "2025-03-26", mcpProtocolVersion}
+
+// negotiateProtocolVersion echoes the client's requested version when it is
+// supported, as the specification requires, and otherwise offers the latest
+// version this server implements.
+func negotiateProtocolVersion(params json.RawMessage) string {
+	var requested struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if len(params) > 0 {
+		_ = json.Unmarshal(params, &requested)
+	}
+	for _, version := range supportedProtocolVersions {
+		if requested.ProtocolVersion == version {
+			return version
+		}
+	}
+	return mcpProtocolVersion
 }
