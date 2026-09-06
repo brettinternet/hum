@@ -2,26 +2,20 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-`hum` is a local process supervisor for humans and coding agents. It keeps
-project processes alive between commands and gives every client the same
-bounded logs and lifecycle controls.
+`hum` keeps local project processes running between commands, with bounded logs and lifecycle controls.
 
 ```sh
-# shell A
 hum run clock -- ./clock.sh
-
-# shell B
 hum logs clock --follow
-
-# ^ these can also be run out of order
 ```
 
 [![Demo of hum supervising a process, retaining its logs, and stopping it](docs/demo.gif)](docs/demo.tape)
 
-With no configuration, `hum up` finds one conventional `dev` task in Mise,
-Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or Phoenix.
+## Start processes
 
-For projects with multiple processes, commit a `hum.yaml`. Declare readiness before using a process as an `after` dependency; `hum up` starts independent roots concurrently and then gates dependents:
+With no configuration, `hum up` finds a conventional `dev` task in Mise, Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or Phoenix.
+
+For multiple processes, add `hum.yaml`:
 
 ```yaml
 version: 1
@@ -42,147 +36,80 @@ processes:
       match: "Local:"
 ```
 
-Existing Task or Just definitions can remain the source of truth; `hum.yaml`
-can forward to them while adding supervision-specific readiness:
+`hum up` starts independent processes concurrently and waits for each `ready` match before starting dependents. Existing Task and Just commands can remain the source of truth:
 
 ```yaml
-version: 1
 processes:
   web:
     argv: [task, "dev:web"]
     ready:
       match: "Listening on"
-  worker:
-    argv: [just, dev-worker]
 ```
 
 ```sh
-hum up                         # ordered readiness gates; output is lexical
+hum up
 hum status web
-hum logs web worker --tail 50
+hum logs web --tail 50
+hum start web
 hum stop web
-# run migrations, installs, or other intermediate work
-hum start web                  # starts only the explicitly named process
-hum down                       # stops project processes concurrently
+hum down
 ```
 
-Run a one-off named process without a manifest:
+`start` is explicit and does not start dependencies. `down` stops project processes concurrently. See [design and command semantics](docs/design.md) for validation and exit details.
+
+## Sessions
+
+Run a named process without a manifest:
 
 ```sh
 hum run preview -- bun run preview
+hum logs preview --follow
+hum wait preview --match "ready"
+hum stop preview
+hum remove preview
 ```
 
-Process names are durable supervision sessions. Attached `run` and `logs --follow`
-stay open across stops and launches until Ctrl+C; they may attach before the first
-launch. `wait` is the bounded alternative for automation. `stop` preserves the
-session and retained launch state, while `remove` stops and discards runtime state
-without editing `hum.yaml`. `hum status <name>` and `hum list --all` report the
-number of live attached `run` and `logs --follow` clients as `followers`; this is
-a read-only observation and never warns, prompts, or blocks `remove`. Records
-without a live daemon session report zero. Unobserved completed sessions remain
-bounded by eviction. `down` stops all project processes; a later `up` restarts resolved
-definitions, not retained ad hoc sessions. Daemon loss ends followers nonzero
-with a diagnostic; followers do not reconnect.
+Names identify durable sessions. Attached `run` and `logs --follow` clients stay attached across stops and launches until Ctrl+C. `wait` is bounded for automation. `stop` preserves session state; `remove` stops and discards it. `hum status NAME` and `hum list --all` show live followers. Followers do not reconnect after daemon loss.
 
-### Crash relaunch
+## Restart on failure
 
-A manifest process may opt into the bounded policy `restart: on-failure` (the
-only other value is `never`, which is the default). Unknown values and non-string
-values are rejected with the manifest file and process context. Discovered
-processes and ad-hoc sessions always use `never`; `hum init` leaves an inert,
-commented `restart: on-failure` example in generated templates.
+Manifest processes default to `never`. Enable bounded recovery with `on-failure`:
 
-For an opted-in process, a non-zero exit or signal not owned by an explicit
-`stop`, `down`, `restart`, `remove`, or shutdown (including their TERM/KILL
-control) schedules at most five
-automatic relaunches after 1s, 2s, 4s, 8s, and 16s. A spawn failure consumes
-that attempt and is retained as a bounded system entry. An automatic
-incarnation that survives 30 seconds resets the counter; exit zero and
-operator controls also reset it. Backoff is generation-guarded, so a stop or
-manual start/restart wins cleanly and no stale timer can launch a child.
-Automatic relaunches reuse the last effective argv, cwd, environment, readiness,
-and TTY rather than rereading the manifest; `hum restart NAME` is the explicit
-operation that adopts definition edits: only restart applies a changed
-definition. While a manifest-sourced process is
-running or recovery-capable, `hum up` and `hum start NAME` report
-`definition_drift` with sorted `changed_fields` and restart guidance instead of
-silently adopting the edit. The readiness matcher and normalized restart policy
-are comparison boundaries; environment and readiness timeout are not compared.
-Readiness timeout never triggers a relaunch.
+```yaml
+processes:
+  api:
+    argv: [bun, run, api]
+    restart: on-failure
+```
 
-Status, list, CLI JSON, and MCP snapshots expose `restart`, `relaunches`, and
-`next_launch_at` while backoff is pending. During this bounded recovery,
-`hum up` and MCP `up` observe an exited declaration as `recovery_pending`; after
-all five attempts they report `recovery_exhausted`. These observations do not
-send a start request or wait for an automatic successor, and CLI `hum up` exits
-3 because the declaration is not running. Use targeted `hum restart NAME` (or
-the matching MCP tool) to adopt changed definitions; `hum start NAME` cancels
-matching pending recovery. A changed running or recovery-capable declaration
-returns `definition_drift` with sorted `changed_fields` and `hum restart NAME`
-guidance. Retained logs include each failed incarnation and the
-`relaunching`, spawn-failure, and final `gave up` boundaries; followers remain
-attached through backoff and exhaustion. Before editing again, agents should
-read the failing incarnation's retained output with `hum logs` (or MCP `logs`)
-so the crash is diagnosed rather than hidden by recovery.
+A non-zero exit schedules at most five relaunches after:
 
-### Ordered startup
+```text
+1s, 2s, 4s, 8s, 16s
+```
 
-A process may declare `after: [db, queue]`. Every dependency must be a unique
-name in the same manifest, must not be the owner, and must declare `ready`;
-unknown names, duplicates, cycles, non-lists, and non-string elements are
-manifest errors with indexed `process "name".after[index]` context. Readiness is
-the gate, and each process's timeout starts when that process launches (or is
-first observed already running). Independent roots overlap.
+Manual controls win. Relaunches reuse the last effective process definition and do not reread the manifest. Use `hum restart NAME` to adopt definition changes. Status, JSON, and MCP snapshots expose recovery state and relaunch counts. Read retained logs with `hum logs` to diagnose failures.
 
-`hum up` emits stable lexical results after all definitions settle. A changed
-running or recovery-capable declaration produces `outcome: definition_drift`,
-sorted `changed_fields`, and `hum restart NAME` guidance; CLI exits 1 and the
-result cannot satisfy an `after` gate. A manifest-sourced running,
-pending-recovery, or exhausted record absent from the current declarations
-produces `outcome: removed_definition` with `hum stop NAME or hum remove NAME`
-guidance. Removed records require an explicit stop or remove. Removed
-warnings are lexical, do not change aggregate exit status, and exclude ad-hoc
-and conventionally discovered records. A failed or
-unready prerequisite produces `outcome: skipped` with every direct unsatisfied
-`blocked_by` name sorted; skips do not add an exit code, so aggregate precedence
-remains request error 1, exited before ready 3, timed out 2, and success 0. Before
-finalizing a skip, `up` observes any retained record without changing it: JSON
-reports `existing_state: running|exited` with its snapshot, while human output
-says `existing process running`, `existing process exited`, or `not launched`.
-A skipped node still blocks dependents even when its retained record is running.
-`up --no-wait` is rejected before daemon contact when any `after` is declared.
-`start NAME...` remains explicit-only and never pulls in prerequisites; `down`
-remains concurrent. If an `on-failure` prerequisite is recovering, that
-invocation records its early exit and skips dependents rather than following the
-successor; rerun `hum up` after the prerequisite is ready.
+## Aggregate logs
 
-### Aggregate logs
+```sh
+hum logs --follow
+hum logs web worker --tail 50
+hum logs web --stream stdout --match Listening
+```
 
-After `hum up`, use `hum logs --follow` to watch every current declaration in one
-terminal. `hum logs [NAME...]` accepts names in selection order. Omitting names
-resolves the current project's declarations once in lexical order, excludes ad-hoc
-sessions, and keeps that membership fixed for the command. Duplicate names are rejected, and
-`--after-cursor` remains a single-explicit-name option. Aggregate bounded reads apply
-`--stream`, `--match`, `--tail`, and each byte or entry limit independently to every
-name; output follows selection order. Human aggregate entries are written atomically
-with a `[NAME]` prefix, while JSON uses the existing named NDJSON event objects.
-Aggregate follow opens one follower per selected session, serializes writes, keeps
-session errors named and isolated, and closes every follower on daemon loss or
-output failure. Ctrl+C closes those followers without signaling any managed process.
-A single explicit name retains the existing human and JSON output unchanged.
+Without names, logs selects the current project declarations once, in lexical order. Ad-hoc sessions are excluded. Named output is prefixed with `[NAME]`; JSON uses named NDJSON events. Limits and filters apply independently to each process. Ctrl+C closes log followers without stopping processes.
 
-## Install
+## Install and build
 
-Install the latest macOS or Linux release with [mise](https://mise.jdx.dev/):
+Install the latest release with [mise](https://mise.jdx.dev/):
 
 ```toml
 [tools]
 "github:brettinternet/hum" = "latest"
 ```
 
-## Build
-
-Install mise, then:
+Build from a checkout:
 
 ```sh
 mise install
@@ -193,71 +120,37 @@ task cli:build
 
 ## Coding agents
 
-Codex users can install the bundled hum skill and MCP registration from a
-repository checkout after placing `hum` on `PATH`:
+With `hum` on `PATH`:
 
 ```sh
 codex plugin marketplace add .
 codex plugin add hum@hum
 ```
 
-`hum mcp` exposes the same project processes, bounded output, and one-shot TTY
-input over MCP for manual registration with other coding agents.
+`hum mcp` exposes project processes, bounded output, and one-shot TTY input over MCP.
 
-See [coding-agent setup](docs/coding-agents.md) for Claude Code, Cursor, the MCP
-tool surface, and the shell-only skill fallback.
+See [coding-agent setup](docs/coding-agents.md) for Claude Code, Cursor, MCP, and the shell-only skill.
 
-## Documentation
+## TTY input
 
-- [Design and command semantics](docs/design.md)
-- [Development setup and checks](docs/development.md)
-- [Coding-agent setup](docs/coding-agents.md)
+TTY support is opt-in:
 
-### Interactive TTY sessions
+```yaml
+processes:
+  console:
+    argv: [./console]
+    tty: true
+```
 
-TTY support is opt-in. Add `tty: true` to a process in `hum.yaml`, or use
-`hum run NAME --tty -- COMMAND...` (and optionally `--detach`) for an ad-hoc
-session. A TTY session has one attached input owner; other `hum run` clients
-follow output only, while `logs --follow` is always output-only. Attached TTY
-runs preserve terminal control sequences and retain the merged child stream as
-`stdout`; `stderr` has no child entries. Terminal echo is produced by the
-child, so password secrecy depends on the child disabling echo.
+```sh
+hum run console --tty -- ./console
+hum logs console
+hum input console --text 'value'
+hum input console --base64 PADDED_VALUE
+```
 
-The attached terminal is put in raw mode and restored on detach, transport
-loss, signals, panics, and errors. The owner alone forwards SIGWINCH resizes. Press
-Ctrl-] to detach only input; Ctrl-C, Ctrl-D, and Ctrl-Z are forwarded to the
-child in TTY mode. Non-TTY runs keep the
-existing Ctrl-C observer-detach behavior. A TTY lease survives ordinary stop
-and restart, targets each launch cursor, discards input while stopped, and is
-closed by remove or daemon shutdown. Bare `hum shutdown` still refuses while
-work is active; use `hum shutdown --stop-processes` to apply the normal grace
-sequence.
+A TTY has one input owner. Other `run` clients and `logs --follow` receive output only. Ctrl-] detaches input. Ctrl-C, Ctrl-D, and Ctrl-Z go to the child.
 
-For bounded request/response input, observe with `hum logs` or `hum wait --match`,
-answer with `hum input NAME --text 'value'` (or MCP `input`), then confirm with
-`hum wait --match`. Use `hum input NAME --base64 PADDED_VALUE` for exact binary
-bytes. Text sends exact bytes without a newline (it never adds one); base64 must
-be strict padded base64 (standard alphabet) without whitespace and decode to at most 32 KiB.
-`input` only targets an already-running TTY incarnation, writes once at its
-initial launch cursor (at-most-once, with no resend across a launch race), fails
-immediately on an ownership conflict when another client owns input, and never
-starts, waits, queues, retries, retains, or explicitly echoes the payload.
-Success prints the acknowledged byte count and launch cursor; `--json` emits
-`name`, `bytes`, and `launch_cursor`. MCP exposes the same bounded operation as
-its `input` tool.
+`--text` sends exact bytes without a newline. `--base64` accepts strict padded base64 up to 32 KiB. `input` targets only a running TTY, sends once, and never queues, retries, or echoes the payload. Use `--json` for `name`, `bytes`, and `launch_cursor`. MCP provides the same `input` operation.
 
-Bounded child-output reads (`hum logs`, including JSON and tail, and MCP `logs`)
-and child-output matches (`logs --match`, `wait --match`, and readiness matches)
-use terminal-control-stripped text. The strip is byte-wise and per entry:
-stdout/stderr control sequences are removed, while system entries remain raw.
-Patterns containing raw ESC bytes no longer match stripped child text; a `^`
-anchor now matches colourised output whose raw first byte is ESC. Stored bytes,
-cursors, and limit accounting remain raw, so a control-only bounded
-child entry is retained with empty text and raw byte limits still apply.
-`logs --follow --match` selects child entries using stripped text but emits the selected
-raw entry; follow and attached `run` rendering remain raw. There is no `--raw`
-flag or other raw opt-out. Stripping does not emulate a terminal or collapse
-redraws: a sequence split across entries can leave its tail visible, and
-carriage-return redraw frames stay
-separate. Keep TTY off when a tool's non-interactive mode (`--yes`, `CI=1`, or
-`--force`) is sufficient.
+TTY log matches strip terminal control sequences from child text; emitted follow output remains raw. Keep TTY off when non-interactive modes such as `--yes`, `CI=1`, or `--force` are sufficient.
