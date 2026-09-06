@@ -84,8 +84,7 @@ func TestWait(t *testing.T) {
 		testutil.WaitForFile(t, runtime.paths.PID, waitIntegrationTimeout)
 		daemonPID = lifecycleReadPID(t, runtime.paths.PID)
 
-		waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", name, "--match", "stdout:never-present", "--json")
-		time.Sleep(100 * time.Millisecond)
+		waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", name, "--after-cursor", strconv.FormatUint(launchCursor, 10), "--match", "stdout:never-present", "--json")
 		if err := os.WriteFile(gate, []byte("release"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -116,11 +115,10 @@ func TestWait(t *testing.T) {
 		testutil.WaitForFile(t, runtime.paths.PID, waitIntegrationTimeout)
 		daemonPID = lifecycleReadPID(t, runtime.paths.PID)
 
-		waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", name, "--timeout", "2s", "--json")
+		waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", name, "--after-cursor", strconv.FormatUint(launchCursor, 10), "--timeout", "2s", "--json")
 		if waiter.Exited() {
 			t.Fatalf("no-match wait exited before process exit: stdout=%q stderr=%q", waiter.Stdout(), waiter.Stderr())
 		}
-		time.Sleep(100 * time.Millisecond)
 		if err := os.WriteFile(gate, []byte("release"), 0o600); err != nil {
 			t.Fatalf("release no-match burst gate: %v", err)
 		}

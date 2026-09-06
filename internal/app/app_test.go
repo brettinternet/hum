@@ -1343,6 +1343,34 @@ func TestWaitExitWakeupWithAndWithoutMatch(t *testing.T) {
 	}
 }
 
+func TestWaitExplicitCursorReplaysTerminalIncarnationExit(t *testing.T) {
+	root := makeProject(t, false)
+	exitAt := time.Unix(33, 0)
+	child := newSubscriptionChild(5133, 7, exitAt, "noise\n")
+	s := testSupervisor(t, Options{
+		Now: func() time.Time { return time.Unix(32, 0) },
+		StartProcess: subscriptionStarter(map[string]*subscriptionChild{
+			"terminal": child,
+		}),
+	})
+	started, err := s.Start(StartRequest{Name: "terminal", Cwd: root, Argv: []string{"/bin/fake", "terminal"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child.release()
+	waitExited(t, s, root, "terminal")
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := s.Wait(ctx, root, "terminal", WaitOptions{After: &started.LaunchCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != WaitExited || got.Cursor != 0 || got.Exit == nil || got.Exit.ExitCode != 7 || !got.Exit.ExitedAt.Equal(exitAt) {
+		t.Fatalf("explicit-cursor terminal wait = %#v, want exited code 7 at %v", got, exitAt)
+	}
+}
+
 func TestWaitPreLaunchTimeoutCursorCancellationAndConcurrentWaiters(t *testing.T) {
 	root := makeProject(t, false)
 	children := map[string]*subscriptionChild{

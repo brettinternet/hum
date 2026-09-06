@@ -2563,7 +2563,7 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 		}
 	}
 	sub := store.Subscribe(output.ReadOptions{After: after, Match: opts.Match, Streams: output.BothStreams, MaxBytes: s.maxLineBytes})
-	if !rec.terminal {
+	if !rec.terminal || opts.After != nil {
 		sub.ReplayLatestExitSince(rec.start)
 	}
 	s.mu.RUnlock()
