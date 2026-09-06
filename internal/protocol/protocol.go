@@ -1279,6 +1279,12 @@ func (e StreamEvent) MarshalJSON() ([]byte, error) {
 	if e.Result != nil {
 		result = *e.Result
 	}
+	// A zero time carries no information; omit it rather than emitting the Go
+	// zero value so consumers can rely on time being present only when known.
+	var eventTime *time.Time
+	if !e.Time.IsZero() {
+		eventTime = &e.Time
+	}
 	return json.Marshal(struct {
 		Op             Operation     `json:"op"`
 		Type           EventType     `json:"type"`
@@ -1292,10 +1298,10 @@ func (e StreamEvent) MarshalJSON() ([]byte, error) {
 		More           bool          `json:"more,omitempty"`
 		Cursor         *Cursor       `json:"cursor,omitempty"`
 		Ready          bool          `json:"ready,omitempty"`
-		Time           time.Time     `json:"time,omitempty"`
+		Time           *time.Time    `json:"time,omitempty"`
 		Exit           *Exit         `json:"exit,omitempty"`
 		Error          *WireError    `json:"error,omitempty"`
-	}{Op: eventOperation, Type: e.Type, Name: e.Name, Entries: result.Entries, Next: result.Next, Oldest: result.Oldest, Latest: result.Latest, EvictedThrough: result.EvictedThrough, Truncated: result.Truncated, More: result.More, Cursor: e.Cursor, Ready: e.Ready, Time: e.Time, Exit: e.Exit, Error: e.Error})
+	}{Op: eventOperation, Type: e.Type, Name: e.Name, Entries: result.Entries, Next: result.Next, Oldest: result.Oldest, Latest: result.Latest, EvictedThrough: result.EvictedThrough, Truncated: result.Truncated, More: result.More, Cursor: e.Cursor, Ready: e.Ready, Time: eventTime, Exit: e.Exit, Error: e.Error})
 }
 
 // UnmarshalJSON decodes a streaming event and populates Result for output
