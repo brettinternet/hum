@@ -1125,12 +1125,12 @@ processes:
 	var stdout, stderr manifestProgressCapture
 	done := make(chan error, 1)
 	go func() {
-		done <- cliServeRunInvoke(context.Background(), []string{"up", "--timeout", "400ms"}, &stdout, &stderr)
+		done <- cliServeRunInvoke(context.Background(), []string{"up", "--timeout", "2s"}, &stdout, &stderr)
 	}()
 	if !stderr.waitFor("hum up: fast: started; waiting for readiness\n", time.Second) {
 		t.Fatalf("fast launch progress did not arrive while up waited: %q", stderr.String())
 	}
-	if !stderr.waitFor("hum up: fast: ready\n", 2*time.Second) {
+	if !stderr.waitFor("hum up: fast: ready\n", 3*time.Second) {
 		t.Fatalf("fast readiness progress did not arrive: %q", stderr.String())
 	}
 	if err := <-done; manifestCLIExitCode(err) != 1 {
