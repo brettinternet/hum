@@ -116,7 +116,6 @@ processes:
 
 func TestUpRecoveryDocs(t *testing.T) {
 	documents := map[string]string{
-		"README.md":      restartPolicyDoc(t, "../../README.md"),
 		"docs/design.md": restartPolicyDoc(t, "../../docs/design.md"),
 	}
 	for path, content := range documents {

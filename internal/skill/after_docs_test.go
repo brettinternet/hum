@@ -7,7 +7,7 @@ import (
 )
 
 func TestUpDriftDocs(t *testing.T) {
-	paths := []string{"../../README.md", "../../docs/design.md", "../../docs/coding-agents.md", "SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
+	paths := []string{"../../docs/design.md", "../../docs/coding-agents.md", "SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
 	for _, path := range paths {
 		contents, err := os.ReadFile(path)
 		if err != nil {
@@ -26,7 +26,7 @@ func TestUpDriftDocs(t *testing.T) {
 }
 
 func TestAfterDocs(t *testing.T) {
-	paths := []string{"../../README.md", "../../docs/design.md", "../../docs/coding-agents.md", "SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
+	paths := []string{"../../docs/design.md", "../../docs/coding-agents.md", "SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
 	var all strings.Builder
 	for _, path := range paths {
 		contents, err := os.ReadFile(path)

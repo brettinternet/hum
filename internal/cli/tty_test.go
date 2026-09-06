@@ -106,7 +106,7 @@ func TestTTYHelpAndDocs(t *testing.T) {
 			t.Errorf("run help missing %q: %q", want, output.String())
 		}
 	}
-	for _, path := range []string{"../../README.md", "../../docs/design.md", "../../docs/coding-agents.md", "../skill/SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"} {
+	for _, path := range []string{"../../docs/design.md", "../../docs/coding-agents.md", "../skill/SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"} {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

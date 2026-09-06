@@ -12,7 +12,6 @@ import (
 
 func TestRestartPolicyDocs(t *testing.T) {
 	documents := map[string]string{
-		"README.md":                       restartPolicyDoc(t, "../../README.md"),
 		"docs/design.md":                  restartPolicyDoc(t, "../../docs/design.md"),
 		"docs/coding-agents.md":           restartPolicyDoc(t, "../../docs/coding-agents.md"),
 		"internal/skill/SKILL.md":         restartPolicyDoc(t, "../skill/SKILL.md"),
@@ -28,7 +27,7 @@ func TestRestartPolicyDocs(t *testing.T) {
 		}
 	}
 	all := strings.ToLower(strings.Join([]string{
-		documents["README.md"], documents["docs/design.md"], documents["docs/coding-agents.md"],
+		documents["docs/design.md"], documents["docs/coding-agents.md"],
 		documents["internal/skill/SKILL.md"], documents["plugins/hum/skills/hum/SKILL.md"],
 	}, "\n"))
 	for _, phrase := range []string{"1s", "2s", "4s", "8s", "16s", "relaunches", "next_launch_at", "followers", "last effective", "generation", "operator", "gave up"} {

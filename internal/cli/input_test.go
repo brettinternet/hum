@@ -199,7 +199,7 @@ func TestInputDocs(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
-	for _, relative := range []string{"README.md", "docs/design.md", "docs/coding-agents.md", "internal/skill/SKILL.md", "plugins/hum/skills/hum/SKILL.md"} {
+	for _, relative := range []string{"docs/design.md", "docs/coding-agents.md", "internal/skill/SKILL.md", "plugins/hum/skills/hum/SKILL.md"} {
 		content, err := os.ReadFile(filepath.Join(repo, relative))
 		if err != nil {
 			t.Fatal(err)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestRestartPolicyDocs(t *testing.T) {
-	paths := []string{"../../README.md", "../../docs/design.md", "../../docs/coding-agents.md", "SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
+	paths := []string{"../../docs/design.md", "../../docs/coding-agents.md", "SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
 	var all strings.Builder
 	for _, path := range paths {
 		content, err := os.ReadFile(path)

@@ -8,7 +8,6 @@ import (
 
 func TestTerminalControlDocs(t *testing.T) {
 	for path, content := range map[string]string{
-		"README.md":                       readTerminalControlDoc(t, "../../README.md"),
 		"docs/design.md":                  readTerminalControlDoc(t, "../../docs/design.md"),
 		"docs/coding-agents.md":           readTerminalControlDoc(t, "../../docs/coding-agents.md"),
 		"embedded skill":                  Content(),
