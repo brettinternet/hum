@@ -1,9 +1,10 @@
 ---
 id: HUM-030
-title: Preserve crash recovery state during hum up
+title: Preserve crash recovery state during up reconciliation
 status: To Do
 assignee: []
 created_date: '2026-09-06 04:57'
+updated_date: '2026-09-06 05:08'
 labels:
   - cli
   - mcp
@@ -12,34 +13,41 @@ milestone: m-3
 dependencies: []
 modified_files:
   - internal/cli/manifest.go
-  - internal/cli/manifest_test.go
   - internal/cli/commands.go
+  - internal/cli/render.go
+  - internal/cli/manifest_test.go
+  - internal/cli/restart_policy_test.go
   - internal/mcp/tools.go
   - internal/mcp/tools_test.go
-  - internal/cli/render.go
+  - internal/mcp/restart_policy_test.go
+  - integration/relaunch_test.go
   - README.md
   - docs/design.md
 priority: high
 type: bug
-ordinal: 7700
+ordinal: 5700
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: broad reconciliation through `hum up` or MCP `up` observes pending or exhausted on-failure recovery without resetting its backoff or retry budget.
+Outcome: `hum up` and MCP `up` report an existing declaration’s automatic recovery without resetting its backoff or five-attempt budget.
 
-Scope: expose recovery state, relaunch count, and `next_launch_at` consistently; a pending retry remains scheduled, and an exhausted session remains exhausted. Targeted `start NAME` and `restart NAME` remain explicit operator overrides.
+Why now: broad reconciliation currently calls start for an exited record. The supervisor correctly treats start as an explicit override, so an otherwise harmless repeated `up` can cancel a pending timer or revive an exhausted crash loop.
 
-Non-goals: do not alter the fixed retry delays, stability window, retry count, or targeted lifecycle commands.
+Scope: when a resolved name has exited with `next_launch_at`, `up` returns `recovery_pending`; when its `restart: on-failure` budget is exhausted, `up` returns `recovery_exhausted`. Both outcomes preserve and expose runtime state, normalized restart policy, relaunch count, and `next_launch_at`, issue no start request, and make CLI `up` exit 3 because the declaration is not running. Repeated `up` does not move the deadline, consume an attempt, create an incarnation, or wait for an automatic successor. CLI `start NAME`, MCP `start`, and CLI/MCP `restart` remain explicit overrides that cancel pending recovery and launch immediately.
+
+Docs: CLI help, README.md, and docs/design.md document the two outcomes, exit behavior, bounded observation, and targeted override.
+
+Non-goals: changing retry delays, the stability window, the five-attempt limit, supervisor timer behavior, stopped records without automatic recovery, or targeted lifecycle semantics.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `task test` exits 0, including coverage proving repeated CLI and MCP `up` calls during pending recovery preserve the scheduled retry and do not launch another child.
-- [ ] #2 `task test` exits 0, including coverage proving repeated `up` cannot bypass the five-attempt limit or revive an exhausted crash loop.
-- [ ] #3 `task test` exits 0, including coverage proving CLI and MCP results expose current recovery state, relaunch count, and `next_launch_at` after an exit.
-- [ ] #4 `task test` exits 0, including coverage proving targeted `start NAME` and `restart NAME` still cancel pending backoff and launch immediately.
+- [ ] #1 AC1 — `go test ./internal/cli -run "^TestUpPreservesCrashRecovery$" -count=1 -v` exits 0 and prints `--- PASS: TestUpPreservesCrashRecovery`. It proves pending and exhausted CLI `up` results use the exact outcomes and fields, exit 3, and send no start request.
+- [ ] #2 AC2 — `go test ./internal/mcp -run "^TestUpPreservesCrashRecovery$" -count=1 -v` exits 0 and prints `--- PASS: TestUpPreservesCrashRecovery`. It proves the equivalent MCP contract and that neither recovery state sends a start request.
+- [ ] #3 AC3 — `go test ./integration -run "^TestUpPreservesPendingRecovery$" -count=1 -v` exits 0 and prints `--- PASS: TestUpPreservesPendingRecovery`. Against the built binary and real daemon, repeated CLI and MCP `up` calls preserve one pending deadline and incarnation, while targeted start and restart still launch immediately.
+- [ ] #4 AC4 — `go test ./internal/cli -run "^TestUpRecoveryDocs$" -count=1 -v` exits 0 and prints `--- PASS: TestUpRecoveryDocs`. It proves CLI help, README.md, and docs/design.md state the recovery outcomes, exit behavior, no-successor wait, and targeted override.
 <!-- AC:END -->
 
 ## Definition of Done
@@ -51,3 +59,11 @@ Non-goals: do not alter the fixed retry delays, stability window, retry count, o
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+- [ ] T1 — Classify pending and exhausted recovery before the up path can issue a start request.
+- [ ] T2 — Render equivalent CLI and MCP outcomes while preserving targeted start and restart overrides.
+- [ ] T3 — Add real-daemon regression coverage and document the reconciliation contract.
+<!-- SECTION:PLAN:END -->

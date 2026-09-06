@@ -4,6 +4,7 @@ title: Warn about supervised processes removed from the manifest
 status: To Do
 assignee: []
 created_date: '2026-09-06 04:57'
+updated_date: '2026-09-06 05:07'
 labels:
   - cli
   - mcp
@@ -51,3 +52,9 @@ Non-goals: do not automatically stop, remove, or disable relaunch for obsolete s
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by HUM-029, which now covers changed and removed manifest declarations under one stable up-reconciliation contract.
+<!-- SECTION:FINAL_SUMMARY:END -->

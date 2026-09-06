@@ -1,10 +1,11 @@
 ---
 id: HUM-026
 title: Order up launches by declared readiness dependencies
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@brett'
 created_date: '2026-09-05 15:14'
-updated_date: '2026-09-05 15:23'
+updated_date: '2026-09-06 05:07'
 labels:
   - config
   - cli
@@ -50,6 +51,8 @@ Scope, restart-policy composition: this task follows HUM-025. If a prerequisite 
 Docs: docs/design.md removes dependencies from the manifest exclusions, documents validation, gating, skipped/blocked results, stable ordering, unchanged exit precedence, and no-wait rejection. README.md includes a real three-process example. docs/coding-agents.md, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` tell agents to prefer `up` over sequencing starts when `after` is declared and to rerun `up` after an automatically recovering prerequisite.
 
 Non-goals: dependencies on ad hoc or discovered definitions; `start` pulling in prerequisites; reverse-order `down`; continuous health propagation; restarting/stopping dependents when a prerequisite exits or relaunches; following an automatic successor within the same `up`; port, HTTP, or command health gates; daemon-side dependency state or protocol changes; per-edge timeouts; exposing `after` in runtime snapshots; Windows.
+
+Scope, blocked existing sessions: before finalizing a dependency-blocked node, CLI and MCP make a read-only observation of its retained record. The result remains `outcome: skipped` with sorted direct `blocked_by`; when a record exists it also includes `existing_state: running|exited` and the applicable snapshot-backed PID, launch, readiness, restart, relaunch, and `next_launch_at` fields. Human output separately says `existing process running`, `existing process exited`, or `not launched`. Observation never stops, starts, restarts, or otherwise mutates the record. A skipped result never satisfies a downstream gate, even when its retained record is running. Definition-drift classification and recovery policy remain HUM-029 and HUM-030.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -58,6 +61,7 @@ Non-goals: dependencies on ad hoc or discovered definitions; `start` pulling in 
 - [ ] #2 AC2 — `go test ./internal/cli -run "^TestUpOrdersByAfter$" -count=1 -v` and `go test ./internal/mcp -run "^TestUpOrdersByAfter$" -count=1 -v` both exit 0 and print the corresponding named PASS line. Against fake daemon clients they prove independent roots launch concurrently; a node waits for all direct prerequisites and launches only when each invocation result is started/already-running and ready; already-ready processes satisfy without relaunch; per-process timeout begins at its own launch/observation; request error, exited-before-ready, timeout, and skipped cascade without a launch; `blocked_by` includes all and only sorted direct blockers; CLI human/NDJSON and MCP arrays stay lexical; aggregate exit precedence remains 1/3/2/0 with no skipped exit code; CLI `start NAME...` launches only requested names concurrently and MCP start remains singular; and no-wait rejection occurs before any fake daemon call.
 - [ ] #3 AC3 — `go test ./integration -run "^TestUpOrderedStack$" -count=1 -v` exits 0 and prints `--- PASS: TestUpOrderedStack`. With the built binary and a manifest of db, api (`after: [db]`), and web (`after: [api]`) whose fixtures record launch/readiness times, it proves each launch follows prerequisite readiness, independent roots overlap, `hum up` exits 0 with three lexical success results, and a second run is idempotent. Failure cases prove db exit before readiness returns exit 3 with api/web skipped and not launched, multiple failed roots produce complete sorted direct blockers, and an `on-failure` db successor is not followed by the same invocation but a later `hum up` launches the blocked nodes after db is ready.
 - [ ] #4 AC4 — `go test ./internal/cli ./internal/skill -run "^TestAfterDocs$" -count=1 -v` exits 0 and prints both named PASS lines. README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document `after` validation, readiness gates and per-process timing, `skipped` plus sorted direct `blocked_by`, stable lexical output and unchanged exit precedence, pre-contact no-wait rejection, explicit-only start, concurrent down, and rerunning up after automatic prerequisite recovery; docs/design.md no longer lists dependencies as a manifest exclusion.
+- [ ] #5 AC5 — `go test ./internal/cli ./internal/mcp -run "^TestUpReportsBlockedExistingState$" -count=1 -v` exits 0 and prints a named PASS line for both packages. It proves blocked running and exited records remain untouched and are distinguished from an absent record in human, CLI NDJSON, and MCP results; no lifecycle request is sent for the blocked node; sorted direct blockers and aggregate exit precedence remain unchanged; and a skipped node with a running record still blocks its dependent.
 <!-- AC:END -->
 
 ## Definition of Done
@@ -75,6 +79,7 @@ Non-goals: dependencies on ad hoc or discovered definitions; `start` pulling in 
 <!-- SECTION:PLAN:BEGIN -->
 - [ ] T1 — Add strict manifest graph decoding/validation and reusable, non-aliasing dependency metadata.
 - [ ] T2 — Add client-side DAG scheduling for CLI and MCP with concurrent roots, per-node readiness waits, complete blocker propagation, and stable result order.
-- [ ] T3 — Preserve start/down/protocol behavior, reject no-wait before daemon contact, and prove HUM-025 recovery composition.
-- [ ] T4 — Update operator/agent documentation and prove ordered and blocked stacks with the built binary.
+- [ ] T3 — Observe and render retained state for dependency-blocked nodes without changing skipped gating.
+- [ ] T4 — Preserve start/down/protocol behavior, reject no-wait before daemon contact, and prove HUM-025 recovery composition.
+- [ ] T5 — Update operator/agent documentation and prove ordered and blocked stacks with the built binary.
 <!-- SECTION:PLAN:END -->
