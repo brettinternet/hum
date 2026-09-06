@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -25,6 +24,12 @@ const (
 	wireVersion              = protocol.Version
 	defaultWireMaxLine       = protocol.DefaultMaxLineBytes
 	maxWaitTimeoutMS   int64 = (1<<63 - 1) / int64(time.Millisecond)
+	// maxBoundedReadBytes caps one bounded output response so its JSON encoding
+	// fits within a single wire message.
+	maxBoundedReadBytes = defaultWireMaxLine / 2
+	// followerDrainGrace bounds how long a follower may take to accept the
+	// final shutdown events before its transport is abandoned.
+	followerDrainGrace = 2 * time.Second
 )
 
 // Server owns one app.Supervisor and exposes it over one private Unix socket.
@@ -71,7 +76,10 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	paths = owner.paths
-	version := cfgVersion(cfg.Version)
+	version := cfg.WireVersion
+	if version <= 0 {
+		version = wireVersion
+	}
 	maxLine := cfg.MaxLineBytes
 	if maxLine <= 0 {
 		maxLine = 64 * 1024
@@ -129,17 +137,6 @@ func NewServer(cfg Config) (*Server, error) {
 		shutdownDone: make(chan struct{}),
 		closing:      make(chan struct{}),
 	}, nil
-}
-
-func cfgVersion(version string) int {
-	if version == "" {
-		return wireVersion
-	}
-	value, err := strconv.Atoi(version)
-	if err != nil || value <= 0 {
-		return wireVersion
-	}
-	return value
 }
 
 // Paths returns the runtime artifacts owned by this server.
@@ -326,7 +323,6 @@ func (s *Server) shutdown(force bool) error {
 		}
 	}
 	s.shutdownStarted = true
-	close(s.closing)
 	s.shutdownMu.Unlock()
 
 	var shutdownErr error
@@ -337,7 +333,9 @@ func (s *Server) shutdown(force bool) error {
 		shutdownErr = errors.Join(shutdownErr, err)
 	}
 	// Follow handlers must flush the supervisor shutdown error before the
-	// daemon exits and tears down their connections.
+	// daemon exits and tears down their connections. Closing s.closing starts
+	// the bounded drain so a client that stopped reading cannot block exit.
+	close(s.closing)
 	s.followers.Wait()
 	_ = s.listener.Close()
 	if err := s.owner.cleanup(); err != nil {
@@ -433,8 +431,8 @@ func (s *Server) serveConn(conn net.Conn) {
 	defer conn.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	decoder := protocol.NewDecoder(conn, s.maxLine)
-	encoder := protocol.NewEncoder(conn, s.maxLine)
+	decoder := protocol.NewDecoder(conn, defaultWireMaxLine)
+	encoder := protocol.NewEncoder(conn, defaultWireMaxLine)
 	first, err := decoder.DecodeRequest()
 	if err != nil {
 		_ = writeProtocolError(encoder, protocol.OpHello, err)
@@ -488,6 +486,11 @@ func (s *Server) serveConn(conn net.Conn) {
 		}
 		resp, terminal := s.dispatch(req)
 		writeErr := writeProtocolResponse(encoder, resp)
+		var oversized *protocol.OversizedError
+		if errors.As(writeErr, &oversized) {
+			message := fmt.Sprintf("response of %d bytes exceeds the %d byte message limit; request fewer entries or bytes", oversized.Size, oversized.Limit)
+			writeErr = writeProtocolError(encoder, protocol.Operation(req.Op), protocol.NewWireError(protocol.ErrorOversized, message, nil))
+		}
 		if shutdownResponseRegistered {
 			s.shutdownResponses.Done()
 		}
@@ -564,12 +567,6 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 			return dispatchError(req.Op, err), false
 		}
 		return wireResponseFromRead(req.Op, stripBoundedChildText(result)), false
-	case "wait":
-		response, err := s.executeWait(context.Background(), req)
-		if err != nil {
-			return dispatchError(req.Op, err), false
-		}
-		return response, false
 	case "signal":
 		sig, err := parseSignal(req.Signal)
 		if err != nil {
@@ -730,6 +727,23 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 		var one [1]byte
 		_, _ = conn.Read(one[:])
 		cancel()
+	}()
+	go func() {
+		// After the supervisor has shut down, a follower that no longer reads
+		// its socket must not hold the daemon open: bound any blocked write,
+		// then cancel the stream once the drain window has elapsed.
+		select {
+		case <-s.closing:
+			_ = conn.SetWriteDeadline(time.Now().Add(followerDrainGrace))
+			timer := time.NewTimer(followerDrainGrace)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				cancel()
+			case <-followCtx.Done():
+			}
+		case <-followCtx.Done():
+		}
 	}()
 	for {
 		event, err := sub.Next(followCtx)
@@ -964,6 +978,9 @@ func stripBoundedChildText(result output.ReadResult) output.ReadResult {
 
 func readOptionsFromWire(req wireRequest) (output.ReadOptions, error) {
 	options := output.ReadOptions{Tail: req.Tail, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+	if options.MaxBytes > maxBoundedReadBytes {
+		options.MaxBytes = maxBoundedReadBytes
+	}
 	if req.After != nil {
 		cursor := output.Cursor(*req.After)
 		options.After = &cursor

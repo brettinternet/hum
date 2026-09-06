@@ -604,7 +604,7 @@ func lifecycleWaitCondition(timeout time.Duration, condition func() bool) bool {
 
 func lifecycleStartMismatchedServer(t *testing.T, runtimeDir string) (*daemon.Server, chan error) {
 	t.Helper()
-	server, err := daemon.NewServer(daemon.Config{RuntimeDir: runtimeDir, Version: "999", StopGrace: 100 * time.Millisecond})
+	server, err := daemon.NewServer(daemon.Config{RuntimeDir: runtimeDir, WireVersion: 999, StopGrace: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("create mismatched daemon server: %v", err)
 	}

@@ -69,7 +69,6 @@ func daemonConfig(cfg config.Config) (daemon.Config, error) {
 	}
 	return daemon.Config{
 		RuntimeDir:     cfg.RuntimeDir,
-		Version:        cfg.Version,
 		StopGrace:      cfg.StopGrace,
 		CompletedLimit: cfg.CompletedRecords,
 		MaxLineBytes:   int(cfg.MaxLineBytes),

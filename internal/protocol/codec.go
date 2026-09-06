@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	// DefaultMaxLineBytes is the conservative maximum encoded message size.
-	DefaultMaxLineBytes = 1 << 20
-	// MaxLineBytesDefault is a descriptive alias for DefaultMaxLineBytes.
-	MaxLineBytesDefault = DefaultMaxLineBytes
+	// DefaultMaxLineBytes is the maximum encoded message size on the private
+	// socket. It is deliberately larger than any single retained output line:
+	// a start request carries the client's whole environment and a bounded
+	// output response may return several megabytes of retained entries.
+	DefaultMaxLineBytes = 8 << 20
 )
 
 // Decoder reads one bounded JSON value per newline-delimited message. It does

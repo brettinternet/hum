@@ -98,7 +98,9 @@ func DefaultRuntimeDir() string { return resolveRuntimeDir("") }
 // lifetime and is shut down before runtime artifacts are removed.
 type Config struct {
 	RuntimeDir string
-	Version    string
+	// WireVersion overrides the advertised protocol version. It exists for
+	// compatibility tests; zero selects protocol.Version.
+	WireVersion int
 
 	StopGrace      time.Duration
 	OutputLimits   output.Limits

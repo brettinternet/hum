@@ -524,10 +524,10 @@ func TestVersionMismatch(t *testing.T) {
 	startMismatch := func(t *testing.T, runtimeDir string, supervisor *app.Supervisor) (*daemon.Server, chan error) {
 		t.Helper()
 		server, err := daemon.NewServer(daemon.Config{
-			RuntimeDir: runtimeDir,
-			Version:    "999",
-			StopGrace:  100 * time.Millisecond,
-			Supervisor: supervisor,
+			RuntimeDir:  runtimeDir,
+			WireVersion: 999,
+			StopGrace:   100 * time.Millisecond,
+			Supervisor:  supervisor,
 		})
 		if err != nil {
 			t.Fatalf("new mismatched daemon: %v", err)

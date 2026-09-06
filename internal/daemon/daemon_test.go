@@ -1471,7 +1471,7 @@ func TestHelloVersion(t *testing.T) {
 
 	t.Run("v9 client rejects a v8 daemon before terminal-readiness reconciliation", func(t *testing.T) {
 		const oldDaemonVersion = 8
-		server := testServer(t, Config{Version: strconv.Itoa(oldDaemonVersion)})
+		server := testServer(t, Config{WireVersion: oldDaemonVersion})
 		client, err := Dial(context.Background(), server.Paths().Socket)
 		if client == nil {
 			t.Fatalf("legacy daemon dial returned nil client: %v", err)
@@ -1498,7 +1498,7 @@ func TestHelloVersion(t *testing.T) {
 
 	t.Run("current client to v2 daemon rejects wait during hello but permits frozen shutdown", func(t *testing.T) {
 		const oldDaemonVersion = 2
-		server := testServer(t, Config{Version: strconv.Itoa(oldDaemonVersion)})
+		server := testServer(t, Config{WireVersion: oldDaemonVersion})
 		conn, err := net.Dial("unix", server.Paths().Socket)
 		if err != nil {
 			t.Fatal(err)
@@ -1973,4 +1973,110 @@ func TestWaitDaemonBridge(t *testing.T) {
 			t.Fatal("follower alongside wait did not return")
 		}
 	})
+}
+
+func TestCloseCompletesWithStalledFollower(t *testing.T) {
+	root := t.TempDir()
+	server := testServer(t, Config{})
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	flood := "while :; do echo 0123456789012345678901234567890123456789012345678901234567890123; done"
+	if _, err := client.Start(context.Background(), testStartRequest(root, "flood", testShell(t), "-c", flood)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A raw follower that never reads its socket: once the kernel buffer fills,
+	// the daemon's event write blocks until shutdown forces the transport shut.
+	conn, err := net.Dial("unix", server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	encoder := protocol.NewEncoder(conn)
+	if err := encoder.EncodeResponse(protocol.Hello{Op: protocol.OpHello, Version: protocol.Version}); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Encode(protocol.NewFollowRequest("flood", root)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second)
+
+	done := make(chan error, 1)
+	go func() { done <- server.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("close with stalled follower: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Close did not complete while a follower stopped reading")
+	}
+	assertShutdownArtifactsAbsent(t, server.Paths())
+}
+
+func TestStartAcceptsLargeEnvironment(t *testing.T) {
+	root := t.TempDir()
+	server := testServer(t, Config{})
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	env := []string{"PATH=/usr/bin:/bin", "BIG=" + strings.Repeat("x", 70000)}
+	if _, err := client.Start(context.Background(), protocol.NewStartRequest("bigenv", []string{testShell(t), "-c", "true"}, root, env)); err != nil {
+		t.Fatalf("start with a 70 KB environment: %v", err)
+	}
+}
+
+func TestOutputReadExceedsLogLineLimit(t *testing.T) {
+	root := t.TempDir()
+	server := testServer(t, Config{})
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	// 100 lines of 2000 bytes: far more than one 64 KiB log line, which used to
+	// double as the response frame limit and made this read drop the connection.
+	script := "i=0; while [ $i -lt 100 ]; do printf '%02000d\\n' 0; i=$((i+1)); done"
+	if _, err := client.Start(context.Background(), testStartRequest(root, "bigout", testShell(t), "-c", script)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		process, err := client.Get(context.Background(), protocol.NewGetRequest("bigout", root))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if process.State == app.StateExited {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bigout did not exit")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	req := protocol.NewOutputRequest("bigout", root)
+	req.MaxEntries = 1000
+	req.MaxBytes = 300000
+	result, err := client.Output(context.Background(), req)
+	if err != nil {
+		t.Fatalf("bounded read above 64 KiB: %v", err)
+	}
+	total := 0
+	for _, entry := range result.Entries {
+		total += len(entry.Text)
+	}
+	if len(result.Entries) < 100 || total < 200000 {
+		t.Fatalf("read %d entries and %d bytes, want all 100 lines", len(result.Entries), total)
+	}
+
+	// A request larger than one wire frame can carry is clamped rather than dropped.
+	req.MaxBytes = defaultWireMaxLine * 4
+	if _, err := client.Output(context.Background(), req); err != nil {
+		t.Fatalf("bounded read with oversized limit: %v", err)
+	}
 }
