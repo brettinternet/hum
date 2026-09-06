@@ -97,11 +97,17 @@ and TTY rather than rereading the manifest; use an explicit start/restart to
 adopt edits. Readiness timeout never triggers a relaunch.
 
 Status, list, CLI JSON, and MCP snapshots expose `restart`, `relaunches`, and
-`next_launch_at` while backoff is pending. Retained logs include each failed
-incarnation and the `relaunching`, spawn-failure, and final `gave up` boundaries;
-followers remain attached through backoff and exhaustion. Before editing again,
-agents should read the failing incarnation's retained output with `hum logs` (or
-MCP `logs`) so the crash is diagnosed rather than hidden by recovery.
+`next_launch_at` while backoff is pending. During this bounded recovery,
+`hum up` and MCP `up` observe an exited declaration as `recovery_pending`; after
+all five attempts they report `recovery_exhausted`. These observations do not
+send a start request or wait for an automatic successor, and CLI `hum up` exits
+3 because the declaration is not running. Use targeted `hum start NAME` or
+`hum restart NAME` (or the matching MCP tool) to cancel pending recovery and
+launch immediately. Retained logs include each failed incarnation and the
+`relaunching`, spawn-failure, and final `gave up` boundaries; followers remain
+attached through backoff and exhaustion. Before editing again, agents should
+read the failing incarnation's retained output with `hum logs` (or MCP `logs`)
+so the crash is diagnosed rather than hidden by recovery.
 
 ### Aggregate logs
 

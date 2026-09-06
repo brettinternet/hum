@@ -144,6 +144,7 @@ type manifestLaunchResult struct {
 	Outcome      string     `json:"outcome"`
 	Source       string     `json:"source"`
 	Argv         []string   `json:"argv"`
+	State        string     `json:"state,omitempty"`
 	PID          *int       `json:"pid,omitempty"`
 	LaunchCursor *uint64    `json:"launch_cursor,omitempty"`
 	Readiness    string     `json:"readiness,omitempty"`
@@ -181,6 +182,7 @@ func manifestLaunchResultFor(definition project.Definition, process app.Process,
 		Outcome:      outcome,
 		Source:       process.Source,
 		Argv:         append([]string(nil), process.Argv...),
+		State:        string(process.State),
 		Restart:      string(effectiveProcessRestart(process)),
 		Relaunches:   process.Relaunches,
 		NextLaunchAt: process.NextLaunchAt,
@@ -418,7 +420,22 @@ func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd str
 	}
 }
 
-func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root string, definition project.Definition, env []string) (manifestLaunchResult, app.Process, bool, error) {
+const manifestAutomaticRelaunchLimit = 5
+
+func manifestRecoveryOutcome(definition project.Definition, process app.Process) (string, bool) {
+	if process.State != app.StateExited || !definitionMatchesProcess(definition, process) {
+		return "", false
+	}
+	if process.NextLaunchAt != nil {
+		return "recovery_pending", true
+	}
+	if effectiveProcessRestart(process) == app.RestartOnFailure && process.Relaunches >= manifestAutomaticRelaunchLimit {
+		return "recovery_exhausted", true
+	}
+	return "", false
+}
+
+func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root string, definition project.Definition, env []string, preserveRecovery bool) (manifestLaunchResult, app.Process, bool, error) {
 	lookupCwd := root
 	if lookupCwd == "" {
 		lookupCwd = cwd
@@ -433,6 +450,11 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 				return manifestLaunchError(definition, fmt.Errorf("declared process %q is occupied by an ad-hoc launch", definition.Name)), current, false, nil
 			}
 			return manifestLaunchResultFor(definition, current, "already_running"), current, true, nil
+		}
+		if preserveRecovery {
+			if outcome, ok := manifestRecoveryOutcome(definition, current); ok {
+				return manifestLaunchResultFor(definition, current, outcome), current, true, nil
+			}
 		}
 	} else if !isNotFound(err) {
 		return manifestLaunchError(definition, err), app.Process{}, false, nil
@@ -513,7 +535,7 @@ func aggregateManifestExit(results []manifestLaunchResult) error {
 		}
 	}
 	for _, result := range results {
-		if result.Outcome == "exited_before_ready" {
+		if result.Outcome == "exited_before_ready" || result.Outcome == "recovery_pending" || result.Outcome == "recovery_exhausted" {
 			return urfavecli.Exit("", 3)
 		}
 	}

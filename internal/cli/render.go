@@ -447,6 +447,9 @@ func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
 	} else if len(result.Argv) != 0 {
 		line += " argv=" + shellJoin(result.Argv)
 	}
+	if result.State != "" {
+		line += " state=" + result.State
+	}
 	if result.PID != nil {
 		line += fmt.Sprintf(" pid=%d", *result.PID)
 	}
@@ -458,6 +461,14 @@ func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
 	}
 	if result.ReadyCursor != nil {
 		line += fmt.Sprintf(" ready_cursor=%d", *result.ReadyCursor)
+	}
+	if result.Outcome == "recovery_pending" || result.Outcome == "recovery_exhausted" {
+		line += fmt.Sprintf(" restart=%s relaunches=%d", result.Restart, result.Relaunches)
+		if result.NextLaunchAt == nil {
+			line += " next_launch_at=null"
+		} else {
+			line += " next_launch_at=" + result.NextLaunchAt.Format(time.RFC3339Nano)
+		}
 	}
 	if result.Error != "" {
 		line += " error=" + result.Error

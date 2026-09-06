@@ -18,7 +18,10 @@ import (
 	"hum/internal/protocol"
 )
 
-const defaultTimeoutMS int64 = 30_000
+const (
+	defaultTimeoutMS       = int64(30_000)
+	automaticRelaunchLimit = 5
+)
 
 // ErrDaemonUnavailable identifies a missing daemon without coupling MCP to the daemon package.
 var ErrDaemonUnavailable = errors.New("daemon unavailable")
@@ -223,7 +226,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}, "name", "bytes", "launch_cursor")
 	return []toolDefinition{
 		{Name: "start", Description: "Start one resolved project definition through the hum daemon; waits for configured readiness by default. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
-		{Name: "up", Description: "Start every resolved project definition through the hum daemon; waits for configured readiness by default. Manifest restart: on-failure uses bounded crash relaunches.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: map[string]any{"type": "array", "items": launch}},
+		{Name: "up", Description: "Ensure every resolved project definition through the hum daemon; waits for configured readiness by default. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: map[string]any{"type": "array", "items": launch}},
 		{Name: "down", Description: "Stop every running runtime record in the project and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: map[string]any{"type": "array", "items": stop}},
 		{Name: "list", Description: "Merge resolved definitions with all daemon runtime records in the project, including ad_hoc records. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: map[string]any{"type": "array", "items": process}},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
@@ -370,6 +373,20 @@ func normalizeProcess(process protocol.Process) protocol.Process {
 	return process
 }
 
+func recoveryOutcome(process protocol.Process) (string, bool) {
+	process = normalizeProcess(process)
+	if process.State != "exited" {
+		return "", false
+	}
+	if process.NextLaunchAt != nil {
+		return "recovery_pending", true
+	}
+	if process.Restart == protocol.RestartOnFailure && process.Relaunches >= automaticRelaunchLimit {
+		return "recovery_exhausted", true
+	}
+	return "", false
+}
+
 func stoppedProcess(root string, definition Definition) protocol.Process {
 	return protocol.Process{Name: definition.Name, Source: definition.Source, Root: root, TTY: definition.TTY, Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: "stopped", Restart: effectiveRestart(definition.Restart)}
 }
@@ -468,45 +485,50 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		panic("unreachable")
 	}
 }
-func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution Resolution, definition Definition) (protocol.Process, bool, error) {
+func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution Resolution, definition Definition, preserveRecovery bool) (protocol.Process, bool, string, error) {
 	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: definition.Name, Cwd: resolution.Root})
 	if err == nil && process.State == "running" {
 		if definition.TTY && !process.TTY {
-			return protocol.Process{}, false, &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: fmt.Sprintf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)}
+			return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: fmt.Sprintf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)}
 		}
 		if process.Source == definition.Source {
-			return process, true, nil
+			return process, true, "", nil
 		}
-		return protocol.Process{}, false, &ToolError{Code: string(protocol.ErrorNameInUse), Message: fmt.Sprintf("declared process %q is occupied by an ad_hoc launch", definition.Name)}
+		return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorNameInUse), Message: fmt.Sprintf("declared process %q is occupied by an ad_hoc launch", definition.Name)}
+	}
+	if err == nil && preserveRecovery && process.Source == definition.Source {
+		if outcome, ok := recoveryOutcome(process); ok {
+			return normalizeProcess(process), true, outcome, nil
+		}
 	}
 	if err != nil && mapError(err).Code != string(protocol.ErrorNotFound) {
-		return protocol.Process{}, false, mapError(err)
+		return protocol.Process{}, false, "", mapError(err)
 	}
 	process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: definition.Name, Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd, Root: resolution.Root, Env: s.environment(), Source: definition.Source, Ready: definition.Ready, TTY: definition.TTY, Restart: effectiveRestart(definition.Restart)})
 	if err == nil || mapError(err).Code != string(protocol.ErrorNameInUse) {
-		return process, false, err
+		return process, false, "", err
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		current, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: definition.Name, Cwd: resolution.Root})
 		if getErr == nil && current.State == "running" {
 			if definition.TTY && !current.TTY {
-				return protocol.Process{}, false, &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: fmt.Sprintf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)}
+				return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: fmt.Sprintf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)}
 			}
 			if current.Source == definition.Source {
-				return current, true, nil
+				return current, true, "", nil
 			}
-			return protocol.Process{}, false, &ToolError{Code: string(protocol.ErrorNameInUse), Message: fmt.Sprintf("declared process %q is occupied by an ad_hoc launch", definition.Name)}
+			return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorNameInUse), Message: fmt.Sprintf("declared process %q is occupied by an ad_hoc launch", definition.Name)}
 		}
 		timer := time.NewTimer(5 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return protocol.Process{}, false, ctx.Err()
+			return protocol.Process{}, false, "", ctx.Err()
 		case <-timer.C:
 		}
 	}
-	return protocol.Process{}, false, err
+	return protocol.Process{}, false, "", err
 }
 
 func launchOutcome(already bool, definition Definition) string {
@@ -621,7 +643,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	process, already, err := s.ensureDefinition(ctx, client, resolution, definition)
+	process, already, _, err := s.ensureDefinition(ctx, client, resolution, definition, false)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -662,14 +684,18 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 	results := make([]launchResult, len(definitions))
 	for index, definition := range definitions {
 		results[index].Name = definition.Name
-		process, already, startErr := s.ensureDefinition(ctx, client, resolution, definition)
+		process, already, recovery, startErr := s.ensureDefinition(ctx, client, resolution, definition, true)
 		if startErr != nil {
 			results[index].Outcome = "error"
 			results[index].Error = mapError(startErr)
 			continue
 		}
-		results[index].Outcome = launchOutcome(already, definition)
-		if definition.Ready == nil {
+		if recovery != "" {
+			results[index].Outcome = recovery
+		} else {
+			results[index].Outcome = launchOutcome(already, definition)
+		}
+		if definition.Ready == nil && process.State == "running" {
 			process.Readiness = &protocol.Readiness{State: protocol.ReadinessRunningUnverified}
 		}
 		process = normalizeProcess(process)
@@ -680,7 +706,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 	}
 	var waits sync.WaitGroup
 	for index, definition := range definitions {
-		if definition.Ready == nil || results[index].Process == nil {
+		if definition.Ready == nil || results[index].Process == nil || results[index].Process.State != "running" {
 			continue
 		}
 		waits.Add(1)

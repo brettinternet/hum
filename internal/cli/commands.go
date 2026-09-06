@@ -102,7 +102,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:        "up",
 			Usage:       "ensure every manifest process is running",
 			ArgsUsage:   "",
-			Description: "Up resolves every hum.yaml declaration in lexical order, continues after launch failures, and waits for readiness concurrently unless --no-wait is set. A declared restart: on-failure session retries unexpected crashes with bounded 1s/2s/4s/8s/16s backoff; automatic attempts retain their effective launch spec.",
+			Description: "Up resolves every hum.yaml declaration in lexical order, continues after launch failures, and waits for readiness concurrently unless --no-wait is set. A declared restart: on-failure session retries unexpected crashes with bounded 1s/2s/4s/8s/16s backoff; automatic attempts retain their effective launch spec. During bounded recovery, up observes an exited declaration as recovery_pending or recovery_exhausted without sending a start request or waiting for an automatic successor; these outcomes make up exit 3 because the declaration is not running. Use targeted start NAME or restart NAME to cancel recovery and launch immediately.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after processes are spawned"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
@@ -1669,7 +1669,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	for _, definition := range manifest.defs {
 		names = append(names, definition.Name)
 	}
-	return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifest, names)
+	return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifest, names, true)
 }
 
 func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, names []string) error {
@@ -1699,7 +1699,7 @@ func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version,
 			return err
 		}
 	}
-	return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifest, names)
+	return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifest, names, false)
 }
 
 func loadManifestForCommand() (manifestState, error) {
@@ -1710,7 +1710,7 @@ func loadManifestForCommand() (manifestState, error) {
 	return loadManifest(cwd)
 }
 
-func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string) error {
+func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery bool) error {
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1757,7 +1757,7 @@ func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command,
 			}
 			continue
 		}
-		result, process, _, ensureErr := ensureManifestStart(ctx, client, cwd, manifest.root, definition, env)
+		result, process, _, ensureErr := ensureManifestStart(ctx, client, cwd, manifest.root, definition, env, preserveRecovery)
 		if ensureErr != nil {
 			results[index] = manifestLaunchError(definition, ensureErr)
 			continue

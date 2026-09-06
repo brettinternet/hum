@@ -86,7 +86,12 @@ stopped records; retained ad hoc records reuse their exact argv, cwd, and
 environment, while resolved records use the current definition and client
 environment. Concurrent starts create at most one child. `up` does the same only
 for current resolved definitions, waits concurrently, and leaves successful
-children running after other failures. `--no-wait` returns after spawn.
+children running after other failures. During bounded recovery, CLI and MCP `up`
+preserve the exited record and report `recovery_pending` or
+`recovery_exhausted` without sending a start request or waiting for an automatic
+successor. A pending or exhausted declaration makes CLI `hum up` exit 3 because
+it is not running; targeted `hum start NAME` or `hum restart NAME` cancels
+recovery and launches immediately. `--no-wait` returns after spawn.
 
 `run <name>` uses an existing resolved definition or attaches to an existing
 running or stopped session. `run <name> -- <command>...` creates an ad hoc
@@ -275,12 +280,16 @@ and supervisor lock linearize exit, timer claim, and operator intent, so stale
 timers never launch and a manual start/restart wins without two children.
 
 Automatic attempts reuse the last effective argv, cwd, environment, readiness,
-and TTY and do not reread the manifest; an explicit start/up/restart adopts
-changed definitions. Readiness and client timeout do not trigger relaunch.
+and TTY and do not reread the manifest. Explicit start and restart adopt changed
+definitions; up adopts them only when no automatic recovery is pending or
+exhausted. Readiness and client timeout do not trigger relaunch.
 `restart`, `relaunches`, and optional whole-second `next_launch_at` appear in
-process, CLI JSON, and MCP snapshots. Pending records resist completed-record
-eviction. Followers stay attached through the exit/wait boundary, backoff, and
-exhaustion; bounded logs retain child failures and relaunch/gave-up boundaries.
+process, CLI JSON, and MCP snapshots. During backoff, CLI and MCP `up` preserve
+that state and report `recovery_pending` without consuming an attempt; after the
+budget is exhausted they report `recovery_exhausted` without reviving the loop.
+Pending records resist completed-record eviction. Followers stay attached through
+the exit/wait boundary, backoff, and exhaustion; bounded logs retain child
+failures and relaunch/gave-up boundaries.
 Agents should read the failing incarnation's retained output before editing
 again.
 

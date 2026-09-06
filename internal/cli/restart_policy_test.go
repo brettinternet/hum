@@ -114,4 +114,40 @@ processes:
 	}
 }
 
+func TestUpRecoveryDocs(t *testing.T) {
+	documents := map[string]string{
+		"README.md":      restartPolicyDoc(t, "../../README.md"),
+		"docs/design.md": restartPolicyDoc(t, "../../docs/design.md"),
+	}
+	for path, content := range documents {
+		lower := strings.ToLower(strings.Join(strings.Fields(content), " "))
+		for _, phrase := range []string{"recovery_pending", "recovery_exhausted", "bounded", "automatic successor", "start request", "not running", "targeted", "hum start name", "hum restart name"} {
+			if !strings.Contains(lower, phrase) {
+				t.Errorf("%s missing recovery guidance %q", path, phrase)
+			}
+		}
+		if !strings.Contains(lower, "exit 3") && !strings.Contains(lower, "exits 3") {
+			t.Errorf("%s missing exit-3 guidance", path)
+		}
+		if strings.Contains(lower, "explicit start/up/restart adopts changed definitions") {
+			t.Errorf("%s incorrectly claims recovery-preserving up adopts changed definitions", path)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	root := NewRootCommand("test", "test", &stdout, &stderr)
+	if err := root.Run(context.Background(), []string{"hum", "up", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	help := strings.ToLower(strings.Join(strings.Fields(stdout.String()), " "))
+	for _, phrase := range []string{"recovery_pending", "recovery_exhausted", "bounded", "automatic successor", "start request", "exit 3", "not running", "targeted start name", "restart name"} {
+		if !strings.Contains(help, phrase) {
+			t.Errorf("CLI up help missing %q: %q", phrase, stdout.String())
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("CLI up help stderr = %q", stderr.String())
+	}
+}
+
 var processResultForCLITest = process.Result{ExitCode: 1, ExitedAt: time.Unix(1, 0)}

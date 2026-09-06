@@ -57,6 +57,171 @@ func manifestCLIExitCode(err error) int {
 	return -1
 }
 
+func manifestCLIRecoveryStubDaemon(t *testing.T, processes map[string]protocol.Process) (string, <-chan protocol.Operation, <-chan struct{}) {
+	t.Helper()
+	runtimeDir := t.TempDir()
+	listener, err := net.Listen("unix", daemon.NewRuntimePaths(runtimeDir).Socket)
+	if err != nil {
+		t.Fatalf("listen for recovery stub daemon: %v", err)
+	}
+	operations := make(chan protocol.Operation, 16)
+	done := make(chan struct{})
+	var connMu sync.Mutex
+	var conn net.Conn
+	t.Cleanup(func() {
+		_ = listener.Close()
+		connMu.Lock()
+		active := conn
+		connMu.Unlock()
+		if active != nil {
+			_ = active.Close()
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("recovery stub daemon did not finish")
+		}
+	})
+	go func() {
+		defer close(done)
+		active, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		connMu.Lock()
+		conn = active
+		connMu.Unlock()
+		defer active.Close()
+
+		decoder := protocol.NewDecoder(active)
+		encoder := protocol.NewEncoder(active)
+		request, decodeErr := decoder.DecodeRequest()
+		if decodeErr != nil || request.Op != protocol.OpHello {
+			return
+		}
+		if encodeErr := encoder.EncodeResponse(protocol.Hello{Op: protocol.OpHello, Version: protocol.Version}); encodeErr != nil {
+			return
+		}
+		for {
+			request, decodeErr = decoder.DecodeRequest()
+			if decodeErr != nil {
+				return
+			}
+			operations <- request.Op
+			switch request.Op {
+			case protocol.OpGet:
+				if request.Get == nil {
+					return
+				}
+				process, ok := processes[request.Get.Name]
+				if !ok {
+					_ = encoder.EncodeResponse(protocol.NewErrorResponse(protocol.OpGet, protocol.NewWireError(protocol.ErrorNotFound, "not found", nil)))
+					continue
+				}
+				if encodeErr := encoder.EncodeResponse(protocol.NewGetResponse(process)); encodeErr != nil {
+					return
+				}
+			case protocol.OpWait:
+				if encodeErr := encoder.EncodeResponse(protocol.NewWaitResponse(protocol.WaitExited, 0, nil)); encodeErr != nil {
+					return
+				}
+			case protocol.OpStart:
+				if encodeErr := encoder.EncodeResponse(protocol.NewErrorResponse(protocol.OpStart, protocol.NewWireError(protocol.ErrorInternal, "unexpected start request", nil))); encodeErr != nil {
+					return
+				}
+			default:
+				if encodeErr := encoder.EncodeResponse(protocol.NewErrorResponse(request.Op, protocol.NewWireError(protocol.ErrorInternal, "unexpected request", nil))); encodeErr != nil {
+					return
+				}
+			}
+		}
+	}()
+	return runtimeDir, operations, done
+}
+
+func TestUpPreservesCrashRecovery(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
+	pendingNextCursor := protocol.Cursor(21)
+	exhaustedNextCursor := protocol.Cursor(29)
+	processes := map[string]protocol.Process{
+		"pending": {
+			Name: "pending", Source: "manifest", Root: root, Cwd: root, Argv: []string{"pending"},
+			State: "exited", LaunchCursor: 11, NextCursor: &pendingNextCursor, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
+		},
+		"exhausted": {
+			Name: "exhausted", Source: "manifest", Root: root, Cwd: root, Argv: []string{"exhausted"},
+			State: "exited", LaunchCursor: 19, NextCursor: &exhaustedNextCursor, Restart: protocol.RestartOnFailure, Relaunches: 5,
+		},
+	}
+	runtimeDir, operations, done := manifestCLIRecoveryStubDaemon(t, processes)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  pending:
+    argv: [pending]
+    ready:
+      match: ready
+      timeout: 1s
+    restart: on-failure
+  exhausted:
+    argv: [exhausted]
+    ready:
+      match: ready
+      timeout: 1s
+    restart: on-failure
+`)
+
+	stdout, stderr, err := stopShutdownRun(t, "up", "--json")
+	if err == nil || manifestCLIExitCode(err) != 3 || stderr != "" {
+		t.Fatalf("up = code %d err=%v stdout=%q stderr=%q, want exit code 3 without stderr", manifestCLIExitCode(err), err, stdout, stderr)
+	}
+	results := manifestCLILaunchResults(t, stdout)
+	if len(results) != 2 {
+		t.Fatalf("up returned %d results, want two: %s", len(results), stdout)
+	}
+	if results[0].Name != "exhausted" || results[1].Name != "pending" {
+		t.Fatalf("up order = %#v, want lexical order", results)
+	}
+	for _, result := range results {
+		if result.Source != "manifest" || result.State != "exited" || result.Restart != protocol.RestartOnFailure || result.Readiness != "" {
+			t.Fatalf("recovery result = %#v, want exited manifest on-failure without readiness", result)
+		}
+		if result.LaunchCursor == nil {
+			t.Fatalf("recovery result omitted launch cursor: %#v", result)
+		}
+		switch result.Name {
+		case "pending":
+			if result.Outcome != "recovery_pending" || *result.LaunchCursor != 11 || result.Relaunches != 2 || result.NextLaunchAt == nil || !result.NextLaunchAt.Equal(next) {
+				t.Fatalf("pending recovery result = %#v", result)
+			}
+		case "exhausted":
+			if result.Outcome != "recovery_exhausted" || *result.LaunchCursor != 19 || result.Relaunches != 5 || result.NextLaunchAt != nil {
+				t.Fatalf("exhausted recovery result = %#v", result)
+			}
+		default:
+			t.Fatalf("unexpected recovery result = %#v", result)
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("recovery stub daemon did not observe the CLI connection close")
+	}
+	var got []protocol.Operation
+	for {
+		select {
+		case operation := <-operations:
+			got = append(got, operation)
+		default:
+			if len(got) != 2 || got[0] != protocol.OpGet || got[1] != protocol.OpGet {
+				t.Fatalf("CLI up daemon operations = %v, want two get requests only", got)
+			}
+			return
+		}
+	}
+}
+
 func TestManifestStart(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)

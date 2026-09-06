@@ -276,6 +276,71 @@ func contains(values []string, want string) bool {
 	return false
 }
 
+func TestUpPreservesCrashRecovery(t *testing.T) {
+	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"pending": {
+			Name: "pending", Source: "manifest", State: "exited", Argv: []string{"pending"},
+			LaunchCursor: 11, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
+		},
+		"exhausted": {
+			Name: "exhausted", Source: "manifest", State: "exited", Argv: []string{"exhausted"},
+			LaunchCursor: 19, Restart: protocol.RestartOnFailure, Relaunches: 5,
+		},
+	}}
+	ready := &protocol.ReadinessConfig{Match: "ready", Timeout: time.Second}
+	server, root, _ := newTestServer(t, []Definition{
+		{Name: "pending", Source: "manifest", Cwd: ".", Argv: []string{"pending"}, Ready: ready, Restart: protocol.RestartOnFailure},
+		{Name: "exhausted", Source: "manifest", Cwd: ".", Argv: []string{"exhausted"}, Ready: ready, Restart: protocol.RestartOnFailure},
+	}, client)
+	for name := range client.processes {
+		process := client.processes[name]
+		process.Root, process.Cwd = root, root
+		client.processes[name] = process
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		value, err := server.callTool(context.Background(), "up", args(root))
+		if err != nil {
+			t.Fatalf("up attempt %d: %v", attempt+1, err)
+		}
+		results, ok := value.([]launchResult)
+		if !ok || len(results) != 2 {
+			t.Fatalf("up attempt %d result = %#v (type %T), want two results", attempt+1, value, value)
+		}
+		if results[0].Name != "exhausted" || results[1].Name != "pending" {
+			t.Fatalf("up attempt %d order = %#v, want lexical order", attempt+1, results)
+		}
+		for index, result := range results {
+			if result.Process == nil {
+				t.Fatalf("up attempt %d result %q omitted process", attempt+1, result.Name)
+			}
+			process := result.Process
+			if process.State != "exited" || process.Source != "manifest" || process.Restart != protocol.RestartOnFailure || process.Readiness != nil {
+				t.Fatalf("up attempt %d process %q = %#v, want exited manifest on-failure without readiness", attempt+1, result.Name, process)
+			}
+			if result.Name == "exhausted" {
+				if result.Outcome != "recovery_exhausted" || process.Relaunches != 5 || process.NextLaunchAt != nil || process.LaunchCursor != 19 {
+					t.Fatalf("up attempt %d exhausted result = %#v", attempt+1, result)
+				}
+			} else {
+				if result.Outcome != "recovery_pending" || process.Relaunches != 2 || process.NextLaunchAt == nil || !process.NextLaunchAt.Equal(next) || process.LaunchCursor != 11 {
+					t.Fatalf("up attempt %d pending result = %#v", attempt+1, result)
+				}
+			}
+			if (index == 0 && result.Name != "exhausted") || (index == 1 && result.Name != "pending") {
+				t.Fatalf("up attempt %d result index %d = %#v", attempt+1, index, result)
+			}
+		}
+	}
+	if len(client.starts) != 0 {
+		t.Fatalf("up sent start requests: %#v", client.starts)
+	}
+	if len(client.waits) != 0 {
+		t.Fatalf("up waited on exited recovery: %#v", client.waits)
+	}
+}
+
 func TestToolValidation(t *testing.T) {
 	client := &fakeClient{}
 	s, root, _ := newTestServer(t, []Definition{{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp"}}, client)
