@@ -142,6 +142,118 @@ func manifestCLIRecoveryStubDaemon(t *testing.T, processes map[string]protocol.P
 	return runtimeDir, operations, done
 }
 
+func TestUpEmptyManifest(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	runtimeDir := t.TempDir()
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, "version: 1\nprocesses: {}\n")
+
+	stdout, stderr, err := stopShutdownRun(t, "up")
+	if err != nil {
+		t.Fatalf("empty manifest up: %v", err)
+	}
+	if stdout != "No processes are declared in hum.yaml.\n" || stderr != "" {
+		t.Fatalf("empty manifest output = stdout %q stderr %q", stdout, stderr)
+	}
+	assertDownRuntimeAbsent(t, runtimeDir)
+}
+
+func TestUpEmptyManifestJSON(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	runtimeDir := t.TempDir()
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, "version: 1\nprocesses: {}\n")
+
+	stdout, stderr, err := stopShutdownRun(t, "up", "--json")
+	if err != nil {
+		t.Fatalf("empty manifest JSON up: %v", err)
+	}
+	if stdout != "" || stderr != "" {
+		t.Fatalf("empty manifest JSON output = stdout %q stderr %q, want both empty", stdout, stderr)
+	}
+	assertDownRuntimeAbsent(t, runtimeDir)
+}
+
+func TestUpNonEmptyManifestStartsDaemon(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	runtimeDir := cliServeRunRuntimeDir(t)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  worker:
+    argv: [/bin/sh, -c, "sleep 30"]
+`)
+	t.Cleanup(func() {
+		_, _, _ = stopShutdownRun(t, "shutdown", "--stop-processes")
+	})
+
+	stdout, stderr, err := stopShutdownRun(t, "up", "--json", "--no-wait")
+	if err != nil {
+		t.Fatalf("non-empty manifest up: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+	}
+	results := manifestCLILaunchResults(t, stdout)
+	if len(results) != 1 || results[0].Name != "worker" || results[0].Outcome != "running_unverified" {
+		t.Fatalf("non-empty manifest results = %+v", results)
+	}
+	paths := daemon.NewRuntimePaths(runtimeDir)
+	if _, err := os.Stat(paths.Socket); err != nil {
+		t.Fatalf("daemon socket: %v", err)
+	}
+	client, err := daemon.Dial(context.Background(), paths.Socket)
+	if err != nil {
+		t.Fatalf("dial started daemon: %v", err)
+	}
+	defer client.Close()
+	active, err := client.List(context.Background(), daemon.ListRequest{Cwd: root})
+	if err != nil {
+		t.Fatalf("list started process: %v", err)
+	}
+	if len(active) != 1 || active[0].Name != "worker" {
+		t.Fatalf("active processes = %+v", active)
+	}
+}
+
+func TestUpEmptyManifestValidatesInput(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	writeManifestCLITestFile(t, root, "version: 1\nprocesses: {}\n")
+
+	tests := []struct {
+		name    string
+		ctx     context.Context
+		args    []string
+		wantErr string
+	}{
+		{name: "arguments", ctx: context.Background(), args: []string{"up", "worker"}, wantErr: "up accepts no positional arguments"},
+		{name: "malformed timeout", ctx: context.Background(), args: []string{"up", "--timeout", "invalid"}, wantErr: "timeout must be a valid duration"},
+		{name: "non-positive timeout", ctx: context.Background(), args: []string{"up", "--timeout", "0s"}, wantErr: "timeout must be positive"},
+		{name: "sub-millisecond timeout", ctx: context.Background(), args: []string{"up", "--timeout", "1us"}, wantErr: "timeout must be at least 1ms"},
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests = append(tests, struct {
+		name    string
+		ctx     context.Context
+		args    []string
+		wantErr string
+	}{name: "canceled context", ctx: canceled, args: []string{"up"}, wantErr: context.Canceled.Error()})
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtimeDir := t.TempDir()
+			t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+			var stdout, stderr bytes.Buffer
+			err := cliServeRunInvoke(test.ctx, test.args, &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("up error = %v, want containing %q", err, test.wantErr)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Fatalf("validation output = stdout %q stderr %q, want empty", stdout.String(), stderr.String())
+			}
+			assertDownRuntimeAbsent(t, runtimeDir)
+		})
+	}
+}
+
 func TestUpPreservesCrashRecovery(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)

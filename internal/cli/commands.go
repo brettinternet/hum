@@ -1729,6 +1729,13 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	if err != nil {
 		return err
 	}
+	if ordered && len(manifest.defs) == 0 {
+		if cmd.Bool("json") {
+			return nil
+		}
+		_, err = fmt.Fprintln(writer, "No processes are declared in hum.yaml.")
+		return err
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err

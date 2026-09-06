@@ -174,7 +174,10 @@ process is active unless `--stop-processes` is given.
 
 The nearest Git project root may contain one authoritative `hum.yaml`. A valid
 empty manifest resolves to no definitions; an invalid manifest is an error.
-Discovery occurs only when the file is absent. Alternate filenames are ignored.
+`hum up` on an empty manifest does not contact or create a daemon: human output
+is exactly `No processes are declared in hum.yaml.` and `--json` emits no NDJSON
+records. Discovery occurs only when the file is absent. Alternate filenames are
+ignored.
 
 ```yaml
 version: 1
