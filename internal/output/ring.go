@@ -181,6 +181,11 @@ func (r *ring) readLimits(opts ReadOptions) (int, int, error) {
 	maxEntries := opts.MaxEntries
 	if maxEntries == 0 {
 		maxEntries = r.limits.DefaultReadEntries
+		// A tail read asks for the final N entries; the default entry cap must
+		// not clip that window from the front and hide the newest output.
+		if opts.Tail > maxEntries {
+			maxEntries = opts.Tail
+		}
 	}
 	maxBytes := opts.MaxBytes
 	if maxBytes == 0 {

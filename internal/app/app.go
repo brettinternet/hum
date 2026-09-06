@@ -237,7 +237,7 @@ var (
 	ErrProcessNotFound  = errors.New("supervised process not found")
 	ErrNameInUse        = errors.New("supervised process name is already running")
 	ErrInvalidName      = errors.New("invalid supervised process name")
-	ErrInvalidRequest   = errors.New("invalid process start request")
+	ErrInvalidRequest   = errors.New("invalid request")
 	ErrInvalidSignal    = errors.New("invalid process signal")
 	ErrInputConflict    = errors.New("tty input is already owned")
 	ErrInputTooLarge    = errors.New("tty input is too large")

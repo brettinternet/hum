@@ -349,3 +349,29 @@ func TestCursorTruncation(t *testing.T) {
 		t.Fatalf("small byte cap error = %v, want EntryTooLargeError", err)
 	}
 }
+
+func TestTailLargerThanDefaultEntriesReturnsNewest(t *testing.T) {
+	r, err := newRing(Limits{RetainedBytes: 1024, DefaultReadEntries: 2, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := r.append(Stdout, time.Time{}, "line\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := r.read(ReadOptions{Tail: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != 4 || result.Entries[0].Cursor != 1 || result.Entries[3].Cursor != 4 || result.More {
+		t.Fatalf("tail 4 with default entry limit 2 = %#v, want cursors 1-4 without More", result)
+	}
+	explicit, err := r.read(ReadOptions{Tail: 4, MaxEntries: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(explicit.Entries) != 2 || !explicit.More {
+		t.Fatalf("tail 4 with explicit entry limit 2 = %#v, want two entries and More", explicit)
+	}
+}
