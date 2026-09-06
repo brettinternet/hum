@@ -1,10 +1,10 @@
 ---
 id: HUM-036
 title: Serve MCP requests concurrently with cancellation
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-06 16:15'
-updated_date: '2026-09-06 17:41'
+updated_date: '2026-09-06 21:40'
 labels:
   - mcp
   - docs
@@ -36,22 +36,22 @@ Non-goals: HTTP transport, sessions, streaming results, request batching, config
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/mcp -run '^TestConcurrentRequests$' -count=1 -v` exits 0 and prints PASS, proving ping, logs, status, and list respond within one second while a five-second wait and a blocked up are in flight.
-- [ ] #2 `go test ./internal/mcp -run '^TestRequestCancellation$' -count=1 -v` exits 0 and prints PASS, proving notifications/cancelled targets exactly one request ID, returns code -32800 for that request, leaves unrelated work running, and treats unknown cancellation IDs as no-ops.
-- [ ] #3 `go test ./internal/mcp -run '^TestRequestCapacityAndIDs$' -count=1 -v` exits 0 and prints PASS for a 64-request bound, immediate -32001 overload, -32600 duplicate in-flight IDs, slot release after every terminal path, and notifications not consuming slots.
-- [ ] #4 `go test ./internal/mcp -run '^TestConcurrentServerShutdown$' -count=1 -v` exits 0 and prints PASS, proving EOF and parent cancellation cancel stuck handlers, close/unblock a stuck response writer, join all handler/writer goroutines, and return within two seconds without partial response frames.
-- [ ] #5 `go test ./internal/mcp -race -run '^(TestConcurrentRequests|TestRequestCancellation|TestRequestCapacityAndIDs|TestConcurrentServerShutdown)$' -count=1` exits 0, and `go test ./internal/mcp -run '^TestMCPConcurrencyDocs$' -count=1` exits 0 with docs/design.md and docs/coding-agents.md stating the limit, codes, cancellation, transport ownership, and shutdown contract.
-- [ ] #6 `task ci` exits 0.
+- [x] #1 `go test ./internal/mcp -run '^TestConcurrentRequests$' -count=1 -v` exits 0 and prints PASS, proving ping, logs, status, and list respond within one second while a five-second wait and a blocked up are in flight.
+- [x] #2 `go test ./internal/mcp -run '^TestRequestCancellation$' -count=1 -v` exits 0 and prints PASS, proving notifications/cancelled targets exactly one request ID, returns code -32800 for that request, leaves unrelated work running, and treats unknown cancellation IDs as no-ops.
+- [x] #3 `go test ./internal/mcp -run '^TestRequestCapacityAndIDs$' -count=1 -v` exits 0 and prints PASS for a 64-request bound, immediate -32001 overload, -32600 duplicate in-flight IDs, slot release after every terminal path, and notifications not consuming slots.
+- [x] #4 `go test ./internal/mcp -run '^TestConcurrentServerShutdown$' -count=1 -v` exits 0 and prints PASS, proving EOF and parent cancellation cancel stuck handlers, close/unblock a stuck response writer, join all handler/writer goroutines, and return within two seconds without partial response frames.
+- [x] #5 `go test ./internal/mcp -race -run '^(TestConcurrentRequests|TestRequestCancellation|TestRequestCapacityAndIDs|TestConcurrentServerShutdown)$' -count=1` exits 0, and `go test ./internal/mcp -run '^TestMCPConcurrencyDocs$' -count=1` exits 0 with docs/design.md and docs/coding-agents.md stating the limit, codes, cancellation, transport ownership, and shutdown contract.
+- [x] #6 `task ci` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -61,3 +61,26 @@ Non-goals: HTTP transport, sessions, streaming results, request batching, config
 2. Dispatch requests concurrently with duplicate, overload, cancellation, and bounded-shutdown handling.
 3. Add race-safe lifecycle tests and document exact codes and limits.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed for implementation in an isolated worktree.
+
+Implementation complete in worktree hum-036-mcp-concurrency. Added internal/cli/commands.go beyond the original modified-file list because newCLICommands overwrites mcpCLICommand.Description; updating that caller is required for the shipped hum mcp --help text, verified by TestMCPHelp.
+AC#1 — go test ./internal/mcp -run '^TestConcurrentRequests$' -count=1 -v: PASS.
+AC#2 — go test ./internal/mcp -run '^TestRequestCancellation$' -count=1 -v: PASS, including cancellation of a response queued behind a blocked writer.
+AC#3 — go test ./internal/mcp -run '^TestRequestCapacityAndIDs$' -count=1 -v: PASS, including response-backpressure ID and slot retention.
+AC#4 — go test ./internal/mcp -run '^TestConcurrentServerShutdown$' -count=1 -v: PASS, including EOF/cancellation shutdown, blocked writer closure, and complete-frame validation.
+AC#5 — go test ./internal/mcp -race -run '^(TestConcurrentRequests|TestRequestCancellation|TestRequestCapacityAndIDs|TestConcurrentServerShutdown)$' -count=1: PASS; go test ./internal/mcp -run '^TestMCPConcurrencyDocs$' -count=1: PASS.
+AC#6 — task ci: PASS.
+Independent verifier: PASS for AC#1 through AC#6 after cancellation/backpressure and complete-frame review fixes. Reviewer findings were resolved and focused race tests remained green.
+
+Final implementation commit 50b8ea2; task ci passed after rebasing onto current main and on the final commit.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented bounded concurrent MCP request serving with targeted cancellation, deterministic duplicate/overload errors, serialized closeable responses, and bounded shutdown. Added race-safe lifecycle, backpressure, frame-integrity, CLI help, and documentation coverage. Verified all focused tests, the focused race suite, independent verifier review, task check:staged, and task ci on commit 50b8ea2.
+<!-- SECTION:FINAL_SUMMARY:END -->
