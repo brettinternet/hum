@@ -132,6 +132,21 @@ task cli:build
 ./bin/hum --help
 ```
 
+## Shell completion
+
+Completion is opt-in and does not start a daemon:
+
+```sh
+# bash
+source <(hum completion bash)
+
+# zsh
+source <(hum completion zsh)
+
+# fish
+hum completion fish > ~/.config/fish/completions/hum.fish
+```
+
 ## Coding agents
 
 With `hum` on `PATH`:

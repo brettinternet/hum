@@ -40,9 +40,13 @@ hum [--project DIR|-C DIR] remove <name>... [--json]
 hum shutdown [--stop-processes] [--json]
 hum mcp
 hum skill
+hum completion bash|zsh|fish
 ```
 
 Short aliases are command-local except the global help and version aliases. Project-scoped commands also accept the persistent `-C DIR` alias for `--project DIR`; the selector may appear before or after the subcommand, and `run` accepts it after the process name before `--`.
+
+`completion bash`, `completion zsh`, and `completion fish` print installable shell scripts. Completion is opt-in, uses the assembled command and flag tree, and never starts a daemon; NAME positions query only the merged declaration/runtime names for the selected project. Manifest or daemon errors return no candidates and no diagnostic.
+
 Long options remain canonical in documentation, scripts, output, and errors.
 Combined short options are unsupported; MCP fields have no aliases.
 
@@ -186,6 +190,11 @@ records. With no daemon or names it succeeds with
 
 `shutdown` controls daemon lifetime across projects. It refuses while any
 process is active unless `--stop-processes` is given.
+
+`completion` prints a script for bash, zsh, or fish and does not edit shell
+startup files. Its NAME callbacks merge manifest declarations with retained runtime records from the selected project, deduplicate and sort the names, and
+silently return no candidates when manifest or daemon resolution fails. A
+missing daemon still permits declaration completion.
 
 ## Definitions and resolution
 
