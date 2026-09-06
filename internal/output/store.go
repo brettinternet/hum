@@ -349,13 +349,6 @@ func (sub *Subscription) Cursor() Cursor {
 	return sub.after
 }
 
-// ReplayLatestExit requests delivery of the latest exit retained when this
-// subscription was created. It rewinds only an otherwise caught-up
-// subscription, and never rewinds over an exit appended after Subscribe.
-func (sub *Subscription) ReplayLatestExit() bool {
-	return sub.ReplayLatestExitSince(time.Time{})
-}
-
 // ReplayLatestExitSince requests delivery of the latest exit retained when
 // this subscription was created when its timestamp is at or after since. A
 // zero since omits the timestamp lower bound. It rewinds only an otherwise

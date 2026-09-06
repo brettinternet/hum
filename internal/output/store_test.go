@@ -248,8 +248,8 @@ func TestReplayLatestExitDrainsWatermarkedOutput(t *testing.T) {
 	}
 
 	sub := store.Subscribe(ReadOptions{})
-	if !sub.ReplayLatestExit() {
-		t.Fatal("ReplayLatestExit() = false, want true for retained pre-subscribe exit")
+	if !sub.ReplayLatestExitSince(time.Time{}) {
+		t.Fatal("ReplayLatestExitSince(time.Time{}) = false, want true for retained pre-subscribe exit")
 	}
 
 	event := nextStoreEvent(t, sub)
@@ -390,8 +390,8 @@ func TestReplayLatestExitDoesNotDuplicatePostSubscribeExit(t *testing.T) {
 	sub := store.Subscribe(ReadOptions{})
 	exit := Exit{Code: 13, Time: time.Unix(4, 0)}
 	store.NotifyExit(exit)
-	if sub.ReplayLatestExit() {
-		t.Fatal("ReplayLatestExit() = true, want false for exit appended after Subscribe")
+	if sub.ReplayLatestExitSince(time.Time{}) {
+		t.Fatal("ReplayLatestExitSince(time.Time{}) = true, want false for exit appended after Subscribe")
 	}
 
 	event := nextStoreEvent(t, sub)

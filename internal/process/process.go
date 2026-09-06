@@ -371,9 +371,6 @@ func waitTTYWritable(raw syscall.RawConn) error {
 	return errors.Join(controlErr, pollErr)
 }
 
-// WriteInput is an explicit alias for Write at input transport call sites.
-func (c *Child) WriteInput(p []byte) (int, error) { return c.Write(p) }
-
 // Resize applies a terminal size in character cells.
 func (c *Child) Resize(columns, rows uint16) error {
 	if c == nil || !c.tty {

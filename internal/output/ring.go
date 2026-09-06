@@ -157,13 +157,11 @@ func (r *ring) read(opts ReadOptions) (ReadResult, error) {
 	// even though it returns no entries. This makes the result directly reusable
 	// by a follower without manufacturing a one-past cursor.
 	if start >= r.count {
+		next := latest
 		if opts.After != nil {
-			next := *opts.After
-			result.Next = &next
-		} else {
-			next := latest
-			result.Next = &next
+			next = *opts.After
 		}
+		result.Next = &next
 		return result, nil
 	}
 
@@ -262,36 +260,6 @@ func (r *ring) readBounded(opts ReadOptions, result ReadResult, start, maxEntrie
 		next = entry.Cursor
 	}
 
-	if result.More {
-		// The first matching entry at or after the limit remains unconsumed. Any
-		// nonmatching entries before it are safe to consume and advance Next.
-		for offset := start; offset < r.count; offset++ {
-			entry := r.entries[(r.head+offset)%len(r.entries)]
-			if !consumed || entry.Cursor <= next {
-				continue
-			}
-			if matchesRead(entry, opts) {
-				break
-			}
-			consumed = true
-			next = entry.Cursor
-		}
-		if !hasMatchingAfter(r, opts, next) {
-			result.More = false
-			// If no later match exists, all skipped entries were consumed. The
-			// loop above may have stopped only at a matching entry, so consume the
-			// remainder now to make Next the newest source cursor.
-			for offset := start; offset < r.count; offset++ {
-				entry := r.entries[(r.head+offset)%len(r.entries)]
-				if !consumed || entry.Cursor <= next {
-					continue
-				}
-				consumed = true
-				next = entry.Cursor
-			}
-		}
-	}
-
 	if consumed {
 		result.Next = &next
 	} else if opts.After != nil {
@@ -302,10 +270,10 @@ func (r *ring) readBounded(opts ReadOptions, result ReadResult, start, maxEntrie
 	return result, nil
 }
 
-// readTail scans the full requested range to count matching entries, then
-// walks the final Tail matches in chronological order. All source entries are
-// consumed during selection, so Next is the newest retained cursor even when
-// no entry matched the filter.
+// readTail walks backwards from the newest retained entry until the final
+// Tail matches are known, evaluating the filter once per entry, then returns
+// those matches in chronological order. Every source entry in range counts as
+// consumed, so Next is the newest retained cursor even when nothing matched.
 func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, maxBytes int) (ReadResult, error) {
 	tail := opts.Tail
 	if tail > r.count-start {
@@ -314,52 +282,31 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 	if tail < 1 {
 		return result, nil
 	}
+	next := r.entries[(r.head+r.count-1)%len(r.entries)].Cursor
 
-	matching := 0
-	var next Cursor
-	consumed := false
-	for offset := start; offset < r.count; offset++ {
-		entry := r.entries[(r.head+offset)%len(r.entries)]
-		consumed = true
-		next = entry.Cursor
-		if matchesRead(entry, opts) {
-			matching++
+	selected := make([]int, 0, tail)
+	for offset := r.count - 1; offset >= start && len(selected) < tail; offset-- {
+		if matchesRead(r.entries[(r.head+offset)%len(r.entries)], opts) {
+			selected = append(selected, offset)
 		}
 	}
-
-	if !consumed {
-		if opts.After != nil {
-			boundary := *opts.After
-			result.Next = &boundary
-		}
-		return result, nil
-	}
-	if matching == 0 {
+	if len(selected) == 0 {
 		result.Next = &next
 		return result, nil
 	}
+	for i, j := 0, len(selected)-1; i < j; i, j = i+1, j-1 {
+		selected[i], selected[j] = selected[j], selected[i]
+	}
 
-	selected := minInt(matching, tail)
-	skip := matching - selected
 	// Valid entries are nonempty, so MaxBytes also bounds the tail result's
 	// entry capacity.
-	tailResultCapacity := minInt(maxEntries, maxBytes)
-	tailResultCapacity = minInt(tailResultCapacity, selected)
+	tailResultCapacity := minInt(minInt(maxEntries, maxBytes), len(selected))
 	var tailResult []Entry
 	usedBytes := 0
 	var blocked Cursor
 	blockedSet := false
-	matchingSeen := 0
-	for offset := start; offset < r.count; offset++ {
+	for _, offset := range selected {
 		entry := r.entries[(r.head+offset)%len(r.entries)]
-		if !matchesRead(entry, opts) {
-			continue
-		}
-		if matchingSeen < skip {
-			matchingSeen++
-			continue
-		}
-		matchingSeen++
 		if len(tailResult) >= maxEntries {
 			result.More = true
 			blocked = entry.Cursor
@@ -414,16 +361,6 @@ func matchText(entry Entry) string {
 		return StripTerminalControl(entry.Text)
 	}
 	return entry.Text
-}
-
-func hasMatchingAfter(r *ring, opts ReadOptions, after Cursor) bool {
-	for offset := 0; offset < r.count; offset++ {
-		entry := r.entries[(r.head+offset)%len(r.entries)]
-		if entry.Cursor > after && matchesRead(entry, opts) {
-			return true
-		}
-	}
-	return false
 }
 
 func streamBit(stream Stream) StreamMask {

@@ -36,13 +36,6 @@ const (
 	// by ReadOptions and avoids a special value outside the mask's bit range.
 	AllStreams  StreamMask = 0
 	BothStreams            = StdoutMask | StderrMask
-
-	// The Mask* spellings are aliases kept alongside the stream-named masks so
-	// callers can choose either the noun-first or mask-first form.
-	MaskStdout = StdoutMask
-	MaskStderr = StderrMask
-	MaskSystem = SystemMask
-	MaskBoth   = BothStreams
 )
 
 // Conservative defaults used when a Limits field is zero.
@@ -50,11 +43,6 @@ const (
 	DefaultRetainedBytes = 4 << 20
 	DefaultReadEntries   = 100
 	DefaultReadBytes     = 16 << 10
-
-	// RetainedBytesDefault is an alternate descriptive spelling for callers
-	// that keep defaults grouped by field name.
-	RetainedBytesDefault       = DefaultRetainedBytes
-	DefaultRetainedOutputBytes = DefaultRetainedBytes
 )
 
 // Entry is one immutable output record. Text is kept as a string so arbitrary
@@ -230,10 +218,3 @@ func (e *InvalidLimitsError) Error() string {
 }
 
 func (e *InvalidLimitsError) Unwrap() error { return ErrInvalidLimits }
-
-// Common aliases make the typed errors discoverable without duplicating error
-// implementations.
-type FutureError = FutureCursorError
-type CursorFutureError = FutureCursorError
-type OversizedEntryError = EntryTooLargeError
-type InvalidReadLimitError = ReadLimitError
