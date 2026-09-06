@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
+Agent-oriented process supervisor with retained bounded logs, independent followers, readiness/dependencies, structured JSON/MCP, and controlled TTY input.
+
 `hum` keeps local project processes running between commands, with bounded logs and lifecycle controls. Let your agents see your stdout.
 
 ```sh
