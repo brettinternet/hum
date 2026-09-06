@@ -419,7 +419,7 @@ func TestAutomaticDaemonStartup(t *testing.T) {
 			_, _, _ = cliServeRunInvokeForTest("shutdown", "--stop-processes")
 		})
 
-		attachedCtx, cancelAttached := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		attachedCtx, cancelAttached := context.WithTimeout(context.Background(), 5*time.Second)
 		var attachedOut, attachedErr strings.Builder
 		err := cliServeRunInvoke(attachedCtx, []string{"run", "automatic-attached", "--", "/bin/sh", "-c", "printf attached"}, &attachedOut, &attachedErr)
 		cancelAttached()

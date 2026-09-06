@@ -358,9 +358,22 @@ func TestLogsFollow(t *testing.T) {
 		t.Fatalf("human evicted logs stderr = %q, want next-cursor and truncation trailer", humanErr)
 	}
 
-	followContext, cancelFollow := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	followOutput, stderr, err := hum006ListLogsRunAt(t, project, followContext, "logs", "overflow", "--follow", "--json", "--after-cursor", "0", "--limit-bytes", "16")
+	followContext, cancelFollow := context.WithTimeout(context.Background(), 5*time.Second)
+	followOldwd := hum006ListLogsEnterDir(t, project)
+	var followStdout, followStderr manifestProgressCapture
+	followDone := make(chan error, 1)
+	go func() {
+		followDone <- NewRootCommand("test", "test", &followStdout, &followStderr).Run(followContext, []string{"hum", "logs", "overflow", "--follow", "--json", "--after-cursor", "0", "--limit-bytes", "16"})
+	}()
+	sawEviction := followStdout.waitFor(`"type":"eviction"`, 5*time.Second)
+	sawMoreEvent := followStdout.waitFor(`"more":true`, 5*time.Second)
 	cancelFollow()
+	err = <-followDone
+	hum006ListLogsLeaveDir(t, followOldwd)
+	followOutput, stderr := followStdout.String(), followStderr.String()
+	if !sawEviction || !sawMoreEvent {
+		t.Fatalf("bounded eviction follow did not produce required events: stdout=%q stderr=%q", followOutput, stderr)
+	}
 	if err != nil {
 		t.Fatalf("bounded eviction follow: %v (stderr=%q)", err, stderr)
 	}

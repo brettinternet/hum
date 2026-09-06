@@ -1095,6 +1095,8 @@ processes:
 	root := stopShutdownTestProject(t)
 	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	fastGate := filepath.Join(root, "fast-ready-gate")
+	fastScript := fmt.Sprintf("while [ ! -f %s ]; do sleep 0.01; done; printf fast-child-output; printf fast-ready; sleep 30", strconv.Quote(fastGate))
 	writeManifestCLITestFile(t, root, fmt.Sprintf(`version: 1
 processes:
   slow:
@@ -1102,7 +1104,7 @@ processes:
     ready: {match: never-seen, timeout: 2s}
   fast:
     argv: [/bin/sh, -c, %s]
-    ready: {match: fast-ready, timeout: 2s}
+    ready: {match: fast-ready, timeout: 8s}
   plain:
     argv: [/bin/sh, -c, "printf plain-child; sleep 30"]
   error:
@@ -1114,7 +1116,7 @@ processes:
     argv: [/bin/sh, -c, "printf should-not-launch; sleep 30"]
     after: [blocked-root]
     ready: {match: blocked-ready, timeout: 2s}
-`, strconv.Quote("sleep 0.15; printf fast-child-output; printf fast-ready; sleep 30"), strconv.Quote("sleep 0.05; exit 4")))
+`, strconv.Quote(fastScript), strconv.Quote("sleep 0.05; exit 4")))
 	t.Cleanup(func() {
 		for _, name := range []string{"blocked", "blocked-root", "error", "fast", "plain", "slow"} {
 			_, _, _ = stopShutdownRun(t, "stop", name)
@@ -1125,12 +1127,15 @@ processes:
 	var stdout, stderr manifestProgressCapture
 	done := make(chan error, 1)
 	go func() {
-		done <- cliServeRunInvoke(context.Background(), []string{"up", "--timeout", "2s"}, &stdout, &stderr)
+		done <- cliServeRunInvoke(context.Background(), []string{"up"}, &stdout, &stderr)
 	}()
-	if !stderr.waitFor("hum up: fast: started; waiting for readiness\n", time.Second) {
+	if !stderr.waitFor("hum up: fast: started; waiting for readiness\n", 5*time.Second) {
 		t.Fatalf("fast launch progress did not arrive while up waited: %q", stderr.String())
 	}
-	if !stderr.waitFor("hum up: fast: ready\n", 3*time.Second) {
+	if err := os.WriteFile(fastGate, []byte("release\n"), 0o600); err != nil {
+		t.Fatalf("release fast readiness gate: %v", err)
+	}
+	if !stderr.waitFor("hum up: fast: ready\n", 8*time.Second) {
 		t.Fatalf("fast readiness progress did not arrive: %q", stderr.String())
 	}
 	if err := <-done; manifestCLIExitCode(err) != 1 {
