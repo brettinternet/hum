@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -882,5 +883,22 @@ func TestAppendObserverCloseWaitsForInFlightAppend(t *testing.T) {
 
 	if _, err := store.Append(Stdout, time.Unix(2, 0), "two\n"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDefaultReadFitsMaximumLine(t *testing.T) {
+	store, err := NewStore(Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close(nil)
+	line := strings.Repeat("x", DefaultReadBytes-1) + "\n"
+	store.Append(Stdout, time.Now(), line)
+	result, err := store.Read(ReadOptions{})
+	if err != nil {
+		t.Fatalf("default read of one maximum-size line: %v", err)
+	}
+	if len(result.Entries) != 1 || len(result.Entries[0].Text) != DefaultReadBytes {
+		t.Fatalf("default read returned %d entries, want the single %d-byte line", len(result.Entries), DefaultReadBytes)
 	}
 }

@@ -52,8 +52,9 @@ const (
 	DefaultCompletedRecords int = 20
 	// DefaultReadEntries is the default number of log entries read at a time.
 	DefaultReadEntries int = 100
-	// DefaultReadBytes is the default number of log bytes read at a time.
-	DefaultReadBytes int64 = 16 * 1024
+	// DefaultReadBytes is the default number of log bytes read at a time. It
+	// matches MaxLineBytes so one maximum-size line always fits a default read.
+	DefaultReadBytes int64 = MaxLineBytes
 	// MaxLineBytes is the maximum size of a single log line.
 	MaxLineBytes int64 = 64 * 1024
 

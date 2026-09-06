@@ -38,11 +38,13 @@ const (
 	BothStreams            = StdoutMask | StderrMask
 )
 
-// Conservative defaults used when a Limits field is zero.
+// Conservative defaults used when a Limits field is zero. DefaultReadBytes
+// equals the largest retained line so a default read always fits at least one
+// maximum-size entry instead of failing with EntryTooLargeError.
 const (
 	DefaultRetainedBytes = 4 << 20
 	DefaultReadEntries   = 100
-	DefaultReadBytes     = 16 << 10
+	DefaultReadBytes     = 64 << 10
 )
 
 // Entry is one immutable output record. Text is kept as a string so arbitrary
