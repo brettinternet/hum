@@ -167,8 +167,11 @@ func TestOneShotInputWrite(t *testing.T) {
 	if _, err := client.Input(ctx, InputRequest{Name: "prompt", Cwd: root, Root: root, Data: []byte("again")}); err == nil {
 		t.Fatal("stopped one-shot input succeeded")
 	} else {
+		// The process may exit just before attach (derived not-running error) or
+		// between the initial running event and the write (typed closed error).
 		var stopped *SessionNotRunningError
-		if !errors.As(err, &stopped) {
+		var closed *protocol.WireError
+		if !errors.As(err, &stopped) && (!errors.As(err, &closed) || closed.Code != protocol.ErrorInputClosed) {
 			t.Fatalf("stopped one-shot input error = %v", err)
 		}
 	}

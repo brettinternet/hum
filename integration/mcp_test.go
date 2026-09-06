@@ -197,6 +197,13 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 		t.Fatalf("ad hoc run: %s", run.Stderr)
 	}
 	testutil.WaitForFile(t, adHocMarker+".started", lifecycleTimeout)
+	// The marker is written before the fixture output. Wait for the final
+	// stderr fragment so sequential MCP and CLI status snapshots compare a
+	// stable next_cursor rather than racing output ingestion.
+	outputRaw, outputErr := session.call(t, "wait", explicit, map[string]any{"name": "transient", "after": 0, "match": "stderr:live", "timeout_ms": 3000})
+	if outputErr || !strings.Contains(string(outputRaw), `"outcome":"matched"`) {
+		t.Fatalf("wait for ad hoc fixture output=%s error=%v", outputRaw, outputErr)
+	}
 	listRaw, isErr := session.call(t, "list", explicit, nil)
 	if isErr || !strings.Contains(string(listRaw), `"source":"ad_hoc"`) {
 		t.Fatalf("list=%s error=%v", listRaw, isErr)
