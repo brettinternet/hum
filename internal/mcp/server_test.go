@@ -838,6 +838,188 @@ func TestConcurrentServerShutdown(t *testing.T) {
 	})
 }
 
+func TestToolOutputSchemasAreObjects(t *testing.T) {
+	for _, definition := range NewServer(Options{}).toolDefinitions() {
+		if got := definition.OutputSchema["type"]; got != "object" {
+			t.Errorf("%s output schema type = %#v, want object", definition.Name, got)
+		}
+	}
+
+	for _, version := range supportedProtocolVersions {
+		t.Run(version, func(t *testing.T) {
+			client := &fakeClient{processes: map[string]protocol.Process{
+				"existing": {Name: "existing", State: "running", LaunchCursor: 3},
+				"tty":      {Name: "tty", State: "running", TTY: true, LaunchCursor: 4},
+			}}
+			server, root, _ := newTestServer(t, []Definition{{Name: "declared", Source: "manifest", Argv: []string{"declared"}, Cwd: "."}}, client)
+			for name, process := range client.processes {
+				process.Root, process.Cwd = root, root
+				client.processes[name] = process
+			}
+
+			initializeParams, err := json.Marshal(map[string]any{"protocolVersion": version})
+			if err != nil {
+				t.Fatal(err)
+			}
+			initialized, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"initialize"`), Method: "initialize", Params: initializeParams})
+			if rpcErr != nil {
+				t.Fatalf("initialize: %#v", rpcErr)
+			}
+			initializeResult, ok := initialized.(map[string]any)
+			if !ok || initializeResult["protocolVersion"] != version {
+				t.Fatalf("initialize result = %#v, want version %s", initialized, version)
+			}
+
+			toolsValue, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"tools"`), Method: "tools/list"})
+			if rpcErr != nil {
+				t.Fatalf("tools/list: %#v", rpcErr)
+			}
+			toolsJSON, err := json.Marshal(toolsValue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var listing struct {
+				Tools []struct {
+					Name         string                     `json:"name"`
+					OutputSchema map[string]json.RawMessage `json:"outputSchema"`
+				} `json:"tools"`
+			}
+			if err := json.Unmarshal(toolsJSON, &listing); err != nil {
+				t.Fatalf("decode tools/list: %v", err)
+			}
+			if len(listing.Tools) != len(server.toolDefinitions()) {
+				t.Fatalf("tools/list returned %d tools, want %d", len(listing.Tools), len(server.toolDefinitions()))
+			}
+			for _, tool := range listing.Tools {
+				var schemaType string
+				if err := json.Unmarshal(tool.OutputSchema["type"], &schemaType); err != nil || schemaType != "object" {
+					t.Errorf("%s advertised output schema type = %q, want object", tool.Name, schemaType)
+				}
+			}
+
+			calls := []struct {
+				name   string
+				fields map[string]any
+				key    string
+			}{
+				{name: "start", fields: map[string]any{"name": "declared", "no_wait": true}},
+				{name: "up", fields: map[string]any{"no_wait": true}, key: "results"},
+				{name: "down", key: "results"},
+				{name: "list", key: "processes"},
+				{name: "status", fields: map[string]any{"name": "existing"}},
+				{name: "logs", fields: map[string]any{"name": "existing"}},
+				{name: "wait", fields: map[string]any{"name": "existing"}},
+				{name: "input", fields: map[string]any{"name": "tty", "text": "x"}},
+				{name: "restart", fields: map[string]any{"name": "existing"}},
+				{name: "stop", fields: map[string]any{"name": "existing"}},
+				{name: "remove", fields: map[string]any{"name": "existing"}},
+			}
+			for _, call := range calls {
+				params, err := json.Marshal(toolsCallParams(root, call.name, call.fields))
+				if err != nil {
+					t.Fatal(err)
+				}
+				value, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"call"`), Method: "tools/call", Params: params})
+				if rpcErr != nil {
+					t.Fatalf("%s RPC error: %#v", call.name, rpcErr)
+				}
+				result, ok := value.(callToolResult)
+				if !ok {
+					t.Fatalf("%s result type = %T, want callToolResult", call.name, value)
+				}
+				if result.IsError {
+					t.Fatalf("%s returned tool error: %#v", call.name, result)
+				}
+				structured, err := json.Marshal(result.StructuredContent)
+				if err != nil {
+					t.Fatalf("%s structuredContent: %v", call.name, err)
+				}
+				var object map[string]json.RawMessage
+				if err := json.Unmarshal(structured, &object); err != nil || object == nil {
+					t.Fatalf("%s structuredContent = %s, want object", call.name, structured)
+				}
+				if call.key != "" {
+					if _, ok := object[call.key]; !ok {
+						t.Fatalf("%s structuredContent = %s, missing %q", call.name, structured, call.key)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCollectionToolTextUnchanged(t *testing.T) {
+	for _, version := range supportedProtocolVersions {
+		t.Run(version, func(t *testing.T) {
+			for _, test := range []struct {
+				name        string
+				definitions []Definition
+				key         string
+			}{
+				{name: "up", key: "results"},
+				{name: "down", definitions: []Definition{{Name: "declared", Source: "manifest", Cwd: ".", Argv: []string{"declared"}}}, key: "results"},
+				{name: "list", definitions: []Definition{{Name: "declared", Source: "manifest", Cwd: ".", Argv: []string{"declared"}}}, key: "processes"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					root := t.TempDir()
+					server := NewServer(Options{
+						Resolver: fakeResolver{resolution: Resolution{Root: root, Definitions: test.definitions}},
+						ClientFactory: func(context.Context, bool) (Client, error) {
+							return nil, ErrDaemonUnavailable
+						},
+					})
+					initializeParams, err := json.Marshal(map[string]any{"protocolVersion": version})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"initialize"`), Method: "initialize", Params: initializeParams}); rpcErr != nil {
+						t.Fatalf("initialize: %#v", rpcErr)
+					}
+
+					value, err := server.callTool(context.Background(), test.name, args(root))
+					if err != nil {
+						t.Fatalf("baseline %s: %v", test.name, err)
+					}
+					wantText, err := json.Marshal(value)
+					if err != nil {
+						t.Fatalf("baseline %s JSON: %v", test.name, err)
+					}
+					params, err := json.Marshal(toolsCallParams(root, test.name, nil))
+					if err != nil {
+						t.Fatal(err)
+					}
+					responseValue, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"call"`), Method: "tools/call", Params: params})
+					if rpcErr != nil {
+						t.Fatalf("%s RPC error: %#v", test.name, rpcErr)
+					}
+					response, ok := responseValue.(callToolResult)
+					if !ok || response.IsError || len(response.Content) != 1 {
+						t.Fatalf("%s response = %#v", test.name, responseValue)
+					}
+					if got := response.Content[0].Text; got != string(wantText) {
+						t.Fatalf("%s text = %q, want unchanged %q", test.name, got, wantText)
+					}
+					var legacyArray []json.RawMessage
+					if err := json.Unmarshal([]byte(response.Content[0].Text), &legacyArray); err != nil {
+						t.Fatalf("%s text = %q, want legacy array: %v", test.name, response.Content[0].Text, err)
+					}
+					structured, err := json.Marshal(response.StructuredContent)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var envelope map[string]json.RawMessage
+					if err := json.Unmarshal(structured, &envelope); err != nil {
+						t.Fatalf("%s structuredContent = %s: %v", test.name, structured, err)
+					}
+					if _, ok := envelope[test.key]; !ok {
+						t.Fatalf("%s structuredContent = %s, missing %q", test.name, structured, test.key)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestMCPConcurrencyDocs(t *testing.T) {
 	paths := []string{"../../docs/design.md", "../../docs/coding-agents.md"}
 	var content strings.Builder

@@ -885,9 +885,12 @@ func TestUpReportsBlockedExistingState(t *testing.T) {
 				startErr: map[string]error{"db": errors.New("request failed")},
 			}
 			server, root, _ := newTestServer(t, definitions, client)
-			upItems := server.toolDefinitions()[1].OutputSchema["items"].(map[string]any)
-			upProperties := upItems["properties"].(map[string]any)
-			if _, ok := upProperties["existing_state"]; !ok || upItems["additionalProperties"] != false {
+			upSchema := server.toolDefinitions()[1].OutputSchema
+			upProperties := upSchema["properties"].(map[string]any)
+			resultsSchema := upProperties["results"].(map[string]any)
+			upItems := resultsSchema["items"].(map[string]any)
+			upResultProperties := upItems["properties"].(map[string]any)
+			if _, ok := upResultProperties["existing_state"]; !ok || upItems["additionalProperties"] != false {
 				t.Fatalf("up result schema omits closed existing_state: %#v", upItems)
 			}
 			value, err := server.callTool(context.Background(), "up", args(root))
