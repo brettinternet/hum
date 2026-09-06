@@ -36,6 +36,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "daemon", Aliases: []string{"d"}, Usage: "start the daemon detached, wait for readiness, and print its PID and socket"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return serveCommand(ctx, cmd, version, buildTime, errWriter)
 			},
@@ -50,6 +51,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return initCommand(ctx, cmd, writer)
 			},
@@ -61,6 +63,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			ArgsUsage: "",
 			Description: "Print the embedded Agent Skills file for shell-only fallback use. " +
 				"MCP-capable agents should use hum mcp instead.",
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return skillCommand(ctx, cmd, writer)
 			},
@@ -80,6 +83,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON for detached runs; attached runs stream raw child output"},
 				&urfavecli.BoolFlag{Name: "tty", Usage: "launch an ad-hoc command in a pseudo-terminal and forward attached input"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return runCommand(ctx, cmd, version, buildTime, writer, errWriter)
 			},
@@ -94,6 +98,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return startCommand(ctx, cmd, version, buildTime, writer)
 			},
@@ -102,12 +107,13 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:        "up",
 			Usage:       "ensure every manifest process is running",
 			ArgsUsage:   "",
-			Description: "Up resolves every hum.yaml declaration in lexical order, launches independent roots concurrently, and gates each after dependency on all direct prerequisites observed as ready. It waits per process from that process's launch or running observation, continues after launch failures, continues after failures, and reports skipped direct blockers plus any retained existing process state without mutating it; --no-wait is rejected before daemon contact when after is declared. A running or recovery-capable declaration whose argv, canonical cwd, readiness matcher, tty mode, or normalized restart policy differs returns definition_drift with sorted changed_fields and hum restart NAME guidance; CLI exits 1 for drift (`exit 1`). Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are also reported lexically as removed_definition with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate exit status and exclude ad-hoc or conventionally discovered records; removed records require an explicit stop or remove. During bounded recovery, up observes an exited declaration as recovery_pending or recovery_exhausted without sending a start request or waiting for an automatic successor; these outcomes make up exit 3 because the declaration is not running. Use targeted start NAME or restart NAME to cancel recovery and launch immediately. One invocation does not follow an automatic prerequisite successor; rerun hum up after recovery. A declared restart: on-failure session retries unexpected crashes with bounded 1s/2s/4s/8s/16s backoff; automatic attempts retain their effective launch spec. Human-only up without --json or --no-wait writes bounded startup progress to stderr in transition-completion order, with at most two lines per declaration; final summaries stay on stdout, and timeout or early-exit lines point to hum logs NAME without streaming child output.",
+			Description: "Up resolves every hum.yaml declaration in lexical order, launches independent roots concurrently, and gates each after dependency on all direct prerequisites observed as ready. It waits per process from that process's launch or running observation, continues after launch failures, and reports skipped direct blockers plus any retained existing process state without mutating it; --no-wait is rejected before daemon contact when after is declared. A running or recovery-capable declaration whose argv, canonical cwd, readiness matcher, tty mode, or normalized restart policy differs returns definition_drift with sorted changed_fields and hum restart NAME guidance; CLI exits 1 for drift (`exit 1`). Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are also reported lexically as removed_definition with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate exit status and exclude ad-hoc or conventionally discovered records; removed records require an explicit stop or remove. During bounded recovery, up observes an exited declaration as recovery_pending or recovery_exhausted without sending a start request or waiting for an automatic successor; these outcomes make up exit 3 because the declaration is not running. Use targeted start NAME or restart NAME to cancel recovery and launch immediately. One invocation does not follow an automatic prerequisite successor; rerun hum up after recovery. A declared restart: on-failure session retries unexpected crashes with bounded 1s/2s/4s/8s/16s backoff; automatic attempts retain their effective launch spec. Human-only up without --json or --no-wait writes bounded startup progress to stderr in transition-completion order, with at most two lines per declaration; final summaries stay on stdout, and timeout or early-exit lines point to hum logs NAME without streaming child output.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after processes are spawned"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per declaration"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return upCommand(ctx, cmd, version, buildTime, writer, errWriter)
 			},
@@ -122,6 +128,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return downCommand(ctx, cmd, version, buildTime, writer)
 			},
@@ -136,6 +143,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				&urfavecli.BoolFlag{Name: "all", Aliases: []string{"a"}, Usage: "list processes from every project"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return listCommand(ctx, cmd, version, buildTime, writer)
 			},
@@ -149,6 +157,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return statusCommand(ctx, cmd, version, buildTime, writer)
 			},
@@ -170,13 +179,14 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				"Following is read-only, so Ctrl+C cancels only the follower for one name and closes all followers in an aggregate; it never signals the managed process or any other managed process. Without --follow, an unavailable daemon reports Nothing is running.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "select stdout, stderr, or both"},
-				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, Usage: "select the final N entries"},
-				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, Usage: "read entries after this cursor"},
-				&urfavecli.IntFlag{Name: "limit-bytes", Aliases: []string{"b"}, Usage: "limit returned output bytes"},
+				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "select the final N entries; omit to include every retained entry"},
+				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "read entries after this cursor; omit to read from the oldest retained entry"},
+				&urfavecli.IntFlag{Name: "limit-bytes", Aliases: []string{"b"}, HideDefault: true, Usage: "limit returned output bytes; omit for the default read limit"},
 				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "filter entries by regular expression"},
 				&urfavecli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "follow the named session across process launches until interrupted"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return logsCommand(ctx, cmd, version, buildTime, writer, errWriter)
 			},
@@ -189,11 +199,12 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				"Without --after-cursor, a stopped or never-launched session waits for its next launch and evaluates from that launch cursor. " +
 				"It starts a daemon when needed and waits at most 30s unless --timeout is set. Exit code is 0 for a match or an exit without --match, 3 when --match sees process exit first, and 2 on timeout.",
 			Flags: []urfavecli.Flag{
-				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, DefaultText: "current launch cursor", Usage: "search entries after this cursor"},
+				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "search entries after this cursor; omit to evaluate from the current or next launch cursor"},
 				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "wait for output matching this non-empty regular expression"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum wait duration (default 30s)"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return waitCommand(ctx, cmd, version, buildTime, writer)
 			},
@@ -211,6 +222,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				&urfavecli.StringFlag{Name: "base64", Usage: "write strictly padded base64 bytes without whitespace"},
 				&urfavecli.BoolFlag{Name: "json", Usage: "write stable JSON"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return inputCommand(ctx, cmd, version, buildTime, writer)
 			},
@@ -226,6 +238,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return restartCommand(ctx, cmd, version, buildTime, writer)
 			},
@@ -240,6 +253,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return stopCommand(ctx, cmd, version, buildTime, writer)
 			},
@@ -253,6 +267,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return removeCommand(ctx, cmd, version, buildTime, writer)
 			},
@@ -268,6 +283,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				&urfavecli.BoolFlag{Name: "stop-processes", Usage: "stop all managed processes before shutting down; default refuses when any are active"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
 			},
+			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return shutdownCommand(ctx, cmd, version, buildTime, writer)
 			},
@@ -418,7 +434,7 @@ func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool
 			}
 		default:
 			if !hasSeparator && !strings.HasPrefix(flag, "-") {
-				return fmt.Errorf("run requires -- before the command: hum run NAME [options] -- %s ...", flag)
+				return newUserFacingError(fmt.Sprintf("run requires -- before the command: hum run NAME [options] -- %s ...", flag))
 			}
 			return fmt.Errorf("unknown run option %q", flag)
 		}
@@ -640,7 +656,7 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	defer client.Close()
-	processes, err := client.List(ctx, daemon.ListRequest{Cwd: cwd, All: cmd.Bool("all")})
+	processes, err := client.List(ctx, daemon.ListRequest{Cwd: cwd, All: cmd.Bool("all"), IncludeCompleted: true})
 	if err != nil {
 		return err
 	}
@@ -698,7 +714,7 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		}
 		definition, declared := manifest.byName[name]
 		if !declared {
-			return fmt.Errorf("%w. Run hum list --all to see known processes.", err)
+			return wrapUserFacingError(err, err.Error()+". Run hum list --all to see known processes.")
 		}
 		// A declared process that has never launched has no daemon record yet;
 		// report it stopped, exactly as list does, instead of a raw lookup error.
@@ -911,7 +927,7 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 	if cmd.Bool("follow") {
 		return aggregateLogsFollow(ctx, cmd, client, request, names, manifest, writer, errWriter)
 	}
-	return aggregateLogsRead(ctx, cmd, client, request, names, writer, errWriter)
+	return aggregateLogsRead(ctx, cmd, client, request, names, manifest, writer, errWriter)
 }
 
 func aggregateLogNamedError(name string, err error) error {
@@ -950,7 +966,7 @@ func renderAggregateLogsUnavailable(writer, errWriter io.Writer, jsonOutput bool
 	return firstErr
 }
 
-func aggregateLogsRead(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, request daemon.OutputRequest, names []string, writer, errWriter io.Writer) error {
+func aggregateLogsRead(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, request daemon.OutputRequest, names []string, manifest manifestState, writer, errWriter io.Writer) error {
 	renderer := newAggregateLogRenderer(writer, errWriter, cmd.Bool("json"))
 	var firstErr error
 	for _, name := range names {
@@ -962,6 +978,16 @@ func aggregateLogsRead(ctx context.Context, cmd *urfavecli.Command, client *daem
 		if err != nil {
 			if aggregateLogFatalError(err) {
 				return err
+			}
+			if _, declared := manifest.byName[name]; declared && isNotFound(err) {
+				// A declared name with no daemon record yet (never launched, or
+				// skipped behind a blocked dependency) is not a real failure: it
+				// must not print a not_found error to both stdout and stderr, or
+				// fail the aggregate when every other name succeeds.
+				if writeErr := renderer.writeNotLaunched(name); writeErr != nil {
+					return writeErr
+				}
+				continue
 			}
 			if firstErr == nil {
 				firstErr = aggregateLogNamedError(name, err)
@@ -1391,6 +1417,18 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	client, err := daemonClient(ctx, cfg)
 	if err != nil {
+		if daemonUnavailable(err) {
+			if cmd.Bool("json") {
+				for _, name := range names {
+					if err := encodeJSON(writer, stopResult{Name: name, Status: "not_running"}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			_, writeErr := fmt.Fprintln(writer, stopUnavailableMessage)
+			return writeErr
+		}
 		return err
 	}
 	defer client.Close()
@@ -1649,15 +1687,19 @@ func shutdownCommand(ctx context.Context, cmd *urfavecli.Command, version, build
 			_, writeErr := fmt.Fprintln(writer, shutdownUnavailableMessage)
 			return writeErr
 		}
-		if cmd.Bool("json") && isActiveProcesses(shutdownErr) {
-			encodeErr := encodeJSON(writer, struct {
-				Status    string   `json:"status"`
-				Message   string   `json:"message"`
-				Processes []string `json:"processes,omitempty"`
-			}{Status: "error", Message: shutdownErr.Error(), Processes: activeProcessNames(shutdownErr)})
-			if encodeErr != nil {
-				return encodeErr
+		if isActiveProcesses(shutdownErr) {
+			if cmd.Bool("json") {
+				encodeErr := encodeJSON(writer, struct {
+					Status    string   `json:"status"`
+					Message   string   `json:"message"`
+					Processes []string `json:"processes,omitempty"`
+				}{Status: "error", Message: shutdownErr.Error(), Processes: activeProcessNames(shutdownErr)})
+				if encodeErr != nil {
+					return encodeErr
+				}
+				return shutdownErr
 			}
+			return newUserFacingError(activeProcessesShutdownMessage(activeProcessNames(shutdownErr)))
 		}
 		return shutdownErr
 	}
@@ -1680,9 +1722,26 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	if err := requireNoArgs(cmd, "up"); err != nil {
 		return err
 	}
-	manifest, err := loadManifestForCommand()
+	cwd, err := os.Getwd()
 	if err != nil {
-		return err
+		return fmt.Errorf("current directory: %w", err)
+	}
+	// A genuinely empty hum.yaml stays inert (HUM-033). No hum.yaml and no
+	// discovered convention is an error when there is nothing to report: the
+	// error is deferred so an existing daemon can still surface removed manifest
+	// sessions, and it replaces the empty-manifest message otherwise.
+	manifest, err := loadManifest(cwd)
+	var noCandidateErr error
+	if err != nil {
+		var noCandidate *project.NoCandidateError
+		if !errors.As(err, &noCandidate) {
+			return err
+		}
+		noCandidateErr = err
+		manifest, err = loadManifestOrEmpty(cwd)
+		if err != nil {
+			return err
+		}
 	}
 	names := make([]string, 0, len(manifest.defs))
 	for _, definition := range manifest.defs {
@@ -1691,7 +1750,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	if cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
 		return errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies")
 	}
-	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, true, true, errWriter)
+	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, true, true, errWriter, noCandidateErr)
 }
 
 func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, names []string) error {
@@ -1724,19 +1783,11 @@ func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version,
 	return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifest, names, false)
 }
 
-func loadManifestForCommand() (manifestState, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return manifestState{}, fmt.Errorf("current directory: %w", err)
-	}
-	return loadManifestOrEmpty(cwd)
-}
-
 func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery bool) error {
-	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, preserveRecovery, false, nil)
+	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, preserveRecovery, false, nil, nil)
 }
 
-func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery, ordered bool, progressWriter io.Writer) error {
+func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery, ordered bool, progressWriter io.Writer, noCandidateErr error) error {
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1759,6 +1810,9 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		client, err = daemonClient(ctx, cfg)
 		if err != nil {
 			if daemonUnavailable(err) {
+				if noCandidateErr != nil {
+					return noCandidateErr
+				}
 				if cmd.Bool("json") {
 					return nil
 				}
@@ -1798,7 +1852,13 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	if err != nil {
 		return err
 	}
-	if ordered && len(results) == 0 && len(manifest.defs) == 0 && !cmd.Bool("json") {
+	if ordered && len(results) == 0 && len(manifest.defs) == 0 {
+		if noCandidateErr != nil {
+			return noCandidateErr
+		}
+		if cmd.Bool("json") {
+			return nil
+		}
 		_, err = fmt.Fprintln(writer, "No processes are declared in hum.yaml.")
 		return err
 	}

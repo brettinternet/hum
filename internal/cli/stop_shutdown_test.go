@@ -126,10 +126,13 @@ func TestShutdown(t *testing.T) {
 		}
 		refusal := err.Error() + "\n" + stderr
 		for _, name := range []string{"alpha", "beta"} {
-			want := projectRoot + ": " + name
+			want := name + " (" + projectRoot + ")"
 			if !strings.Contains(refusal, want) {
 				t.Errorf("shutdown refusal missing %q: %q", want, refusal)
 			}
+		}
+		if !strings.Contains(refusal, "hum shutdown --stop-processes") {
+			t.Errorf("shutdown refusal missing guidance: %q", refusal)
 		}
 		if _, statErr := os.Stat(server.Paths().Socket); statErr != nil {
 			t.Fatalf("daemon socket after refusal: %v", statErr)

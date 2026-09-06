@@ -31,6 +31,7 @@ hum stop <name>... [--json]
 hum remove <name>... [--json]
 hum shutdown [--stop-processes] [--json]
 hum mcp
+hum skill
 ```
 
 Short aliases are command-local except the global help and version aliases.
@@ -364,7 +365,7 @@ that state and report `recovery_pending` without consuming an attempt; after the
 budget is exhausted they report `recovery_exhausted` without reviving the loop.
 Pending and exhausted records resist completed-record eviction. Followers stay attached through
 the exit/wait boundary, backoff, and exhaustion; bounded logs retain child
-failures and relaunch/gave-up boundaries. Recovery snapshots retain the
+failures and the `relaunching` and `gave up` system boundaries. Recovery snapshots retain the
 response-safe readiness matcher without exposing environment so drift can be
 classified after exit.
 Agents should read the failing incarnation's retained output before editing

@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -158,6 +159,39 @@ func TestInitNoOverwrite(t *testing.T) {
 	}
 	if stderr != "" {
 		t.Fatalf("existing-manifest stderr = %q, want empty", stderr)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read existing hum.yaml: %v", readErr)
+	}
+	if !reflect.DeepEqual(got, contents) {
+		t.Fatalf("existing hum.yaml changed from %q to %q", contents, got)
+	}
+	assertRuntimeDirEmpty(t, runtimeDir)
+}
+
+func TestInitNoOverwriteHuman(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	runtimeDir := initTestRuntime(t)
+	path := filepath.Join(root, "hum.yaml")
+	contents := []byte("version: 1\nprocesses: {}\n")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("write existing hum.yaml: %v", err)
+	}
+
+	stdout, stderr, err := stopShutdownRun(t, "init")
+	if err == nil || initCLIExitCode(err) != 1 {
+		t.Fatalf("hum init existing manifest: err=%v code=%d stdout=%q stderr=%q, want exit 1", err, initCLIExitCode(err), stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("existing-manifest human stdout = %q, want empty", stdout)
+	}
+	wantMessage := fmt.Sprintf("hum.yaml already exists at %s; edit it, or remove it before running hum init again", path)
+	if err.Error() != wantMessage {
+		t.Fatalf("existing-manifest human error = %q, want %q", err.Error(), wantMessage)
+	}
+	if stderr != "" {
+		t.Fatalf("existing-manifest human stderr = %q, want the message reported once through the returned error", stderr)
 	}
 	got, readErr := os.ReadFile(path)
 	if readErr != nil {

@@ -195,14 +195,13 @@ func TestWaitCLIOutputsAndExitCodes(t *testing.T) {
 
 func TestWaitCLIValidation(t *testing.T) {
 	tests := []struct {
-		name           string
-		args           []string
-		want           string
-		frameworkParse bool
+		name string
+		args []string
+		want string
 	}{
 		{name: "missing name", args: []string{"wait"}, want: "wait requires a process name"},
 		{name: "too many names", args: []string{"wait", "one", "two"}, want: "wait accepts exactly one process name"},
-		{name: "invalid cursor", args: []string{"wait", "api", "--after-cursor", "-1"}, want: "after-cursor", frameworkParse: true},
+		{name: "invalid cursor", args: []string{"wait", "api", "--after-cursor", "-1"}, want: "after-cursor"},
 		{name: "invalid regex", args: []string{"wait", "api", "--match", "["}, want: "regular expression"},
 		{name: "empty regex", args: []string{"wait", "api", "--match", ""}, want: "match must not be empty"},
 		{name: "invalid duration", args: []string{"wait", "api", "--timeout", "later"}, want: "valid duration"},
@@ -225,15 +224,9 @@ func TestWaitCLIValidation(t *testing.T) {
 			if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(test.want)) {
 				t.Errorf("wait validation error = %q, want substring %q", err, test.want)
 			}
-			if test.frameworkParse {
-				if !strings.Contains(strings.ToLower(stdout), "usage:") {
-					t.Errorf("wait flag-parse stdout = %q, want usage", stdout)
-				}
-				if !strings.Contains(strings.ToLower(stderr), "incorrect usage") ||
-					!strings.Contains(strings.ToLower(stderr), strings.ToLower(test.want)) {
-					t.Errorf("wait flag-parse stderr = %q, want incorrect usage mentioning %q", stderr, test.want)
-				}
-			} else if stdout != "" || stderr != "" {
+			// Flag parse errors are reported once through the returned error, with
+			// no help dump on stdout and no duplicate line on stderr.
+			if stdout != "" || stderr != "" {
 				t.Errorf("wait validation output = stdout %q stderr %q, want empty", stdout, stderr)
 			}
 			if _, statErr := os.Stat(runtimeDir); !os.IsNotExist(statErr) {

@@ -179,7 +179,7 @@ func TestDiscoveredList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discovered human list: %v (stderr: %s)", err, stderr)
 	}
-	if !strings.Contains(stdout, "source=bin_dev") || !strings.Contains(stdout, "argv=./bin/dev") || !strings.Contains(stdout, "readiness=running_unverified") {
+	if !strings.Contains(stdout, "NAME") || !strings.Contains(stdout, "SOURCE") || !strings.Contains(stdout, "bin_dev") || !strings.Contains(stdout, "./bin/dev") || !strings.Contains(stdout, "readiness=running_unverified") {
 		t.Fatalf("discovered human list omitted metadata: %q", stdout)
 	}
 }
@@ -240,11 +240,15 @@ func TestDiscoveryErrors(t *testing.T) {
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 
 		stdout, stderr, err := stopShutdownRun(t, "up")
-		if err != nil {
-			t.Fatalf("no-candidate up: %v", err)
+		if err == nil {
+			t.Fatalf("no-candidate up unexpectedly succeeded: stdout %q stderr %q", stdout, stderr)
 		}
-		if stdout != "No processes are declared in hum.yaml.\n" || stderr != "" {
-			t.Fatalf("no-candidate up output = stdout %q stderr %q", stdout, stderr)
+		var noCandidate *project.NoCandidateError
+		if !errors.As(err, &noCandidate) {
+			t.Fatalf("no-candidate up error = %v, want NoCandidateError", err)
+		}
+		if stdout != "" || stderr != "" {
+			t.Fatalf("no-candidate up output = stdout %q stderr %q, want empty (harness does not print the returned error)", stdout, stderr)
 		}
 		assertRuntimeDirEmpty(t, runtimeDir)
 	})
@@ -412,11 +416,15 @@ func TestDiscoveryErrors(t *testing.T) {
 						t.Fatalf("no-candidate root = %q, want %q", noCandidate.Root, root)
 					}
 				case "no-candidate-up":
-					if err != nil {
-						t.Fatalf("%s error = %v, want inert success", strings.Join(test.args, " "), err)
+					if err == nil {
+						t.Fatalf("%s unexpectedly succeeded: stdout %q stderr %q", strings.Join(test.args, " "), stdout, stderr)
 					}
-					if stdout != "No processes are declared in hum.yaml.\n" || stderr != "" {
-						t.Fatalf("%s output = stdout %q stderr %q", strings.Join(test.args, " "), stdout, stderr)
+					var noCandidate *project.NoCandidateError
+					if !errors.As(err, &noCandidate) {
+						t.Fatalf("%s error = %v, want NoCandidateError", strings.Join(test.args, " "), err)
+					}
+					if stdout != "" || stderr != "" {
+						t.Fatalf("%s output = stdout %q stderr %q, want empty", strings.Join(test.args, " "), stdout, stderr)
 					}
 				default:
 					t.Fatalf("unknown expected error kind %q", test.kind)

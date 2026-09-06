@@ -607,6 +607,124 @@ func TestManifestReadinessSurvivesExitAfterMatch(t *testing.T) {
 	}
 }
 
+// TestManifestReadinessRefreshesExitedSnapshot proves that an
+// exited_before_ready result carries the daemon's current process snapshot
+// (state, pid, exit code) rather than the running snapshot recorded before
+// Wait observed the exit.
+func TestManifestReadinessRefreshesExitedSnapshot(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	client := daemon.NewClient(clientConn)
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = serverConn.Close()
+	})
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer serverConn.Close()
+		decoder := protocol.NewDecoder(serverConn)
+		encoder := protocol.NewEncoder(serverConn)
+		request, err := decoder.DecodeRequest()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if request.Op != protocol.OpHello || request.Hello == nil || request.Hello.Version != protocol.Version {
+			serverDone <- fmt.Errorf("hello request = %#v", request)
+			return
+		}
+		if err := encoder.EncodeResponse(protocol.Hello{Op: protocol.OpHello, Version: protocol.Version}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		next := protocol.Cursor(1)
+		running := protocol.Process{
+			Name: "web", Source: "manifest", Root: "/tmp/project", PID: 123,
+			Cwd: "/tmp/project", Argv: []string{"fixture"}, LaunchCursor: 0,
+			NextCursor: &next, State: string(app.StateRunning),
+			Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"},
+		}
+		exited := protocol.Process{
+			Name: "web", Source: "manifest", Root: "/tmp/project", PID: 0,
+			Cwd: "/tmp/project", Argv: []string{"fixture"}, LaunchCursor: 0,
+			NextCursor: &next, State: string(app.StateExited), ExitCode: 7,
+		}
+		gets := 0
+		for {
+			request, err = decoder.DecodeRequest()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					serverDone <- nil
+				} else {
+					serverDone <- err
+				}
+				return
+			}
+			switch request.Op {
+			case protocol.OpGet:
+				gets++
+				process := running
+				if gets > 1 {
+					process = exited
+				}
+				if err := encoder.EncodeResponse(protocol.NewGetResponse(process)); err != nil {
+					serverDone <- err
+					return
+				}
+				if gets > 1 {
+					serverDone <- nil
+					return
+				}
+			case protocol.OpWait:
+				if err := encoder.EncodeResponse(protocol.NewWaitResponse(protocol.WaitExited, 0, nil)); err != nil {
+					serverDone <- err
+					return
+				}
+			default:
+				serverDone <- fmt.Errorf("unexpected request %q", request.Op)
+				return
+			}
+		}
+	}()
+
+	if err := client.Hello(context.Background()); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	definition := project.Definition{
+		Name: "web", Source: "manifest", Argv: []string{"fixture"},
+		Ready: &project.ReadyDefinition{Match: "ready"},
+	}
+	process := app.Process{
+		Name: "web", Source: "manifest", Root: "/tmp/project",
+		PID: 123, Cwd: "/tmp/project", Argv: []string{"fixture"},
+		State: app.StateRunning, LaunchCursor: 0,
+		Readiness: &app.Readiness{State: app.ReadinessStarting, Match: "ready"},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := manifestReadinessResult(client, ctx, "/tmp/project", definition, process, "started", time.Second)
+	if err != nil {
+		t.Fatalf("manifest readiness: %v", err)
+	}
+	if result.Outcome != "exited_before_ready" {
+		t.Fatalf("outcome = %q, want exited_before_ready", result.Outcome)
+	}
+	if result.State != string(app.StateExited) {
+		t.Fatalf("state = %q, want exited (stale snapshot leaked through)", result.State)
+	}
+	if result.PID != nil {
+		t.Fatalf("pid = %v, want nil for an exited process", result.PID)
+	}
+	if result.ExitCode == nil || *result.ExitCode != 7 {
+		t.Fatalf("exit code = %v, want 7", result.ExitCode)
+	}
+
+	if err := <-serverDone; err != nil {
+		t.Fatalf("fake daemon: %v", err)
+	}
+}
+
 func TestManifestStartTimeout(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
@@ -1498,6 +1616,25 @@ processes:
 	}
 }
 
+// TestManifestProgressDriftDetail proves the definition_drift progress
+// detail names the sorted changed fields and restart guidance instead of
+// the bare outcome ("hum up: db: definition_drift"). render.go's
+// manifestProgressInitialLine and manifestProgressTerminalLine must call
+// this helper from a "definition_drift" case (see report) for the fix to
+// reach the rendered "hum up: db: ..." stderr line.
+func TestManifestProgressDriftDetail(t *testing.T) {
+	result := manifestLaunchResult{
+		Name:          "db",
+		Outcome:       "definition_drift",
+		ChangedFields: []string{"argv", "cwd"},
+		Guidance:      "hum restart db",
+	}
+	want := "definition_drift (argv, cwd); run hum restart db"
+	if got := manifestProgressDriftDetail(result); got != want {
+		t.Fatalf("manifestProgressDriftDetail = %q, want %q", got, want)
+	}
+}
+
 func TestUpReportsManifestRuntimeDrift(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1787,7 +1924,7 @@ processes:
 }
 
 func TestUpDriftDocs(t *testing.T) {
-	paths := []string{"../../README.md", "../../docs/design.md", "../../docs/coding-agents.md", "../skill/SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
+	paths := []string{"../../docs/design.md", "../../docs/coding-agents.md", "../skill/SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
 	for _, path := range paths {
 		contents, err := os.ReadFile(path)
 		if err != nil {

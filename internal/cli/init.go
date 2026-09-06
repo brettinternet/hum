@@ -49,6 +49,9 @@ func initCommand(ctx context.Context, cmd *urfavecli.Command, writer io.Writer) 
 			result.Path = existsErr.Path
 		}
 		result.Outcome = project.InitOutcomeExists
+		if !cmd.Bool("json") {
+			return newUserFacingError(fmt.Sprintf("hum.yaml already exists at %s; edit it, or remove it before running hum init again", result.Path))
+		}
 		if err := renderInitResult(writer, result, cmd.Bool("json")); err != nil {
 			return err
 		}

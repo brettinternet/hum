@@ -145,14 +145,17 @@ func TestShutdown(t *testing.T) {
 		t.Fatalf("shutdown unexpectedly succeeded with active trees: stdout=%q stderr=%q", refused.Stdout, refused.Stderr)
 	}
 	refusalText := refused.Stdout + refused.Stderr
-	if !strings.Contains(refusalText, "active supervised processes prevent daemon shutdown") {
+	if !strings.Contains(refusalText, "Active processes prevent daemon shutdown") {
 		t.Fatalf("shutdown refusal omitted active-process error: %q", refusalText)
 	}
 	for _, name := range []string{graceful.name, stubborn.name} {
-		want := projectRoot + ": " + name
+		want := name + " (" + projectRoot + ")"
 		if !strings.Contains(refusalText, want) {
 			t.Errorf("shutdown refusal missing exact entry %q: %q", want, refusalText)
 		}
+	}
+	if !strings.Contains(refusalText, "hum shutdown --stop-processes") {
+		t.Errorf("shutdown refusal missing guidance: %q", refusalText)
 	}
 	if !testutil.ProcessAlive(daemonPID) {
 		t.Fatal("daemon exited after refusing shutdown")

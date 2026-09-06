@@ -197,7 +197,7 @@ func TestWaitHelpDescribesExitAndReadiness(t *testing.T) {
 		t.Fatalf("wait help: %v", err)
 	}
 	help := strings.ToLower(output.String())
-	for _, want := range []string{"without --match", "process incarnation exits", "stopped or never-launched session", "next launch", "starts a daemon when needed", "--after-cursor", "default: current launch cursor", "--match", "--timeout", "--json"} {
+	for _, want := range []string{"without --match", "process incarnation exits", "stopped or never-launched session", "next launch", "starts a daemon when needed", "--after-cursor", "omit to evaluate from the current or next launch cursor", "--match", "--timeout", "--json"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("wait help missing %q: %q", want, output.String())
 		}
@@ -238,7 +238,7 @@ func TestLogsAggregateDocs(t *testing.T) {
 		t.Fatalf("logs help stderr = %q", errorOutput.String())
 	}
 	for path, want := range map[string][]string{
-		"../../README.md":      {"hum up", "hum logs --follow", "single explicit name", "unchanged"},
+		"../../README.md":      {"hum up", "hum logs --follow", "docs/design.md"},
 		"../../docs/design.md": {"hum up", "hum logs --follow", "single explicit", "unchanged"},
 	} {
 		content, err := os.ReadFile(path)
@@ -405,7 +405,7 @@ func TestLifecycleHelp(t *testing.T) {
 				"stopped or never-launched session",
 				"next launch",
 				"starts a daemon when needed",
-				"default: current launch cursor",
+				"omit to evaluate from the current or next launch cursor",
 				"30s",
 				"exit code is 0",
 				"3 when --match",

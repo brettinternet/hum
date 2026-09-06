@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"text/tabwriter"
 	"time"
 	"unicode"
 
@@ -278,6 +279,22 @@ func eventJSON(name string, event output.Event) protocol.StreamEvent {
 	}
 }
 
+// aggregateEventTime is the event time to report for an aggregate logs JSON
+// event: the newest entry's time when entries are present, or the zero value
+// (omitted on encoding) when there is none to derive it from.
+func aggregateEventTime(event output.Event) time.Time {
+	if event.Read == nil || len(event.Read.Entries) == 0 {
+		return time.Time{}
+	}
+	newest := event.Read.Entries[0].Time
+	for _, entry := range event.Read.Entries[1:] {
+		if entry.Time.After(newest) {
+			newest = entry.Time
+		}
+	}
+	return newest
+}
+
 func writeRawEntry(w io.Writer, entry output.Entry) error {
 	_, err := io.WriteString(w, entry.Text)
 	return err
@@ -316,7 +333,11 @@ func (r *aggregateLogRenderer) writeEvent(name string, event output.Event) error
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.json {
-		return encodeJSON(r.writer, eventJSON(name, event))
+		streamEvent := eventJSON(name, event)
+		if streamEvent.Time.IsZero() {
+			streamEvent.Time = aggregateEventTime(event)
+		}
+		return encodeJSON(r.writer, streamEvent)
 	}
 	if event.Read == nil {
 		return nil
@@ -342,6 +363,19 @@ func (r *aggregateLogRenderer) writeError(name string, wire *protocol.WireError)
 		message = wire.Message
 	}
 	_, err := io.WriteString(r.writer, fmt.Sprintf("[%s] error: %s\n", name, message))
+	return err
+}
+
+// writeNotLaunched reports a declared name with no daemon record yet (never
+// launched, or skipped behind a blocked dependency). JSON output emits no
+// event at all for it; human output prints one stdout-only line.
+func (r *aggregateLogRenderer) writeNotLaunched(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.json {
+		return nil
+	}
+	_, err := fmt.Fprintf(r.writer, "[%s] not launched\n", name)
 	return err
 }
 
@@ -392,33 +426,45 @@ func renderListHuman(w io.Writer, processes []app.Process, all bool) error {
 		_, err := fmt.Fprintln(w, stopUnavailableMessage)
 		return err
 	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	header := "NAME\tSTATE\tPID\tSOURCE\tARGV\n"
+	if all {
+		header = "ROOT\tNAME\tSTATE\tPID\tSOURCE\tARGV\n"
+	}
+	if _, err := io.WriteString(tw, header); err != nil {
+		return err
+	}
 	for _, process := range processes {
 		argv := shellJoin(process.Argv)
 		readiness, readyCursor := processReadinessFields(process)
-		prefix := fmt.Sprintf("%s\t%s\tPID %d\tsource=%s\targv=%s", process.Name, process.State, process.PID, process.Source, argv)
+		pid := ""
+		if process.PID != 0 {
+			pid = fmt.Sprintf("PID %d", process.PID)
+		}
+		row := fmt.Sprintf("%s\t%s\t%s\tsource=%s\targv=%s", process.Name, process.State, pid, process.Source, argv)
 		if all {
-			prefix = fmt.Sprintf("%s: %s\t%s\tPID %d\tsource=%s\targv=%s", process.Root, process.Name, process.State, process.PID, process.Source, argv)
+			row = fmt.Sprintf("%s\t%s\t%s\t%s\tsource=%s\targv=%s", process.Root, process.Name, process.State, pid, process.Source, argv)
 		}
 		if process.Followers > 0 {
-			prefix += fmt.Sprintf("\tfollowers=%d", process.Followers)
+			row += fmt.Sprintf("\tfollowers=%d", process.Followers)
 		}
 		if process.TTY {
-			prefix += "\ttty=true"
+			row += "\ttty=true"
 		}
 		if readiness != "" {
-			prefix += "\treadiness=" + readiness
+			row += "\treadiness=" + readiness
 			if readyCursor != nil {
-				prefix += fmt.Sprintf("\tready_cursor=%d", *readyCursor)
+				row += fmt.Sprintf("\tready_cursor=%d", *readyCursor)
 			}
 		}
 		if effectiveProcessRestart(process) == app.RestartOnFailure {
-			prefix += "\trestart=on-failure"
+			row += "\trestart=on-failure"
 		}
-		if _, err := fmt.Fprintln(w, prefix); err != nil {
+		if _, err := fmt.Fprintln(tw, row); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tw.Flush()
 }
 func shellJoin(argv []string) string {
 	parts := make([]string, 0, len(argv))
@@ -512,6 +558,8 @@ func manifestProgressInitialLine(definition project.Definition, result manifestL
 		return prefix + manifestProgressAction(result) + "; readiness unverified"
 	case "running_unverified":
 		return prefix + "started; readiness unverified"
+	case "definition_drift":
+		return prefix + manifestProgressText(manifestProgressDriftDetail(result))
 	default:
 		return prefix + manifestProgressText(result.Outcome)
 	}
@@ -535,6 +583,8 @@ func manifestProgressTerminalLine(result manifestLaunchResult) string {
 		return prefix + manifestProgressAction(result) + "; readiness unverified"
 	case "running_unverified":
 		return prefix + "started; readiness unverified"
+	case "definition_drift":
+		return prefix + manifestProgressText(manifestProgressDriftDetail(result))
 	default:
 		return prefix + manifestProgressText(result.Outcome)
 	}
@@ -572,6 +622,16 @@ func manifestProgressText(value string) string {
 }
 
 func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
+	if result.Outcome == "error" && result.Source == "manifest" && len(result.Argv) == 0 {
+		// No definition (and no retained launch spec) resolved for this name:
+		// undefinedManifestDefinition leaves Source as the synthetic "manifest"
+		// placeholder with an empty Argv. Render plainly instead of the
+		// (source: argv) parenthetical, which would otherwise print an empty
+		// "(manifest: )". A genuinely declared manifest process always has a
+		// non-empty Argv and keeps the general result line below.
+		_, err := fmt.Fprintf(w, "error %s: %s\n", result.Name, result.Error)
+		return err
+	}
 	if result.Outcome == "skipped" {
 		line := fmt.Sprintf("%s: skipped (blocked by %s)", result.Name, strings.Join(result.BlockedBy, ", "))
 		switch result.ExistingState {
@@ -609,9 +669,7 @@ func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
 	}
 	if result.Outcome == "recovery_pending" || result.Outcome == "recovery_exhausted" || result.Outcome == "removed_definition" {
 		line += fmt.Sprintf(" restart=%s relaunches=%d", result.Restart, result.Relaunches)
-		if result.NextLaunchAt == nil {
-			line += " next_launch_at=null"
-		} else {
+		if result.NextLaunchAt != nil {
 			line += " next_launch_at=" + result.NextLaunchAt.Format(time.RFC3339Nano)
 		}
 	}
@@ -698,9 +756,19 @@ func renderStatusHuman(w io.Writer, process app.Process) error {
 		restartLabel = "on-failure (gave up after 5 relaunch attempts)"
 	}
 	if _, err := fmt.Fprintf(w,
-		"name: %s\nsource: %s\nproject_root: %s\ntty: %t\npid: %d\npgid: %d\ncwd: %s\nargv: %s\nstarted_at: %s\nstate: %s\nrestart: %s\n",
-		status.Name, status.Source, status.ProjectRoot, status.TTY, status.PID, status.PGID, status.Cwd,
-		shellJoin(status.Argv), status.StartedAt, status.State, restartLabel,
+		"name: %s\nsource: %s\nproject_root: %s\ntty: %t\n",
+		status.Name, status.Source, status.ProjectRoot, status.TTY,
+	); err != nil {
+		return err
+	}
+	if status.PID != 0 {
+		if _, err := fmt.Fprintf(w, "pid: %d\n", status.PID); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w,
+		"pgid: %d\ncwd: %s\nargv: %s\nstarted_at: %s\nstate: %s\nrestart: %s\n",
+		status.PGID, status.Cwd, shellJoin(status.Argv), status.StartedAt, status.State, restartLabel,
 	); err != nil {
 		return err
 	}
@@ -724,12 +792,10 @@ func renderStatusHuman(w io.Writer, process app.Process) error {
 			}
 		}
 	}
-	if status.ExitStatus == nil {
-		if _, err := fmt.Fprintln(w, "exit_status: null"); err != nil {
+	if status.ExitStatus != nil {
+		if _, err := fmt.Fprintf(w, "exit_status: %d\n", *status.ExitStatus); err != nil {
 			return err
 		}
-	} else if _, err := fmt.Fprintf(w, "exit_status: %d\n", *status.ExitStatus); err != nil {
-		return err
 	}
 	_, err := fmt.Fprintf(w, "relaunches: %d\nrestart_count: %d\nfollowers: %d\nnext_cursor: %d\n", status.Relaunches, status.RestartCount, status.Followers, status.NextCursor)
 	return err

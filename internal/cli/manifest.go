@@ -170,6 +170,7 @@ type manifestLaunchResult struct {
 	Relaunches          int        `json:"relaunches"`
 	NextLaunchAt        *time.Time `json:"next_launch_at,omitempty"`
 	Error               string     `json:"error,omitempty"`
+	ExitCode            *int       `json:"exit_code,omitempty"`
 }
 
 // MarshalJSON keeps a configured empty readiness matcher visible. The matcher
@@ -232,6 +233,10 @@ func manifestLaunchResultFor(definition project.Definition, process app.Process,
 	if process.PID > 0 {
 		pid := process.PID
 		result.PID = &pid
+	}
+	if process.State == app.StateExited {
+		exitCode := process.ExitCode
+		result.ExitCode = &exitCode
 	}
 	cursor := uint64(process.LaunchCursor)
 	result.LaunchCursor = &cursor
@@ -321,6 +326,15 @@ func manifestDefinitionDriftResult(root string, definition project.Definition, p
 	result.ChangedFields = manifestChangedFields(root, definition, process)
 	result.Guidance = fmt.Sprintf("hum restart %s", definition.Name)
 	return result
+}
+
+// manifestProgressDriftDetail renders the changed_fields and restart
+// guidance already carried on a definition_drift result into the single
+// stderr progress detail up prints for it, e.g.
+// "definition_drift (argv, cwd); run hum restart db" instead of the bare
+// outcome name.
+func manifestProgressDriftDetail(result manifestLaunchResult) string {
+	return fmt.Sprintf("definition_drift (%s); run %s", strings.Join(result.ChangedFields, ", "), result.Guidance)
 }
 
 func manifestProcessSupportsDrift(process app.Process) bool {
@@ -417,14 +431,27 @@ func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd str
 	result := manifestLaunchResultFor(definition, process, initialOutcome)
 	deadline := time.Now().Add(timeout)
 	observed := process
+	// refreshManifestResult re-fetches the current process snapshot before
+	// reporting a terminal exited/timed-out outcome. Without this, the
+	// rendered result can carry a stale running state, a dead pid, and no
+	// exit code even though the daemon has already recorded the exit.
+	refreshManifestResult := func(outcome string) (manifestLaunchResult, error) {
+		lookupCwd := process.Root
+		if lookupCwd == "" {
+			lookupCwd = cwd
+		}
+		current, err := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd})
+		if err != nil {
+			result.Outcome = outcome
+			return result, nil
+		}
+		return manifestLaunchResultFor(definition, current, outcome), nil
+	}
 	markExited := func() (manifestLaunchResult, error) {
-		result.Outcome = "exited_before_ready"
-		result.Readiness = ""
-		return result, nil
+		return refreshManifestResult("exited_before_ready")
 	}
 	markTimedOut := func() (manifestLaunchResult, error) {
-		result.Outcome = "timed_out"
-		return result, nil
+		return refreshManifestResult("timed_out")
 	}
 	if process.State != app.StateRunning {
 		return markExited()

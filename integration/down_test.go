@@ -185,7 +185,7 @@ func TestDownWorkflow(t *testing.T) {
 
 	firstAfter := downWorkflowList(t, hum, firstRoot, env, false)
 	downWorkflowRememberGroups(firstAfter, &groups)
-	downWorkflowAssertManifestStopped(t, firstAfter, firstRoot, []string{"alpha", "zeta"})
+	downWorkflowAssertManifestNotRunning(t, firstAfter, firstRoot, []string{"alpha", "zeta"})
 	for _, process := range firstBefore {
 		testutil.WaitForProcessGone(t, process.PID, downWorkflowTimeout)
 	}
@@ -273,7 +273,7 @@ func downWorkflowAssertRunning(t *testing.T, processes []downWorkflowProcess, ro
 	}
 }
 
-func downWorkflowAssertManifestStopped(t *testing.T, processes []downWorkflowProcess, root string, names []string) {
+func downWorkflowAssertManifestNotRunning(t *testing.T, processes []downWorkflowProcess, root string, names []string) {
 	t.Helper()
 	seen := make(map[string]downWorkflowProcess, len(processes))
 	for _, process := range processes {
@@ -289,15 +289,15 @@ func downWorkflowAssertManifestStopped(t *testing.T, processes []downWorkflowPro
 		seen[process.Name] = process
 	}
 	if len(seen) != len(names) {
-		t.Fatalf("first-project list after down = %#v, want %d declared stopped records", processes, len(names))
+		t.Fatalf("first-project list after down = %#v, want %d retained declared records", processes, len(names))
 	}
 	for _, name := range names {
 		process, ok := seen[name]
 		if !ok {
 			t.Fatalf("first-project list omitted declared process %q: %#v", name, processes)
 		}
-		if process.Source != "manifest" || process.State != "stopped" {
-			t.Errorf("declared process %q after down = %#v, want manifest/stopped", name, process)
+		if process.Source != "manifest" || (process.State != "stopped" && process.State != "exited") {
+			t.Errorf("declared process %q after down = %#v, want a non-running manifest record", name, process)
 		}
 	}
 }

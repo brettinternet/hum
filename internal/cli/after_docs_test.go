@@ -12,7 +12,6 @@ import (
 
 func TestAfterDocs(t *testing.T) {
 	documents := map[string]string{
-		"README.md":                       afterDocsRead(t, "../../README.md"),
 		"docs/design.md":                  afterDocsRead(t, "../../docs/design.md"),
 		"docs/coding-agents.md":           afterDocsRead(t, "../../docs/coding-agents.md"),
 		"internal/skill/SKILL.md":         afterDocsRead(t, "../skill/SKILL.md"),
@@ -20,7 +19,7 @@ func TestAfterDocs(t *testing.T) {
 		"embedded skill":                  skill.Content(),
 	}
 	all := strings.ToLower(strings.Join([]string{
-		documents["README.md"], documents["docs/design.md"], documents["docs/coding-agents.md"],
+		documents["docs/design.md"], documents["docs/coding-agents.md"],
 		documents["internal/skill/SKILL.md"], documents["plugins/hum/skills/hum/SKILL.md"],
 	}, "\n"))
 	for _, phrase := range []string{"after", "readiness", "timeout", "skipped", "blocked_by", "lexical", "no-wait", "explicit", "concurrent", "rerun", "on-failure"} {

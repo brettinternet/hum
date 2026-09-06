@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 
 	"hum/internal/config"
@@ -27,6 +28,18 @@ type userFacingError string
 func (e userFacingError) Error() string { return string(e) }
 
 func newUserFacingError(message string) error { return userFacingError(message) }
+
+type wrappedUserFacingError struct {
+	cause   error
+	message string
+}
+
+func (e wrappedUserFacingError) Error() string { return e.message }
+func (e wrappedUserFacingError) Unwrap() error { return e.cause }
+
+func wrapUserFacingError(cause error, message string) error {
+	return wrappedUserFacingError{cause: cause, message: message}
+}
 
 // cliConfig resolves the command-edge values once. The config package remains
 // independent of urfave/cli and receives only its typed input.
@@ -132,4 +145,20 @@ func activeProcessNames(err error) []string {
 		return append([]string(nil), active.Names...)
 	}
 	return nil
+}
+
+// activeProcessesShutdownMessage renders the "root: name" entries reported by
+// ActiveProcessesError as a human-facing "name (root), ..." list, instead of
+// a raw Go slice, for a shutdown refusal message.
+func activeProcessesShutdownMessage(names []string) string {
+	formatted := make([]string, 0, len(names))
+	for _, entry := range names {
+		root, name, ok := strings.Cut(entry, ": ")
+		if !ok {
+			formatted = append(formatted, entry)
+			continue
+		}
+		formatted = append(formatted, fmt.Sprintf("%s (%s)", name, root))
+	}
+	return fmt.Sprintf("Active processes prevent daemon shutdown: %s. Stop them first or run hum shutdown --stop-processes.", strings.Join(formatted, ", "))
 }

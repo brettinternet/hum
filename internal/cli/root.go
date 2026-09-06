@@ -34,7 +34,8 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained output bytes per process, at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
 			&urfavecli.StringFlag{Name: "completed-records", Usage: "completed process records to retain [$HUM_COMPLETED_RECORDS]", DefaultText: strconv.Itoa(config.DefaultCompletedRecords)},
 		},
-		Commands: newCLICommands(version, buildTime, writer, errWriter),
+		Commands:     newCLICommands(version, buildTime, writer, errWriter),
+		OnUsageError: onUsageError,
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -49,6 +50,13 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		panic(err)
 	}
 	return root
+}
+
+// onUsageError formats a flag-parsing usage error as a single line naming
+// the full command path, instead of urfave/cli's default double-printed
+// "Incorrect Usage" message plus a full help dump.
+func onUsageError(_ context.Context, cmd *urfavecli.Command, err error, _ bool) error {
+	return newUserFacingError(fmt.Sprintf("%s: %s", cmd.FullName(), err.Error()))
 }
 
 func validateCLICommandTree(root *urfavecli.Command) error {
