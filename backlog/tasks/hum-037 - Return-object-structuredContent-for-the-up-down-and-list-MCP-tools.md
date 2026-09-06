@@ -4,6 +4,7 @@ title: 'Return object structuredContent for the up, down, and list MCP tools'
 status: To Do
 assignee: []
 created_date: '2026-09-06 16:15'
+updated_date: '2026-09-06 17:31'
 labels:
   - mcp
 milestone: m-4
@@ -12,6 +13,7 @@ modified_files:
   - internal/mcp/tools.go
   - internal/mcp/server.go
   - internal/mcp/tools_test.go
+  - internal/mcp/server_test.go
   - integration/mcp_test.go
   - docs/coding-agents.md
 priority: medium
@@ -22,18 +24,21 @@ ordinal: 14700
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: the `up`, `down`, and `list` tools declare `outputSchema` with `type: object` and return `structuredContent` as an object, for example `{"results": [...]}` for up and down and `{"processes": [...]}` for list. Text content is unchanged.
+Outcome: up, down, and list declare object outputSchema values and return object structuredContent: {"results":[...]} for up/down and {"processes":[...]} for list. Their existing text content remains byte-for-byte unchanged. Every other MCP tool keeps its current schema, structured payload, and text.
 
-Why now: the server advertises MCP protocol version 2025-06-18 (and since commit a0bb06e negotiates 2024-11-05 and 2025-03-26); those schema revisions fix `outputSchema.type` to `object` and type `structuredContent` as an object. Array outputs only became legal in a later revision. Strict clients and SDKs validating tool definitions or results reject these three tools today.
+Scope: change only the three incompatible tool schemas/result envelopes, add schema/result/text parity tests across every negotiated MCP protocol version, and retain existing integration coverage.
 
-Non-goals: changing CLI output, adding fields, changing the other eight tools.
+Why now: the advertised MCP revisions require outputSchema.type and structuredContent to be objects. Strict clients reject the current array-shaped results.
+
+Non-goals: CLI changes, new fields, text rewrites, or changes to the other tools.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/mcp -run '^TestToolOutputSchemasAreObjects$' -count=1 -v` exits 0 and prints `--- PASS: TestToolOutputSchemasAreObjects`: every tool outputSchema has type object and every tools/call structuredContent decodes as a JSON object.
-- [ ] #2 `go test ./integration -run '^TestMCP' -count=1` exits 0 against the built binary.
-- [ ] #3 `task ci` exits 0.
+- [ ] #1 `go test ./internal/mcp -run '^TestToolOutputSchemasAreObjects$' -count=1 -v` exits 0 and prints PASS, proving every outputSchema has type object and every tools/call structuredContent decodes as an object for all supported protocol versions.
+- [ ] #2 `go test ./internal/mcp -run '^TestCollectionToolTextUnchanged$' -count=1 -v` exits 0 and prints PASS, proving up, down, and list text content is byte-for-byte unchanged and the other tools retain their schema and result payloads.
+- [ ] #3 `go test ./integration -run '^TestMCP' -count=1` exits 0 against the built binary.
+- [ ] #4 `task ci` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
@@ -45,3 +50,11 @@ Non-goals: changing CLI output, adding fields, changing the other eight tools.
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Wrap the three array payloads in stable object envelopes and align their schemas.
+2. Assert all tool schemas/results are objects while pinning existing text content.
+3. Run negotiated-version integration coverage and the final gate.
+<!-- SECTION:PLAN:END -->

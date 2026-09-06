@@ -4,6 +4,7 @@ title: Rewrite command help for humans
 status: To Do
 assignee: []
 created_date: '2026-09-06 16:15'
+updated_date: '2026-09-06 17:31'
 labels:
   - cli
   - docs
@@ -12,6 +13,7 @@ dependencies: []
 modified_files:
   - internal/cli/root.go
   - internal/cli/commands.go
+  - internal/cli/help_contract_test.go
   - internal/cli/surface_test.go
   - internal/cli/after_docs_test.go
   - internal/cli/restart_policy_docs_test.go
@@ -26,21 +28,21 @@ ordinal: 11700
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: `hum --help` and every `hum <command> --help` read as concise operator help: a one-line usage, a description of at most three sentences, an `Examples:` block with one to three copy-pasteable commands, defaults shown on every flag, and the exit codes of `up`, `start`, and `wait` listed once in their help. Contract-level prose (readiness gates, drift and recovery outcomes, terminal-control stripping, TTY lease rules) lives only in docs/design.md, which already states it.
+Outcome: `hum --help` and every visible `hum <command> --help` provide concise operator help: one-line usage, a description of at most three sentences, one to three copy-pasteable examples, and a visible default or explicit omission meaning for every flag. The help for start, up, and wait each states its 0/1/2/3 exit behavior once. Contract prose remains in docs/design.md.
 
-Why now: the root DESCRIPTION is a ~250-word specification paragraph and `hum up --help` is a ~400-word paragraph in contract language ("reports lexical skipped results with direct blocked_by names"). The 2026-09-06 audit found zero Examples sections in 17 commands, exit codes documented nowhere in the CLI, and rated this the largest ergonomics gap.
+Scope: rewrite Usage, Description, ArgsUsage, and examples in internal/cli; add one table-driven help-contract test that walks the assembled visible command tree so newly added commands and flags inherit the same standard; update phrase pins without dropping coverage of README.md, docs/design.md, docs/coding-agents.md, or bundled skills.
 
-Scope: rewrite Usage, Description, and ArgsUsage strings in internal/cli/root.go and internal/cli/commands.go; re-pin the help assertions in the docs tests to the new concise wording without removing any assertion about README.md, docs/design.md, docs/coding-agents.md, or the skills, which keep the full contract phrases.
+Why now: root and up help currently read like internal specifications, contain no examples, and omit exit behavior. Help is the primary discovery surface for humans and agents using the CLI.
 
-Non-goals: changing any flag, behavior, exit code, or JSON output; rewriting README.md (separate task).
+Non-goals: changing flags, behavior, exit codes, JSON output, or restructuring README.md.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `task cli:build && ./bin/hum --help | wc -w` prints a number at or below 300.
-- [ ] #2 `for c in serve init mcp skill run start up down list status logs wait input restart stop remove shutdown; do ./bin/hum $c --help | grep -c 'Examples:'; done` prints 1 for every command, and `./bin/hum up --help | sed -n '/DESCRIPTION:/,/OPTIONS:/p' | wc -w` prints a number at or below 120.
-- [ ] #3 `./bin/hum up --help | grep -c 'exit'` and `./bin/hum wait --help | grep -c 'exit'` each print at least 1, describing the 0/1/2/3 exit codes.
-- [ ] #4 `go test ./internal/cli -run 'Docs|Surface|Root' -count=1` exits 0 with help phrase pins updated to the new wording and every README, design, and skill assertion intact.
+- [ ] #1 `go test ./internal/cli -run '^TestHelpContract$' -count=1 -v` exits 0 and prints PASS while walking every visible command and asserting a one-line usage, at most three description sentences, one to three examples, and a displayed default or explicit omission meaning for every flag.
+- [ ] #2 `go test ./internal/cli -run '^TestHelpExitCodes$' -count=1 -v` exits 0 and prints PASS, proving start, up, and wait each document the exact 0/1/2/3 outcomes once and no other help block duplicates that contract.
+- [ ] #3 `task cli:build && test "$(./bin/hum --help | wc -w | tr -d ' ')" -le 300 && test "$(./bin/hum up --help | sed -n '/DESCRIPTION:/,/OPTIONS:/p' | wc -w | tr -d ' ')" -le 120` exits 0.
+- [ ] #4 `go test ./internal/cli -run 'Docs|Surface|Root|HelpContract' -count=1` exits 0 with all contract-level phrases still asserted in the canonical docs or skills.
 - [ ] #5 `task ci` exits 0.
 <!-- AC:END -->
 
@@ -53,3 +55,11 @@ Non-goals: changing any flag, behavior, exit code, or JSON output; rewriting REA
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Define concise usage, description, example, default, and exit-code copy for the root and every visible command.
+2. Add a command-tree help contract test instead of hard-coded shell lists.
+3. Re-pin documentation assertions and run focused help tests plus the final gate.
+<!-- SECTION:PLAN:END -->

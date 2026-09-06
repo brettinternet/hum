@@ -1,10 +1,10 @@
 ---
 id: HUM-043
-title: Restructure README into a quickstart and reference
+title: Finish the README quickstart structure
 status: To Do
 assignee: []
 created_date: '2026-09-06 16:15'
-updated_date: '2026-09-06 17:04'
+updated_date: '2026-09-06 17:32'
 labels:
   - docs
 milestone: m-4
@@ -12,6 +12,7 @@ dependencies: []
 modified_files:
   - README.md
   - docs/design.md
+  - internal/cli/surface_test.go
   - internal/cli/after_docs_test.go
   - internal/cli/restart_policy_docs_test.go
   - internal/cli/terminal_control_docs_test.go
@@ -26,17 +27,19 @@ ordinal: 20700
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: README.md leads with install, a sixty-second quickstart (`hum run`, `hum up`, `hum logs --follow`, `hum down`), a short feature tour (manifest with `after` and `ready`, crash relaunch, TTY sessions, MCP for agents) of one or two paragraphs each, and links to docs/design.md for the full contract. Contract paragraphs that restate docs/design.md are removed; anything README states that design.md does not is moved into design.md first.
+Outcome: README.md stays below 900 words and leads new users through exact top-level sections in this order: Install, Quickstart, then short feature-oriented sections including Coding agents. Quickstart contains copy-pasteable hum run, hum up, hum logs --follow, and hum down examples that can be completed in about a minute. Full behavioral contracts live in docs/design.md and remain covered there.
 
-Why now: README.md is about 1800 words and most sections repeat the specification prose of docs/design.md (drift outcomes, stripping rules, lease semantics). New users cannot find the quickstart. The docs tests pin phrases across README, design, coding-agents, and both skills, so trimming needs the pins moved to design.md.
+Scope: finish the simplification already landed in commit 2df5cf2 by renaming/reordering headings, adding only the minimal missing quickstart/install copy, and keeping documentation phrase pins pointed at canonical design, coding-agent, or skill documents.
 
-Non-goals: behavior changes, rewriting docs/design.md prose, changing CLI help (separate task).
+Why now: the README is already about 620 words, but the remaining task contract is not met: installation appears late and the exact Install and Quickstart headings do not exist.
+
+Non-goals: behavior changes, expanding README back into a specification, rewriting docs/design.md, or changing CLI help.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `wc -w README.md` prints a number at or below 900, and `grep -c '^## ' README.md` prints at least 4 including Install, Quickstart, and Coding agents headings.
-- [ ] #2 `go test ./internal/cli ./internal/skill -run 'Docs' -count=1` exits 0 with every removed README phrase asserted against docs/design.md instead of dropped.
+- [ ] #1 `go test ./internal/cli -run '^TestREADMEQuickstartStructure$' -count=1 -v` exits 0 and prints PASS, proving README.md is at most 900 words; top-level Install precedes Quickstart, which precedes Coding agents; and the quickstart contains hum run, hum up, hum logs --follow, and hum down.
+- [ ] #2 `go test ./internal/cli ./internal/skill -run 'Docs' -count=1` exits 0 with every removed README contract phrase still asserted against docs/design.md, docs/coding-agents.md, or the bundled skills.
 - [ ] #3 `task ci` exits 0.
 <!-- AC:END -->
 
@@ -49,6 +52,14 @@ Non-goals: behavior changes, rewriting docs/design.md prose, changing CLI help (
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Reorder and rename the concise README around Install and Quickstart without expanding contract prose.
+2. Verify required commands and feature links, moving any unique contract statement to design.md before removal.
+3. Run docs tests, independent verification, and the final gate.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

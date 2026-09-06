@@ -4,13 +4,24 @@ title: Add a global --project/-C directory override
 status: To Do
 assignee: []
 created_date: '2026-09-06 16:15'
-updated_date: '2026-09-06 17:17'
+updated_date: '2026-09-06 17:43'
 labels:
   - cli
 milestone: m-4
 dependencies: []
 modified_files:
-  - internal/cli/
+  - internal/cli/root.go
+  - internal/cli/commands.go
+  - internal/cli/manifest.go
+  - internal/cli/init.go
+  - internal/cli/input.go
+  - internal/cli/mcp.go
+  - internal/cli/render.go
+  - internal/cli/project_dir_test.go
+  - internal/cli/flag_alias_test.go
+  - internal/cli/run_args_test.go
+  - internal/cli/init_test.go
+  - internal/cli/surface_test.go
   - README.md
   - docs/design.md
 priority: high
@@ -23,13 +34,15 @@ ordinal: 16700
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: a persistent global `--project DIR` option with `-C` shorthand lets every project-scoped CLI command operate from DIR without changing the caller working directory. DIR resolves relative to the invocation directory, is cleaned to an absolute existing directory, and then follows the existing nearest-Git-root-or-directory-fallback rule. Both `hum --project DIR up` and `hum up --project DIR` work; `run` also accepts the option after NAME and before `--`.
 
-Semantics: the selected DIR is the cwd for ad-hoc `run`; manifest processes retain their declared cwd relative to the resolved project root; `init` writes at the root resolved from DIR. `list --all` still uses the selected project when merging unlaunched declarations. With no override, behavior is unchanged. Empty, missing, nonexistent, and non-directory values fail before daemon contact with an actionable error. Daemon-global `serve` and `shutdown`, request-scoped `mcp`, and static `skill` reject an explicitly supplied project option as inapplicable rather than silently ignoring it.
+Scope: add one inherited root flag and one selected-directory helper; route init, run, start, up, down, list, status, logs, wait, input, restart, stop, and remove through it. Extend the special run option parser, override-aware guidance, root/subcommand help, README.md, docs/design.md, and focused tests. Daemon-global serve/shutdown, request-scoped mcp, and static skill reject an explicitly supplied project option as inapplicable.
 
-Developer experience: human guidance and stable next-command fields emitted while an override is active retain a shell-safe canonical `--project` selector, including paths with spaces, so suggested follow-up commands work from the original unrelated directory. Help explains the project-root-versus-process-cwd distinction. docs/design.md records the behavior and alias; README.md includes one operate-from-anywhere example.
+Semantics: the selected DIR is the cwd for ad-hoc run; manifest processes retain their declared cwd relative to the resolved project root; init writes at the root resolved from DIR. list --all still uses the selected project when merging unlaunched declarations. With no override, behavior is unchanged. Empty, missing, nonexistent, and non-directory values fail before daemon contact with an actionable error.
 
-Why now: project-scoped commands repeatedly read os.Getwd(); operating on another checkout or from a scripts directory requires a subshell or `cd`. This is common for coding agents and worktree users. `--project` names the scope clearly alongside `--runtime-dir` and manifest `cwd`; `-C` follows Git and Make conventions. `-d` is not available because it already means `serve --daemon` and `run --detach`.
+Developer experience: human guidance and stable next-command fields emitted while an override is active retain a shell-safe canonical --project selector, including paths with spaces, so suggested follow-up commands work from the original unrelated directory. Help explains the project-root-versus-process-cwd distinction.
 
-Non-goals: multi-project mutation, project registries, changing MCP `project_root`, changing manifest cwd semantics, or changing the process cwd of manifest definitions.
+Why now: project-scoped commands repeatedly read os.Getwd(); operating on another checkout or from a scripts directory requires a subshell or cd. This is common for coding agents and worktree users. --project names the scope clearly alongside --runtime-dir and manifest cwd; -C follows Git and Make conventions. -d is unavailable because it already means serve --daemon and run --detach.
+
+Non-goals: multi-project mutation, project registries, changing MCP project_root, changing manifest cwd semantics, or changing the process cwd of manifest definitions.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
