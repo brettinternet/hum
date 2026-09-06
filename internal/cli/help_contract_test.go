@@ -13,6 +13,12 @@ import (
 
 func TestHelpContract(t *testing.T) {
 	paths := visibleHelpPaths(NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{}))
+	paths = append(paths,
+		[]string{"hum", "completion"},
+		[]string{"hum", "completion", "bash"},
+		[]string{"hum", "completion", "zsh"},
+		[]string{"hum", "completion", "fish"},
+	)
 	if len(paths) == 0 {
 		t.Fatal("visible command tree is empty")
 	}
@@ -21,6 +27,15 @@ func TestHelpContract(t *testing.T) {
 		t.Run(strings.Join(path, " "), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			root := NewRootCommand("test", "test", &stdout, &stderr)
+			// urfave/cli adds the configured completion command during root
+			// setup, so initialize the graph before looking up its generated paths.
+			if len(path) > 1 && path[1] == "completion" {
+				if err := root.Run(context.Background(), []string{"hum", "--help"}); err != nil {
+					t.Fatalf("set up command tree: %v", err)
+				}
+				stdout.Reset()
+				stderr.Reset()
+			}
 			command := commandAtPath(root, path)
 			if command == nil {
 				t.Fatalf("command path disappeared: %v", path)

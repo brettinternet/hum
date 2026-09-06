@@ -38,9 +38,12 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 			"restart: on-failure retries spawn failures at 1s, 2s, 4s, 8s, and 16s five times; a 30-second survivor resets recovery, so inspect retained failing output.\n\n" +
 			"Examples:\n" +
 			"  hum up",
-		Version:   version + " (built " + buildTime + ")",
-		Writer:    writer,
-		ErrWriter: errWriter,
+		Version:                         version + " (built " + buildTime + ")",
+		ShellComplete:                   completeProcessNames,
+		EnableShellCompletion:           true,
+		ConfigureShellCompletionCommand: configureCompletionCommand,
+		Writer:                          writer,
+		ErrWriter:                       errWriter,
 		Flags: []urfavecli.Flag{
 			&urfavecli.StringFlag{Name: "project", Aliases: []string{"C"}, Usage: "project directory; omit for the current directory; ad-hoc run uses it as cwd, manifest cwd stays project-relative"},
 			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon [$HUM_RUNTIME_DIR, then $XDG_RUNTIME_DIR/hum]", DefaultText: "$TMPDIR/hum-UID"},
