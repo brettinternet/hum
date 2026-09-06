@@ -464,7 +464,7 @@ func decodeMapping(filename, context string, node *yaml.Node, allowed map[string
 		seen[name] = struct{}{}
 		if allowed != nil {
 			if _, known := allowed[name]; !known {
-				return nil, manifestError(filename, context, "unknown key %q", name)
+				return nil, manifestError(filename, context, "unknown key %q (valid keys: %s)", name, sortedKeys(allowed))
 			}
 		}
 		entries = append(entries, yamlEntry{name: name, value: node.Content[i+1]})
@@ -521,6 +521,15 @@ func contextForChild(parent, key string) string {
 		return key
 	}
 	return parent + "." + key
+}
+
+func sortedKeys(keys map[string]struct{}) string {
+	names := make([]string, 0, len(keys))
+	for name := range keys {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 func manifestError(filename, context, format string, args ...any) error {

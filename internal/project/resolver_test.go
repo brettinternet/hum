@@ -126,6 +126,34 @@ func TestResolveExplicit(t *testing.T) {
 			t.Fatalf("error = %v, want ConfigurationError", err)
 		}
 	})
+
+	t.Run("manifest errors name the path once without a discovery prefix", func(t *testing.T) {
+		root := t.TempDir()
+		writeTestManifest(t, root, "version: 1\nprocesses:\n  a:\n    argv: [a]\n    autostart: true\n")
+		installDiscoveryStubs(t, nil)
+
+		_, err := ResolveDefinitions(root)
+		if err == nil {
+			t.Fatal("ResolveDefinitions succeeded, want unknown-key error")
+		}
+		if !errors.Is(err, ErrConfiguration) {
+			t.Fatalf("error = %v, want errors.Is ErrConfiguration", err)
+		}
+		var configuration *ConfigurationError
+		if !errors.As(err, &configuration) {
+			t.Fatalf("error = %v, want ConfigurationError", err)
+		}
+		want := fmt.Sprintf("hum.yaml (%s): process %q: unknown key %q (valid keys: after, argv, cwd, ready, restart, tty)", root, "a", "autostart")
+		if err.Error() != want {
+			t.Fatalf("error = %q, want %q", err.Error(), want)
+		}
+		if strings.Contains(err.Error(), "project discovery") {
+			t.Fatalf("error = %q, want no project discovery prefix", err.Error())
+		}
+		if strings.Count(err.Error(), root) != 1 {
+			t.Fatalf("error = %q, want root %q named exactly once", err.Error(), root)
+		}
+	})
 }
 
 func TestDiscoverTaskRunnerDev(t *testing.T) {

@@ -84,6 +84,22 @@ func (e *ConfigurationError) Error() string {
 	if location == "" {
 		location = "project discovery"
 	}
+	if e.Source == "hum.yaml" {
+		// A manifest validation error already names hum.yaml through this
+		// location, and its message is already prefixed by the same
+		// underlying filename; repeating either as "project discovery
+		// configuration is malformed: hum.yaml (path): path: message" is
+		// redundant. Report the location once and strip the duplicate
+		// filename prefix instead.
+		if e.Err == nil {
+			return location
+		}
+		message := e.Err.Error()
+		if e.Path != "" {
+			message = strings.TrimPrefix(message, filepath.Join(e.Path, "hum.yaml")+": ")
+		}
+		return fmt.Sprintf("%s: %s", location, message)
+	}
 	if e.Err == nil {
 		return fmt.Sprintf("%s: %s", ErrConfiguration, location)
 	}
@@ -162,11 +178,11 @@ var (
 func ResolveDefinitions(root string) ([]Definition, error) {
 	root, err := absoluteClean(root)
 	if err != nil {
-		return nil, &ConfigurationError{Source: "hum.yaml", Path: filepath.Join(root, "hum.yaml"), Err: err}
+		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: err}
 	}
 	definitions, present, err := loadDefinitions(root)
 	if err != nil {
-		return nil, &ConfigurationError{Source: "hum.yaml", Path: filepath.Join(root, "hum.yaml"), Err: err}
+		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: err}
 	}
 	if present {
 		return definitions, nil

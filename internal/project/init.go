@@ -138,20 +138,20 @@ func renderInitManifest(candidates []Definition, outcome InitOutcome, reason str
 		fmt.Fprintf(&document, "# hum init did not generate a process entry: %s.\n", reason)
 		if len(candidates) == 0 {
 			document.WriteString("# No detected candidates.\n")
+			document.WriteString("# Add a process entry below; replace the example command with your own.\n")
 		} else {
 			document.WriteString("# Detected candidates:\n")
 			for _, candidate := range candidates {
 				fmt.Fprintf(&document, "# - source: %s\n", candidate.Source)
 				fmt.Fprintf(&document, "#   argv: %s\n", formatYAMLSequence(candidate.Argv))
 			}
+			document.WriteString("# Replace the example below with one of the detected candidates.\n")
 		}
-		document.WriteString("# Replace the example below with one of the detected candidates.\n")
 		document.WriteString("# Example:\n")
 		document.WriteString("#   \"dev\":\n")
 		document.WriteString("#     argv:\n")
 		document.WriteString("#       - \"command\"\n")
 		document.WriteString("#     # restart: on-failure\n")
-		document.WriteString("#     # after: [db]\n")
 		document.WriteString("version: 1\n")
 		document.WriteString("processes: {}\n")
 		return []byte(document.String())

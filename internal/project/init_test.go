@@ -92,7 +92,15 @@ func TestInitTemplates(t *testing.T) {
 		if result.Candidates == nil || len(result.Candidates) != 0 {
 			t.Fatalf("candidates = %#v, want non-nil empty slice", result.Candidates)
 		}
-		assertInitTemplate(t, root, []string{"no candidate was detected", "# No detected candidates."})
+		assertInitTemplate(t, root, []string{"no candidate was detected", "# No detected candidates.", "# Add a process entry"})
+		assertInitTemplateExample(t, root)
+		contents, err := os.ReadFile(filepath.Join(root, "hum.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(contents), "Replace the example below with one of the detected candidates") {
+			t.Fatalf("no-candidate template wrongly references detected candidates: %q", contents)
+		}
 	})
 
 	t.Run("ambiguous candidates", func(t *testing.T) {
@@ -121,8 +129,53 @@ func TestInitTemplates(t *testing.T) {
 			"#   argv: [\"npm\", \"run\", \"dev\"]",
 			"# - source: deno_json",
 			"#   argv: [\"deno\", \"task\", \"dev\"]",
+			"# Replace the example below with one of the detected candidates.",
 		})
+		assertInitTemplateExample(t, root)
 	})
+}
+
+// assertInitTemplateExample proves the template's commented example manifest
+// entry parses as a valid, standalone process declaration once uncommented,
+// so following the template's own instructions cannot yield a manifest
+// error (e.g. a dangling after dependency).
+func assertInitTemplateExample(t *testing.T, root string) {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join(root, "hum.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(contents), "\n")
+	start := -1
+	for i, line := range lines {
+		if line == "# Example:" {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("template missing \"# Example:\" marker: %q", contents)
+	}
+	var uncommented []string
+	for _, line := range lines[start:] {
+		if line == "version: 1" {
+			break
+		}
+		if !strings.HasPrefix(line, "# ") {
+			t.Fatalf("template example line missing comment prefix: %q", line)
+		}
+		uncommented = append(uncommented, strings.TrimPrefix(line, "# "))
+	}
+	manifest := "version: 1\nprocesses:\n" + strings.Join(uncommented, "\n") + "\n"
+	exampleRoot := t.TempDir()
+	writeTestManifest(t, exampleRoot, manifest)
+	definitions, err := LoadDefinitions(exampleRoot)
+	if err != nil {
+		t.Fatalf("template example does not parse once uncommented: %v\nmanifest:\n%s", err, manifest)
+	}
+	if len(definitions) != 1 || definitions[0].Name != "dev" || !reflect.DeepEqual(definitions[0].Argv, []string{"command"}) {
+		t.Fatalf("template example definitions = %#v, want one dev process with argv [command]", definitions)
+	}
 }
 
 func assertInitTemplate(t *testing.T, root string, expected []string) {

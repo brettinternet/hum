@@ -463,9 +463,14 @@ processes:
 	if _, err := LoadDefinitions(root); err != nil {
 		t.Fatalf("generated init manifest is invalid: %v", err)
 	}
+	// The template (unlike the single-candidate manifest above) has no real
+	// process to name in an after dependency, so it omits the after example
+	// entirely rather than offering one that fails validation ("dependency
+	// %q must declare ready") the moment a reader follows the template's own
+	// instruction to uncomment it.
 	template := renderInitManifest(nil, InitOutcomeTemplate, "no candidate")
-	if !strings.Contains(string(template), "#     # after: [db]") {
-		t.Fatalf("template init omitted inert after example: %s", template)
+	if strings.Contains(string(template), "after") {
+		t.Fatalf("template init example references after without a valid target: %s", template)
 	}
 	writeTestManifest(t, root, string(template))
 	if _, err := LoadDefinitions(root); err != nil {
