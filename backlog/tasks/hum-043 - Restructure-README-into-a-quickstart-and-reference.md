@@ -4,6 +4,7 @@ title: Restructure README into a quickstart and reference
 status: To Do
 assignee: []
 created_date: '2026-09-06 16:15'
+updated_date: '2026-09-06 17:04'
 labels:
   - docs
 milestone: m-4
@@ -48,3 +49,9 @@ Non-goals: behavior changes, rewriting docs/design.md prose, changing CLI help (
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-09-06: README.md was simplified to about 620 words in commit 2df5cf2 (docs: simplify README) while the audit was running, and the audit re-pointed the contract phrase pins in the CLI docs tests (input, drift, restart policy, recovery, aggregate logs, terminal control, TTY) from README.md to docs/design.md, docs/coding-agents.md, and the skills; README keeps a pinned link to docs/design.md. Remaining: confirm the README headings match AC1 (Install, Quickstart, Coding agents) and record the verifier pass before closing.
+<!-- SECTION:NOTES:END -->
