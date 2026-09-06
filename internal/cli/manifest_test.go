@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,8 @@ import (
 	"hum/internal/output"
 	"hum/internal/project"
 	"hum/internal/protocol"
+
+	urfavecli "github.com/urfave/cli/v3"
 )
 
 func writeManifestCLITestFile(t *testing.T, root, contents string) {
@@ -220,6 +223,61 @@ processes:
 			return
 		}
 	}
+}
+
+type manifestProgressCapture struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (c *manifestProgressCapture) Write(data []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data = append(c.data, data...)
+	return len(data), nil
+}
+
+func (c *manifestProgressCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return string(c.data)
+}
+
+func (c *manifestProgressCapture) waitFor(text string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if strings.Contains(c.String(), text) {
+			return true
+		}
+		if remaining := time.Until(deadline); remaining <= 0 {
+			return false
+		} else if remaining < 10*time.Millisecond {
+			time.Sleep(remaining)
+		} else {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+type manifestBlockingProgressCapture struct {
+	manifestProgressCapture
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *manifestBlockingProgressCapture) Write(data []byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	<-c.release
+	return c.manifestProgressCapture.Write(data)
+}
+
+func manifestProgressLines(output string) []string {
+	trimmed := strings.TrimSuffix(output, "\n")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
 }
 
 func TestManifestStart(t *testing.T) {
@@ -585,12 +643,467 @@ processes:
 	}
 
 	human, humanErr, humanRunErr := stopShutdownRun(t, "up")
-	if humanRunErr == nil || manifestCLIExitCode(humanRunErr) != 3 || humanErr != "" {
+	if humanRunErr == nil || manifestCLIExitCode(humanRunErr) != 3 {
 		t.Fatalf("human blocked up: %v (stdout=%s stderr=%s)", humanRunErr, human, humanErr)
 	}
 	for _, phrase := range []string{"api: skipped (blocked by db); existing process exited", "web: skipped (blocked by api); not launched"} {
 		if !strings.Contains(human, phrase) {
 			t.Fatalf("human blocked output missing %q: %s", phrase, human)
+		}
+	}
+	for _, phrase := range []string{"hum up: db: started; waiting for readiness", "hum up: db: exited before readiness; inspect retained logs: hum logs db", "hum up: api: skipped (blocked by db); existing process exited", "hum up: web: skipped (blocked by api); not launched"} {
+		if !strings.Contains(humanErr, phrase) {
+			t.Fatalf("human progress missing %q: %s", phrase, humanErr)
+		}
+	}
+}
+
+func TestUpHumanProgress(t *testing.T) {
+	t.Run("deterministic transition barriers", func(t *testing.T) {
+		definitions := []project.Definition{
+			{Name: "alpha", Argv: []string{"alpha"}, Ready: &project.ReadyDefinition{Match: "ready"}},
+			{Name: "blocked", Argv: []string{"blocked"}, After: []string{"failure"}, Ready: &project.ReadyDefinition{Match: "ready"}},
+			{Name: "failure", Argv: []string{"failure"}},
+			{Name: "plain", Argv: []string{"plain"}},
+			{Name: "zeta", Argv: []string{"zeta"}, Ready: &project.ReadyDefinition{Match: "ready"}},
+		}
+		manifest := manifestState{defs: definitions, byName: make(map[string]project.Definition)}
+		starts := make(map[string]chan struct{})
+		readiness := make(map[string]chan manifestLaunchResult)
+		for _, definition := range definitions {
+			manifest.byName[definition.Name] = definition
+			starts[definition.Name] = make(chan struct{})
+			if definition.Ready != nil {
+				readiness[definition.Name] = make(chan manifestLaunchResult)
+			}
+		}
+		ops := manifestUpScheduleOps{
+			start: func(ctx context.Context, definition project.Definition) (manifestLaunchResult, app.Process, time.Time) {
+				select {
+				case <-ctx.Done():
+					return manifestLaunchError(definition, ctx.Err()), app.Process{}, time.Now()
+				case <-starts[definition.Name]:
+				}
+				if definition.Name == "failure" {
+					return manifestLaunchError(definition, errors.New("boom")), app.Process{}, time.Now()
+				}
+				result := manifestLaunchResult{Name: definition.Name, Argv: definition.Argv, Outcome: "started", Readiness: app.ReadinessRunningUnverified}
+				if definition.Ready != nil {
+					result.Readiness = app.ReadinessStarting
+				}
+				return result, app.Process{Name: definition.Name, State: app.StateRunning}, time.Now()
+			},
+			readiness: func(ctx context.Context, definition project.Definition, _ app.Process, _ string, _ time.Duration) (manifestLaunchResult, error) {
+				select {
+				case <-ctx.Done():
+					return manifestLaunchResult{}, ctx.Err()
+				case result := <-readiness[definition.Name]:
+					return result, nil
+				}
+			},
+			skipped: func(_ context.Context, definition project.Definition, blocked []string) manifestLaunchResult {
+				return manifestLaunchResult{Name: definition.Name, Argv: definition.Argv, Outcome: "skipped", BlockedBy: blocked}
+			},
+		}
+		var progress manifestProgressCapture
+		renderer := newManifestProgressRenderer(&progress, len(definitions))
+		done := make(chan []manifestLaunchResult, 1)
+		go func() {
+			results, err := manifestUpScheduleWithOps(context.Background(), &urfavecli.Command{}, manifest, []string{"alpha", "blocked", "failure", "plain", "zeta"}, time.Second, renderer, ops)
+			if err != nil {
+				t.Errorf("schedule: %v", err)
+			}
+			done <- results
+		}()
+
+		close(starts["zeta"])
+		if !progress.waitFor("hum up: zeta: started; waiting for readiness\n", time.Second) {
+			t.Fatalf("zeta launch progress = %q", progress.String())
+		}
+		readiness["zeta"] <- manifestLaunchResult{Name: "zeta", Outcome: "started", Readiness: app.ReadinessReady}
+		if !progress.waitFor("hum up: zeta: ready\n", time.Second) {
+			t.Fatalf("zeta ready progress = %q", progress.String())
+		}
+		close(starts["alpha"])
+		if !progress.waitFor("hum up: alpha: started; waiting for readiness\n", time.Second) {
+			t.Fatalf("alpha launch progress = %q", progress.String())
+		}
+		readiness["alpha"] <- manifestLaunchResult{Name: "alpha", Outcome: "timed_out", Readiness: app.ReadinessStarting}
+		close(starts["failure"])
+		close(starts["plain"])
+		results := <-done
+		if len(results) != len(definitions) {
+			t.Fatalf("results = %#v", results)
+		}
+		want := []string{
+			"hum up: zeta: started; waiting for readiness",
+			"hum up: zeta: ready",
+			"hum up: alpha: started; waiting for readiness",
+			"hum up: alpha: readiness timed out; inspect retained logs: hum logs alpha",
+			"hum up: failure: error: boom",
+			"hum up: blocked: skipped (blocked by failure); not launched",
+			"hum up: plain: started; readiness unverified",
+		}
+		lines := manifestProgressLines(progress.String())
+		if !reflect.DeepEqual(lines[:3], want[:3]) {
+			t.Fatalf("temporal progress prefix = %q, want %q", lines[:3], want[:3])
+		}
+		for _, expected := range want {
+			if strings.Count(progress.String(), expected+"\n") != 1 {
+				t.Errorf("progress count for %q != 1: %q", expected, progress.String())
+			}
+		}
+		for _, line := range lines {
+			if strings.Count(line, "hum up: ") != 1 {
+				t.Errorf("interleaved progress line %q", line)
+			}
+		}
+	})
+
+	t.Run("blocked stderr does not consume readiness timeout", func(t *testing.T) {
+		root := stopShutdownTestProject(t)
+		_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		writeManifestCLITestFile(t, root, `version: 1
+processes:
+  ready:
+    argv: [/bin/sh, -c, "sleep 0.05; printf ready-now; sleep 30"]
+    ready: {match: ready-now, timeout: 1s}
+`)
+		t.Cleanup(func() {
+			_, _, _ = stopShutdownRun(t, "stop", "ready")
+			_, _, _ = stopShutdownRun(t, "shutdown", "--stop-processes")
+		})
+
+		stderr := &manifestBlockingProgressCapture{started: make(chan struct{}), release: make(chan struct{})}
+		var stdout manifestProgressCapture
+		done := make(chan error, 1)
+		go func() {
+			done <- cliServeRunInvoke(context.Background(), []string{"up"}, &stdout, stderr)
+		}()
+		select {
+		case <-stderr.started:
+		case <-time.After(time.Second):
+			t.Fatal("progress writer was not called")
+		}
+		time.Sleep(1500 * time.Millisecond)
+		close(stderr.release)
+		if err := <-done; err != nil {
+			t.Fatalf("up with blocked progress writer: %v; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+		}
+		if got := stderr.String(); !strings.Contains(got, "hum up: ready: ready\n") || strings.Contains(got, "timed out") {
+			t.Fatalf("blocked progress changed readiness result: %q", got)
+		}
+	})
+
+	root := stopShutdownTestProject(t)
+	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, fmt.Sprintf(`version: 1
+processes:
+  slow:
+    argv: [/bin/sh, -c, "sleep 30"]
+    ready: {match: never-seen, timeout: 2s}
+  fast:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: fast-ready, timeout: 2s}
+  plain:
+    argv: [/bin/sh, -c, "printf plain-child; sleep 30"]
+  error:
+    argv: [/definitely/not/a/real/hum-command]
+  blocked-root:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: blocked-ready, timeout: 2s}
+  blocked:
+    argv: [/bin/sh, -c, "printf should-not-launch; sleep 30"]
+    after: [blocked-root]
+    ready: {match: blocked-ready, timeout: 2s}
+`, strconv.Quote("sleep 0.15; printf fast-child-output; printf fast-ready; sleep 30"), strconv.Quote("sleep 0.05; exit 4")))
+	t.Cleanup(func() {
+		for _, name := range []string{"blocked", "blocked-root", "error", "fast", "plain", "slow"} {
+			_, _, _ = stopShutdownRun(t, "stop", name)
+		}
+		_, _, _ = stopShutdownRun(t, "shutdown", "--stop-processes")
+	})
+
+	var stdout, stderr manifestProgressCapture
+	done := make(chan error, 1)
+	go func() {
+		done <- cliServeRunInvoke(context.Background(), []string{"up", "--timeout", "400ms"}, &stdout, &stderr)
+	}()
+	if !stderr.waitFor("hum up: fast: started; waiting for readiness\n", time.Second) {
+		t.Fatalf("fast launch progress did not arrive while up waited: %q", stderr.String())
+	}
+	if !stderr.waitFor("hum up: fast: ready\n", 2*time.Second) {
+		t.Fatalf("fast readiness progress did not arrive: %q", stderr.String())
+	}
+	if err := <-done; manifestCLIExitCode(err) != 1 {
+		t.Fatalf("progress up exit = %v (code %d), want launch-error exit 1; stdout=%q stderr=%q", err, manifestCLIExitCode(err), stdout.String(), stderr.String())
+	}
+
+	lines := manifestProgressLines(stderr.String())
+	counts := make(map[string]int)
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "hum up: ") {
+			t.Fatalf("progress line %q lacks hum up prefix", line)
+		}
+		body := strings.TrimPrefix(line, "hum up: ")
+		nameEnd := strings.Index(body, ": ")
+		if nameEnd < 0 {
+			t.Fatalf("malformed progress line %q", line)
+		}
+		name := body[:nameEnd]
+		counts[name]++
+		if strings.Contains(line, "fast-child-output") || strings.Contains(line, "plain-child") || strings.Contains(line, "should-not-launch") {
+			t.Fatalf("progress copied child output: %q", line)
+		}
+		if strings.ContainsRune(line, '\x1b') {
+			t.Fatalf("progress contains terminal control: %q", line)
+		}
+	}
+	for _, name := range []string{"blocked", "blocked-root", "error", "fast", "plain", "slow"} {
+		if counts[name] == 0 || counts[name] > 2 {
+			t.Fatalf("progress line count for %s = %d, lines=%q", name, counts[name], lines)
+		}
+	}
+	wantLines := []string{
+		"hum up: blocked: skipped (blocked by blocked-root); not launched",
+		"hum up: blocked-root: started; waiting for readiness",
+		"hum up: blocked-root: exited before readiness; inspect retained logs: hum logs blocked-root",
+		"hum up: fast: started; waiting for readiness",
+		"hum up: fast: ready",
+		"hum up: plain: started; readiness unverified",
+		"hum up: slow: started; waiting for readiness",
+		"hum up: slow: readiness timed out; inspect retained logs: hum logs slow",
+	}
+	for _, want := range wantLines {
+		found := false
+		for _, line := range lines {
+			if line == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing exact progress line %q in %q", want, lines)
+		}
+	}
+	fastReadyPosition := -1
+	slowTimeoutPosition := -1
+	for index, line := range lines {
+		if line == "hum up: fast: ready" {
+			fastReadyPosition = index
+		}
+		if line == "hum up: slow: readiness timed out; inspect retained logs: hum logs slow" {
+			slowTimeoutPosition = index
+		}
+	}
+	if fastReadyPosition < 0 || slowTimeoutPosition < 0 || fastReadyPosition >= slowTimeoutPosition {
+		t.Fatalf("terminal progress order = %q, want fast ready before slow timeout", lines)
+	}
+
+	finalLines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	wantNames := []string{"blocked", "blocked-root", "error", "fast", "plain", "slow"}
+	if len(finalLines) != len(wantNames) {
+		t.Fatalf("final human result lines = %q, want %d lexical lines", stdout.String(), len(wantNames))
+	}
+	for index, line := range finalLines {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			t.Fatalf("final human result line %d is empty: %q", index, stdout.String())
+		}
+		nameField := strings.TrimSuffix(fields[0], ":")
+		switch nameField {
+		case "started", "already_running", "running_unverified", "exited_before_ready", "timed_out", "error":
+			if len(fields) < 2 {
+				t.Fatalf("final human result line %d lacks name: %q", index, line)
+			}
+			nameField = fields[1]
+		}
+		if nameField != wantNames[index] {
+			t.Fatalf("final human result order = %q, want %q at %d", stdout.String(), wantNames[index], index)
+		}
+	}
+}
+
+func TestUpProgressOutputModes(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  zeta:
+    argv: [/bin/sh, -c, "sleep 30"]
+  alpha:
+    argv: [/bin/sh, -c, "printf alpha-ready; sleep 30"]
+    ready: {match: alpha-ready, timeout: 2s}
+`)
+	t.Cleanup(func() {
+		for _, name := range []string{"alpha", "zeta"} {
+			_, _, _ = stopShutdownRun(t, "stop", name)
+		}
+		_, _, _ = stopShutdownRun(t, "shutdown", "--stop-processes")
+	})
+
+	stdout, stderr, err := stopShutdownRun(t, "up", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("up --json: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	results := manifestCLILaunchResults(t, stdout)
+	if len(results) != 2 || results[0].Name != "alpha" || results[1].Name != "zeta" {
+		t.Fatalf("up --json results = %#v, want lexical declarations", results)
+	}
+	if results[0].Readiness != app.ReadinessReady || results[1].Readiness != app.ReadinessRunningUnverified {
+		t.Fatalf("up --json readiness = %#v", results)
+	}
+	for _, name := range []string{"alpha", "zeta"} {
+		if _, _, stopErr := stopShutdownRun(t, "stop", name); stopErr != nil {
+			t.Fatalf("stop %s after json up: %v", name, stopErr)
+		}
+	}
+
+	stdout, stderr, err = stopShutdownRun(t, "up", "--no-wait")
+	if err != nil || stderr != "" {
+		t.Fatalf("up --no-wait: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if len(stopShutdownNonEmptyLines(stdout)) != 2 {
+		t.Fatalf("up --no-wait stdout = %q, want two final summaries", stdout)
+	}
+	for _, name := range []string{"alpha", "zeta"} {
+		if _, _, stopErr := stopShutdownRun(t, "stop", name); stopErr != nil {
+			t.Fatalf("stop %s after no-wait up: %v", name, stopErr)
+		}
+	}
+
+	stdout, stderr, err = stopShutdownRun(t, "start", "--timeout", "1s", "alpha")
+	if err != nil || stderr != "" || !strings.Contains(stdout, "alpha") {
+		t.Fatalf("human start: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	stdout, stderr, err = stopShutdownRun(t, "start", "--json", "--timeout", "1s", "alpha")
+	if err != nil || stderr != "" {
+		t.Fatalf("json start: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	var jsonStart manifestLaunchResult
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &jsonStart); err != nil {
+		t.Fatalf("decode json start = %q: %v", stdout, err)
+	}
+	if jsonStart.Name != "alpha" || jsonStart.Outcome != "already_running" {
+		t.Fatalf("json start result = %#v, want already_running alpha", jsonStart)
+	}
+
+	precedenceCases := []struct {
+		name     string
+		results  []manifestLaunchResult
+		wantCode int
+	}{
+		{name: "launch error wins", results: []manifestLaunchResult{{Outcome: "timed_out"}, {Outcome: "exited_before_ready"}, {Outcome: "error"}}, wantCode: 1},
+		{name: "early exit wins timeout", results: []manifestLaunchResult{{Outcome: "timed_out"}, {Outcome: "exited_before_ready"}}, wantCode: 3},
+		{name: "timeout", results: []manifestLaunchResult{{Outcome: "timed_out"}}, wantCode: 2},
+		{name: "success", results: []manifestLaunchResult{{Outcome: "started"}}, wantCode: 0},
+	}
+	for _, test := range precedenceCases {
+		if got := manifestCLIExitCode(aggregateManifestExit(test.results)); got != test.wantCode {
+			t.Errorf("%s aggregate exit = %d, want %d", test.name, got, test.wantCode)
+		}
+	}
+
+	pid, launchCursor, readyCursor := 42, uint64(7), uint64(9)
+	var final bytes.Buffer
+	if err := renderManifestLaunchHuman(&final, manifestLaunchResult{
+		Name: "alpha", Argv: []string{"/bin/sh", "-c", "printf ready"}, Source: "manifest", Outcome: "started",
+		PID: &pid, LaunchCursor: &launchCursor, Readiness: app.ReadinessReady, ReadyCursor: &readyCursor,
+	}); err != nil {
+		t.Fatalf("render final human summary: %v", err)
+	}
+	if want := "started alpha (manifest: /bin/sh -c 'printf ready') pid=42 launch_cursor=7 readiness=ready ready_cursor=9\n"; final.String() != want {
+		t.Fatalf("final human summary = %q, want %q", final.String(), want)
+	}
+}
+
+func TestUpProgressDocs(t *testing.T) {
+	design, err := os.ReadFile("../../docs/design.md")
+	if err != nil {
+		t.Fatalf("read design docs: %v", err)
+	}
+	var help, helpErr bytes.Buffer
+	root := NewRootCommand("test", "test", &help, &helpErr)
+	if err := root.Run(context.Background(), []string{"hum", "up", "--help"}); err != nil {
+		t.Fatalf("up help: %v", err)
+	}
+	if helpErr.Len() != 0 {
+		t.Fatalf("up help stderr = %q", helpErr.String())
+	}
+	all := strings.ToLower(help.String() + "\n" + string(design))
+	for _, phrase := range []string{"human-only", "stderr", "stdout", "--json", "--no-wait", "at most two lines", "temporal", "transition", "child output", "timeout", "early-exit", "hum logs name"} {
+		if !strings.Contains(all, phrase) {
+			t.Errorf("progress docs missing %q", phrase)
+		}
+	}
+}
+
+func TestUpProgressBlockedExistingState(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  queue:
+    argv: [/bin/sh, -c, "exit 5"]
+    ready: {match: queue-ready}
+  db:
+    argv: [/bin/sh, -c, "exit 4"]
+    ready: {match: db-ready}
+  api:
+    argv: [/bin/sh, -c, "sleep 30"]
+    after: [queue, db]
+    ready: {match: api-ready}
+  web:
+    argv: [/bin/sh, -c, "sleep 30"]
+    after: [api]
+    ready: {match: web-ready}
+`)
+	t.Cleanup(func() {
+		for _, name := range []string{"api", "db", "queue", "web"} {
+			_, _, _ = stopShutdownRun(t, "stop", name)
+		}
+		_, _, _ = stopShutdownRun(t, "shutdown", "--stop-processes")
+	})
+	seed, seedErr, err := stopShutdownRun(t, "start", "--json", "--no-wait", "api")
+	if err != nil || seedErr != "" {
+		t.Fatalf("seed running api: err=%v stdout=%q stderr=%q", err, seed, seedErr)
+	}
+
+	_, stderr, err := stopShutdownRun(t, "up")
+	if manifestCLIExitCode(err) != 3 {
+		t.Fatalf("running blocked up exit = %v, want 3; stderr=%q", err, stderr)
+	}
+	for _, want := range []string{
+		"hum up: api: skipped (blocked by db, queue); existing process running",
+		"hum up: web: skipped (blocked by api); not launched",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("running blocked progress missing %q: %s", want, stderr)
+		}
+	}
+	if _, _, err := stopShutdownRun(t, "stop", "api"); err != nil {
+		t.Fatalf("stop seeded api: %v", err)
+	}
+	_, stderr, err = stopShutdownRun(t, "up")
+	if manifestCLIExitCode(err) != 3 {
+		t.Fatalf("exited blocked up exit = %v, want 3; stderr=%q", err, stderr)
+	}
+	for _, want := range []string{
+		"hum up: api: skipped (blocked by db, queue); existing process exited",
+		"hum up: web: skipped (blocked by api); not launched",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("exited blocked progress missing %q: %s", want, stderr)
+		}
+	}
+	for _, name := range []string{"api", "web"} {
+		count := strings.Count(stderr, "hum up: "+name+":")
+		if count != 1 {
+			t.Errorf("progress line count for %s = %d, stderr=%q", name, count, stderr)
 		}
 	}
 }

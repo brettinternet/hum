@@ -7,9 +7,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"hum/internal/app"
 	"hum/internal/output"
+	"hum/internal/project"
 	"hum/internal/protocol"
 )
 
@@ -438,6 +440,135 @@ func shellEscape(value string) string {
 		return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 	}
 	return value
+}
+
+type manifestProgressRenderer struct {
+	lines chan string
+	done  chan struct{}
+	err   error
+}
+
+func newManifestProgressRenderer(writer io.Writer, declarationCount int) *manifestProgressRenderer {
+	r := &manifestProgressRenderer{
+		lines: make(chan string, 2*declarationCount),
+		done:  make(chan struct{}),
+	}
+	go func() {
+		defer close(r.done)
+		for line := range r.lines {
+			if r.err != nil {
+				continue
+			}
+			text := line + "\n"
+			written, err := io.WriteString(writer, text)
+			if err == nil && written != len(text) {
+				err = io.ErrShortWrite
+			}
+			r.err = err
+		}
+	}()
+	return r
+}
+
+func (r *manifestProgressRenderer) writeInitial(definition project.Definition, result manifestLaunchResult) {
+	r.writeLine(manifestProgressInitialLine(definition, result))
+}
+
+func (r *manifestProgressRenderer) writeTerminal(result manifestLaunchResult) {
+	r.writeLine(manifestProgressTerminalLine(result))
+}
+
+func (r *manifestProgressRenderer) writeLine(line string) {
+	if line != "" {
+		r.lines <- line
+	}
+}
+
+func (r *manifestProgressRenderer) Close() error {
+	close(r.lines)
+	<-r.done
+	return r.err
+}
+
+func manifestProgressInitialLine(definition project.Definition, result manifestLaunchResult) string {
+	prefix := "hum up: " + manifestProgressText(result.Name) + ": "
+	switch result.Outcome {
+	case "skipped":
+		return prefix + manifestProgressSkippedText(result)
+	case "error":
+		return prefix + "error: " + manifestProgressText(result.Error)
+	case "exited_before_ready":
+		return prefix + "exited before readiness; inspect retained logs: hum logs " + manifestProgressText(result.Name)
+	case "timed_out":
+		return prefix + "readiness timed out; inspect retained logs: hum logs " + manifestProgressText(result.Name)
+	case "started", "already_running":
+		action := manifestProgressAction(result)
+		if manifestProgressWaitsForReadiness(definition, result) {
+			return prefix + action + "; waiting for readiness"
+		}
+		if result.Readiness == app.ReadinessReady {
+			return prefix + action + "; ready"
+		}
+		return prefix + manifestProgressAction(result) + "; readiness unverified"
+	case "running_unverified":
+		return prefix + "started; readiness unverified"
+	default:
+		return prefix + manifestProgressText(result.Outcome)
+	}
+}
+
+func manifestProgressTerminalLine(result manifestLaunchResult) string {
+	prefix := "hum up: " + manifestProgressText(result.Name) + ": "
+	switch result.Outcome {
+	case "skipped":
+		return prefix + manifestProgressSkippedText(result)
+	case "error":
+		return prefix + "error: " + manifestProgressText(result.Error)
+	case "exited_before_ready":
+		return prefix + "exited before readiness; inspect retained logs: hum logs " + manifestProgressText(result.Name)
+	case "timed_out":
+		return prefix + "readiness timed out; inspect retained logs: hum logs " + manifestProgressText(result.Name)
+	case "started", "already_running":
+		if result.Readiness == app.ReadinessReady {
+			return prefix + "ready"
+		}
+		return prefix + manifestProgressAction(result) + "; readiness unverified"
+	case "running_unverified":
+		return prefix + "started; readiness unverified"
+	default:
+		return prefix + manifestProgressText(result.Outcome)
+	}
+}
+
+func manifestProgressSkippedText(result manifestLaunchResult) string {
+	line := "skipped (blocked by " + manifestProgressText(strings.Join(result.BlockedBy, ", ")) + ")"
+	switch result.ExistingState {
+	case "running", "exited":
+		return line + "; existing process " + result.ExistingState
+	default:
+		return line + "; not launched"
+	}
+}
+
+func manifestProgressAction(result manifestLaunchResult) string {
+	switch result.Outcome {
+	case "running_unverified", "started":
+		return "started"
+	case "already_running":
+		return "already running"
+	default:
+		return result.Outcome
+	}
+}
+
+func manifestProgressText(value string) string {
+	value = output.StripTerminalControl(value)
+	return strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' || unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
 }
 
 func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {

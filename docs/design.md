@@ -72,6 +72,19 @@ and entry or byte limits apply independently per selected name, bounded output i
 returned in selection order, human entries are atomic `[NAME]`-prefixed writes, and
 aggregate JSON uses named NDJSON event objects.
 
+This human-only `hum up` progress is enabled only in default human mode while
+readiness waiting is enabled. It writes newline-terminated startup transitions to stderr;
+the unchanged final per-declaration summaries remain on stdout. Progress follows
+temporal transition completion rather than lexical declaration order, is serialized
+as complete lines, and is bounded to a maximum of two lines per declaration: one
+launch, observation, error, or dependency-blocked line and, only for a declaration
+that entered `starting`, one ready, early-exit, or timeout line. It never streams
+child output. `up --json` emits no progress and keeps stderr empty on success;
+`up --no-wait`, `start`, and MCP `up` also keep their existing output and timing.
+Timeout and early-exit progress names include `inspect retained logs: hum logs
+NAME`, which directs operators to retained diagnostics without copying them into
+`up`.
+
 ### Command semantics
 
 `init` resolves the project and zero-config candidates without launching or
@@ -275,6 +288,13 @@ result remains skipped and cannot satisfy a downstream gate. Skips do not change
 request error 1, exited before ready 3, timed out 2, success 0. An
 `on-failure` successor is not followed by the same `up`; rerun `up` after
 recovery.
+
+When the human CLI progress renderer reports a launch or observation error, it
+uses `hum up: NAME: error: MESSAGE`; dependency-blocked lines retain the direct
+sorted blocker list and distinguish an existing running or exited record from
+`not launched`. This progress is observational only and does not change the
+scheduler, aggregate exit precedence, readiness timeout, or successful child
+lifetime.
 
 Each durable named session has one cursor sequence across stdout, stderr, and
 incarnations. Entries contain stream, timestamp, raw stored text, stripped on

@@ -102,14 +102,14 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:        "up",
 			Usage:       "ensure every manifest process is running",
 			ArgsUsage:   "",
-			Description: "Up resolves every hum.yaml declaration in lexical order, launches independent roots concurrently, and gates each after dependency on all direct prerequisites observed as ready. It waits per process from that process's launch or running observation, continues after launch failures, continues after failures, and reports skipped direct blockers plus any retained existing process state without mutating it; --no-wait is rejected before daemon contact when after is declared. During bounded recovery, up observes an exited declaration as recovery_pending or recovery_exhausted without sending a start request or waiting for an automatic successor; these outcomes make up exit 3 because the declaration is not running. Use targeted start NAME or restart NAME to cancel recovery and launch immediately. One invocation does not follow an automatic prerequisite successor; rerun hum up after recovery. A declared restart: on-failure session retries unexpected crashes with bounded 1s/2s/4s/8s/16s backoff; automatic attempts retain their effective launch spec.",
+			Description: "Up resolves every hum.yaml declaration in lexical order, launches independent roots concurrently, and gates each after dependency on all direct prerequisites observed as ready. It waits per process from that process's launch or running observation, continues after launch failures, continues after failures, and reports skipped direct blockers plus any retained existing process state without mutating it; --no-wait is rejected before daemon contact when after is declared. During bounded recovery, up observes an exited declaration as recovery_pending or recovery_exhausted without sending a start request or waiting for an automatic successor; these outcomes make up exit 3 because the declaration is not running. Use targeted start NAME or restart NAME to cancel recovery and launch immediately. One invocation does not follow an automatic prerequisite successor; rerun hum up after recovery. A declared restart: on-failure session retries unexpected crashes with bounded 1s/2s/4s/8s/16s backoff; automatic attempts retain their effective launch spec. Human-only up without --json or --no-wait writes bounded startup progress to stderr in transition-completion order, with at most two lines per declaration; final summaries stay on stdout, and timeout or early-exit lines point to hum logs NAME without streaming child output.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after processes are spawned"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per declaration"},
 			},
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
-				return upCommand(ctx, cmd, version, buildTime, writer)
+				return upCommand(ctx, cmd, version, buildTime, writer, errWriter)
 			},
 		},
 		{
@@ -1657,7 +1657,7 @@ func startCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	return manifestLaunchCommand(ctx, cmd, version, buildTime, writer, names)
 }
 
-func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
 	if err := requireNoArgs(cmd, "up"); err != nil {
 		return err
 	}
@@ -1672,7 +1672,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	if cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
 		return errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies")
 	}
-	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, true, true)
+	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, true, true, errWriter)
 }
 
 func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, names []string) error {
@@ -1714,10 +1714,10 @@ func loadManifestForCommand() (manifestState, error) {
 }
 
 func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery bool) error {
-	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, preserveRecovery, false)
+	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, preserveRecovery, false, nil)
 }
 
-func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery, ordered bool) error {
+func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery, ordered bool, progressWriter io.Writer) error {
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1744,8 +1744,12 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	}
 	env := manifestProcessEnv()
 	var results []manifestLaunchResult
+	var progress *manifestProgressRenderer
+	if ordered && !cmd.Bool("json") && !cmd.Bool("no-wait") && progressWriter != nil {
+		progress = newManifestProgressRenderer(progressWriter, len(names))
+	}
 	if ordered {
-		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, env, timeoutOverride, preserveRecovery)
+		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, env, timeoutOverride, preserveRecovery, progress)
 	} else {
 		results, err = manifestStartConcurrent(ctx, cmd, client, cwd, manifest, names, env, timeoutOverride)
 	}
@@ -1893,7 +1897,35 @@ func manifestRemainingTimeout(timeout time.Duration, observedAt time.Time) time.
 	return remaining
 }
 
-func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, env []string, timeoutOverride time.Duration, preserveRecovery bool) ([]manifestLaunchResult, error) {
+type manifestUpScheduleOps struct {
+	start     func(context.Context, project.Definition) (manifestLaunchResult, app.Process, time.Time)
+	readiness func(context.Context, project.Definition, app.Process, string, time.Duration) (manifestLaunchResult, error)
+	skipped   func(context.Context, project.Definition, []string) manifestLaunchResult
+}
+
+func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, env []string, timeoutOverride time.Duration, preserveRecovery bool, progress *manifestProgressRenderer) ([]manifestLaunchResult, error) {
+	ops := manifestUpScheduleOps{
+		start: func(ctx context.Context, definition project.Definition) (manifestLaunchResult, app.Process, time.Time) {
+			observedAt := time.Now()
+			_, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, definition.Name, env, preserveRecovery)
+			if result.Outcome == "started" && !process.Start.IsZero() {
+				observedAt = process.Start
+			} else if result.Outcome == "already_running" {
+				observedAt = time.Now()
+			}
+			return result, process, observedAt
+		},
+		readiness: func(ctx context.Context, definition project.Definition, process app.Process, outcome string, timeout time.Duration) (manifestLaunchResult, error) {
+			return manifestReadinessResult(client, ctx, cwd, definition, process, outcome, timeout)
+		},
+		skipped: func(ctx context.Context, definition project.Definition, blocked []string) manifestLaunchResult {
+			return manifestLaunchSkipped(ctx, client, manifest.root, definition, blocked)
+		},
+	}
+	return manifestUpScheduleWithOps(ctx, cmd, manifest, names, timeoutOverride, progress, ops)
+}
+
+func manifestUpScheduleWithOps(ctx context.Context, cmd *urfavecli.Command, manifest manifestState, names []string, timeoutOverride time.Duration, progress *manifestProgressRenderer, ops manifestUpScheduleOps) ([]manifestLaunchResult, error) {
 	definitions := make([]project.Definition, 0, len(names))
 	for _, name := range names {
 		if definition, ok := manifest.byName[name]; ok {
@@ -1941,7 +1973,11 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 				cond.Wait()
 			}
 			if ctx.Err() != nil {
-				results[index] = manifestLaunchError(definition, ctx.Err())
+				result := manifestLaunchError(definition, ctx.Err())
+				if progress != nil {
+					progress.writeInitial(definition, result)
+				}
+				results[index] = result
 				done[index] = true
 				cond.Broadcast()
 				mu.Unlock()
@@ -1957,7 +1993,10 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 			if len(blocked) != 0 {
 				sort.Strings(blocked)
 				mu.Unlock()
-				skipped := manifestLaunchSkipped(ctx, client, manifest.root, definition, blocked)
+				skipped := ops.skipped(ctx, definition, blocked)
+				if progress != nil {
+					progress.writeInitial(definition, skipped)
+				}
 				mu.Lock()
 				results[index] = skipped
 				done[index] = true
@@ -1967,12 +2006,10 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 			}
 			mu.Unlock()
 
-			observedAt := time.Now()
-			_, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, definition.Name, env, preserveRecovery)
-			if result.Outcome == "started" && !process.Start.IsZero() {
-				observedAt = process.Start
-			} else if result.Outcome == "already_running" {
-				observedAt = time.Now()
+			result, process, observedAt := ops.start(ctx, definition)
+			waitsForReadiness := manifestProgressWaitsForReadiness(definition, result)
+			if progress != nil {
+				progress.writeInitial(definition, result)
 			}
 			if result.Outcome != "error" && !cmd.Bool("no-wait") && definition.Ready != nil && process.State == app.StateRunning {
 				timeout, timeoutErr := manifestTimeoutForResult(cmd, definition, timeoutOverride)
@@ -1980,11 +2017,14 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 					result = manifestLaunchError(definition, timeoutErr)
 				} else {
 					timeout = manifestRemainingTimeout(timeout, observedAt)
-					result, timeoutErr = manifestReadinessResult(client, ctx, cwd, definition, process, result.Outcome, timeout)
+					result, timeoutErr = ops.readiness(ctx, definition, process, result.Outcome, timeout)
 					if timeoutErr != nil {
 						result = manifestLaunchError(definition, timeoutErr)
 					}
 				}
+			}
+			if progress != nil && waitsForReadiness {
+				progress.writeTerminal(result)
 			}
 			mu.Lock()
 			results[index] = result
@@ -1994,7 +2034,22 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 		}(index, definition)
 	}
 	workers.Wait()
+	if progress != nil {
+		if err := progress.Close(); err != nil {
+			return results, err
+		}
+	}
 	return results, nil
+}
+
+func manifestProgressWaitsForReadiness(definition project.Definition, result manifestLaunchResult) bool {
+	if definition.Ready == nil {
+		return false
+	}
+	if result.Outcome != "started" && result.Outcome != "already_running" {
+		return false
+	}
+	return result.Readiness == app.ReadinessStarting || (result.Outcome == "started" && result.Readiness == "")
 }
 
 func manifestResultSatisfiesGate(result manifestLaunchResult) bool {

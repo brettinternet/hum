@@ -255,6 +255,151 @@ processes:
 	}
 }
 
+func TestUpStartupProgress(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := testutil.BuildHum(t)
+	projectRoot := t.TempDir()
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
+	manifest := fmt.Sprintf(`version: 1
+processes:
+  fast:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: fast-ready, timeout: 2s}
+  slow:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: never-seen, timeout: 2s}
+`, strconv.Quote("printf fast-child-output; sleep 0.2; printf fast-ready; sleep 30"), strconv.Quote("printf slow-child-output; sleep 30"))
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, name := range []string{"fast", "slow"} {
+			_ = testutil.Run(t, hum, projectRoot, env, "stop", name)
+		}
+		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
+	})
+
+	up := testutil.Start(t, hum, projectRoot, env, "up", "--timeout", "700ms")
+	manifestIntegrationWaitForText(t, up, "hum up: fast: started; waiting for readiness", manifestWorkflowTimeout)
+	manifestIntegrationWaitForText(t, up, "hum up: slow: started; waiting for readiness", manifestWorkflowTimeout)
+	manifestIntegrationWaitForText(t, up, "hum up: fast: ready", manifestWorkflowTimeout)
+	if up.Exited() {
+		t.Fatalf("up exited before slow readiness timeout: stdout=%q stderr=%q", up.Stdout(), up.Stderr())
+	}
+	if strings.Contains(up.Stderr(), "fast-child-output") || strings.Contains(up.Stderr(), "slow-child-output") {
+		t.Fatalf("up progress copied child output: %q", up.Stderr())
+	}
+	if err := up.Wait(manifestWorkflowTimeout); err == nil {
+		t.Fatalf("up unexpectedly succeeded: stdout=%q stderr=%q", up.Stdout(), up.Stderr())
+	}
+	if up.Cmd.ProcessState == nil || up.Cmd.ProcessState.ExitCode() != 2 {
+		t.Fatalf("up exit code = %v, want 2; stdout=%q stderr=%q", up.Cmd.ProcessState, up.Stdout(), up.Stderr())
+	}
+	if !strings.Contains(up.Stderr(), "hum up: slow: readiness timed out; inspect retained logs: hum logs slow") {
+		t.Fatalf("timeout progress = %q", up.Stderr())
+	}
+	lines := strings.Split(strings.TrimSpace(up.Stdout()), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "fast") || !strings.Contains(lines[1], "slow") {
+		t.Fatalf("final summaries = %q, want lexical fast then slow", up.Stdout())
+	}
+}
+
+func TestUpReadinessTimeoutDiagnostics(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := testutil.BuildHum(t)
+	projectRoot := t.TempDir()
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
+	manifestPath := filepath.Join(projectRoot, "hum.yaml")
+	write := func(command string) {
+		t.Helper()
+		manifest := fmt.Sprintf(`version: 1
+processes:
+  probe:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: never-seen, timeout: 2s}
+`, strconv.Quote(command))
+		if err := os.WriteFile(manifestPath, []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("printf timeout-child-output; sleep 30")
+	t.Cleanup(func() {
+		_ = testutil.Run(t, hum, projectRoot, env, "stop", "probe")
+		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
+	})
+
+	timeout := testutil.Run(t, hum, projectRoot, env, "up", "--timeout", "150ms")
+	if timeout.Code != 2 || timeout.Err == nil {
+		t.Fatalf("timeout up = code %d err=%v stdout=%q stderr=%q, want exit 2", timeout.Code, timeout.Err, timeout.Stdout, timeout.Stderr)
+	}
+	if !strings.Contains(timeout.Stderr, "hum up: probe: readiness timed out; inspect retained logs: hum logs probe") {
+		t.Fatalf("timeout progress = %q", timeout.Stderr)
+	}
+	if strings.Contains(timeout.Stderr, "timeout-child-output") || !strings.Contains(timeout.Stdout, "timed_out") {
+		t.Fatalf("timeout output = stdout %q stderr %q", timeout.Stdout, timeout.Stderr)
+	}
+	logs := testutil.Run(t, hum, projectRoot, env, "logs", "probe", "--json", "--stream", "stdout")
+	if logs.Code != 0 || logs.Err != nil {
+		t.Fatalf("timeout retained logs = code %d err=%v stdout=%q stderr=%q", logs.Code, logs.Err, logs.Stdout, logs.Stderr)
+	}
+	var timeoutLogs manifestOutputResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(logs.Stdout)), &timeoutLogs); err != nil {
+		t.Fatalf("decode timeout logs = %q: %v", logs.Stdout, err)
+	}
+	if !manifestOutputContains(timeoutLogs, "timeout-child-output") {
+		t.Fatalf("timeout retained logs = %#v, missing child diagnostic", timeoutLogs)
+	}
+	if stopped := testutil.Run(t, hum, projectRoot, env, "stop", "probe"); stopped.Code != 0 {
+		t.Fatalf("stop timeout probe = code %d stderr=%q", stopped.Code, stopped.Stderr)
+	}
+
+	write("printf early-child-output; exit 7")
+	early := testutil.Run(t, hum, projectRoot, env, "up", "--timeout", "1s")
+	if early.Code != 3 || early.Err == nil {
+		t.Fatalf("early-exit up = code %d err=%v stdout=%q stderr=%q, want exit 3", early.Code, early.Err, early.Stdout, early.Stderr)
+	}
+	if !strings.Contains(early.Stderr, "hum up: probe: exited before readiness; inspect retained logs: hum logs probe") {
+		t.Fatalf("early-exit progress = %q", early.Stderr)
+	}
+	if strings.Contains(early.Stderr, "early-child-output") || !strings.Contains(early.Stdout, "exited_before_ready") {
+		t.Fatalf("early-exit output = stdout %q stderr %q", early.Stdout, early.Stderr)
+	}
+	earlyLogs := testutil.Run(t, hum, projectRoot, env, "logs", "probe", "--json", "--stream", "stdout")
+	if earlyLogs.Code != 0 || earlyLogs.Err != nil {
+		t.Fatalf("early retained logs = code %d err=%v stdout=%q stderr=%q", earlyLogs.Code, earlyLogs.Err, earlyLogs.Stdout, earlyLogs.Stderr)
+	}
+	var earlyOutput manifestOutputResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(earlyLogs.Stdout)), &earlyOutput); err != nil {
+		t.Fatalf("decode early logs = %q: %v", earlyLogs.Stdout, err)
+	}
+	if !manifestOutputContains(earlyOutput, "early-child-output") {
+		t.Fatalf("early retained logs = %#v, missing child diagnostic", earlyOutput)
+	}
+}
+
+func manifestIntegrationWaitForText(t *testing.T, process *testutil.Process, text string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(process.Stderr(), text) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %q: stdout=%q stderr=%q", text, process.Stdout(), process.Stderr())
+}
+
+func manifestOutputContains(result manifestOutputResponse, text string) bool {
+	for _, entry := range result.Entries {
+		if strings.Contains(entry.Text, text) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestManifestWorkflow(t *testing.T) {
 	fixture := testutil.BuildFixture(t)
 	hum := testutil.BuildHum(t)
