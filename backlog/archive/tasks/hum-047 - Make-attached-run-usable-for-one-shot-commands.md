@@ -4,7 +4,7 @@ title: Make attached run usable for one-shot commands
 status: To Do
 assignee: []
 created_date: '2026-09-06 16:15'
-updated_date: '2026-09-06 17:20'
+updated_date: '2026-09-06 19:10'
 labels:
   - cli
 milestone: m-4
@@ -61,3 +61,13 @@ Non-goals: changing detached run, changing the default durable attached mode, ch
 2. Bound initial replay and terminate one-incarnation attachment with exact exit propagation while preserving default durable following.
 3. Cover fast exits, signals, replay, conflicts, help, docs, and unchanged default behavior.
 <!-- SECTION:PLAN:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: maintainer
+created: 2026-09-06 19:10
+---
+Product-boundary review: archive this active task. Its bounded replay need is consolidated into HUM-055 (`hum attach --tail N`). Its one-incarnation exit behavior remains preserved as deferred DRAFT-002 and should be promoted only with evidence of a development-session use case that direct shell, Task, or Just execution cannot satisfy.
+---
+<!-- COMMENTS:END -->
