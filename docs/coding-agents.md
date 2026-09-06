@@ -82,7 +82,7 @@ terminal followers. `remove` is different from `stop`: it discards retained
 runtime state and output but never edits `hum.yaml`. `down` preserves sessions;
 a later `up` starts resolved definitions only, leaving ad hoc sessions stopped.
 
-See [the MCP design](design.md#mcp-stdio-adapter) for detailed behavior and
+See [the MCP design](design.md#mcp-adapter) for detailed behavior and
 failure semantics.
 
 ## Deterministic environments
