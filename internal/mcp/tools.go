@@ -1288,6 +1288,3 @@ func (s *Server) stop(ctx context.Context, resolution Resolution, name string) (
 	}
 	return map[string]string{"name": name, "state": "stopped"}, nil
 }
-
-// DefaultTimeout exposes the MCP wait/readiness default for CLI adapters and tests.
-func DefaultTimeout() time.Duration { return time.Duration(defaultTimeoutMS) * time.Millisecond }

@@ -34,9 +34,6 @@ func DiscoverProjectRoot(cwd string) (string, error) {
 	}
 }
 
-// ProjectRoot is a concise alias for DiscoverProjectRoot.
-func ProjectRoot(cwd string) (string, error) { return DiscoverProjectRoot(cwd) }
-
 func absoluteClean(path string) (string, error) {
 	if path == "" {
 		var err error

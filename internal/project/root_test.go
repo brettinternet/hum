@@ -99,12 +99,5 @@ func TestDiscoverProjectRoot(t *testing.T) {
 		if got != cwd {
 			t.Fatalf("root = %q, want %q", got, cwd)
 		}
-		alias, err := ProjectRoot(cwd)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if alias != got {
-			t.Fatalf("ProjectRoot = %q, DiscoverProjectRoot = %q", alias, got)
-		}
 	})
 }

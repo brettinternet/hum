@@ -35,10 +35,8 @@ const (
 type RestartPolicy string
 
 const (
-	RestartNever           RestartPolicy = "never"
-	RestartOnFailure       RestartPolicy = "on-failure"
-	RestartPolicyNever                   = RestartNever
-	RestartPolicyOnFailure               = RestartOnFailure
+	RestartNever     RestartPolicy = "never"
+	RestartOnFailure RestartPolicy = "on-failure"
 )
 
 func validRestartPolicy(policy RestartPolicy) bool {

@@ -31,9 +31,6 @@ type RestartPolicy string
 const (
 	RestartNever     RestartPolicy = "never"
 	RestartOnFailure RestartPolicy = "on-failure"
-	// Descriptive aliases used by callers that prefer the policy-prefixed name.
-	RestartPolicyNever     = RestartNever
-	RestartPolicyOnFailure = RestartOnFailure
 )
 
 var (
