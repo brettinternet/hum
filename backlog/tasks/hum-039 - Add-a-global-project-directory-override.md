@@ -1,10 +1,10 @@
 ---
 id: HUM-039
 title: Add a global --project/-C directory override
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-06 16:15'
-updated_date: '2026-09-06 17:43'
+updated_date: '2026-09-06 18:45'
 labels:
   - cli
 milestone: m-4
@@ -47,21 +47,21 @@ Non-goals: multi-project mutation, project registries, changing MCP project_root
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/cli -run '^TestProjectDirFlag$' -count=1 -v` exits 0 and prints PASS, proving absolute and relative `--project`/`-C` values select the intended root from an unrelated invocation directory for init, run, start, up, down, list (including `--all` declaration merging), status, single and aggregate logs, wait, input, restart, stop, and remove; ad-hoc run records exact DIR as child cwd while manifest cwd remains definition-derived.
-- [ ] #2 `go test ./internal/cli -run '^TestProjectDirFlagParsing$' -count=1 -v` exits 0 and prints PASS, proving the long and short forms before and after the subcommand plus run pre-NAME and post-NAME placement; root and project-command help show `--project, -C`; empty, missing, nonexistent, and file values fail before daemon contact with actionable errors; serve, shutdown, mcp, and skill reject the option as inapplicable; existing `-d` daemon/detach behavior is unchanged.
-- [ ] #3 `go test ./internal/cli -run '^TestProjectDirGuidance$' -count=1 -v` exits 0 and prints PASS, proving human guidance and stable next-command fields retain a shell-safe canonical `--project` selector for a directory containing spaces, while output without an override remains byte-for-byte unchanged.
-- [ ] #4 `go test ./internal/cli -run '^(TestProjectDirDocs|TestFlagAliases)$' -count=1 -v` exits 0 and prints PASS, proving README.md and docs/design.md document the operate-from-anywhere example, project-root/cwd semantics, `-C` alias, and unchanged `-d` aliases.
-- [ ] #5 `task ci` exits 0.
+- [x] #1 `go test ./internal/cli -run '^TestProjectDirFlag$' -count=1 -v` exits 0 and prints PASS, proving absolute and relative `--project`/`-C` values select the intended root from an unrelated invocation directory for init, run, start, up, down, list (including `--all` declaration merging), status, single and aggregate logs, wait, input, restart, stop, and remove; ad-hoc run records exact DIR as child cwd while manifest cwd remains definition-derived.
+- [x] #2 `go test ./internal/cli -run '^TestProjectDirFlagParsing$' -count=1 -v` exits 0 and prints PASS, proving the long and short forms before and after the subcommand plus run pre-NAME and post-NAME placement; root and project-command help show `--project, -C`; empty, missing, nonexistent, and file values fail before daemon contact with actionable errors; serve, shutdown, mcp, and skill reject the option as inapplicable; existing `-d` daemon/detach behavior is unchanged.
+- [x] #3 `go test ./internal/cli -run '^TestProjectDirGuidance$' -count=1 -v` exits 0 and prints PASS, proving human guidance and stable next-command fields retain a shell-safe canonical `--project` selector for a directory containing spaces, while output without an override remains byte-for-byte unchanged.
+- [x] #4 `go test ./internal/cli -run '^(TestProjectDirDocs|TestFlagAliases)$' -count=1 -v` exits 0 and prints PASS, proving README.md and docs/design.md document the operate-from-anywhere example, project-root/cwd semantics, `-C` alias, and unchanged `-d` aliases.
+- [x] #5 `task ci` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -71,3 +71,25 @@ Non-goals: multi-project mutation, project registries, changing MCP project_root
 2. Extend the special `run` argument parser and override-aware guidance without changing command payload parsing after `--`.
 3. Add focused semantic, parsing, validation, guidance, help, and documentation coverage; run the focused tests and final gate.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed for implementation in worktree hum-039-project-dir.
+
+AC#1: `go test ./internal/cli -run '^TestProjectDirFlag$' -count=1 -v` — PASS (independent verifier).
+AC#2: `go test ./internal/cli -run '^TestProjectDirFlagParsing$' -count=1 -v` — PASS (independent verifier).
+AC#3: `go test ./internal/cli -run '^TestProjectDirGuidance$' -count=1 -v` — PASS (independent verifier).
+AC#4: `go test ./internal/cli -run '^(TestProjectDirDocs|TestFlagAliases)$' -count=1 -v` — PASS (independent verifier).
+AC#5: `task ci` — PASS on final rebased commit 2898f26.
+
+Verification: independent verifier dbc07217-59cd-419b-ac15-9edbc73bc233 returned PASS for all five criteria; all 12 changed paths are declared, with no deleted/skipped/weakened tests or protected gate changes.
+Review: parent diff review found no actionable defects; automated reviewer could not start because its local extensions failed to load.
+Integration: committed as 2898f26 (`feat(cli): add project directory override`) and fast-forwarded to main.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added the global --project/-C directory override across project-scoped CLI commands, including validated directory selection, run argument parsing, override-aware guidance, help, documentation, and focused coverage. Rebased onto current main, passed independent verification and final task ci, and merged as 2898f26.
+<!-- SECTION:FINAL_SUMMARY:END -->
