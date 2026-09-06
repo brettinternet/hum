@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -640,6 +641,7 @@ type readinessTracker struct {
 
 	mu       sync.Mutex
 	ready    bool
+	done     atomic.Bool // set once ready so later appends skip the strip and match
 	cursor   output.Cursor
 	at       time.Time
 	once     sync.Once
@@ -658,7 +660,7 @@ func newReadinessTracker(store *output.Store, pattern *regexp.Regexp, after outp
 }
 
 func (t *readinessTracker) observe(entry output.Entry) {
-	if t == nil || (t.hasAfter && entry.Cursor <= t.after) {
+	if t == nil || t.done.Load() || (t.hasAfter && entry.Cursor <= t.after) {
 		return
 	}
 	text := entry.Text
@@ -673,6 +675,7 @@ func (t *readinessTracker) observe(entry output.Entry) {
 		t.ready = true
 		t.cursor = entry.Cursor
 		t.at = entry.Time
+		t.done.Store(true)
 	}
 	t.mu.Unlock()
 }
@@ -958,7 +961,10 @@ func (s *Supervisor) trackStore(key string, store *output.Store) {
 	store.SetIdleCallback(func() {
 		s.mu.Lock()
 		rec := s.records[key]
-		if rec != nil && rec.store == store && rec.terminal && rec.incarnation == 0 {
+		// A follower may attach between the last subscriber leaving and this
+		// callback acquiring s.mu; re-check under the lock so a live pre-launch
+		// follower keeps reserving its session.
+		if rec != nil && rec.store == store && rec.terminal && rec.incarnation == 0 && store.SubscriberCount() == 0 {
 			delete(s.records, key)
 		} else {
 			s.evictLocked()
@@ -1776,7 +1782,7 @@ func (s *Supervisor) evictLocked() {
 				index = i
 				break
 			}
-			if rec.restarting || rec.relaunchPending || rec.automaticStarting || rec.input != nil || rec.store != nil && rec.store.SubscriberCount() != 0 {
+			if rec.restarting || rec.relaunchPending || rec.relaunchExhausted || rec.automaticStarting || rec.input != nil || rec.store != nil && rec.store.SubscriberCount() != 0 {
 				continue
 			}
 			if _, reserved := s.starting[rec.key]; reserved {
@@ -2002,9 +2008,6 @@ func (s *Supervisor) PrepareTTY(req StartRequest) error {
 	return nil
 }
 
-// EnsureTTY is a descriptive alias for PrepareTTY.
-func (s *Supervisor) EnsureTTY(req StartRequest) error { return s.PrepareTTY(req) }
-
 // AcquireInput claims the one input owner for an existing known TTY session.
 // The variadic arguments accept cwd, name, and an optional bool indicating a
 // known TTY definition, followed by an optional TTYSize.
@@ -2092,9 +2095,6 @@ func (s *Supervisor) acquireInput(rootHint, cwd, name string, requestedTTY, ttyS
 	}
 	return lease, nil
 }
-
-// AttachInput is the protocol-facing spelling of AcquireInput.
-func (s *Supervisor) AttachInput(args ...any) (*InputLease, error) { return s.AcquireInput(args...) }
 
 func parseInputAcquireArgs(args ...any) (cwd, name string, requestedTTY, ttySet bool, size *TTYSize, err error) {
 	for _, arg := range args {

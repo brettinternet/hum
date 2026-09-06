@@ -362,7 +362,7 @@ definition. Readiness and client timeout do not trigger relaunch.
 process, CLI JSON, and MCP snapshots. During backoff, CLI and MCP `up` preserve
 that state and report `recovery_pending` without consuming an attempt; after the
 budget is exhausted they report `recovery_exhausted` without reviving the loop.
-Pending records resist completed-record eviction. Followers stay attached through
+Pending and exhausted records resist completed-record eviction. Followers stay attached through
 the exit/wait boundary, backoff, and exhaustion; bounded logs retain child
 failures and relaunch/gave-up boundaries. Recovery snapshots retain the
 response-safe readiness matcher without exposing environment so drift can be

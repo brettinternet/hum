@@ -2724,3 +2724,25 @@ func TestWaitPreLaunchStartsAtNextIncarnation(t *testing.T) {
 		t.Fatalf("pre-launch wait = %#v, want matched", got)
 	}
 }
+
+func TestPrelaunchFollowerSurvivesIdleRace(t *testing.T) {
+	s := testSupervisor(t, Options{})
+	root := makeProject(t, false)
+	// The idle callback runs after the store lock is released, so a follower
+	// that attaches in that window must still find its reserved session.
+	for i := 0; i < 2000; i++ {
+		first, err := s.Subscribe(root, "never", output.ReadOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		first.Close()
+		second, err := s.Subscribe(root, "never", output.ReadOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Get(root, "never"); err != nil {
+			t.Fatalf("iteration %d: attached pre-launch follower lost its session: %v", i, err)
+		}
+		second.Close()
+	}
+}

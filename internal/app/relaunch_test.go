@@ -668,3 +668,66 @@ func TestRelaunchOnFailure(t *testing.T) {
 }
 
 func nowFunc(now time.Time) func() time.Time { return func() time.Time { return now } }
+
+func TestExhaustedRecordResistsEviction(t *testing.T) {
+	launches := make([]relaunchTestLaunch, 7)
+	launches[0].code = 1
+	for index := 1; index <= maxAutomaticRelaunches; index++ {
+		launches[index].spawnErr = errors.New("spawn failed")
+	}
+	harness := newRelaunchTestHarness(t, launches, 1)
+	s := harness.s
+	if _, err := s.Start(StartRequest{Name: "exhausted", Source: "manifest", Root: harness.root, Cwd: harness.root, Argv: []string{"fake"}, Restart: RestartOnFailure}); err != nil {
+		t.Fatal(err)
+	}
+	harness.child(0).release()
+	for attempt := 1; attempt <= maxAutomaticRelaunches; attempt++ {
+		delay := relaunchDelay(attempt)
+		harness.timers.wait(delay)
+		if !harness.timers.fire(delay) {
+			t.Fatalf("missing relaunch timer for attempt %d", attempt)
+		}
+		if attempt < maxAutomaticRelaunches {
+			waitForRelaunch(t, s, harness.root, "exhausted", func(process Process) bool {
+				return process.NextLaunchAt != nil && process.Relaunches == attempt
+			})
+		}
+	}
+	waitForRelaunch(t, s, harness.root, "exhausted", func(process Process) bool {
+		return process.State == StateExited && process.NextLaunchAt == nil && process.Relaunches == maxAutomaticRelaunches
+	})
+
+	// Churn one more completed record past the limit of one.
+	if _, err := s.Start(StartRequest{Name: "filler", Root: harness.root, Cwd: harness.root, Argv: []string{"fake"}}); err != nil {
+		t.Fatal(err)
+	}
+	harness.child(1).release()
+	// With a completed limit of one, the filler itself is the only evictable
+	// record and disappears as soon as it completes.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if process, err := s.Get(harness.root, "filler"); err != nil || process.State == StateExited {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	process, err := s.Get(harness.root, "exhausted")
+	if err != nil {
+		t.Fatalf("exhausted record was evicted: %v", err)
+	}
+	if process.Relaunches != maxAutomaticRelaunches || process.NextLaunchAt != nil {
+		t.Fatalf("exhausted snapshot = %#v, want retained exhaustion state", process)
+	}
+	items, err := s.List(harness.root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range items {
+		found = found || item.Name == "exhausted"
+	}
+	if !found {
+		t.Fatalf("exhausted record missing from active list: %#v", items)
+	}
+}
