@@ -2,10 +2,9 @@
 id: HUM-026
 title: Order up launches by declared readiness dependencies
 status: Done
-assignee:
-  - '@brett'
+assignee: []
 created_date: '2026-09-05 15:14'
-updated_date: '2026-09-06 05:45'
+updated_date: '2026-09-06 05:46'
 labels:
   - config
   - cli
