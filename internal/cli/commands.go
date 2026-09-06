@@ -68,7 +68,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		{
 			Name:         "run",
 			Usage:        "start a named process (attached by default)",
-			ArgsUsage:    "NAME -- COMMAND [ARGS...]",
+			ArgsUsage:    "NAME [-- COMMAND [ARGS...]]",
 			StopOnNthArg: &runStopOnNthArg,
 			Description: "hum run automatically starts a detached daemon when none is available. " +
 				"Without --detach, it follows the named session across process exits and launches until Ctrl+C detaches the observer. " +
@@ -356,24 +356,35 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 		return args[0], argv, nil
 	}
 	if separator < 0 {
-		if cmd.Bool("tty") || cmd.IsSet("tty") {
+		// Flag parsing stops at NAME, so options written after it arrive here as
+		// positional arguments: hum run NAME --detach is the documented grammar.
+		if err := applyRunOptions(cmd, args[1:], false); err != nil {
+			return "", nil, err
+		}
+		if cmd.Bool("tty") {
 			return "", nil, errors.New("--tty requires an ad-hoc command after --")
 		}
-		for _, arg := range args[1:] {
-			if arg == "--tty" || arg == "--tty=true" {
-				return "", nil, errors.New("--tty requires an ad-hoc command after --")
-			}
-		}
-		if len(args) == 1 {
-			return args[0], nil, nil
-		}
-		return "", nil, errors.New("run requires a command after --")
+		return args[0], nil, nil
 	}
 	if separator < 2 {
 		return "", nil, errors.New("run accepts exactly one process name before --")
 	}
-	for i := 1; i < separator; i++ {
-		flag := args[i]
+	if err := applyRunOptions(cmd, args[1:separator], true); err != nil {
+		return "", nil, err
+	}
+	argv := append([]string(nil), args[separator+1:]...)
+	if len(argv) == 0 || argv[0] == "" {
+		return "", nil, errors.New("run requires a non-empty command after --")
+	}
+	return args[0], argv, nil
+}
+
+// applyRunOptions applies run and global options that appear after NAME,
+// where urfave/cli no longer parses them. Without a separator, a stray word is
+// most likely a command missing its --.
+func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool) error {
+	for i := 0; i < len(options); i++ {
+		flag := options[i]
 		flagName, value, hasValue := strings.Cut(flag, "=")
 		name := ""
 		switch flagName {
@@ -389,31 +400,30 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 		switch name {
 		case "detach", "json", "tty":
 			if hasValue {
-				return "", nil, fmt.Errorf("--%s does not take a value", name)
+				return fmt.Errorf("--%s does not take a value", name)
 			}
 			if err := cmd.Set(name, "true"); err != nil {
-				return "", nil, err
+				return err
 			}
 		case "runtime-dir", "stop-grace", "output-bytes", "completed-records":
 			if !hasValue {
 				i++
-				if i >= separator {
-					return "", nil, fmt.Errorf("--%s requires a value", name)
+				if i >= len(options) {
+					return fmt.Errorf("--%s requires a value", name)
 				}
-				value = args[i]
+				value = options[i]
 			}
 			if err := cmd.Set(name, value); err != nil {
-				return "", nil, err
+				return err
 			}
 		default:
-			return "", nil, fmt.Errorf("unknown run option %q", flag)
+			if !hasSeparator && !strings.HasPrefix(flag, "-") {
+				return fmt.Errorf("run requires -- before the command: hum run NAME [options] -- %s ...", flag)
+			}
+			return fmt.Errorf("unknown run option %q", flag)
 		}
 	}
-	argv := append([]string(nil), args[separator+1:]...)
-	if len(argv) == 0 || argv[0] == "" {
-		return "", nil, errors.New("run requires a non-empty command after --")
-	}
-	return args[0], argv, nil
+	return nil
 }
 
 func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
@@ -683,7 +693,16 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	defer client.Close()
 	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd})
 	if err != nil {
-		return err
+		if !isNotFound(err) {
+			return err
+		}
+		definition, declared := manifest.byName[name]
+		if !declared {
+			return fmt.Errorf("%w. Run hum list --all to see known processes.", err)
+		}
+		// A declared process that has never launched has no daemon record yet;
+		// report it stopped, exactly as list does, instead of a raw lookup error.
+		process = manifestProcess(definition, manifest.root)
 	}
 	if cmd.Bool("json") {
 		return encodeJSON(writer, statusJSONFor(process))
