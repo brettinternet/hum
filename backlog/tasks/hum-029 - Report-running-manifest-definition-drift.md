@@ -1,10 +1,11 @@
 ---
 id: HUM-029
 title: Report manifest/runtime drift during up
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-06 04:57'
-updated_date: '2026-09-06 05:06'
+updated_date: '2026-09-06 15:30'
 labels:
   - cli
   - mcp
@@ -55,29 +56,54 @@ Non-goals: automatically restarting, stopping, removing, or otherwise mutating a
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/cli -run "^TestUpReportsManifestRuntimeDrift$" -count=1 -v` exits 0 and prints `--- PASS: TestUpReportsManifestRuntimeDrift`. It proves matching definitions remain `already_running`; each supported field change returns exit 1 with `definition_drift`, sorted `changed_fields`, and restart guidance; and CLI start uses the same classification.
-- [ ] #2 AC2 — `go test ./internal/mcp -run "^TestUpReportsManifestRuntimeDrift$" -count=1 -v` exits 0 and prints `--- PASS: TestUpReportsManifestRuntimeDrift`. It proves equivalent MCP up/start outcomes and fields for running, pending-recovery, and exhausted records, including readiness-match drift retained after exit.
-- [ ] #3 AC3 — `go test ./internal/cli ./internal/mcp -run "^TestUpRejectsDriftedReadinessGate$" -count=1 -v` exits 0 and prints a named PASS line for both packages. It proves readiness from an old incarnation cannot satisfy the current declaration or launch its dependent.
-- [ ] #4 AC4 — `go test ./internal/cli ./internal/mcp -run "^TestUpReportsRemovedManifestSessions$" -count=1 -v` exits 0 and prints a named PASS line for both packages. It proves running, pending, and exhausted removed manifest records are lexical and actionable, while current declarations, ordinary stopped records, ad-hoc records, and discovery records are excluded and aggregate exit status is unchanged.
-- [ ] #5 AC5 — `go test ./integration -run "^TestUpReportsManifestRuntimeDrift$" -count=1 -v` exits 0 and prints `--- PASS: TestUpReportsManifestRuntimeDrift`. Against the built binary and real daemon, it edits and removes declarations, proves stable human/NDJSON results and stale-gate rejection, and proves no existing process is mutated.
-- [ ] #6 AC6 — `go test ./internal/cli ./internal/skill -run "^TestUpDriftDocs$" -count=1 -v` exits 0 and prints a named PASS line for both packages. It proves every declared documentation surface states the outcomes, exit behavior, comparison boundary, and explicit operator actions.
+- [x] #1 AC1 — `go test ./internal/cli -run "^TestUpReportsManifestRuntimeDrift$" -count=1 -v` exits 0 and prints `--- PASS: TestUpReportsManifestRuntimeDrift`. It proves matching definitions remain `already_running`; each supported field change returns exit 1 with `definition_drift`, sorted `changed_fields`, and restart guidance; and CLI start uses the same classification.
+- [x] #2 AC2 — `go test ./internal/mcp -run "^TestUpReportsManifestRuntimeDrift$" -count=1 -v` exits 0 and prints `--- PASS: TestUpReportsManifestRuntimeDrift`. It proves equivalent MCP up/start outcomes and fields for running, pending-recovery, and exhausted records, including readiness-match drift retained after exit.
+- [x] #3 AC3 — `go test ./internal/cli ./internal/mcp -run "^TestUpRejectsDriftedReadinessGate$" -count=1 -v` exits 0 and prints a named PASS line for both packages. It proves readiness from an old incarnation cannot satisfy the current declaration or launch its dependent.
+- [x] #4 AC4 — `go test ./internal/cli ./internal/mcp -run "^TestUpReportsRemovedManifestSessions$" -count=1 -v` exits 0 and prints a named PASS line for both packages. It proves running, pending, and exhausted removed manifest records are lexical and actionable, while current declarations, ordinary stopped records, ad-hoc records, and discovery records are excluded and aggregate exit status is unchanged.
+- [x] #5 AC5 — `go test ./integration -run "^TestUpReportsManifestRuntimeDrift$" -count=1 -v` exits 0 and prints `--- PASS: TestUpReportsManifestRuntimeDrift`. Against the built binary and real daemon, it edits and removes declarations, proves stable human/NDJSON results and stale-gate rejection, and proves no existing process is mutated.
+- [x] #6 AC6 — `go test ./internal/cli ./internal/skill -run "^TestUpDriftDocs$" -count=1 -v` exits 0 and prints a named PASS line for both packages. It proves every declared documentation surface states the outcomes, exit behavior, comparison boundary, and explicit operator actions.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-- [ ] T1 — Retain a response-safe readiness matcher and compare every observable effective definition field.
-- [ ] T2 — Classify changed and removed records consistently in CLI and MCP without mutating runtime state.
-- [ ] T3 — Prevent drifted readiness from satisfying dependency gates and prove behavior against the real daemon.
-- [ ] T4 — Document restart, stop, and remove guidance for humans and coding agents.
+- [x] T1 — Retain a response-safe readiness matcher and compare every observable effective definition field.
+- [x] T2 — Classify changed and removed records consistently in CLI and MCP without mutating runtime state.
+- [x] T3 — Prevent drifted readiness from satisfying dependency gates and prove behavior against the real daemon.
+- [x] T4 — Document restart, stop, and remove guidance for humans and coding agents.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation commit: 4cd24a28df5822cb6489277946efe780bfde57a9 (fix(cli): report manifest runtime drift).
+
+AC#1 evidence — `go test ./internal/cli -run "^TestUpReportsManifestRuntimeDrift$" -count=1 -v` exited 0 and printed PASS for TestUpReportsManifestRuntimeDrift.
+AC#2 evidence — `go test ./internal/mcp -run "^TestUpReportsManifestRuntimeDrift$" -count=1 -v` exited 0 and printed PASS for TestUpReportsManifestRuntimeDrift.
+AC#3 evidence — `go test ./internal/cli ./internal/mcp -run "^TestUpRejectsDriftedReadinessGate$" -count=1 -v` exited 0 and printed named PASS lines for both packages.
+AC#4 evidence — `go test ./internal/cli ./internal/mcp -run "^TestUpReportsRemovedManifestSessions$" -count=1 -v` exited 0 and printed named PASS lines for both packages.
+AC#5 evidence — `go test ./integration -run "^TestUpReportsManifestRuntimeDrift$" -count=1 -v` exited 0 and printed PASS for TestUpReportsManifestRuntimeDrift.
+AC#6 evidence — `go test ./internal/cli ./internal/skill -run "^TestUpDriftDocs$" -count=1 -v` exited 0 and printed named PASS lines for both packages.
+
+Full verification — `task ci` passed on the final commit: vet, staticcheck, all tests, race tests, build, and smoke. `task check:staged` passed formatting and secret scan before commit. Independent verifier reran every AC command and returned PASS for AC1–AC6; it also confirmed no deleted/skipped/weakened tests and no protected gate changes.
+
+Modified-file contract deviation: `internal/cli/discovery_test.go` is required to update discovery expectations for the CLI no-candidate fallback that enables removed-definition reconciliation after deleting hum.yaml. `integration/relaunch_test.go` is required to update the response expectation for the newly retained response-safe readiness object. Both are item-scoped test coverage for required behavior; production changes remain within the declared contract.
+
+Adversarial review found three issues (legacy protocol compatibility, deleted-manifest CLI/MCP parity, and empty readiness matcher serialization); all were fixed before final verification, including a protocol bump to v9 and focused tests.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented manifest/runtime definition drift and removed-definition reporting across CLI and MCP, retained response-safe readiness metadata, rejected stale readiness gates, bumped protocol compatibility, and documented explicit restart/stop/remove actions. Commit 4cd24a2 passed every AC command, task ci, staged checks, adversarial review, and independent verification.
+<!-- SECTION:FINAL_SUMMARY:END -->
