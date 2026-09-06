@@ -2321,9 +2321,8 @@ func (s *Supervisor) writeInput(ctx context.Context, lease *InputLease, cursor o
 		if inputLeaseClosed(lease) {
 			return ErrInputClosed
 		}
-		if inputIncarnationStopped(lease, incarnationDone) {
-			return InputStoppedError{}
-		}
+		// A full write succeeded even if the child consumed it and exited before
+		// the acknowledgement path observed the completed operation.
 		return finish(outcome)
 	case <-ctx.Done():
 		if !operation.legacy {
