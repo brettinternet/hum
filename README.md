@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-`hum` keeps local project processes running between commands, with bounded logs and lifecycle controls.
+`hum` keeps local project processes running between commands, with bounded logs and lifecycle controls. Let your agents see your stdout.
 
 ```sh
 hum run clock -- ./clock.sh
