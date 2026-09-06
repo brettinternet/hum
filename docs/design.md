@@ -120,7 +120,7 @@ exited record and report `recovery_pending` or `recovery_exhausted` without
 sending a start request or waiting for an automatic successor. A pending or
 exhausted declaration makes CLI `hum up` exit 3 because it is not running;
 targeted `hum start NAME` or `hum restart NAME` cancels recovery and launches
-immediately. Successful children remain running after other failures.
+immediately. Successful children remain running after other failures. CLI `start` and `up` use exit 0 for success, 1 for request errors or definition drift, 2 for readiness timeouts, and 3 for an early exit; `up` also uses 3 when recovery leaves a declaration not running. `wait` uses 0 for a match or an unfiltered exit, 1 for a request or usage error, 2 for timeout, and 3 when `--match` sees process exit first.
 `--no-wait` returns after spawn only for dependency-free manifests; when any
 `after` is declared it is rejected before daemon creation/contact. `start
 NAME...` remains explicitly named and concurrent but never adds or waits for

@@ -9,30 +9,40 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"hum/internal/config"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
 
+var configureFrameworkFlagsOnce sync.Once
+
 // NewRootCommand builds the hum command with the supplied build metadata
 // and output writers.
 func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urfavecli.Command {
+	configureFrameworkFlagsOnce.Do(func() {
+		for _, flag := range []urfavecli.Flag{urfavecli.HelpFlag, urfavecli.VersionFlag} {
+			if boolFlag, ok := flag.(*urfavecli.BoolFlag); ok {
+				boolFlag.DefaultText = "false"
+				boolFlag.HideDefault = false
+			}
+		}
+	})
 	root := &urfavecli.Command{
-		Name:  "hum",
-		Usage: "A local development process supervisor",
-		Description: "The ordinary workflow is hum run NAME -- COMMAND [ARGS...]. run automatically starts a detached daemon when needed and stays attached by default; add --detach to return immediately. " +
-			"Manifest projects use hum start NAME and hum up to ensure declared processes are running, waiting for readiness unless --no-wait is set. " +
-			"hum serve runs the daemon in the foreground, while hum serve --daemon runs it detached. " +
-			"Bounded reads and controls do not start an empty daemon: list, status, logs without --follow, wait, input, restart, stop, remove, and shutdown inspect or control existing work. " +
-			"logs --follow and wait ensure a daemon exists so they can observe a future launch. When nothing is running, bounded status, logs, and restart provide launch guidance. " +
-			"Manifest processes may declare `after: [name]` readiness dependencies; hum up launches independent roots concurrently, gates dependents on ready prerequisites, reports lexical skipped results with direct blocked_by names, and rejects --no-wait before daemon contact when after is present. start remains explicitly named, and down remains concurrent. They may also opt into restart: on-failure; it retries crashes at 1s, 2s, 4s, 8s, and 16s, at most five times, while discovered and ad-hoc processes remain never. Spawn failures consume attempts and a 30-second survivor resets the loop; controls cancel pending work. Read retained failing output before editing again. " +
-			"Stopping named processes and shutting down the daemon are separate operations.",
+		Name:      "hum",
+		Usage:     "A local development process supervisor",
+		UsageText: "hum [global options] [command [command options]]",
+		Description: "Manifest projects use hum start NAME; hum run starts a detached daemon and stays attached by default; hum serve --daemon runs detached. " +
+			"Bounded controls, including logs without --follow, do not start an empty daemon; logs --follow and wait start one to observe future launches; stopping processes and daemon shutdown are separate. " +
+			"restart: on-failure retries spawn failures at 1s, 2s, 4s, 8s, and 16s five times; a 30-second survivor resets recovery, so inspect retained failing output.\n\n" +
+			"Examples:\n" +
+			"  hum up",
 		Version:   version + " (built " + buildTime + ")",
 		Writer:    writer,
 		ErrWriter: errWriter,
 		Flags: []urfavecli.Flag{
-			&urfavecli.StringFlag{Name: "project", Aliases: []string{"C"}, Usage: "project directory; ad-hoc run uses it as cwd, manifest process cwd remains relative to the resolved project root"},
+			&urfavecli.StringFlag{Name: "project", Aliases: []string{"C"}, Usage: "project directory; omit for the current directory; ad-hoc run uses it as cwd, manifest cwd stays project-relative"},
 			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon [$HUM_RUNTIME_DIR, then $XDG_RUNTIME_DIR/hum]", DefaultText: "$TMPDIR/hum-UID"},
 			&urfavecli.StringFlag{Name: "stop-grace", Usage: "grace period between SIGTERM and SIGKILL when stopping a process [$HUM_STOP_GRACE]", DefaultText: config.DefaultStopGrace.String()},
 			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained output bytes per process, at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
