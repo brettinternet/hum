@@ -101,6 +101,33 @@ func (s *mcpTestSession) request(t *testing.T, method string, params any) mcpTes
 }
 func (s *mcpTestSession) call(t *testing.T, name, root string, arguments map[string]any) (json.RawMessage, bool) {
 	t.Helper()
+	raw, isErr := s.callStructured(t, name, root, arguments)
+	if isErr {
+		return raw, true
+	}
+	key := ""
+	switch name {
+	case "up", "down":
+		key = "results"
+	case "list":
+		key = "processes"
+	}
+	if key == "" {
+		return raw, false
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode %s structured content: %v", name, err)
+	}
+	value, ok := envelope[key]
+	if !ok {
+		t.Fatalf("%s structured content = %s, missing %q", name, raw, key)
+	}
+	return value, false
+}
+
+func (s *mcpTestSession) callStructured(t *testing.T, name, root string, arguments map[string]any) (json.RawMessage, bool) {
+	t.Helper()
 	if arguments == nil {
 		arguments = map[string]any{}
 	}
@@ -204,8 +231,17 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 	if outputErr || !strings.Contains(string(outputRaw), `"outcome":"matched"`) {
 		t.Fatalf("wait for ad hoc fixture output=%s error=%v", outputRaw, outputErr)
 	}
-	listRaw, isErr := session.call(t, "list", explicit, nil)
-	if isErr || !strings.Contains(string(listRaw), `"source":"ad_hoc"`) {
+	listRaw, isErr := session.callStructured(t, "list", explicit, nil)
+	if isErr {
+		t.Fatalf("list=%s error=%v", listRaw, isErr)
+	}
+	var listEnvelope struct {
+		Processes []json.RawMessage `json:"processes"`
+	}
+	if err := json.Unmarshal(listRaw, &listEnvelope); err != nil {
+		t.Fatalf("decode list envelope %q: %v", listRaw, err)
+	}
+	if len(listEnvelope.Processes) == 0 || !strings.Contains(string(listRaw), `"source":"ad_hoc"`) {
 		t.Fatalf("list=%s error=%v", listRaw, isErr)
 	}
 	adStatusRaw, isErr := session.call(t, "status", explicit, map[string]any{"name": "transient"})
@@ -258,8 +294,17 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 	if isErr || !strings.Contains(string(stopRaw), `"stopped"`) {
 		t.Fatalf("stop=%s error=%v", stopRaw, isErr)
 	}
-	downRaw, isErr := session.call(t, "down", explicit, nil)
-	if isErr || !strings.Contains(string(downRaw), `"name":"api"`) || !strings.Contains(string(downRaw), `"name":"transient"`) || strings.Count(string(downRaw), `"state":"stopped"`) < 2 {
+	downRaw, isErr := session.callStructured(t, "down", explicit, nil)
+	if isErr {
+		t.Fatalf("down=%s error=%v", downRaw, isErr)
+	}
+	var downEnvelope struct {
+		Results []json.RawMessage `json:"results"`
+	}
+	if err := json.Unmarshal(downRaw, &downEnvelope); err != nil {
+		t.Fatalf("decode down envelope %q: %v", downRaw, err)
+	}
+	if len(downEnvelope.Results) < 2 || !strings.Contains(string(downRaw), `"name":"api"`) || !strings.Contains(string(downRaw), `"name":"transient"`) || strings.Count(string(downRaw), `"state":"stopped"`) < 2 {
 		t.Fatalf("down=%s error=%v", downRaw, isErr)
 	}
 

@@ -586,6 +586,17 @@ func rpcIDKey(raw json.RawMessage) string {
 	}
 }
 
+func structuredToolContent(name string, value any) any {
+	switch name {
+	case "up", "down":
+		return map[string]any{"results": value}
+	case "list":
+		return map[string]any{"processes": value}
+	default:
+		return value
+	}
+}
+
 func (s *Server) handleRequest(ctx context.Context, request rpcRequest) (any, *rpcError) {
 	switch request.Method {
 	case "initialize":
@@ -620,7 +631,7 @@ func (s *Server) handleRequest(ctx context.Context, request rpcRequest) (any, *r
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: "failed to encode tool result"}
 		}
-		return callToolResult{Content: []textContent{{Type: "text", Text: string(text)}}, StructuredContent: value}, nil
+		return callToolResult{Content: []textContent{{Type: "text", Text: string(text)}}, StructuredContent: structuredToolContent(params.Name, value)}, nil
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found"}
 	}
