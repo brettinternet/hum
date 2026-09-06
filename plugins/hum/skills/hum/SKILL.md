@@ -17,10 +17,8 @@ Use the bundled hum MCP tools when available. Pass the absolute current project 
 - Use `wait` for a bounded later condition, including before another client starts the name.
 - For intermediate work, use `stop`, run the work, then `start`; the durable session keeps terminal observers attached.
 - After process-definition changes, use `restart`; only restart adopts changed definitions. `up` and `start` report active or recovery-capable definition drift instead of silently replacing them; CLI `up` exits 1 for drift, and only restart applies a changed definition.
-- A manifest process may opt into `restart: on-failure`; the default is `never`.
+- A manifest process may opt into `restart: on-failure`; the default is `never`. Unexpected exits retry after 1s, 2s, 4s, 8s, and 16s, at most five times. Inspect retained `logs` before editing a crashing process again.
 - If an `after` prerequisite exits before readiness, `up` returns the failure and returns dependents as `skipped` with sorted direct `blocked_by` names rather than following its automatic successor. A skip may include read-only `existing_state` and process snapshot data, but it still means no launch occurred and still blocks dependents. Read the retained failure, then rerun `up` after the prerequisite is ready; skips keep aggregate exit precedence unchanged (1 request error, 3 early exit, 2 timeout, 0 success).
-  Unexpected exits retry after 1s, 2s, 4s, 8s, and 16s, at most five times.
-  Inspect retained `logs` before editing a crashing process again.
 - Use `remove` only to discard the runtime session, retained output, and launch state; it never edits `hum.yaml`.
 - Use `down` only when the developer asks you to stop everything in the project; a later `up` restarts only resolved definitions.
 - If `up` reports a manifest-sourced running, pending-recovery, or exhausted record as `removed_definition`, explicitly use `stop NAME` or `remove NAME` (or the CLI equivalents `hum stop NAME` and `hum remove NAME`); these lexical warnings do not change aggregate status and exclude ad-hoc/discovered sessions; removed records require an explicit stop or remove.

@@ -18,11 +18,8 @@ Use MCP as the primary integration. Use this skill only for shell-only fallback 
 - Never use unbounded `hum logs <name> --follow`; it is for interactive terminals.
 - For intermediate work, use `hum stop <name>`, run the work, then `hum start <name>`; the durable session keeps observers attached.
 - After process-definition changes, use `hum restart <name>`. `hum up` and `hum start <name>` report active or recovery-capable definition drift instead of silently adopting edits; CLI `up` exits 1 and only restart applies a changed definition.
-- A manifest process may opt into `restart: on-failure`; the default is `never`.
+- A manifest process may opt into `restart: on-failure`; the default is `never`. It retries unexpected non-zero or signal exits after 1s, 2s, 4s, 8s, and 16s, for at most five automatic attempts. Read `hum status NAME` and the retained `hum logs NAME` output before editing a failing/crashing process again; recovery does not replace diagnosis.
 - If an `after` prerequisite exits before readiness, `up` reports the prerequisite failure and returns dependents as `skipped` with sorted direct `blocked_by` names; it does not follow an automatic successor. A skip may include read-only `existing_state` and process snapshot data, but it still means no launch occurred and still blocks dependents. Read the failure, then rerun `hum up` after the prerequisite is ready. Skips do not change aggregate exit precedence (1 request error, 3 early exit, 2 timeout, 0 success).
-  It retries unexpected non-zero or signal exits after 1s, 2s, 4s, 8s, and 16s, for at most five automatic attempts. Read `hum status NAME` and the retained
-  `hum logs NAME` output before editing a failing/crashing process again; recovery does
-  not replace diagnosis.
 - Use `hum remove <name>` only to discard the runtime session, retained output, and launch state; it never edits `hum.yaml`.
 - Use `hum down` to stop everything in the current project; a later `hum up` restarts only resolved definitions.
 - If `hum up` reports a manifest-sourced running, pending-recovery, or exhausted record as `removed_definition`, explicitly use `hum stop <name>` or `hum remove <name>`. Removed warnings are lexical, do not change aggregate status, and exclude ad-hoc and discovered sessions; removed records require an explicit stop or remove.
