@@ -83,6 +83,19 @@ func (f *fakeClient) Get(_ context.Context, req protocol.GetRequest) (protocol.P
 	if !ok {
 		return protocol.Process{}, protocol.NewWireError(protocol.ErrorNotFound, "not found", nil)
 	}
+	if f.waitResult.Outcome == protocol.WaitExited && f.waited[req.Name] {
+		// Mirror a daemon that has already recorded the child's exit by the
+		// time Wait reports it, so tests can prove the snapshot returned to
+		// the caller is fresh rather than the stale pre-wait record.
+		p.State = "exited"
+		p.Readiness = nil
+		p.PID = 0
+		if f.waitResult.Exit != nil {
+			p.ExitCode = f.waitResult.Exit.Code
+		}
+		f.processes[req.Name] = p
+		return p, nil
+	}
 	if p.Readiness != nil && !f.keepStarting && (f.readyBeforeWait || f.waited[req.Name]) {
 		p.Readiness = &protocol.Readiness{State: protocol.ReadinessReady, Cursor: p.NextCursor, Match: p.Readiness.Match}
 	}
@@ -210,6 +223,7 @@ func TestToolSchemas(t *testing.T) {
 		if d.OutputSchema == nil {
 			t.Errorf("%s lacks output schema", d.Name)
 		}
+		assertSchemaPropertiesDescribed(t, d.Name, d.InputSchema)
 	}
 	want := []string{"start", "up", "down", "list", "status", "logs", "wait", "input", "restart", "stop", "remove"}
 	if !reflect.DeepEqual(names, want) {
@@ -281,6 +295,35 @@ func TestToolSchemas(t *testing.T) {
 		t.Fatalf("stdio output=%s", out.String())
 	}
 }
+
+// assertSchemaPropertiesDescribed fails if any property in a tool's input
+// schema, including properties nested under oneOf branches, lacks a
+// non-empty description. An agent choosing arguments only ever sees this
+// schema, so every property needs its own explanation.
+func assertSchemaPropertiesDescribed(t *testing.T, toolName string, schema map[string]any) {
+	t.Helper()
+	if props, ok := schema["properties"].(map[string]any); ok {
+		for name, raw := range props {
+			property, ok := raw.(map[string]any)
+			if !ok {
+				t.Errorf("%s.%s is not an object schema: %#v", toolName, name, raw)
+				continue
+			}
+			description, _ := property["description"].(string)
+			if description == "" {
+				t.Errorf("%s.%s input schema property lacks a description", toolName, name)
+			}
+		}
+	}
+	if branches, ok := schema["oneOf"].([]any); ok {
+		for _, branch := range branches {
+			if branchSchema, ok := branch.(map[string]any); ok {
+				assertSchemaPropertiesDescribed(t, toolName, branchSchema)
+			}
+		}
+	}
+}
+
 func contains(values []string, want string) bool {
 	for _, v := range values {
 		if v == want {
@@ -683,8 +726,9 @@ func TestStartUp(t *testing.T) {
 	exitedClient := &fakeClient{waitResult: protocol.NewWaitResponse(protocol.WaitExited, 9, &protocol.Exit{Code: 3})}
 	exitedServer, exitedRoot, _ := newTestServer(t, []Definition{{Name: "short", Source: "hum.yaml", Argv: []string{"short"}, Cwd: "/tmp", Ready: ready}}, exitedClient)
 	exitedValue, err := exitedServer.callTool(context.Background(), "start", args(exitedRoot, "name", "short"))
-	if err != nil || exitedValue.(launchResult).Outcome != "exited_before_ready" {
-		t.Fatalf("exited start = %#v, %v", exitedValue, err)
+	exitedResult, _ := exitedValue.(launchResult)
+	if err != nil || exitedResult.Outcome != "exited_before_ready" || exitedResult.Process == nil || exitedResult.Process.State != "exited" || exitedResult.Process.ExitCode != 3 {
+		t.Fatalf("exited start = %#v, %v, want fresh state=exited exit_code=3", exitedValue, err)
 	}
 }
 
@@ -890,6 +934,12 @@ func TestObservationTools(t *testing.T) {
 	}
 	if client.outputs[0].Tail != 2 || client.outputs[0].MaxEntries != 3 {
 		t.Fatalf("output req=%#v", client.outputs[0])
+	}
+	if _, err = s.callTool(context.Background(), "logs", args(root, "name", "raw", "tail", 200)); err != nil {
+		t.Fatal(err)
+	}
+	if got := client.outputs[len(client.outputs)-1]; got.Tail != 200 || got.MaxEntries != 200 {
+		t.Fatalf("tail-only output req = %#v, want max_entries defaulted to tail", got)
 	}
 	if _, err = s.callTool(context.Background(), "wait", args(root, "name", "raw")); err != nil {
 		t.Fatal(err)
