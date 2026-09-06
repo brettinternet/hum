@@ -408,6 +408,18 @@ tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `input`, `restar
 payload, uses the same bounded one-shot TTY semantics as the CLI, and returns
 `name`, decoded `bytes`, and `launch_cursor`.
 
+Requests with IDs run concurrently up to 64 in-flight requests. The mutex-
+protected request registry rejects a 65th request with JSON-RPC code `-32001`
+without starting it, and rejects a duplicate in-flight ID with `-32600`.
+Notifications and incoming responses consume no request slots. A
+`notifications/cancelled` notification cancels only its matching in-flight ID;
+that request receives code `-32800`, while an unknown cancellation ID is a
+no-op. Responses are serialized by the Serve-owned closeable response transport.
+On stdin EOF or parent cancellation, all request contexts are cancelled; Serve
+waits at most two seconds for handlers, closes the response transport to unblock
+writes, joins the writer, and returns without leaving handler or writer
+goroutines behind.
+
 The tools share CLI definition, readiness, cursor, collision, and aggregate
 semantics. `up` applies the same client-side `after` DAG scheduler and lexical
 results as the CLI; independent roots launch concurrently, dependents wait for

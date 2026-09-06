@@ -20,6 +20,17 @@ installation is unavailable.
 directly at the `hum` executable. Use an absolute path; do not wrap the command
 in `sh -c` or include a project path in the registration.
 
+MCP requests with IDs run concurrently up to 64 in flight. A 65th request is
+rejected with `-32001` without starting, and a duplicate in-flight ID is
+rejected with `-32600`; notifications and responses consume no slots.
+`notifications/cancelled` cancels exactly its matching request and returns
+`-32800`, while an unknown cancellation ID does nothing. Responses remain
+serialized through the Serve-owned closeable response transport. On stdin EOF or
+parent cancellation, request contexts are cancelled, handlers are given at most
+two seconds to finish, the response transport is closed to unblock writes, and
+the writer is joined before `hum mcp` returns; no handler or writer goroutines
+are left behind.
+
 ## Register the MCP server manually
 
 Claude Code:
