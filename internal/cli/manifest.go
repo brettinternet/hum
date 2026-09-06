@@ -6,14 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"hum/internal/app"
 	"hum/internal/daemon"
+	"hum/internal/orchestrate"
+	"hum/internal/output"
+	processpkg "hum/internal/process"
 	"hum/internal/project"
 	"hum/internal/protocol"
 
@@ -96,10 +97,6 @@ func effectiveAppRestart(policy app.RestartPolicy) app.RestartPolicy {
 
 func isManifestSource(source string) bool {
 	return source == "manifest" || source == "hum.yaml" || strings.HasPrefix(source, "manifest:") || strings.HasPrefix(source, "hum.yaml:")
-}
-
-func sameManifestSource(left, right string) bool {
-	return left == right || isManifestSource(left) && isManifestSource(right)
 }
 
 func effectiveProcessRestart(process app.Process) app.RestartPolicy {
@@ -216,17 +213,11 @@ func newManifestLaunchResult(definition project.Definition, outcome string) mani
 }
 
 func manifestLaunchSkipped(ctx context.Context, client *daemon.Client, root string, definition project.Definition, blockedBy []string) manifestLaunchResult {
-	result := newManifestLaunchResult(definition, "skipped")
-	if current, err := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: root}); err == nil {
-		result = manifestLaunchResultFor(definition, current, "skipped")
-		if current.State == app.StateRunning {
-			result.ExistingState = "running"
-		} else {
-			result.ExistingState = "exited"
-		}
-	}
-	result.BlockedBy = append([]string(nil), blockedBy...)
-	return result
+	shared := orchestrate.SkippedResult(ctx, root, cliOrchestrateDefinition(definition), blockedBy, func(ctx context.Context, name, lookupRoot string) (orchestrate.Process, error) {
+		current, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: lookupRoot})
+		return cliOrchestrateProcess(current), err
+	})
+	return cliManifestLaunchResult(definition, shared)
 }
 
 func manifestLaunchResultFor(definition project.Definition, process app.Process, outcome string) manifestLaunchResult {
@@ -277,65 +268,190 @@ func manifestLaunchError(definition project.Definition, err error) manifestLaunc
 	return result
 }
 
-func definitionMatchesProcess(definition project.Definition, process app.Process) bool {
-	return sameManifestSource(process.Source, definition.Source)
-}
-
-func canonicalManifestCwd(root, cwd string) string {
-	if cwd == "" {
-		cwd = root
+func cliOrchestrateDefinition(definition project.Definition) orchestrate.Definition {
+	shared := orchestrate.Definition{
+		Name: definition.Name, Source: definition.Source, Argv: append([]string(nil), definition.Argv...),
+		Cwd: definition.Cwd, After: append([]string(nil), definition.After...), TTY: definition.TTY,
+		Restart: restartPolicy(definition),
 	}
-	if !filepath.IsAbs(cwd) {
-		cwd = filepath.Join(root, cwd)
-	}
-	absolute, err := filepath.Abs(cwd)
-	if err != nil {
-		absolute = filepath.Clean(cwd)
-	}
-	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
-		return filepath.Clean(resolved)
-	}
-	return filepath.Clean(absolute)
-}
-
-func processReadinessMatch(process app.Process) (bool, string) {
-	if process.Readiness == nil || process.Readiness.State == app.ReadinessRunningUnverified {
-		return false, ""
-	}
-	return true, process.Readiness.Match
-}
-
-func manifestChangedFields(root string, definition project.Definition, process app.Process) []string {
-	changed := make([]string, 0, 5)
-	if !slices.Equal(definition.Argv, process.Argv) {
-		changed = append(changed, "argv")
-	}
-	if canonicalManifestCwd(root, definition.Cwd) != canonicalManifestCwd(root, process.Cwd) {
-		changed = append(changed, "cwd")
-	}
-	definitionReady, definitionMatch := false, ""
 	if definition.Ready != nil {
-		definitionReady, definitionMatch = true, definition.Ready.Match
+		shared.Ready = &orchestrate.ReadinessConfig{Match: definition.Ready.Match, Timeout: definition.Ready.Timeout}
 	}
-	processReady, processMatch := processReadinessMatch(process)
-	if definitionReady != processReady || definitionMatch != processMatch {
-		changed = append(changed, "readiness_match")
-	}
-	if definition.TTY != process.TTY {
-		changed = append(changed, "tty")
-	}
-	if restartPolicy(definition) != string(effectiveProcessRestart(process)) {
-		changed = append(changed, "restart")
-	}
-	sort.Strings(changed)
-	return changed
+	return shared
 }
 
-func manifestDefinitionDriftResult(root string, definition project.Definition, process app.Process) manifestLaunchResult {
-	result := manifestLaunchResultFor(definition, process, "definition_drift")
-	result.ChangedFields = manifestChangedFields(root, definition, process)
-	result.Guidance = fmt.Sprintf("hum restart %s", definition.Name)
+func cliOrchestrateProcess(process app.Process) orchestrate.Process {
+	shared := orchestrate.Process{
+		Name: process.Name, Source: process.Source, Root: process.Root, TTY: process.TTY,
+		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
+		Start: process.Start, LaunchCursor: uint64(process.LaunchCursor), State: string(process.State),
+		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
+		Followers: process.Followers, Restart: string(process.Restart), Relaunches: process.Relaunches,
+		NextLaunchAt: process.NextLaunchAt,
+	}
+	if process.NextCursor != 0 {
+		cursor := uint64(process.NextCursor)
+		shared.NextCursor = &cursor
+	}
+	if process.Exit != nil {
+		shared.Exit = &orchestrate.Exit{Code: process.Exit.ExitCode, Time: process.Exit.ExitedAt}
+		if process.Exit.Err != nil {
+			shared.Exit.Error = process.Exit.Err.Error()
+		}
+	}
+	if process.Readiness != nil {
+		readiness := &orchestrate.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
+		if process.Readiness.Cursor != nil {
+			cursor := uint64(*process.Readiness.Cursor)
+			readiness.Cursor = &cursor
+		}
+		shared.Readiness = readiness
+	}
+	return shared
+}
+
+func cliAppProcess(process orchestrate.Process) app.Process {
+	process = orchestrate.NormalizeProcess(process)
+	result := app.Process{
+		Name: process.Name, Source: process.Source, Root: process.Root, TTY: process.TTY,
+		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
+		Start: process.Start, LaunchCursor: output.Cursor(process.LaunchCursor), State: app.State(process.State),
+		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
+		Followers: process.Followers, Restart: app.RestartPolicy(process.Restart), Relaunches: process.Relaunches,
+		NextLaunchAt: process.NextLaunchAt,
+	}
+	if process.NextCursor != nil {
+		result.NextCursor = output.Cursor(*process.NextCursor)
+	}
+	if process.Exit != nil {
+		exit := &processpkg.Result{ExitCode: process.Exit.Code, ExitedAt: process.Exit.Time}
+		if process.Exit.Error != "" {
+			exit.Err = errors.New(process.Exit.Error)
+		}
+		result.Exit = exit
+	}
+	if process.Readiness != nil {
+		readiness := &app.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
+		if process.Readiness.Cursor != nil {
+			cursor := output.Cursor(*process.Readiness.Cursor)
+			readiness.Cursor = &cursor
+		}
+		result.Readiness = readiness
+	}
 	return result
+}
+
+func cliManifestLaunchResult(definition project.Definition, shared orchestrate.Result) manifestLaunchResult {
+	var result manifestLaunchResult
+	if shared.Process != nil {
+		result = manifestLaunchResultFor(definition, cliAppProcess(*shared.Process), shared.Outcome)
+	} else {
+		result = newManifestLaunchResult(definition, shared.Outcome)
+	}
+	result.BlockedBy = append([]string(nil), shared.BlockedBy...)
+	result.ExistingState = shared.ExistingState
+	result.ChangedFields = append([]string(nil), shared.ChangedFields...)
+	result.Guidance = shared.Guidance
+	if shared.Error != nil {
+		result.Error = shared.Error.Error()
+	}
+	return result
+}
+
+func cliSharedLaunchResult(definition project.Definition, result manifestLaunchResult, process *app.Process) orchestrate.Result {
+	shared := orchestrate.Result{
+		Name: result.Name, Outcome: result.Outcome,
+		BlockedBy: append([]string(nil), result.BlockedBy...), ExistingState: result.ExistingState,
+		ChangedFields: append([]string(nil), result.ChangedFields...), Guidance: result.Guidance,
+	}
+	if shared.Name == "" {
+		shared.Name = definition.Name
+	}
+	if result.Error != "" {
+		shared.Error = errors.New(result.Error)
+	}
+	var snapshot app.Process
+	hasSnapshot := process != nil && (process.Name != "" || process.Source != "" || process.State != "" || process.Cwd != "" || process.PID != 0 || process.LaunchCursor != 0 || len(process.Argv) != 0)
+	if hasSnapshot {
+		snapshot = *process
+	}
+	if result.State != "" || result.PID != nil || result.LaunchCursor != nil || result.Readiness != "" || result.ReadinessConfigured {
+		hasSnapshot = true
+		if result.Name != "" {
+			snapshot.Name = result.Name
+		}
+		if result.Source != "" {
+			snapshot.Source = result.Source
+		}
+		if result.Argv != nil {
+			snapshot.Argv = append([]string(nil), result.Argv...)
+		}
+		if result.State != "" {
+			snapshot.State = app.State(result.State)
+			snapshot.PID = 0
+			if result.PID != nil {
+				snapshot.PID = *result.PID
+			}
+			snapshot.Exit = nil
+			snapshot.ExitCode = 0
+			if result.ExitCode != nil {
+				snapshot.ExitCode = *result.ExitCode
+			}
+			snapshot.Relaunches = result.Relaunches
+			snapshot.NextLaunchAt = result.NextLaunchAt
+		}
+		if result.LaunchCursor != nil {
+			snapshot.LaunchCursor = output.Cursor(*result.LaunchCursor)
+		}
+		if result.Restart != "" {
+			snapshot.Restart = app.RestartPolicy(result.Restart)
+		}
+		if result.Readiness != "" || result.ReadinessConfigured {
+			snapshot.Readiness = nil
+			if result.ReadinessConfigured || result.Readiness == app.ReadinessStarting || result.Readiness == app.ReadinessReady {
+				readiness := &app.Readiness{State: result.Readiness, Match: result.ReadinessMatch}
+				if result.ReadyCursor != nil {
+					cursor := output.Cursor(*result.ReadyCursor)
+					readiness.Cursor = &cursor
+				}
+				snapshot.Readiness = readiness
+			}
+		}
+	}
+	if hasSnapshot && shared.Error == nil {
+		converted := cliOrchestrateProcess(snapshot)
+		shared.Process = &converted
+	}
+	return shared
+}
+
+func cliReadinessResult(client *daemon.Client, ctx context.Context, cwd string, definition project.Definition, process app.Process, initialOutcome string, timeout time.Duration) (manifestLaunchResult, error) {
+	shared, err := orchestrate.WaitForReadiness(ctx, cwd, cliOrchestrateDefinition(definition), cliOrchestrateProcess(process), initialOutcome, timeout, orchestrate.ReadinessOperations{
+		Get: func(ctx context.Context, name, lookupCwd string) (orchestrate.Process, error) {
+			current, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: lookupCwd})
+			return cliOrchestrateProcess(current), err
+		},
+		Wait: func(ctx context.Context, request orchestrate.WaitRequest) (orchestrate.WaitResult, error) {
+			milliseconds, err := manifestTimeoutMS(request.Timeout)
+			if err != nil {
+				return orchestrate.WaitResult{}, err
+			}
+			waited, err := client.Wait(ctx, daemon.WaitRequest{Name: request.Name, Cwd: request.Cwd, Match: request.Match, TimeoutMS: milliseconds})
+			result := orchestrate.WaitResult{Outcome: string(waited.Outcome), Cursor: uint64(waited.Cursor)}
+			if waited.Exit != nil {
+				result.Exit = &orchestrate.Exit{Code: waited.Exit.ExitCode, Time: waited.Exit.ExitedAt}
+				if waited.Exit.Err != nil {
+					result.Exit.Error = waited.Exit.Err.Error()
+				}
+			}
+			return result, err
+		},
+		IsNotFound: isNotFound,
+	})
+	if err != nil {
+		return manifestLaunchResult{}, err
+	}
+	return cliManifestLaunchResult(definition, shared), nil
 }
 
 // manifestProgressDriftDetail renders the changed_fields and restart
@@ -347,38 +463,28 @@ func manifestProgressDriftDetail(result manifestLaunchResult) string {
 	return fmt.Sprintf("definition_drift (%s); run %s", strings.Join(result.ChangedFields, ", "), result.Guidance)
 }
 
-func manifestProcessSupportsDrift(process app.Process) bool {
-	if process.State == app.StateRunning {
-		return true
-	}
-	return process.State == app.StateExited && (process.NextLaunchAt != nil || effectiveProcessRestart(process) == app.RestartOnFailure && process.Relaunches >= manifestAutomaticRelaunchLimit)
-}
-
-func manifestRemovedProcessEligible(process app.Process) bool {
-	return manifestProcessSupportsDrift(process)
-}
-
 func removedManifestResults(ctx context.Context, client *daemon.Client, manifest manifestState) ([]manifestLaunchResult, error) {
 	processes, err := client.List(ctx, daemon.ListRequest{Op: protocol.OpList, Cwd: manifest.root, IncludeCompleted: true})
 	if err != nil {
 		return nil, err
 	}
-	results := make([]manifestLaunchResult, 0)
-	for _, process := range processes {
-		if process.Name == "" || !isManifestSource(process.Source) || !manifestRemovedProcessEligible(process) {
-			continue
-		}
-		if _, ok := manifest.byName[process.Name]; ok {
-			continue
-		}
-		if process.Root != "" && canonicalManifestCwd(manifest.root, process.Root) != canonicalManifestCwd(manifest.root, manifest.root) {
-			continue
-		}
-		result := manifestLaunchResultFor(undefinedManifestDefinition(process.Name), process, "removed_definition")
-		result.Guidance = fmt.Sprintf("hum stop %s or hum remove %s", process.Name, process.Name)
-		results = append(results, result)
+	definitions := make([]orchestrate.Definition, 0, len(manifest.defs))
+	for _, definition := range manifest.defs {
+		definitions = append(definitions, cliOrchestrateDefinition(definition))
 	}
-	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+	sharedProcesses := make([]orchestrate.Process, 0, len(processes))
+	for _, process := range processes {
+		sharedProcesses = append(sharedProcesses, cliOrchestrateProcess(process))
+	}
+	sharedResults := orchestrate.RemovedDefinitionResults(manifest.root, definitions, sharedProcesses)
+	results := make([]manifestLaunchResult, 0, len(sharedResults))
+	for _, shared := range sharedResults {
+		definition := undefinedManifestDefinition(shared.Name)
+		if shared.Process != nil {
+			definition.Source = shared.Process.Source
+		}
+		results = append(results, cliManifestLaunchResult(definition, shared))
+	}
 	return results, nil
 }
 
@@ -427,323 +533,42 @@ func manifestTimeoutMS(timeout time.Duration) (int64, error) {
 	return int64(milliseconds), nil
 }
 
-func manifestSameIncarnation(observed, current app.Process) bool {
-	return observed.PID == current.PID && observed.LaunchCursor == current.LaunchCursor
-}
-
-func manifestReadinessBeforeDeadline(readiness *app.Readiness, deadline time.Time) bool {
-	if readiness == nil {
-		return true
-	}
-	if !readiness.Time.IsZero() && readiness.Time.After(deadline) {
-		return false
-	}
-	return !time.Now().After(deadline)
-}
-
-func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd string, definition project.Definition, process app.Process, initialOutcome string, timeout time.Duration) (manifestLaunchResult, error) {
-	result := manifestLaunchResultFor(definition, process, initialOutcome)
-	deadline := time.Now().Add(timeout)
-	observed := process
-	// refreshManifestResult re-fetches the current process snapshot before
-	// reporting a terminal exited/timed-out outcome. Without this, the
-	// rendered result can carry a stale running state, a dead pid, and no
-	// exit code even though the daemon has already recorded the exit.
-	refreshManifestResult := func(outcome string) (manifestLaunchResult, error) {
-		lookupCwd := process.Root
-		if lookupCwd == "" {
-			lookupCwd = cwd
-		}
-		current, err := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd})
-		if err != nil {
-			result.Outcome = outcome
-			return result, nil
-		}
-		return manifestLaunchResultFor(definition, current, outcome), nil
-	}
-	markExited := func() (manifestLaunchResult, error) {
-		return refreshManifestResult("exited_before_ready")
-	}
-	markTimedOut := func() (manifestLaunchResult, error) {
-		return refreshManifestResult("timed_out")
-	}
-	if process.State != app.StateRunning {
-		return markExited()
-	}
-	if process.Readiness == nil {
-		return result, nil
-	}
-	switch process.Readiness.State {
-	case app.ReadinessReady:
-		if !manifestReadinessBeforeDeadline(process.Readiness, deadline) {
-			return markTimedOut()
-		}
-		return result, nil
-	case app.ReadinessRunningUnverified:
-		return result, nil
-	case app.ReadinessStarting:
-		// Continue below using the expression recorded on this incarnation.
-	default:
-		return result, nil
-	}
-	recordedMatch := process.Readiness.Match
-
-	// Start returns a snapshot taken before the child can necessarily emit its
-	// first line. Refresh it before subscribing so a readiness match that was
-	// recorded by the daemon in that interval is not lost to output eviction.
-	// If the child already exited, Wait must order its retained output and exit.
-	lookupCwd := process.Root
-	if lookupCwd == "" {
-		lookupCwd = cwd
-	}
-	if current, getErr := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd}); getErr == nil {
-		if !manifestSameIncarnation(observed, current) {
-			return markExited()
-		}
-		if current.State == app.StateRunning {
-			process = current
-			lookupCwd = process.Root
-			if lookupCwd == "" {
-				lookupCwd = cwd
-			}
-			result = manifestLaunchResultFor(definition, process, initialOutcome)
-		}
-	} else if !isNotFound(getErr) {
-		return result, getErr
-	}
-	if process.State != app.StateRunning {
-		return markExited()
-	}
-	if process.Readiness == nil {
-		return result, nil
-	}
-	switch process.Readiness.State {
-	case app.ReadinessReady:
-		if !manifestReadinessBeforeDeadline(process.Readiness, deadline) {
-			return markTimedOut()
-		}
-		return result, nil
-	case app.ReadinessRunningUnverified:
-		return result, nil
-	case app.ReadinessStarting:
-		if process.Readiness.Match != recordedMatch {
-			return result, nil
-		}
-	default:
-		return result, nil
-	}
-
-	remaining := time.Until(deadline)
-	if remaining < time.Millisecond {
-		return markTimedOut()
-	}
-	milliseconds, err := manifestTimeoutMS(remaining)
-	if err != nil {
-		return result, err
-	}
-	waitResult, err := client.Wait(ctx, daemon.WaitRequest{
-		Name:      definition.Name,
-		Cwd:       lookupCwd,
-		Match:     recordedMatch,
-		TimeoutMS: milliseconds,
-	})
-	if err != nil {
-		return result, err
-	}
-
-	checkCurrent := func() (manifestLaunchResult, bool, bool, error) {
-		current, getErr := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd})
-		if getErr != nil {
-			return result, false, false, getErr
-		}
-		if !manifestSameIncarnation(observed, current) {
-			terminal, _ := markExited()
-			return terminal, true, false, nil
-		}
-		if current.State != app.StateRunning {
-			terminal := manifestLaunchResultFor(definition, current, "exited_before_ready")
-			terminal.Readiness = ""
-			return terminal, true, true, nil
-		}
-		if current.Readiness == nil {
-			return manifestLaunchResultFor(definition, current, initialOutcome), true, true, nil
-		}
-		switch current.Readiness.State {
-		case app.ReadinessReady:
-			if !manifestReadinessBeforeDeadline(current.Readiness, deadline) {
-				timedOut, _ := markTimedOut()
-				return timedOut, true, false, nil
-			}
-			return manifestLaunchResultFor(definition, current, initialOutcome), true, true, nil
-		case app.ReadinessRunningUnverified:
-			return manifestLaunchResultFor(definition, current, initialOutcome), true, true, nil
-		case app.ReadinessStarting:
-			if current.Readiness.Match != recordedMatch {
-				return manifestLaunchResultFor(definition, current, initialOutcome), true, true, nil
-			}
-		}
-		return result, false, false, nil
-	}
-
-	switch waitResult.Outcome {
-	case app.WaitMatched:
-		// The readiness monitor and this client subscribe independently. Give
-		// the monitor a bounded opportunity to publish its durable state, but
-		// never restart the original launch's deadline after Wait returns.
-		for {
-			current, done, matchValid, getErr := checkCurrent()
-			if getErr != nil {
-				return result, getErr
-			}
-			if done {
-				if current.Outcome == "exited_before_ready" && matchValid {
-					// Wait observed the readiness match before the process exited,
-					// even if reconciliation hid terminal readiness before Get.
-					result.Readiness = app.ReadinessReady
-					cursor := uint64(waitResult.Cursor)
-					result.ReadyCursor = &cursor
-					return result, nil
-				}
-				return current, nil
-			}
-			remaining = time.Until(deadline)
-			if remaining < time.Millisecond {
-				return markTimedOut()
-			}
-			timerDuration := time.Millisecond
-			if remaining < timerDuration {
-				timerDuration = remaining
-			}
-			timer := time.NewTimer(timerDuration)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return result, ctx.Err()
-			case <-timer.C:
-			}
-		}
-	case app.WaitExited:
-		return markExited()
-	case app.WaitTimedOut:
-		// A match can be consumed and evicted immediately before Wait's
-		// subscription observes it. Re-check the daemon's incarnation-local
-		// readiness state before reporting a timeout.
-		current, done, _, getErr := checkCurrent()
-		if getErr != nil {
-			return result, getErr
-		}
-		if done {
-			return current, nil
-		}
-		return markTimedOut()
-	default:
-		return result, fmt.Errorf("unknown readiness wait outcome %q", waitResult.Outcome)
-	}
-}
-
-const manifestAutomaticRelaunchLimit = 5
-
-func manifestRecoveryOutcome(definition project.Definition, process app.Process) (string, bool) {
-	if process.State != app.StateExited || !definitionMatchesProcess(definition, process) {
-		return "", false
-	}
-	if process.NextLaunchAt != nil {
-		return "recovery_pending", true
-	}
-	if effectiveProcessRestart(process) == app.RestartOnFailure && process.Relaunches >= manifestAutomaticRelaunchLimit {
-		return "recovery_exhausted", true
-	}
-	return "", false
-}
-
 func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root string, definition project.Definition, env []string, preserveRecovery bool) (manifestLaunchResult, app.Process, bool, error) {
-	lookupCwd := root
-	if lookupCwd == "" {
-		lookupCwd = cwd
+	lookupRoot := root
+	if lookupRoot == "" {
+		lookupRoot = cwd
 	}
-	current, err := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd})
-	if err == nil {
-		if current.State == app.StateRunning {
-			if !definitionMatchesProcess(definition, current) {
-				return manifestLaunchError(definition, fmt.Errorf("declared process %q is occupied by an ad-hoc launch", definition.Name)), current, false, nil
+	shared := orchestrate.Ensure(ctx, lookupRoot, cliOrchestrateDefinition(definition), env, preserveRecovery, orchestrate.EnsureOperations{
+		Get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
+			current, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: root})
+			return cliOrchestrateProcess(current), err
+		},
+		Start: func(ctx context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
+			var ready *protocol.ReadinessConfig
+			if request.Ready != nil {
+				ready = &protocol.ReadinessConfig{Match: request.Ready.Match, Timeout: request.Ready.Timeout}
 			}
-			if changed := manifestChangedFields(root, definition, current); len(changed) != 0 {
-				return manifestDefinitionDriftResult(root, definition, current), current, true, nil
-			}
-			if ttyErr := manifestTTYUpgradeError(definition, current); ttyErr != nil {
-				return manifestLaunchError(definition, ttyErr), current, false, nil
-			}
-			return manifestLaunchResultFor(definition, current, "already_running"), current, true, nil
-		}
-		if definitionMatchesProcess(definition, current) && manifestProcessSupportsDrift(current) {
-			if changed := manifestChangedFields(root, definition, current); len(changed) != 0 {
-				return manifestDefinitionDriftResult(root, definition, current), current, true, nil
-			}
-		}
-		if preserveRecovery {
-			if outcome, ok := manifestRecoveryOutcome(definition, current); ok {
-				return manifestLaunchResultFor(definition, current, outcome), current, true, nil
-			}
-		}
-	} else if !isNotFound(err) {
-		return manifestLaunchError(definition, err), app.Process{}, false, nil
-	}
-
-	process, startErr := client.Start(ctx, daemon.StartRequest{
-		Name:    definition.Name,
-		Source:  definition.Source,
-		Root:    root,
-		Cwd:     definition.Cwd,
-		Argv:    append([]string(nil), definition.Argv...),
-		Env:     append([]string(nil), env...),
-		Ready:   readinessConfig(definition),
-		TTY:     definition.TTY,
-		Restart: protocolRestartPolicy(definition),
+			current, err := client.Start(ctx, daemon.StartRequest{
+				Name: request.Name, Source: request.Source, Root: request.Root, Cwd: request.Cwd,
+				Argv: append([]string(nil), request.Argv...), Env: append([]string(nil), request.Env...),
+				Ready: ready, TTY: request.TTY, Restart: request.Restart,
+			})
+			return cliOrchestrateProcess(current), err
+		},
+		IsNotFound: isNotFound,
+		IsNameInUse: func(err error) bool {
+			return isNameInUse(err) || errors.Is(err, app.ErrNameInUse)
+		},
 	})
-	if startErr == nil {
-		outcome := "started"
-		if definition.Ready == nil {
-			outcome = "running_unverified"
-		}
-		return manifestLaunchResultFor(definition, process, outcome), process, false, nil
+	result := cliManifestLaunchResult(definition, shared.Result)
+	process := app.Process{}
+	if shared.Result.Process != nil {
+		process = cliAppProcess(*shared.Result.Process)
+	} else if shared.Process.Name != "" || shared.Process.State != "" {
+		process = cliAppProcess(shared.Process)
 	}
-	if !isNameInUse(startErr) && !errors.Is(startErr, app.ErrNameInUse) {
-		return manifestLaunchError(definition, startErr), app.Process{}, false, nil
-	}
-
-	// A concurrent ensure may have won while this call was between Get and
-	// Start. Poll briefly for its published record so both callers converge on
-	// one already_running result instead of reporting a transient duplicate.
-	deadline := time.Now().Add(time.Second)
-	for {
-		current, getErr := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd})
-		if getErr == nil && current.State == app.StateRunning {
-			if !definitionMatchesProcess(definition, current) {
-				collision := manifestLaunchError(definition, fmt.Errorf("declared process %q is occupied by an ad-hoc launch", definition.Name))
-				return collision, current, false, nil
-			}
-			if changed := manifestChangedFields(root, definition, current); len(changed) != 0 {
-				return manifestDefinitionDriftResult(root, definition, current), current, true, nil
-			}
-			if ttyErr := manifestTTYUpgradeError(definition, current); ttyErr != nil {
-				return manifestLaunchError(definition, ttyErr), current, false, nil
-			}
-			return manifestLaunchResultFor(definition, current, "already_running"), current, true, nil
-		}
-		if time.Now().After(deadline) {
-			break
-		}
-		timer := time.NewTimer(5 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return manifestLaunchError(definition, ctx.Err()), app.Process{}, false, nil
-		case <-timer.C:
-		}
-	}
-	return manifestLaunchError(definition, startErr), app.Process{}, false, nil
+	return result, process, shared.Already, nil
 }
-
 func manifestTimeoutOverride(cmd *urfavecli.Command) (time.Duration, error) {
 	if !cmd.IsSet("timeout") {
 		return 0, nil
