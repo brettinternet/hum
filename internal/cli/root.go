@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
+
+	"hum/internal/config"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -26,15 +29,18 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		Writer:    writer,
 		ErrWriter: errWriter,
 		Flags: []urfavecli.Flag{
-			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon"},
-			&urfavecli.StringFlag{Name: "stop-grace", Usage: "grace period before killing a process"},
-			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained output bytes per process"},
-			&urfavecli.StringFlag{Name: "completed-records", Usage: "completed process records to retain"},
+			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon [$HUM_RUNTIME_DIR, then $XDG_RUNTIME_DIR/hum]", DefaultText: "$TMPDIR/hum-UID"},
+			&urfavecli.StringFlag{Name: "stop-grace", Usage: "grace period between SIGTERM and SIGKILL when stopping a process [$HUM_STOP_GRACE]", DefaultText: config.DefaultStopGrace.String()},
+			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained output bytes per process, at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
+			&urfavecli.StringFlag{Name: "completed-records", Usage: "completed process records to retain [$HUM_COMPLETED_RECORDS]", DefaultText: strconv.Itoa(config.DefaultCompletedRecords)},
 		},
 		Commands: newCLICommands(version, buildTime, writer, errWriter),
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			if cmd.Args().Len() > 0 {
+				return unknownCommandError(cmd, cmd.Args().First())
 			}
 			return urfavecli.ShowRootCommandHelp(cmd)
 		},
@@ -111,4 +117,69 @@ func cliCommandFlags(cmd *urfavecli.Command) []urfavecli.Flag {
 		}
 	}
 	return flags
+}
+
+// unknownCommandError reports an unrecognized command name. urfave/cli passes
+// unmatched names to the root action as positional arguments, so without this
+// check a typo would print help and exit 0.
+func unknownCommandError(root *urfavecli.Command, name string) error {
+	message := fmt.Sprintf("Unknown command %q.", name)
+	if suggestion := suggestCommandName(root.Commands, name); suggestion != "" {
+		message += fmt.Sprintf(" Did you mean %q?", suggestion)
+	}
+	return newUserFacingError(message + " Run hum --help to list commands.")
+}
+
+// suggestCommandName returns the closest command name to the typed name, or
+// an empty string when nothing is close enough to be a plausible typo.
+func suggestCommandName(commands []*urfavecli.Command, typed string) string {
+	typed = strings.ToLower(typed)
+	if typed == "" {
+		return ""
+	}
+	limit := 1
+	if len(typed) >= 4 {
+		limit = 2
+	}
+	best, bestDistance := "", limit+1
+	prefixMatches := 0
+	prefixMatch := ""
+	for _, command := range commands {
+		if command == nil || command.Hidden {
+			continue
+		}
+		for _, candidate := range command.Names() {
+			if strings.HasPrefix(candidate, typed) {
+				prefixMatches++
+				prefixMatch = candidate
+			}
+			if distance := editDistance(typed, candidate); distance < bestDistance {
+				best, bestDistance = candidate, distance
+			}
+		}
+	}
+	if prefixMatches == 1 {
+		return prefixMatch
+	}
+	return best
+}
+
+func editDistance(a, b string) int {
+	previous := make([]int, len(b)+1)
+	current := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			current[j] = min(previous[j]+1, current[j-1]+1, previous[j-1]+cost)
+		}
+		previous, current = current, previous
+	}
+	return previous[len(b)]
 }
