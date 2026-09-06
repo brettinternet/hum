@@ -29,6 +29,7 @@ type manifestTestDefinition struct {
 	Argv  []string
 	Cwd   string
 	Ready *manifestTestReady
+	After []string
 }
 
 // manifestLaunchResult is deliberately local to this integration test. Start
@@ -43,6 +44,7 @@ type manifestLaunchResult struct {
 	LaunchCursor *uint64         `json:"launch_cursor,omitempty"`
 	Readiness    string          `json:"readiness,omitempty"`
 	ReadyCursor  *uint64         `json:"ready_cursor,omitempty"`
+	BlockedBy    []string        `json:"blocked_by,omitempty"`
 	Error        json.RawMessage `json:"error,omitempty"`
 }
 
@@ -72,6 +74,185 @@ type manifestOutputResponse struct {
 	Entries        []manifestOutputEntry `json:"entries"`
 	EvictedThrough *uint64               `json:"evicted_through,omitempty"`
 	Truncated      bool                  `json:"truncated,omitempty"`
+}
+
+func TestUpOrderedStack(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := testutil.BuildHum(t)
+	projectRoot := t.TempDir()
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
+	timeline := filepath.Join(projectRoot, "timeline")
+	manifest := fmt.Sprintf(`version: 1
+processes:
+  db:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: db-ready}
+  api:
+    argv: [/bin/sh, -c, %s]
+    after: [db]
+    ready: {match: api-ready}
+  web:
+    argv: [/bin/sh, -c, %s]
+    after: [api]
+    ready: {match: web-ready}
+  root:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: root-ready}
+`, strconv.Quote(fmt.Sprintf("printf 'db-launched\\n' >> %q; sleep 0.2; printf 'db-ready\\n' >> %q; printf db-ready; sleep 30", timeline, timeline)), strconv.Quote(fmt.Sprintf("printf 'api-launched\\n' >> %q; printf api-ready; sleep 30", timeline)), strconv.Quote(fmt.Sprintf("printf 'web-launched\\n' >> %q; printf web-ready; sleep 30", timeline)), strconv.Quote(fmt.Sprintf("printf 'root-launched\\n' >> %q; printf root-ready; sleep 30", timeline)))
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, name := range []string{"api", "db", "root", "web"} {
+			_ = testutil.Run(t, hum, projectRoot, env, "stop", name)
+		}
+		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
+	})
+
+	first := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if first.Code != 0 || first.Err != nil || first.Stderr != "" {
+		t.Fatalf("ordered up = code %d err=%v stdout=%q stderr=%q", first.Code, first.Err, first.Stdout, first.Stderr)
+	}
+	launches := manifestDecodeLaunchResults(t, first.Stdout)
+	if got := manifestLaunchNames(launches); !reflect.DeepEqual(got, []string{"api", "db", "root", "web"}) {
+		t.Fatalf("ordered up names = %#v", got)
+	}
+	for _, launch := range launches {
+		if launch.Outcome != "started" || launch.Readiness != "ready" {
+			t.Fatalf("ordered up launch = %#v", launch)
+		}
+	}
+	contents, err := os.ReadFile(timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	positions := make(map[string]int, len(lines))
+	for index, line := range lines {
+		positions[line] = index
+	}
+	if positions["db-launched"] >= positions["db-ready"] || positions["db-ready"] >= positions["api-launched"] || positions["api-launched"] >= positions["web-launched"] {
+		t.Fatalf("launch timeline = %v, want db launch < db ready < api < web", lines)
+	}
+	if positions["root-launched"] >= positions["db-ready"] {
+		t.Fatalf("launch timeline = %v, want independent root to overlap db readiness wait", lines)
+	}
+	second := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if second.Code != 0 || second.Err != nil || second.Stderr != "" {
+		t.Fatalf("idempotent ordered up = code %d err=%v stdout=%q stderr=%q", second.Code, second.Err, second.Stdout, second.Stderr)
+	}
+	for _, launch := range manifestDecodeLaunchResults(t, second.Stdout) {
+		if launch.Outcome != "already_running" || launch.Readiness != "ready" {
+			t.Fatalf("idempotent launch = %#v", launch)
+		}
+	}
+
+	manifestTestUpBlockedStack(t, hum)
+	manifestTestUpRecovery(t, hum, testutil.BuildFixture(t))
+}
+
+func manifestTestUpBlockedStack(t *testing.T, hum string) {
+	t.Helper()
+	projectRoot := t.TempDir()
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
+	apiMarker := filepath.Join(projectRoot, "api-launched")
+	webMarker := filepath.Join(projectRoot, "web-launched")
+	manifest := fmt.Sprintf(`version: 1
+processes:
+  db:
+    argv: [/bin/sh, -c, "exit 4"]
+    ready: {match: db-ready}
+  queue:
+    argv: [/bin/sh, -c, "exit 5"]
+    ready: {match: queue-ready}
+  api:
+    argv: [/bin/sh, -c, %s]
+    after: [queue, db]
+    ready: {match: api-ready}
+  web:
+    argv: [/bin/sh, -c, %s]
+    after: [api]
+    ready: {match: web-ready}
+`, strconv.Quote(fmt.Sprintf("touch %q; printf api-ready; sleep 30", apiMarker)), strconv.Quote(fmt.Sprintf("touch %q; printf web-ready; sleep 30", webMarker)))
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes") })
+
+	result := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if result.Code != 3 || result.Err == nil {
+		t.Fatalf("blocked up = code %d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
+	}
+	launches := manifestDecodeLaunchResults(t, result.Stdout)
+	if got := manifestLaunchNames(launches); !reflect.DeepEqual(got, []string{"api", "db", "queue", "web"}) {
+		t.Fatalf("blocked names = %#v", got)
+	}
+	if launches[0].Outcome != "skipped" || !reflect.DeepEqual(launches[0].BlockedBy, []string{"db", "queue"}) {
+		t.Fatalf("api blockers = %#v", launches[0])
+	}
+	if launches[3].Outcome != "skipped" || !reflect.DeepEqual(launches[3].BlockedBy, []string{"api"}) {
+		t.Fatalf("web blockers = %#v", launches[3])
+	}
+	for _, marker := range []string{apiMarker, webMarker} {
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("blocked process marker %q exists: %v", marker, err)
+		}
+	}
+}
+
+func manifestTestUpRecovery(t *testing.T, hum, fixture string) {
+	t.Helper()
+	projectRoot := t.TempDir()
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_OUTPUT_BYTES=65536", "HUM_COMPLETED_RECORDS=20", "HUM_STOP_GRACE=1s")
+	launchesMarker := filepath.Join(projectRoot, "db-launches")
+	apiMarker := filepath.Join(projectRoot, "api-launched")
+	manifest := fmt.Sprintf(`version: 1
+processes:
+  db:
+    argv: [%s, relaunch, %s]
+    ready: {match: ready, timeout: 5s}
+    restart: on-failure
+  api:
+    argv: [/bin/sh, -c, %s]
+    after: [db]
+    ready: {match: api-ready}
+`, strconv.Quote(fixture), strconv.Quote(launchesMarker), strconv.Quote(fmt.Sprintf("touch %q; printf api-ready; sleep 30", apiMarker)))
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes") })
+
+	first := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if first.Code != 3 || first.Err == nil {
+		t.Fatalf("recovery first up = code %d err=%v stdout=%q stderr=%q", first.Code, first.Err, first.Stdout, first.Stderr)
+	}
+	firstLaunches := manifestDecodeLaunchResults(t, first.Stdout)
+	if firstLaunches[0].Outcome != "skipped" || !reflect.DeepEqual(firstLaunches[0].BlockedBy, []string{"db"}) || firstLaunches[1].Outcome != "exited_before_ready" {
+		t.Fatalf("recovery first results = %#v", firstLaunches)
+	}
+	if _, err := os.Stat(apiMarker); !os.IsNotExist(err) {
+		t.Fatalf("same invocation followed successor: api marker exists: %v", err)
+	}
+	relaunchIntegrationWaitStatus(t, hum, projectRoot, env, "db", func(status relaunchIntegrationStatus) bool {
+		return status.State == "running" && status.Readiness == "ready" && status.Relaunches == 2
+	})
+	if _, err := os.Stat(apiMarker); !os.IsNotExist(err) {
+		t.Fatalf("automatic recovery launched dependent: %v", err)
+	}
+	second := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if second.Code != 0 || second.Err != nil {
+		t.Fatalf("recovery second up = code %d err=%v stdout=%q stderr=%q", second.Code, second.Err, second.Stdout, second.Stderr)
+	}
+	secondLaunches := manifestDecodeLaunchResults(t, second.Stdout)
+	if secondLaunches[0].Outcome != "started" || secondLaunches[0].Readiness != "ready" || secondLaunches[1].Outcome != "already_running" || secondLaunches[1].Readiness != "ready" {
+		t.Fatalf("recovery second results = %#v", secondLaunches)
+	}
+	if _, err := os.Stat(apiMarker); err != nil {
+		t.Fatalf("later up did not launch dependent: %v", err)
+	}
 }
 
 func TestManifestWorkflow(t *testing.T) {
@@ -285,6 +466,9 @@ func writeManifestTestYAML(t *testing.T, root string, definitions []manifestTest
 		if definition.Cwd != "" {
 			fmt.Fprintf(&document, "    cwd: %s\n", strconv.Quote(definition.Cwd))
 		}
+		if len(definition.After) != 0 {
+			fmt.Fprintf(&document, "    after: %s\n", formatManifestStringSequence(definition.After))
+		}
 		if definition.Ready != nil {
 			document.WriteString("    ready:\n")
 			fmt.Fprintf(&document, "      match: %s\n", strconv.Quote(definition.Ready.Match))
@@ -297,6 +481,14 @@ func writeManifestTestYAML(t *testing.T, root string, definitions []manifestTest
 	if err := os.WriteFile(manifestPath, []byte(document.String()), 0o600); err != nil {
 		t.Fatalf("write %s: %v", manifestPath, err)
 	}
+}
+
+func formatManifestStringSequence(values []string) string {
+	parts := make([]string, len(values))
+	for index, value := range values {
+		parts[index] = strconv.Quote(value)
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }
 
 func manifestDecodeLaunchResults(t *testing.T, output string) []manifestLaunchResult {

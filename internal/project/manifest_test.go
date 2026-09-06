@@ -1,6 +1,7 @@
 package project
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -51,14 +52,14 @@ processes:
 			Source: "manifest",
 			Argv:   []string{"go", "run", "./api", "--port=8080"},
 			Cwd:    root,
-			Ready:  &ReadyDefinition{Match: "listening", Timeout: 2 * time.Second}, Restart: RestartNever,
+			Ready:  &ReadyDefinition{Match: "listening", Timeout: 2 * time.Second}, After: []string{}, Restart: RestartNever,
 		},
 		{
 			Name:   "web",
 			Source: "manifest",
 			Argv:   []string{"go", "run", "./web"},
 			Cwd:    filepath.Join(root, "web"),
-			Ready:  &ReadyDefinition{Match: "ready:", Timeout: 30 * time.Second}, Restart: RestartNever,
+			Ready:  &ReadyDefinition{Match: "ready:", Timeout: 30 * time.Second}, After: []string{}, Restart: RestartNever,
 		},
 	}
 	if !reflect.DeepEqual(definitions, want) {
@@ -401,6 +402,129 @@ func TestLoadDefinitionsAcceptsRootRelativeCwdSymlink(t *testing.T) {
 	}
 	if len(definitions) != 1 || definitions[0].Cwd != filepath.Join(root, "link") {
 		t.Fatalf("definitions = %#v, want lexical symlink cwd", definitions)
+	}
+}
+
+func TestAfterManifest(t *testing.T) {
+	root := t.TempDir()
+	writeTestManifest(t, root, `version: 1
+processes:
+  web:
+    argv: [web]
+    after: [api]
+  api:
+    argv: [api]
+    after: [db, queue]
+    ready: {match: api-ready}
+  db:
+    argv: [db]
+    ready: {match: db-ready}
+  queue:
+    argv: [queue]
+    ready: {match: queue-ready}
+  worker:
+    argv: [worker]
+    after: []
+`)
+	definitions, err := LoadDefinitions(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{definitions[0].Name, definitions[1].Name, definitions[2].Name, definitions[3].Name, definitions[4].Name}; !reflect.DeepEqual(got, []string{"api", "db", "queue", "web", "worker"}) {
+		t.Fatalf("definition order = %v", got)
+	}
+	byName := make(map[string]Definition, len(definitions))
+	for _, definition := range definitions {
+		byName[definition.Name] = definition
+	}
+	if !reflect.DeepEqual(byName["api"].After, []string{"db", "queue"}) {
+		t.Fatalf("api after = %#v", byName["api"].After)
+	}
+	if len(byName["web"].After) != 1 || byName["web"].After[0] != "api" {
+		t.Fatalf("web after = %#v", byName["web"].After)
+	}
+	if byName["worker"].After == nil || len(byName["worker"].After) != 0 {
+		t.Fatalf("empty after = %#v, want an empty slice", byName["worker"].After)
+	}
+	cloned := cloneDefinitions(definitions)
+	cloned[3].After[0] = "mutated"
+	if byName["web"].After[0] != "api" {
+		t.Fatal("definition clone aliases after slice")
+	}
+	if discovered := discoveredDefinition(root, "package_json", "npm", "run", "dev"); discovered.After == nil || len(discovered.After) != 0 {
+		t.Fatalf("discovered after = %#v, want empty", discovered.After)
+	}
+
+	generated := renderInitManifest([]Definition{{Name: "dev", Source: "test", Argv: []string{"dev"}}}, InitOutcomeGenerated, "")
+	if !strings.Contains(string(generated), "# after: [db]") {
+		t.Fatalf("generated init omitted inert after example: %s", generated)
+	}
+	writeTestManifest(t, root, string(generated))
+	if _, err := LoadDefinitions(root); err != nil {
+		t.Fatalf("generated init manifest is invalid: %v", err)
+	}
+	template := renderInitManifest(nil, InitOutcomeTemplate, "no candidate")
+	if !strings.Contains(string(template), "#     # after: [db]") {
+		t.Fatalf("template init omitted inert after example: %s", template)
+	}
+	writeTestManifest(t, root, string(template))
+	if _, err := LoadDefinitions(root); err != nil {
+		t.Fatalf("template init manifest is invalid: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"unknown", "after: [missing]", []string{"process \"web\".after[0]", "unknown process"}},
+		{"duplicate", "after: [db, db]", []string{"process \"web\".after[1]", "duplicate"}},
+		{"self", "after: [web]", []string{"process \"web\".after[0]", "itself"}},
+		{"without readiness", "after: [db]", []string{"process \"web\".after[0]", "declare ready"}},
+		{"non-list", "after: db", []string{"process \"web\".after", "sequence"}},
+		{"non-string", "after: [db, 7]", []string{"process \"web\".after[1]", "string"}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			body := "version: 1\nprocesses:\n  web:\n    argv: [web]\n    " + test.body + "\n  db:\n    argv: [db]\n"
+			if test.name == "without readiness" {
+				body += ""
+			}
+			writeTestManifest(t, root, body)
+			_, err := LoadDefinitions(root)
+			if err == nil {
+				t.Fatal("manifest unexpectedly accepted invalid after")
+			}
+			for _, want := range test.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want %q", err, want)
+				}
+			}
+		})
+	}
+	cycles := []struct {
+		name  string
+		chain string
+	}{
+		{"two", "a: [b]\n  b: [a]"},
+		{"three", "a: [b]\n  b: [c]\n  c: [a]"},
+		{"longer", "a: [b]\n  b: [c]\n  c: [d]\n  d: [e]\n  e: [a]"},
+	}
+	for _, test := range cycles {
+		t.Run("cycle-"+test.name, func(t *testing.T) {
+			lines := strings.Split(test.chain, "\n")
+			var body strings.Builder
+			body.WriteString("version: 1\nprocesses:\n")
+			for _, line := range lines {
+				parts := strings.SplitN(strings.TrimSpace(line), ": ", 2)
+				fmt.Fprintf(&body, "  %s:\n    argv: [%s]\n    ready: {match: ready}\n    after: %s\n", parts[0], parts[0], parts[1])
+			}
+			writeTestManifest(t, root, body.String())
+			_, err := LoadDefinitions(root)
+			if err == nil || !strings.Contains(err.Error(), "cycle") || !strings.Contains(err.Error(), "after") {
+				t.Fatalf("cycle error = %v", err)
+			}
+		})
 	}
 }
 

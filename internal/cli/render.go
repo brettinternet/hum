@@ -441,6 +441,17 @@ func shellEscape(value string) string {
 }
 
 func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
+	if result.Outcome == "skipped" {
+		line := fmt.Sprintf("%s: skipped (blocked by %s)", result.Name, strings.Join(result.BlockedBy, ", "))
+		switch result.ExistingState {
+		case "running", "exited":
+			line += "; existing process " + result.ExistingState
+		default:
+			line += "; not launched"
+		}
+		_, err := fmt.Fprintln(w, line)
+		return err
+	}
 	line := fmt.Sprintf("%s %s", result.Outcome, result.Name)
 	if result.Source != "" {
 		line += fmt.Sprintf(" (%s: %s)", result.Source, shellJoin(result.Argv))

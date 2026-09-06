@@ -85,8 +85,18 @@ JSON also includes candidates.
 stopped records; retained ad hoc records reuse their exact argv, cwd, and
 environment, while resolved records use the current definition and client
 environment. Concurrent starts create at most one child. `up` does the same only
-for current resolved definitions, waits concurrently, and leaves successful
-children running after other failures. `--no-wait` returns after spawn.
+for current resolved definitions. It launches every zero-dependency root
+concurrently, waits for each direct `after` prerequisite to settle, and launches
+a dependent only when all direct prerequisites were observed as `started` or
+`already_running` with readiness `ready`. A running-ready prerequisite is
+satisfied without relaunch. Each process timeout starts at its own launch or
+first running observation, so independent roots overlap and the critical path
+controls total wait time. Successful children remain running after other
+failures. `--no-wait` returns after spawn only for dependency-free manifests;
+when any `after` is declared it is rejected before daemon creation/contact.
+`start NAME...` remains explicitly named and concurrent but never adds or waits
+for transitive prerequisites. `down` remains concurrent rather than reverse
+ordered.
 
 `run <name>` uses an existing resolved definition or attaches to an existing
 running or stopped session. `run <name> -- <command>...` creates an ad hoc
@@ -151,9 +161,20 @@ Discovery occurs only when the file is absent. Alternate filenames are ignored.
 ```yaml
 version: 1
 processes:
+  db:
+    argv: [docker, compose, up, db]
+    ready:
+      match: "ready"
+  api:
+    argv: [bun, run, api]
+    after: [db]
+    ready:
+      match: "Listening"
+      timeout: 30s
   web:
     argv: [bun, run, dev]
     cwd: web
+    after: [api]
     ready:
       match: "Local:"
       timeout: 30s
@@ -163,17 +184,22 @@ processes:
 Each entry requires a safe name and a non-empty string argv. Optional `cwd` is
 root-relative and must exist and remain beneath the root after lexical and
 symlink resolution. `ready.match` is a regular expression; `ready.timeout` is a
-positive duration defaulting to 30 seconds.
+positive duration defaulting to 30 seconds. Optional `after` is a list of
+same-manifest process names. Names must be unique, cannot self-reference, and
+must point to definitions that declare `ready`; absent `after` is empty.
 
 Parsing is strict and single-document. Unknown or duplicate keys, YAML aliases
 or merges, unsupported versions, invalid names, regexes or durations, unsafe
-cwd, empty/non-string argv, and shell text are errors with file and entry
-context. Definitions are name-sorted and carry `source: manifest`.
+cwd, empty/non-string argv, shell text, malformed `after` values, unknown or
+unready dependencies, duplicate/self references, and cycles of any length are
+errors with file, process, and indexed-field context such as
+`process "web".after[1]`. Definitions are name-sorted and carry
+`source: manifest`; discovered definitions always have no dependencies.
 
-The manifest defines processes only: no runtime settings, dependencies, ports,
-HTTP checks, or environment values/files. Projects needing
-environment activation must commit a runner and put it in argv; CLI and MCP do
-not activate mise, nvm, direnv, or shell hooks.
+The manifest defines processes and their client-side launch gates only: no
+runtime settings, ports, HTTP checks, or environment values/files. Projects
+needing environment activation must commit a runner and put it in argv; CLI and
+MCP do not activate mise, nvm, direnv, or shell hooks.
 
 ### Zero-config discovery
 
@@ -208,7 +234,7 @@ families are errors. With no lockfile, npm is used.
 
 Discovery does not scan nested packages or infer language/framework commands
 (except confirmed `mix phx.server`), Docker Compose, multiple processes, ports,
-readiness, or dependencies. It never tries commands to see what succeeds.
+readiness, or launch ordering. It never tries commands to see what succeeds.
 
 Strict definition commands (`up`, `start`, and argv-free `run`) resolve before
 daemon startup. Ad hoc `run` alone treats `NoCandidate` as no definition.
@@ -228,6 +254,22 @@ cursor even if nobody is waiting. Configured processes move from `starting` to
 at a new launch cursor, so old output cannot satisfy it. Definitions without
 `ready`, including all discovered definitions, report `running_unverified` and
 are never reported ready. A CLI timeout overrides the manifest timeout.
+
+For ordered `up`, a prerequisite result satisfies its gate only when this
+invocation observes `started` or `already_running` with readiness `ready`.
+Request errors, exits before readiness, timeouts, and prior skips block a
+dependent; the dependent is returned as `outcome: skipped` with `blocked_by`
+containing every direct unsatisfied prerequisite sorted by name. Blockers are
+direct only, so a cascade names its immediate skipped parent. The scheduler
+waits for all direct results before finalizing blockers, while output remains
+lexical after every node settles. Before finalizing a blocked node, CLI and MCP
+read its retained record without lifecycle mutation. A present record adds
+`existing_state: running|exited` and its process snapshot; human output says
+`existing process running`, `existing process exited`, or `not launched`. The
+result remains skipped and cannot satisfy a downstream gate. Skips do not change aggregate exit precedence:
+request error 1, exited before ready 3, timed out 2, success 0. An
+`on-failure` successor is not followed by the same `up`; rerun `up` after
+recovery.
 
 Each durable named session has one cursor sequence across stdout, stderr, and
 incarnations. Entries contain stream, timestamp, raw stored text, stripped on
@@ -306,7 +348,12 @@ payload, uses the same bounded one-shot TTY semantics as the CLI, and returns
 `name`, decoded `bytes`, and `launch_cursor`.
 
 The tools share CLI definition, readiness, cursor, collision, and aggregate
-semantics. Only `start` and `up` may create or replace a daemon. Without one,
+semantics. `up` applies the same client-side `after` DAG scheduler and lexical
+results as the CLI; independent roots launch concurrently, dependents wait for
+all direct prerequisites to be ready, and skipped entries include sorted direct
+`blocked_by`. `up` with `no_wait: true` is rejected before daemon contact when
+any dependency is declared. `start` remains singular and explicit-only. Only
+`start` and `up` may create or replace a daemon. Without one,
 `list` reports stopped definitions; `stop` and `down` succeed; the other control
 tools return unavailable-daemon errors. Recorded environments are never
 returned. MCP `status` and `list` return the same `followers` integer as the CLI

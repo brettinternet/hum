@@ -30,6 +30,7 @@ type Definition struct {
 	Argv    []string
 	Cwd     string
 	Ready   *protocol.ReadinessConfig
+	After   []string
 	TTY     bool
 	Restart string
 }
@@ -198,7 +199,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"readiness":      readiness,
 	}, "name", "source", "root", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
-	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError}, "name", "outcome")
+	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "exited"}}}, "name", "outcome")
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
 	output := objectSchema(map[string]any{"entries": map[string]any{"type": "array", "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}, "oldest": map[string]any{"type": "integer", "minimum": 0}, "latest": map[string]any{"type": "integer", "minimum": 0}, "evicted_through": map[string]any{"type": "integer", "minimum": 0}, "truncated": map[string]any{"type": "boolean"}, "more": map[string]any{"type": "boolean"}}, "entries")
@@ -222,8 +223,8 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 	}, "name", "bytes", "launch_cursor")
 	return []toolDefinition{
-		{Name: "start", Description: "Start one resolved project definition through the hum daemon; waits for configured readiness by default. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
-		{Name: "up", Description: "Start every resolved project definition through the hum daemon; waits for configured readiness by default. Manifest restart: on-failure uses bounded crash relaunches.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: map[string]any{"type": "array", "items": launch}},
+		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; it never pulls in after prerequisites and waits for that definition's configured readiness by default. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
+		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. Manifest restart: on-failure uses bounded crash relaunches.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: map[string]any{"type": "array", "items": launch}},
 		{Name: "down", Description: "Stop every running runtime record in the project and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: map[string]any{"type": "array", "items": stop}},
 		{Name: "list", Description: "Merge resolved definitions with all daemon runtime records in the project, including ad_hoc records. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: map[string]any{"type": "array", "items": process}},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
@@ -404,6 +405,28 @@ func readinessTimeout(override int64, definition Definition) (int64, error) {
 	return defaultTimeoutMS, nil
 }
 
+func sameProcessIncarnation(observed, current protocol.Process) bool {
+	return observed.PID == current.PID && observed.LaunchCursor == current.LaunchCursor
+}
+
+func readinessBeforeDeadline(readiness *protocol.Readiness, deadline time.Time) bool {
+	if readiness == nil {
+		return true
+	}
+	if !readiness.Time.IsZero() && readiness.Time.After(deadline) {
+		return false
+	}
+	return !time.Now().After(deadline)
+}
+
+func remainingTimeoutMS(deadline time.Time) int64 {
+	remaining := time.Until(deadline)
+	if remaining < time.Millisecond {
+		return 0
+	}
+	return remaining.Milliseconds()
+}
+
 func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage) (any, error) {
 	known := false
 	for _, definition := range s.toolDefinitions() {
@@ -524,15 +547,25 @@ func (s *Server) waitForReadiness(ctx context.Context, client Client, resolution
 	if process.Readiness != nil && process.Readiness.Match != "" {
 		recordedMatch = process.Readiness.Match
 	}
+	deadline := time.Now().Add(time.Duration(timeout) * time.Millisecond)
 	readCurrent := func() (protocol.Process, string, bool, error) {
 		current, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: process.Name, Cwd: resolution.Root})
 		if getErr != nil {
 			return protocol.Process{}, "", false, getErr
 		}
+		if !sameProcessIncarnation(process, current) {
+			return current, "exited_before_ready", true, nil
+		}
 		if current.State != "running" {
 			return current, "exited_before_ready", true, nil
 		}
-		if current.Readiness == nil || current.Readiness.State == protocol.ReadinessReady || current.Readiness.State == protocol.ReadinessRunningUnverified {
+		if current.Readiness == nil || current.Readiness.State == protocol.ReadinessRunningUnverified {
+			return current, initial, true, nil
+		}
+		if current.Readiness.State == protocol.ReadinessReady {
+			if !readinessBeforeDeadline(current.Readiness, deadline) {
+				return current, "timed_out", true, nil
+			}
 			return current, initial, true, nil
 		}
 		if current.Readiness.State != protocol.ReadinessStarting || current.Readiness.Match != recordedMatch {
@@ -547,8 +580,13 @@ func (s *Server) waitForReadiness(ctx context.Context, client Client, resolution
 	if done {
 		return current, outcome, nil
 	}
-	after := process.LaunchCursor
-	waited, err := client.Wait(ctx, protocol.WaitRequest{Op: protocol.OpWait, Name: process.Name, Cwd: resolution.Root, After: &after, Match: recordedMatch, TimeoutMS: timeout})
+	waitTimeout := remainingTimeoutMS(deadline)
+	if waitTimeout == 0 {
+		return current, "timed_out", nil
+	}
+	// A nil After uses the daemon's launch-scoped default. Supplying the
+	// observed cursor here would exclude a first-launch match at cursor zero.
+	waited, err := client.Wait(ctx, protocol.WaitRequest{Op: protocol.OpWait, Name: process.Name, Cwd: resolution.Root, Match: recordedMatch, TimeoutMS: waitTimeout})
 	if err != nil {
 		return protocol.Process{}, "", err
 	}
@@ -561,6 +599,13 @@ func (s *Server) waitForReadiness(ctx context.Context, client Client, resolution
 		return protocol.Process{}, "", err
 	}
 	if done {
+		// Wait observed the readiness match on this incarnation before it
+		// exited, even if reconciliation removed durable readiness before Get.
+		if waited.Outcome == protocol.WaitMatched && outcome == "exited_before_ready" && sameProcessIncarnation(process, current) {
+			cursor := waited.Cursor
+			current.Readiness = &protocol.Readiness{State: protocol.ReadinessReady, Cursor: &cursor, Match: recordedMatch}
+			return current, initial, nil
+		}
 		return current, outcome, nil
 	}
 	if waited.Outcome == protocol.WaitTimedOut {
@@ -569,9 +614,16 @@ func (s *Server) waitForReadiness(ctx context.Context, client Client, resolution
 	if waited.Outcome != protocol.WaitMatched {
 		return protocol.Process{}, "", fmt.Errorf("unknown readiness wait outcome %q", waited.Outcome)
 	}
-	deadline := time.Now().Add(time.Duration(timeout) * time.Millisecond)
-	for time.Now().Before(deadline) {
-		timer := time.NewTimer(time.Millisecond)
+	for {
+		remaining := time.Until(deadline)
+		if remaining < time.Millisecond {
+			return current, "timed_out", nil
+		}
+		timerDuration := time.Millisecond
+		if remaining < timerDuration {
+			timerDuration = remaining
+		}
+		timer := time.NewTimer(timerDuration)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -586,7 +638,6 @@ func (s *Server) waitForReadiness(ctx context.Context, client Client, resolution
 			return current, outcome, nil
 		}
 	}
-	return current, "timed_out", nil
 }
 
 func (s *Server) start(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
@@ -639,17 +690,24 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 }
 
 type launchResult struct {
-	Name    string            `json:"name"`
-	Outcome string            `json:"outcome"`
-	Process *protocol.Process `json:"process,omitempty"`
-	Error   *ToolError        `json:"error,omitempty"`
+	Name          string            `json:"name"`
+	Outcome       string            `json:"outcome"`
+	Process       *protocol.Process `json:"process,omitempty"`
+	Error         *ToolError        `json:"error,omitempty"`
+	BlockedBy     []string          `json:"blocked_by,omitempty"`
+	ExistingState string            `json:"existing_state,omitempty"`
 }
 
 func (s *Server) up(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
 	if input.TimeoutMS < 0 {
 		return nil, &ToolError{Code: "invalid_request", Message: "timeout_ms must be positive"}
 	}
-	if len(resolution.Definitions) == 0 {
+	definitions := append([]Definition(nil), resolution.Definitions...)
+	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
+	if input.NoWait && definitionsHaveAfter(definitions) {
+		return nil, &ToolError{Code: "invalid_request", Message: "up no_wait is not allowed when definitions declare after dependencies"}
+	}
+	if len(definitions) == 0 {
 		return []launchResult{}, nil
 	}
 	client, err := s.client(ctx, true)
@@ -657,54 +715,152 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	definitions := append([]Definition(nil), resolution.Definitions...)
-	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
 	results := make([]launchResult, len(definitions))
+	done := make([]bool, len(definitions))
+	byName := make(map[string]int, len(definitions))
 	for index, definition := range definitions {
+		byName[definition.Name] = index
 		results[index].Name = definition.Name
-		process, already, startErr := s.ensureDefinition(ctx, client, resolution, definition)
-		if startErr != nil {
-			results[index].Outcome = "error"
-			results[index].Error = mapError(startErr)
-			continue
-		}
-		results[index].Outcome = launchOutcome(already, definition)
-		if definition.Ready == nil {
-			process.Readiness = &protocol.Readiness{State: protocol.ReadinessRunningUnverified}
-		}
-		process = normalizeProcess(process)
-		results[index].Process = &process
 	}
-	if input.NoWait {
-		return results, nil
-	}
-	var waits sync.WaitGroup
+	var mu sync.Mutex
+	cond := sync.NewCond(&mu)
+	wakeDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			mu.Lock()
+			cond.Broadcast()
+			mu.Unlock()
+		case <-wakeDone:
+		}
+	}()
+	defer close(wakeDone)
+	var workers sync.WaitGroup
 	for index, definition := range definitions {
-		if definition.Ready == nil || results[index].Process == nil {
-			continue
-		}
-		waits.Add(1)
+		workers.Add(1)
 		go func(index int, definition Definition) {
-			defer waits.Done()
-			process := *results[index].Process
-			timeout, timeoutErr := readinessTimeout(input.TimeoutMS, definition)
-			outcome := results[index].Outcome
-			if timeoutErr == nil {
-				process, outcome, timeoutErr = s.waitForReadiness(ctx, client, resolution, definition, process, outcome, timeout)
+			defer workers.Done()
+			mu.Lock()
+			for {
+				allDone := true
+				for _, dependency := range definition.After {
+					dependencyIndex, ok := byName[dependency]
+					if !ok || !done[dependencyIndex] {
+						allDone = false
+						break
+					}
+				}
+				if allDone || ctx.Err() != nil {
+					break
+				}
+				cond.Wait()
 			}
-			if timeoutErr != nil {
-				results[index].Process = nil
+			if ctx.Err() != nil {
 				results[index].Outcome = "error"
-				results[index].Error = mapError(timeoutErr)
+				results[index].Error = mapError(ctx.Err())
+				done[index] = true
+				cond.Broadcast()
+				mu.Unlock()
 				return
 			}
-			process = normalizeProcess(process)
-			results[index].Outcome = outcome
-			results[index].Process = &process
+			blocked := make([]string, 0, len(definition.After))
+			for _, dependency := range definition.After {
+				dependencyIndex := byName[dependency]
+				if !launchResultSatisfiesGate(results[dependencyIndex]) {
+					blocked = append(blocked, dependency)
+				}
+			}
+			if len(blocked) != 0 {
+				sort.Strings(blocked)
+				mu.Unlock()
+				skipped := launchResult{Name: definition.Name, Outcome: "skipped", BlockedBy: blocked}
+				if current, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: definition.Name, Cwd: resolution.Root}); getErr == nil {
+					current = normalizeProcess(current)
+					skipped.Process = &current
+					if current.State == "running" {
+						skipped.ExistingState = "running"
+					} else {
+						skipped.ExistingState = "exited"
+					}
+				}
+				mu.Lock()
+				results[index] = skipped
+				done[index] = true
+				cond.Broadcast()
+				mu.Unlock()
+				return
+			}
+			mu.Unlock()
+
+			observedAt := time.Now()
+			process, already, startErr := s.ensureDefinition(ctx, client, resolution, definition)
+			if startErr == nil && !already && !process.Start.IsZero() {
+				observedAt = process.Start
+			} else if startErr == nil && already {
+				observedAt = time.Now()
+			}
+			result := launchResult{Name: definition.Name}
+			if startErr != nil {
+				result.Outcome = "error"
+				result.Error = mapError(startErr)
+			} else {
+				result.Outcome = launchOutcome(already, definition)
+				if definition.Ready == nil {
+					process.Readiness = &protocol.Readiness{State: protocol.ReadinessRunningUnverified}
+				}
+				process = normalizeProcess(process)
+				result.Process = &process
+				if !input.NoWait && definition.Ready != nil {
+					timeout, timeoutErr := readinessTimeout(input.TimeoutMS, definition)
+					if timeoutErr != nil {
+						result.Process = nil
+						result.Outcome = "error"
+						result.Error = mapError(timeoutErr)
+					} else {
+						timeout = remainingReadinessTimeout(timeout, observedAt)
+						process, outcome, waitErr := s.waitForReadiness(ctx, client, resolution, definition, process, result.Outcome, timeout)
+						if waitErr != nil {
+							result.Process = nil
+							result.Outcome = "error"
+							result.Error = mapError(waitErr)
+						} else {
+							process = normalizeProcess(process)
+							result.Outcome = outcome
+							result.Process = &process
+						}
+					}
+				}
+			}
+			mu.Lock()
+			results[index] = result
+			done[index] = true
+			cond.Broadcast()
+			mu.Unlock()
 		}(index, definition)
 	}
-	waits.Wait()
+	workers.Wait()
 	return results, nil
+}
+
+func remainingReadinessTimeout(timeout int64, observedAt time.Time) int64 {
+	remaining := timeout - time.Since(observedAt).Milliseconds()
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining
+}
+
+func definitionsHaveAfter(definitions []Definition) bool {
+	for _, definition := range definitions {
+		if len(definition.After) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func launchResultSatisfiesGate(result launchResult) bool {
+	return (result.Outcome == "started" || result.Outcome == "already_running") && result.Process != nil && result.Process.Readiness != nil && result.Process.Readiness.State == protocol.ReadinessReady
 }
 
 func (s *Server) list(ctx context.Context, resolution Resolution) (any, error) {

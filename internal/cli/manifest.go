@@ -140,29 +140,24 @@ func mergeManifestProcesses(manifest manifestState, running []app.Process) []app
 // Error is deliberately a string so every result remains easy to consume as
 // one NDJSON object without exposing daemon internals.
 type manifestLaunchResult struct {
-	Name         string     `json:"name"`
-	Outcome      string     `json:"outcome"`
-	Source       string     `json:"source"`
-	Argv         []string   `json:"argv"`
-	PID          *int       `json:"pid,omitempty"`
-	LaunchCursor *uint64    `json:"launch_cursor,omitempty"`
-	Readiness    string     `json:"readiness,omitempty"`
-	ReadyCursor  *uint64    `json:"ready_cursor,omitempty"`
-	Restart      string     `json:"restart"`
-	Relaunches   int        `json:"relaunches"`
-	NextLaunchAt *time.Time `json:"next_launch_at,omitempty"`
-	Error        string     `json:"error,omitempty"`
-}
-type manifestWaitItem struct {
-	index      int
-	definition project.Definition
-	process    app.Process
-	initial    string
-	timeout    time.Duration
+	Name          string     `json:"name"`
+	Outcome       string     `json:"outcome"`
+	Source        string     `json:"source"`
+	Argv          []string   `json:"argv"`
+	PID           *int       `json:"pid,omitempty"`
+	LaunchCursor  *uint64    `json:"launch_cursor,omitempty"`
+	Readiness     string     `json:"readiness,omitempty"`
+	ReadyCursor   *uint64    `json:"ready_cursor,omitempty"`
+	BlockedBy     []string   `json:"blocked_by,omitempty"`
+	ExistingState string     `json:"existing_state,omitempty"`
+	Restart       string     `json:"restart"`
+	Relaunches    int        `json:"relaunches"`
+	NextLaunchAt  *time.Time `json:"next_launch_at,omitempty"`
+	Error         string     `json:"error,omitempty"`
 }
 
 func undefinedManifestDefinition(name string) project.Definition {
-	return project.Definition{Name: name, Source: "manifest", Argv: []string{}}
+	return project.Definition{Name: name, Source: "manifest", Argv: []string{}, After: []string{}}
 }
 
 func newManifestLaunchResult(definition project.Definition, outcome string) manifestLaunchResult {
@@ -173,6 +168,20 @@ func newManifestLaunchResult(definition project.Definition, outcome string) mani
 		Argv:    append([]string(nil), definition.Argv...),
 		Restart: restartPolicy(definition),
 	}
+}
+
+func manifestLaunchSkipped(ctx context.Context, client *daemon.Client, root string, definition project.Definition, blockedBy []string) manifestLaunchResult {
+	result := newManifestLaunchResult(definition, "skipped")
+	if current, err := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: root}); err == nil {
+		result = manifestLaunchResultFor(definition, current, "skipped")
+		if current.State == app.StateRunning {
+			result.ExistingState = "running"
+		} else {
+			result.ExistingState = "exited"
+		}
+	}
+	result.BlockedBy = append([]string(nil), blockedBy...)
+	return result
 }
 
 func manifestLaunchResultFor(definition project.Definition, process app.Process, outcome string) manifestLaunchResult {
@@ -259,18 +268,46 @@ func manifestTimeoutMS(timeout time.Duration) (int64, error) {
 	return int64(milliseconds), nil
 }
 
+func manifestSameIncarnation(observed, current app.Process) bool {
+	return observed.PID == current.PID && observed.LaunchCursor == current.LaunchCursor
+}
+
+func manifestReadinessBeforeDeadline(readiness *app.Readiness, deadline time.Time) bool {
+	if readiness == nil {
+		return true
+	}
+	if !readiness.Time.IsZero() && readiness.Time.After(deadline) {
+		return false
+	}
+	return !time.Now().After(deadline)
+}
+
 func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd string, definition project.Definition, process app.Process, initialOutcome string, timeout time.Duration) (manifestLaunchResult, error) {
 	result := manifestLaunchResultFor(definition, process, initialOutcome)
-	if process.State != app.StateRunning {
+	deadline := time.Now().Add(timeout)
+	observed := process
+	markExited := func() (manifestLaunchResult, error) {
 		result.Outcome = "exited_before_ready"
 		result.Readiness = ""
 		return result, nil
+	}
+	markTimedOut := func() (manifestLaunchResult, error) {
+		result.Outcome = "timed_out"
+		return result, nil
+	}
+	if process.State != app.StateRunning {
+		return markExited()
 	}
 	if process.Readiness == nil {
 		return result, nil
 	}
 	switch process.Readiness.State {
-	case app.ReadinessReady, app.ReadinessRunningUnverified:
+	case app.ReadinessReady:
+		if !manifestReadinessBeforeDeadline(process.Readiness, deadline) {
+			return markTimedOut()
+		}
+		return result, nil
+	case app.ReadinessRunningUnverified:
 		return result, nil
 	case app.ReadinessStarting:
 		// Continue below using the expression recorded on this incarnation.
@@ -288,6 +325,9 @@ func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd str
 		lookupCwd = cwd
 	}
 	if current, getErr := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd}); getErr == nil {
+		if !manifestSameIncarnation(observed, current) {
+			return markExited()
+		}
 		if current.State == app.StateRunning {
 			process = current
 			lookupCwd = process.Root
@@ -300,15 +340,18 @@ func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd str
 		return result, getErr
 	}
 	if process.State != app.StateRunning {
-		result.Outcome = "exited_before_ready"
-		result.Readiness = ""
-		return result, nil
+		return markExited()
 	}
 	if process.Readiness == nil {
 		return result, nil
 	}
 	switch process.Readiness.State {
-	case app.ReadinessReady, app.ReadinessRunningUnverified:
+	case app.ReadinessReady:
+		if !manifestReadinessBeforeDeadline(process.Readiness, deadline) {
+			return markTimedOut()
+		}
+		return result, nil
+	case app.ReadinessRunningUnverified:
 		return result, nil
 	case app.ReadinessStarting:
 		if process.Readiness.Match != recordedMatch {
@@ -318,7 +361,11 @@ func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd str
 		return result, nil
 	}
 
-	milliseconds, err := manifestTimeoutMS(timeout)
+	remaining := time.Until(deadline)
+	if remaining < time.Millisecond {
+		return markTimedOut()
+	}
+	milliseconds, err := manifestTimeoutMS(remaining)
 	if err != nil {
 		return result, err
 	}
@@ -332,49 +379,52 @@ func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd str
 		return result, err
 	}
 
-	checkCurrent := func() (manifestLaunchResult, bool, error) {
+	checkCurrent := func() (manifestLaunchResult, bool, bool, error) {
 		current, getErr := client.Get(ctx, daemon.GetRequest{Name: definition.Name, Cwd: lookupCwd})
 		if getErr != nil {
-			return result, false, getErr
+			return result, false, false, getErr
+		}
+		if !manifestSameIncarnation(observed, current) {
+			terminal, _ := markExited()
+			return terminal, true, false, nil
 		}
 		if current.State != app.StateRunning {
 			terminal := manifestLaunchResultFor(definition, current, "exited_before_ready")
 			terminal.Readiness = ""
-			return terminal, true, nil
+			return terminal, true, true, nil
 		}
 		if current.Readiness == nil {
-			return manifestLaunchResultFor(definition, current, initialOutcome), true, nil
+			return manifestLaunchResultFor(definition, current, initialOutcome), true, true, nil
 		}
 		switch current.Readiness.State {
 		case app.ReadinessReady:
-			// A ready state belongs to the expression recorded for the
-			// current incarnation. A different match means another
-			// incarnation won the race; report that snapshot without
-			// waiting on the stale expression.
-			return manifestLaunchResultFor(definition, current, initialOutcome), true, nil
+			if !manifestReadinessBeforeDeadline(current.Readiness, deadline) {
+				timedOut, _ := markTimedOut()
+				return timedOut, true, false, nil
+			}
+			return manifestLaunchResultFor(definition, current, initialOutcome), true, true, nil
 		case app.ReadinessRunningUnverified:
-			return manifestLaunchResultFor(definition, current, initialOutcome), true, nil
+			return manifestLaunchResultFor(definition, current, initialOutcome), true, true, nil
 		case app.ReadinessStarting:
 			if current.Readiness.Match != recordedMatch {
-				return manifestLaunchResultFor(definition, current, initialOutcome), true, nil
+				return manifestLaunchResultFor(definition, current, initialOutcome), true, true, nil
 			}
 		}
-		return result, false, nil
+		return result, false, false, nil
 	}
 
 	switch waitResult.Outcome {
 	case app.WaitMatched:
 		// The readiness monitor and this client subscribe independently. Give
-		// the monitor a bounded opportunity to publish its durable state, then
-		// use that state (rather than a retained entry) for the result.
-		deadline := time.Now().Add(timeout)
+		// the monitor a bounded opportunity to publish its durable state, but
+		// never restart the original launch's deadline after Wait returns.
 		for {
-			current, done, getErr := checkCurrent()
+			current, done, matchValid, getErr := checkCurrent()
 			if getErr != nil {
 				return result, getErr
 			}
 			if done {
-				if current.Outcome == "exited_before_ready" {
+				if current.Outcome == "exited_before_ready" && matchValid {
 					// Wait observed the readiness match before the process exited,
 					// even if reconciliation hid terminal readiness before Get.
 					result.Readiness = app.ReadinessReady
@@ -384,11 +434,15 @@ func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd str
 				}
 				return current, nil
 			}
-			if time.Now().After(deadline) {
-				result.Outcome = "timed_out"
-				return result, nil
+			remaining = time.Until(deadline)
+			if remaining < time.Millisecond {
+				return markTimedOut()
 			}
-			timer := time.NewTimer(time.Millisecond)
+			timerDuration := time.Millisecond
+			if remaining < timerDuration {
+				timerDuration = remaining
+			}
+			timer := time.NewTimer(timerDuration)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
@@ -397,22 +451,19 @@ func manifestReadinessResult(client *daemon.Client, ctx context.Context, cwd str
 			}
 		}
 	case app.WaitExited:
-		result.Outcome = "exited_before_ready"
-		result.Readiness = ""
-		return result, nil
+		return markExited()
 	case app.WaitTimedOut:
 		// A match can be consumed and evicted immediately before Wait's
 		// subscription observes it. Re-check the daemon's incarnation-local
 		// readiness state before reporting a timeout.
-		current, done, getErr := checkCurrent()
+		current, done, _, getErr := checkCurrent()
 		if getErr != nil {
 			return result, getErr
 		}
 		if done {
 			return current, nil
 		}
-		result.Outcome = "timed_out"
-		return result, nil
+		return markTimedOut()
 	default:
 		return result, fmt.Errorf("unknown readiness wait outcome %q", waitResult.Outcome)
 	}

@@ -32,7 +32,7 @@ func TestInitSingleCandidate(t *testing.T) {
 	if result.Outcome != InitOutcomeGenerated {
 		t.Fatalf("outcome = %q, want %q", result.Outcome, InitOutcomeGenerated)
 	}
-	wantCandidate := []Definition{{Name: "dev", Source: "package_json", Argv: []string{"npm", "run", "dev"}, Cwd: root, Restart: RestartNever}}
+	wantCandidate := []Definition{{Name: "dev", Source: "package_json", Argv: []string{"npm", "run", "dev"}, Cwd: root, After: []string{}, Restart: RestartNever}}
 	if !reflect.DeepEqual(result.Candidates, wantCandidate) {
 		t.Fatalf("candidates = %#v, want %#v", result.Candidates, wantCandidate)
 	}
@@ -68,7 +68,7 @@ func TestInitSingleCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantLoaded := []Definition{{Name: "dev", Source: "manifest", Argv: []string{"npm", "run", "dev"}, Cwd: root, Restart: RestartNever}}
+	wantLoaded := []Definition{{Name: "dev", Source: "manifest", Argv: []string{"npm", "run", "dev"}, Cwd: root, After: []string{}, Restart: RestartNever}}
 	if !reflect.DeepEqual(definitions, wantLoaded) {
 		t.Fatalf("loaded definitions = %#v, want %#v", definitions, wantLoaded)
 	}
@@ -109,8 +109,8 @@ func TestInitTemplates(t *testing.T) {
 			t.Fatalf("outcome = %q, want %q", result.Outcome, InitOutcomeTemplate)
 		}
 		wantCandidates := []Definition{
-			{Name: "dev", Source: "package_json", Argv: []string{"npm", "run", "dev"}, Cwd: root, Restart: RestartNever},
-			{Name: "dev", Source: "deno_json", Argv: []string{"deno", "task", "dev"}, Cwd: root, Restart: RestartNever},
+			{Name: "dev", Source: "package_json", Argv: []string{"npm", "run", "dev"}, Cwd: root, After: []string{}, Restart: RestartNever},
+			{Name: "dev", Source: "deno_json", Argv: []string{"deno", "task", "dev"}, Cwd: root, After: []string{}, Restart: RestartNever},
 		}
 		if !reflect.DeepEqual(result.Candidates, wantCandidates) {
 			t.Fatalf("candidates = %#v, want %#v", result.Candidates, wantCandidates)

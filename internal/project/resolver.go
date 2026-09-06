@@ -232,6 +232,7 @@ func discoveredDefinition(root, source string, argv ...string) Definition {
 		Argv:    append([]string(nil), argv...),
 		Cwd:     root,
 		Ready:   nil,
+		After:   []string{},
 		Restart: RestartNever,
 	}
 }

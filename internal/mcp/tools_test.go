@@ -52,6 +52,8 @@ type fakeClient struct {
 
 func (f *fakeClient) Close() error { return nil }
 func (f *fakeClient) Start(_ context.Context, req protocol.StartRequest) (protocol.Process, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.starts = append(f.starts, req)
 	if err := f.startErr[req.Name]; err != nil {
 		return protocol.Process{}, err
@@ -64,6 +66,8 @@ func (f *fakeClient) Start(_ context.Context, req protocol.StartRequest) (protoc
 	return p, nil
 }
 func (f *fakeClient) List(_ context.Context, req protocol.ListRequest) ([]protocol.Process, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lists = append(f.lists, req)
 	out := make([]protocol.Process, 0, len(f.processes))
 	for _, p := range f.processes {
@@ -85,26 +89,30 @@ func (f *fakeClient) Get(_ context.Context, req protocol.GetRequest) (protocol.P
 	return p, nil
 }
 func (f *fakeClient) Output(_ context.Context, req protocol.OutputRequest) (protocol.OutputResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.outputs = append(f.outputs, req)
 	return f.output, nil
 }
 func (f *fakeClient) Wait(_ context.Context, req protocol.WaitRequest) (protocol.WaitResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.waitHook != nil {
 		f.waitHook(req)
 	}
-	f.mu.Lock()
 	f.waits = append(f.waits, req)
 	if f.waited == nil {
 		f.waited = make(map[string]bool)
 	}
 	f.waited[req.Name] = true
-	f.mu.Unlock()
 	if f.waitResult.Op == "" {
 		return protocol.NewWaitResponse(protocol.WaitMatched, 9, nil), nil
 	}
 	return f.waitResult, nil
 }
 func (f *fakeClient) Input(_ context.Context, req InputRequest) (InputResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.inputs = append(f.inputs, req)
 	if f.inputErr != nil {
 		return InputResult{}, f.inputErr
@@ -118,14 +126,20 @@ func (f *fakeClient) Input(_ context.Context, req InputRequest) (InputResult, er
 	return f.inputResult, nil
 }
 func (f *fakeClient) Stop(_ context.Context, req protocol.StopRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.stops = append(f.stops, req)
 	return f.stopErr[req.Name]
 }
 func (f *fakeClient) Remove(_ context.Context, req protocol.RemoveRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.stops = append(f.stops, protocol.StopRequest{Op: protocol.OpStop, Name: req.Name, Cwd: req.Cwd})
 	return f.stopErr[req.Name]
 }
 func (f *fakeClient) Restart(_ context.Context, req protocol.RestartRequest) (protocol.Process, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.restarts = append(f.restarts, req)
 	p, ok := f.processes[req.Name]
 	if !ok {
@@ -355,7 +369,7 @@ func TestStartUp(t *testing.T) {
 	if p.Readiness == nil || p.Readiness.State != protocol.ReadinessReady {
 		t.Fatalf("start=%#v", p)
 	}
-	if len(client.waits) != 1 || client.waits[0].TimeoutMS != defaultTimeoutMS || client.waits[0].After == nil || *client.waits[0].After != 7 {
+	if len(client.waits) != 1 || client.waits[0].TimeoutMS < defaultTimeoutMS-1000 || client.waits[0].TimeoutMS > defaultTimeoutMS || client.waits[0].After != nil {
 		t.Fatalf("wait=%#v", client.waits)
 	}
 	if len(client.starts[0].Env) != 1 {
@@ -406,9 +420,10 @@ func TestStartUp(t *testing.T) {
 		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: &protocol.ReadinessConfig{Match: "ready"}},
 	}
 	concurrentServer, concurrentRoot, _ := newTestServer(t, concurrentDefinitions, concurrentClient)
-	concurrentClient.waitHook = func(protocol.WaitRequest) {
-		if len(concurrentClient.starts) != len(concurrentDefinitions) {
-			t.Errorf("readiness wait began after only %d/%d launches", len(concurrentClient.starts), len(concurrentDefinitions))
+	concurrentClient.waitHook = func(req protocol.WaitRequest) {
+		process, started := concurrentClient.processes[req.Name]
+		if !started || process.State != "running" {
+			t.Errorf("readiness wait for %q began before its process launch: %#v", req.Name, concurrentClient.starts)
 		}
 	}
 	if _, err := concurrentServer.callTool(context.Background(), "up", args(concurrentRoot)); err != nil {
@@ -416,7 +431,7 @@ func TestStartUp(t *testing.T) {
 	}
 	timeouts := []int64{concurrentClient.waits[0].TimeoutMS, concurrentClient.waits[1].TimeoutMS}
 	sort.Slice(timeouts, func(i, j int) bool { return timeouts[i] < timeouts[j] })
-	if !reflect.DeepEqual(timeouts, []int64{17, defaultTimeoutMS}) {
+	if timeouts[0] < 1 || timeouts[0] > 17 || timeouts[1] < defaultTimeoutMS-1000 || timeouts[1] > defaultTimeoutMS {
 		t.Fatalf("readiness timeouts = %v", timeouts)
 	}
 	timeoutClient := &fakeClient{keepStarting: true, waitResult: protocol.NewWaitResponse(protocol.WaitTimedOut, 9, nil)}
@@ -448,6 +463,139 @@ func TestStartUp(t *testing.T) {
 	exitedValue, err := exitedServer.callTool(context.Background(), "start", args(exitedRoot, "name", "short"))
 	if err != nil || exitedValue.(launchResult).Outcome != "exited_before_ready" {
 		t.Fatalf("exited start = %#v, %v", exitedValue, err)
+	}
+}
+
+func TestUpOrdersByAfter(t *testing.T) {
+	ready := &protocol.ReadinessConfig{Match: "ready"}
+	client := &fakeClient{}
+	defs := []Definition{
+		{Name: "web", Source: "hum.yaml", Argv: []string{"web"}, Cwd: "/tmp", Ready: ready, After: []string{"api"}},
+		{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp", Ready: ready, After: []string{"db"}},
+		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: ready},
+	}
+	server, root, _ := newTestServer(t, defs, client)
+	value, err := server.callTool(context.Background(), "up", args(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := value.([]launchResult)
+	if got := []string{results[0].Name, results[1].Name, results[2].Name}; !reflect.DeepEqual(got, []string{"api", "db", "web"}) {
+		t.Fatalf("MCP up order = %v", got)
+	}
+	for _, result := range results {
+		if result.Outcome != "started" || result.Process == nil || result.Process.Readiness == nil || result.Process.Readiness.State != protocol.ReadinessReady {
+			t.Fatalf("MCP up result = %#v", result)
+		}
+	}
+	if got := []string{client.starts[0].Name, client.starts[1].Name, client.starts[2].Name}; !reflect.DeepEqual(got, []string{"db", "api", "web"}) {
+		t.Fatalf("MCP launch order = %v", got)
+	}
+	if _, err := server.callTool(context.Background(), "up", args(root)); err != nil {
+		t.Fatalf("idempotent MCP up: %v", err)
+	}
+	if len(client.starts) != 3 {
+		t.Fatalf("idempotent MCP up relaunched: %#v", client.starts)
+	}
+
+	noWaitClient := &fakeClient{}
+	noWaitServer, noWaitRoot, noWaitEnsures := newTestServer(t, []Definition{{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp", Ready: ready, After: []string{"db"}}, {Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: ready}}, noWaitClient)
+	if _, err := noWaitServer.callTool(context.Background(), "up", args(noWaitRoot, "no_wait", true)); err == nil {
+		t.Fatal("MCP up no_wait accepted after dependency")
+	}
+	if len(*noWaitEnsures) != 0 {
+		t.Fatalf("MCP no_wait contacted daemon: %v", *noWaitEnsures)
+	}
+
+	blockedClient := &fakeClient{startErr: map[string]error{"db": errors.New("request failed"), "queue": errors.New("queue failed")}}
+	blockedServer, blockedRoot, _ := newTestServer(t, []Definition{
+		{Name: "web", Source: "hum.yaml", Argv: []string{"web"}, Cwd: "/tmp", Ready: ready, After: []string{"api"}},
+		{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp", Ready: ready, After: []string{"queue", "db"}},
+		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: ready},
+		{Name: "queue", Source: "hum.yaml", Argv: []string{"queue"}, Cwd: "/tmp", Ready: ready},
+	}, blockedClient)
+	blockedValue, err := blockedServer.callTool(context.Background(), "up", args(blockedRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedResults := blockedValue.([]launchResult)
+	if !reflect.DeepEqual(blockedResults[0].BlockedBy, []string{"db", "queue"}) || blockedResults[0].Outcome != "skipped" {
+		t.Fatalf("direct blockers = %#v", blockedResults[0])
+	}
+	if !reflect.DeepEqual(blockedResults[3].BlockedBy, []string{"api"}) || blockedResults[3].Outcome != "skipped" {
+		t.Fatalf("cascade blockers = %#v", blockedResults[3])
+	}
+
+	matchedThenExited := &fakeClient{keepStarting: true}
+	matchedThenExited.waitHook = func(req protocol.WaitRequest) {
+		process := matchedThenExited.processes[req.Name]
+		process.State = "exited"
+		matchedThenExited.processes[req.Name] = process
+	}
+	matchedServer, matchedRoot, _ := newTestServer(t, []Definition{
+		{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp", Ready: ready, After: []string{"db"}},
+		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: ready},
+	}, matchedThenExited)
+	matchedValue, err := matchedServer.callTool(context.Background(), "up", args(matchedRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	matchedResults := matchedValue.([]launchResult)
+	if matchedResults[1].Outcome != "started" || matchedResults[1].Process == nil || matchedResults[1].Process.Readiness == nil || matchedResults[1].Process.Readiness.State != protocol.ReadinessReady {
+		t.Fatalf("matched-then-exited prerequisite = %#v, want started/ready", matchedResults[1])
+	}
+	if len(matchedThenExited.starts) != 2 || matchedThenExited.starts[1].Name != "api" {
+		t.Fatalf("matched-then-exited starts = %#v, want dependent api launched", matchedThenExited.starts)
+	}
+}
+
+func TestUpReportsBlockedExistingState(t *testing.T) {
+	ready := &protocol.ReadinessConfig{Match: "ready"}
+	definitions := []Definition{
+		{Name: "web", Source: "hum.yaml", Argv: []string{"web"}, Cwd: "/tmp", Ready: ready, After: []string{"api"}},
+		{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp", Ready: ready, After: []string{"db"}},
+		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: ready},
+	}
+	nextLaunch := time.Now().Add(time.Second).UTC().Truncate(time.Millisecond)
+	for _, test := range []struct {
+		name  string
+		state string
+		pid   int
+	}{
+		{name: "running", state: "running", pid: 41},
+		{name: "exited", state: "exited"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &fakeClient{
+				processes: map[string]protocol.Process{
+					"api": {Name: "api", Source: "manifest", Root: "/root", State: test.state, PID: test.pid, LaunchCursor: 12, Restart: "on-failure", Relaunches: 2, NextLaunchAt: &nextLaunch},
+				},
+				startErr: map[string]error{"db": errors.New("request failed")},
+			}
+			server, root, _ := newTestServer(t, definitions, client)
+			upItems := server.toolDefinitions()[1].OutputSchema["items"].(map[string]any)
+			upProperties := upItems["properties"].(map[string]any)
+			if _, ok := upProperties["existing_state"]; !ok || upItems["additionalProperties"] != false {
+				t.Fatalf("up result schema omits closed existing_state: %#v", upItems)
+			}
+			value, err := server.callTool(context.Background(), "up", args(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			results := value.([]launchResult)
+			if results[0].Outcome != "skipped" || results[0].ExistingState != test.state || results[0].Process == nil || results[0].Process.LaunchCursor != 12 || results[0].Process.Restart != "on-failure" || results[0].Process.Relaunches != 2 || results[0].Process.NextLaunchAt == nil {
+				t.Fatalf("blocked %s api = %#v", test.state, results[0])
+			}
+			if test.state == "running" && results[0].Process.PID != test.pid {
+				t.Fatalf("blocked running PID = %d, want %d", results[0].Process.PID, test.pid)
+			}
+			if !reflect.DeepEqual(results[0].BlockedBy, []string{"db"}) || results[2].Outcome != "skipped" || !reflect.DeepEqual(results[2].BlockedBy, []string{"api"}) || results[2].ExistingState != "" || results[2].Process != nil {
+				t.Fatalf("blocked chain = %#v", results)
+			}
+			if len(client.starts) != 1 || client.starts[0].Name != "db" {
+				t.Fatalf("blocked lifecycle requests = %#v, want only db start", client.starts)
+			}
+		})
 	}
 }
 

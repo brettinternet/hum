@@ -45,6 +45,7 @@ var (
 		"argv":    {},
 		"cwd":     {},
 		"ready":   {},
+		"after":   {},
 		"tty":     {},
 		"restart": {},
 	}
@@ -61,6 +62,7 @@ type Definition struct {
 	Argv    []string
 	Cwd     string
 	Ready   *ReadyDefinition
+	After   []string
 	TTY     bool
 	Restart RestartPolicy
 }
@@ -194,7 +196,79 @@ func parseProcesses(root, filename string, node *yaml.Node) ([]Definition, error
 	sort.Slice(definitions, func(i, j int) bool {
 		return definitions[i].Name < definitions[j].Name
 	})
+	if err := validateAfterGraph(filename, definitions); err != nil {
+		return nil, err
+	}
 	return definitions, nil
+}
+
+func validateAfterGraph(filename string, definitions []Definition) error {
+	byName := make(map[string]Definition, len(definitions))
+	for _, definition := range definitions {
+		byName[definition.Name] = definition
+	}
+	for _, definition := range definitions {
+		seen := make(map[string]int, len(definition.After))
+		for index, dependency := range definition.After {
+			context := fmt.Sprintf("process %q.after[%d]", definition.Name, index)
+			if previous, ok := seen[dependency]; ok {
+				return manifestError(filename, context, "duplicate dependency %q (already declared at index %d)", dependency, previous)
+			}
+			seen[dependency] = index
+		}
+		for index, dependency := range definition.After {
+			context := fmt.Sprintf("process %q.after[%d]", definition.Name, index)
+			if dependency == definition.Name {
+				return manifestError(filename, context, "process cannot depend on itself")
+			}
+			dependencyDefinition, ok := byName[dependency]
+			if !ok {
+				return manifestError(filename, context, "unknown process %q", dependency)
+			}
+			if dependencyDefinition.Ready == nil {
+				return manifestError(filename, context, "dependency %q must declare ready", dependency)
+			}
+		}
+	}
+
+	state := make(map[string]uint8, len(definitions))
+	stack := make([]string, 0, len(definitions))
+	var visit func(string, string, int) error
+	visit = func(name, edgeOwner string, edgeIndex int) error {
+		switch state[name] {
+		case 2:
+			return nil
+		case 1:
+			cycleStart := 0
+			for index, item := range stack {
+				if item == name {
+					cycleStart = index
+					break
+				}
+			}
+			cycle := append([]string(nil), stack[cycleStart:]...)
+			cycle = append(cycle, name)
+			context := fmt.Sprintf("process %q.after[%d]", edgeOwner, edgeIndex)
+			return manifestError(filename, context, "dependency cycle: %s", strings.Join(cycle, " -> "))
+		}
+		state[name] = 1
+		stack = append(stack, name)
+		definition := byName[name]
+		for index, dependency := range definition.After {
+			if err := visit(dependency, name, index); err != nil {
+				return err
+			}
+		}
+		stack = stack[:len(stack)-1]
+		state[name] = 2
+		return nil
+	}
+	for _, definition := range definitions {
+		if err := visit(definition.Name, "", -1); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func parseProcess(root, filename, context string, node *yaml.Node) (Definition, error) {
@@ -233,6 +307,13 @@ func parseProcess(root, filename, context string, node *yaml.Node) (Definition, 
 			return Definition{}, err
 		}
 	}
+	after := []string{}
+	if afterNode, ok := fields["after"]; ok {
+		after, err = parseAfter(filename, context, afterNode)
+		if err != nil {
+			return Definition{}, err
+		}
+	}
 	tty := false
 	if ttyNode, ok := fields["tty"]; ok {
 		if ttyNode == nil || ttyNode.Kind != yaml.ScalarNode || ttyNode.ShortTag() != "!!bool" {
@@ -252,7 +333,22 @@ func parseProcess(root, filename, context string, node *yaml.Node) (Definition, 
 			return Definition{}, manifestError(filename, context, "restart %q is invalid (want never or on-failure)", restartNode.Value)
 		}
 	}
-	return Definition{Argv: argv, Cwd: cwd, Ready: ready, TTY: tty, Restart: restart}, nil
+	return Definition{Argv: argv, Cwd: cwd, Ready: ready, After: after, TTY: tty, Restart: restart}, nil
+}
+
+func parseAfter(filename, context string, node *yaml.Node) ([]string, error) {
+	afterContext := context + ".after"
+	if node == nil || !isSequenceNode(node) {
+		return nil, manifestError(filename, afterContext, "must be a sequence of strings")
+	}
+	after := make([]string, len(node.Content))
+	for index, item := range node.Content {
+		if !isStringScalar(item) {
+			return nil, manifestError(filename, fmt.Sprintf("%s[%d]", afterContext, index), "must be a string")
+		}
+		after[index] = item.Value
+	}
+	return after, nil
 }
 
 func parseArgv(filename, context string, node *yaml.Node) ([]string, error) {
