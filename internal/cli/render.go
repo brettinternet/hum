@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"hum/internal/app"
@@ -296,6 +297,76 @@ func writeLogEntries(w io.Writer, entries []output.Entry) error {
 		}
 	}
 	return nil
+}
+
+type aggregateLogRenderer struct {
+	mu        sync.Mutex
+	writer    io.Writer
+	errWriter io.Writer
+	json      bool
+}
+
+func newAggregateLogRenderer(writer, errWriter io.Writer, jsonOutput bool) *aggregateLogRenderer {
+	return &aggregateLogRenderer{writer: writer, errWriter: errWriter, json: jsonOutput}
+}
+
+func (r *aggregateLogRenderer) writeEvent(name string, event output.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.json {
+		return encodeJSON(r.writer, eventJSON(name, event))
+	}
+	if event.Read == nil {
+		return nil
+	}
+	for _, entry := range event.Read.Entries {
+		if err := writeAggregateLogEntry(r.writer, name, entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *aggregateLogRenderer) writeError(name string, wire *protocol.WireError) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.json {
+		return encodeJSON(r.writer, protocol.StreamEvent{
+			Op: protocol.OpEvent, Type: protocol.EventError, Name: name, Error: wire,
+		})
+	}
+	message := "aggregate logs failed"
+	if wire != nil && wire.Message != "" {
+		message = wire.Message
+	}
+	_, err := io.WriteString(r.writer, fmt.Sprintf("[%s] error: %s\n", name, message))
+	return err
+}
+
+func (r *aggregateLogRenderer) writeCursor(name string, result output.ReadResult) error {
+	if r.json {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next := output.Cursor(0)
+	if result.Next != nil {
+		next = *result.Next
+	}
+	trailer := fmt.Sprintf("next cursor: %d", next)
+	if result.Truncated || result.EvictedThrough != nil {
+		trailer += " (truncated)"
+	}
+	if result.More {
+		trailer += " (more available)"
+	}
+	_, err := io.WriteString(r.errWriter, fmt.Sprintf("[%s] %s\n", name, trailer))
+	return err
+}
+
+func writeAggregateLogEntry(w io.Writer, name string, entry output.Entry) error {
+	_, err := io.WriteString(w, fmt.Sprintf("[%s] %s", name, entry.Text))
+	return err
 }
 
 func writeCursorTrailer(w io.Writer, result output.ReadResult) error {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -199,6 +200,56 @@ func TestWaitHelpDescribesExitAndReadiness(t *testing.T) {
 	for _, want := range []string{"without --match", "process incarnation exits", "stopped or never-launched session", "next launch", "starts a daemon when needed", "--after-cursor", "default: current launch cursor", "--match", "--timeout", "--json"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("wait help missing %q: %q", want, output.String())
+		}
+	}
+}
+
+func TestLogsAggregateDocs(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+	if err := root.Run(context.Background(), []string{"hum", "logs", "--help"}); err != nil {
+		t.Fatalf("logs help: %v", err)
+	}
+	help := strings.ToLower(output.String())
+	for _, want := range []string{
+		"[name...]",
+		"one or more names",
+		"command-line order",
+		"no names",
+		"lexical order",
+		"no ad-hoc sessions",
+		"duplicate names",
+		"--after-cursor",
+		"independently",
+		"named ndjson",
+		"atomic [name] prefix",
+		"one follower",
+		"per-session errors",
+		"daemon loss",
+		"output failure",
+		"closes all followers",
+		"never signals",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("logs aggregate help missing %q: %q", want, output.String())
+		}
+	}
+	if errorOutput.Len() != 0 {
+		t.Fatalf("logs help stderr = %q", errorOutput.String())
+	}
+	for path, want := range map[string][]string{
+		"../../README.md":      {"hum up", "hum logs --follow", "single explicit name", "unchanged"},
+		"../../docs/design.md": {"hum up", "hum logs --follow", "single explicit", "unchanged"},
+	} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		lower := strings.ToLower(string(content))
+		for _, phrase := range want {
+			if !strings.Contains(lower, phrase) {
+				t.Errorf("%s missing %q", path, phrase)
+			}
 		}
 	}
 }

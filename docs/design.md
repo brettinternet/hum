@@ -22,7 +22,7 @@ hum down [--json]
 hum run <name> [--detach] [--json] [-- <command> [args...]]
 hum list [--all] [--json]
 hum status <name> [--json]
-hum logs <name> [--stream stdout|stderr|both] [--tail N] [--after-cursor N]
+hum logs [<name>...] [--stream stdout|stderr|both] [--tail N] [--after-cursor N]
            [--limit-bytes N] [--match REGEX] [--follow] [--json]
 hum wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
 hum input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
@@ -64,7 +64,13 @@ unfollowed list output unchanged. `start` and `up` emit one NDJSON launch result
 lexical declaration order, attempts every entry, and applies this exit-code
 precedence: request error (1), early exit (3), timeout (2), success (0).
 Attached `run --json` still streams raw child output; `logs --json --follow`
-emits bounded NDJSON events.
+emits bounded NDJSON events. `logs` accepts optional, repeatable names in selection
+order. With no names, it resolves the current declaration set once in lexical order,
+without adding ad-hoc sessions; duplicate names are rejected. `--after-cursor` is
+rejected before daemon startup for an aggregate invocation. Aggregate filters, tail,
+and entry or byte limits apply independently per selected name, bounded output is
+returned in selection order, human entries are atomic `[NAME]`-prefixed writes, and
+aggregate JSON uses named NDJSON event objects.
 
 ### Command semantics
 
@@ -97,8 +103,18 @@ restarted.
 `list` merges current definitions with all project runtime records. Without a
 daemon it reports resolved definitions as stopped. `status`, `logs`, `wait`,
 `restart`, `stop`, and `remove` operate on resolved and ad hoc records in the
-project. `input` is the bounded request/response surface for an existing TTY
-record: `--text` sends exact non-empty text bytes without a newline, while
+project. The recommended interactive workflow is `hum up` followed by
+`hum logs --follow`. `logs` with multiple names follows the explicit selection order; its
+no-name form uses the same lexical declarations as `up`, does not include ad-hoc
+records, and does not change membership when declarations or runtime records change.
+Each aggregate name receives its own filters and bounded limits. Human output prefixes
+each entry with `[NAME]`; JSON bounded output and follow output retain the named
+NDJSON event shape. An aggregate follow owns one follower per selected session,
+serializes writes, reports per-session errors with their names without stopping other
+sessions, and cancels the whole aggregate on daemon loss or output failure. Ctrl+C
+closes all aggregate followers and never signals managed processes. A single explicit
+name preserves the existing human and JSON output unchanged.
+`input` is the bounded request/response surface for an existing TTY record: `--text` sends exact non-empty text bytes without a newline, while
 `--base64` accepts only standard padded base64 without whitespace and decodes to
 at most 32 KiB. It attaches only to the initial running state, writes exactly
 once at that launch cursor, and releases the exclusive lease before returning.
@@ -230,7 +246,9 @@ not terminal emulation or redraw collapsing: a sequence split across entries can
 leave its tail visible, and carriage-return redraw frames remain separate.
 Byte-bounded retention reports eviction explicitly; a live pre-launch or stopped
 follower reserves its
-session from completed-record eviction. Attached `run` and `logs --follow` may
+session from completed-record eviction. Aggregate `logs --follow` creates one
+follower per selected name and keeps per-session filters, tails, and limits
+independent. Attached `run` and `logs --follow` may
 start before the first launch, return retained output, print exit/wait/launch
 boundaries, and remain open across stop/start and down/up until Ctrl+C, removal,
 or transport loss; their rendering remains raw. Status, list, and their MCP

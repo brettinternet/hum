@@ -51,7 +51,7 @@ processes:
 ```sh
 hum up
 hum status web
-hum logs worker --tail 50
+hum logs web worker --tail 50
 hum stop web
 # run migrations, installs, or other intermediate work
 hum start web
@@ -102,6 +102,21 @@ incarnation and the `relaunching`, spawn-failure, and final `gave up` boundaries
 followers remain attached through backoff and exhaustion. Before editing again,
 agents should read the failing incarnation's retained output with `hum logs` (or
 MCP `logs`) so the crash is diagnosed rather than hidden by recovery.
+
+### Aggregate logs
+
+After `hum up`, use `hum logs --follow` to watch every current declaration in one
+terminal. `hum logs [NAME...]` accepts names in selection order. Omitting names
+resolves the current project's declarations once in lexical order, excludes ad-hoc
+sessions, and keeps that membership fixed for the command. Duplicate names are rejected, and
+`--after-cursor` remains a single-explicit-name option. Aggregate bounded reads apply
+`--stream`, `--match`, `--tail`, and each byte or entry limit independently to every
+name; output follows selection order. Human aggregate entries are written atomically
+with a `[NAME]` prefix, while JSON uses the existing named NDJSON event objects.
+Aggregate follow opens one follower per selected session, serializes writes, keeps
+session errors named and isolated, and closes every follower on daemon loss or
+output failure. Ctrl+C closes those followers without signaling any managed process.
+A single explicit name retains the existing human and JSON output unchanged.
 
 ## Install
 
