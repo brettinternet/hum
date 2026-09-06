@@ -1,11 +1,11 @@
 ---
 id: HUM-026
 title: Order up launches by declared readiness dependencies
-status: In Progress
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-05 15:14'
-updated_date: '2026-09-06 05:07'
+updated_date: '2026-09-06 05:45'
 labels:
   - config
   - cli
@@ -57,29 +57,47 @@ Scope, blocked existing sessions: before finalizing a dependency-blocked node, C
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/project -run "^TestAfterManifest$" -count=1 -v` exits 0 and prints `--- PASS: TestAfterManifest`. It proves absent/empty `after` becomes empty `After []string`; valid lists preserve names; unknown, duplicate, self, dependency-without-ready, non-list, non-string, and cycles of lengths 2, 3, and longer fail with file/process/index context; discovered definitions always have empty `After`; copies do not alias the source slice; and generated/template manifests remain valid with the inert commented example.
-- [ ] #2 AC2 — `go test ./internal/cli -run "^TestUpOrdersByAfter$" -count=1 -v` and `go test ./internal/mcp -run "^TestUpOrdersByAfter$" -count=1 -v` both exit 0 and print the corresponding named PASS line. Against fake daemon clients they prove independent roots launch concurrently; a node waits for all direct prerequisites and launches only when each invocation result is started/already-running and ready; already-ready processes satisfy without relaunch; per-process timeout begins at its own launch/observation; request error, exited-before-ready, timeout, and skipped cascade without a launch; `blocked_by` includes all and only sorted direct blockers; CLI human/NDJSON and MCP arrays stay lexical; aggregate exit precedence remains 1/3/2/0 with no skipped exit code; CLI `start NAME...` launches only requested names concurrently and MCP start remains singular; and no-wait rejection occurs before any fake daemon call.
-- [ ] #3 AC3 — `go test ./integration -run "^TestUpOrderedStack$" -count=1 -v` exits 0 and prints `--- PASS: TestUpOrderedStack`. With the built binary and a manifest of db, api (`after: [db]`), and web (`after: [api]`) whose fixtures record launch/readiness times, it proves each launch follows prerequisite readiness, independent roots overlap, `hum up` exits 0 with three lexical success results, and a second run is idempotent. Failure cases prove db exit before readiness returns exit 3 with api/web skipped and not launched, multiple failed roots produce complete sorted direct blockers, and an `on-failure` db successor is not followed by the same invocation but a later `hum up` launches the blocked nodes after db is ready.
-- [ ] #4 AC4 — `go test ./internal/cli ./internal/skill -run "^TestAfterDocs$" -count=1 -v` exits 0 and prints both named PASS lines. README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document `after` validation, readiness gates and per-process timing, `skipped` plus sorted direct `blocked_by`, stable lexical output and unchanged exit precedence, pre-contact no-wait rejection, explicit-only start, concurrent down, and rerunning up after automatic prerequisite recovery; docs/design.md no longer lists dependencies as a manifest exclusion.
-- [ ] #5 AC5 — `go test ./internal/cli ./internal/mcp -run "^TestUpReportsBlockedExistingState$" -count=1 -v` exits 0 and prints a named PASS line for both packages. It proves blocked running and exited records remain untouched and are distinguished from an absent record in human, CLI NDJSON, and MCP results; no lifecycle request is sent for the blocked node; sorted direct blockers and aggregate exit precedence remain unchanged; and a skipped node with a running record still blocks its dependent.
+- [x] #1 AC1 — `go test ./internal/project -run "^TestAfterManifest$" -count=1 -v` exits 0 and prints `--- PASS: TestAfterManifest`. It proves absent/empty `after` becomes empty `After []string`; valid lists preserve names; unknown, duplicate, self, dependency-without-ready, non-list, non-string, and cycles of lengths 2, 3, and longer fail with file/process/index context; discovered definitions always have empty `After`; copies do not alias the source slice; and generated/template manifests remain valid with the inert commented example.
+- [x] #2 AC2 — `go test ./internal/cli -run "^TestUpOrdersByAfter$" -count=1 -v` and `go test ./internal/mcp -run "^TestUpOrdersByAfter$" -count=1 -v` both exit 0 and print the corresponding named PASS line. Against fake daemon clients they prove independent roots launch concurrently; a node waits for all direct prerequisites and launches only when each invocation result is started/already-running and ready; already-ready processes satisfy without relaunch; per-process timeout begins at its own launch/observation; request error, exited-before-ready, timeout, and skipped cascade without a launch; `blocked_by` includes all and only sorted direct blockers; CLI human/NDJSON and MCP arrays stay lexical; aggregate exit precedence remains 1/3/2/0 with no skipped exit code; CLI `start NAME...` launches only requested names concurrently and MCP start remains singular; and no-wait rejection occurs before any fake daemon call.
+- [x] #3 AC3 — `go test ./integration -run "^TestUpOrderedStack$" -count=1 -v` exits 0 and prints `--- PASS: TestUpOrderedStack`. With the built binary and a manifest of db, api (`after: [db]`), and web (`after: [api]`) whose fixtures record launch/readiness times, it proves each launch follows prerequisite readiness, independent roots overlap, `hum up` exits 0 with three lexical success results, and a second run is idempotent. Failure cases prove db exit before readiness returns exit 3 with api/web skipped and not launched, multiple failed roots produce complete sorted direct blockers, and an `on-failure` db successor is not followed by the same invocation but a later `hum up` launches the blocked nodes after db is ready.
+- [x] #4 AC4 — `go test ./internal/cli ./internal/skill -run "^TestAfterDocs$" -count=1 -v` exits 0 and prints both named PASS lines. README.md, docs/design.md, docs/coding-agents.md, CLI help, the embedded skill, and `plugins/hum/skills/hum/SKILL.md` document `after` validation, readiness gates and per-process timing, `skipped` plus sorted direct `blocked_by`, stable lexical output and unchanged exit precedence, pre-contact no-wait rejection, explicit-only start, concurrent down, and rerunning up after automatic prerequisite recovery; docs/design.md no longer lists dependencies as a manifest exclusion.
+- [x] #5 AC5 — `go test ./internal/cli ./internal/mcp -run "^TestUpReportsBlockedExistingState$" -count=1 -v` exits 0 and prints a named PASS line for both packages. It proves blocked running and exited records remain untouched and are distinguished from an absent record in human, CLI NDJSON, and MCP results; no lifecycle request is sent for the blocked node; sorted direct blockers and aggregate exit precedence remain unchanged; and a skipped node with a running record still blocks its dependent.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-- [ ] T1 — Add strict manifest graph decoding/validation and reusable, non-aliasing dependency metadata.
-- [ ] T2 — Add client-side DAG scheduling for CLI and MCP with concurrent roots, per-node readiness waits, complete blocker propagation, and stable result order.
-- [ ] T3 — Observe and render retained state for dependency-blocked nodes without changing skipped gating.
-- [ ] T4 — Preserve start/down/protocol behavior, reject no-wait before daemon contact, and prove HUM-025 recovery composition.
-- [ ] T5 — Update operator/agent documentation and prove ordered and blocked stacks with the built binary.
+- [x] T1 — Add strict manifest graph decoding/validation and reusable, non-aliasing dependency metadata.
+- [x] T2 — Add client-side DAG scheduling for CLI and MCP with concurrent roots, per-node readiness waits, complete blocker propagation, and stable result order.
+- [x] T3 — Observe and render retained state for dependency-blocked nodes without changing skipped gating.
+- [x] T4 — Preserve start/down/protocol behavior, reject no-wait before daemon contact, and prove HUM-025 recovery composition.
+- [x] T5 — Update operator/agent documentation and prove ordered and blocked stacks with the built binary.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Commit dca091c implements ordered readiness dependencies and blocked retained-state reporting.
+AC#1 PASS — go test ./internal/project -run "^TestAfterManifest$" -count=1 -v.
+AC#2 PASS — go test ./internal/cli -run "^TestUpOrdersByAfter$" -count=1 -v; go test ./internal/mcp -run "^TestUpOrdersByAfter$" -count=1 -v.
+AC#3 PASS — go test ./integration -run "^TestUpOrderedStack$" -count=1 -v.
+AC#4 PASS — go test ./internal/cli ./internal/skill -run "^TestAfterDocs$" -count=1 -v.
+AC#5 PASS — go test ./internal/cli ./internal/mcp -run "^TestUpReportsBlockedExistingState$" -count=1 -v.
+DoD evidence — task ci passed after commit dca091c; independent reviewer returned no findings; independent verifier passed AC1-AC5 and confirmed no tests were deleted, skipped, or weakened. All implementation paths are within the declared modified-file contract; no protected gate file changed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented manifest after validation and client-side readiness DAG scheduling for CLI/MCP, including stable skipped blockers, retained existing-state snapshots, timeout/incarnation fencing, no-wait rejection, integration coverage, and operator/agent documentation. All AC1-AC5 commands and task ci pass; independent review and verification pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
