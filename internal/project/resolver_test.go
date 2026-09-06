@@ -64,7 +64,7 @@ func writeDiscoveryFile(t *testing.T, root, name, contents string, mode os.FileM
 
 func wantDiscoveredDefinition(t *testing.T, definitions []Definition, root, source string, argv ...string) {
 	t.Helper()
-	want := []Definition{{Name: "dev", Source: source, Argv: argv, Cwd: root}}
+	want := []Definition{{Name: "dev", Source: source, Argv: argv, Cwd: root, Restart: RestartNever}}
 	if !reflect.DeepEqual(definitions, want) {
 		t.Fatalf("definitions = %#v, want %#v", definitions, want)
 	}
@@ -89,7 +89,7 @@ func TestResolveExplicit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []Definition{{Name: "web", Source: "manifest", Argv: []string{"go", "run", "./web"}, Cwd: root}}
+		want := []Definition{{Name: "web", Source: "manifest", Argv: []string{"go", "run", "./web"}, Cwd: root, Restart: RestartNever}}
 		if !reflect.DeepEqual(definitions, want) {
 			t.Fatalf("definitions = %#v, want %#v", definitions, want)
 		}

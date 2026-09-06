@@ -192,7 +192,7 @@ func (c *Client) Start(ctx context.Context, req StartRequest) (app.Process, erro
 	request := wireRequest{
 		Op: "start", Name: req.Name, Source: req.Source, Root: req.Root,
 		Argv: append([]string(nil), req.Argv...), Cwd: req.Cwd,
-		Env: append([]string(nil), req.Env...), Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY,
+		Env: append([]string(nil), req.Env...), Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY, Restart: req.Restart,
 	}
 	if req.TTYSize != nil {
 		request.Columns, request.Rows = req.TTYSize.Columns, req.TTYSize.Rows
@@ -737,7 +737,7 @@ func (c *Client) Restart(ctx context.Context, req RestartRequest) (app.Process, 
 	request := wireRequest{
 		Op: "restart", Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
 		Argv: append([]string(nil), req.Argv...), Env: append([]string(nil), req.Env...),
-		Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY,
+		Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY, Restart: req.Restart,
 	}
 	if req.TTYSize != nil {
 		request.Columns, request.Rows = req.TTYSize.Columns, req.TTYSize.Rows
@@ -933,7 +933,7 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 	case "start":
 		value = protocol.StartRequest{
 			Op: protocol.OpStart, Name: req.Name, Argv: req.Argv, Cwd: req.Cwd, Root: req.Root, Env: req.Env,
-			Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY,
+			Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY, Restart: req.Restart,
 		}
 		if req.Columns != 0 || req.Rows != 0 {
 			start := value.(protocol.StartRequest)
@@ -960,7 +960,7 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 		value = protocol.RestartRequest{
 			Op: protocol.OpRestart, Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
 			Argv: req.Argv, Env: req.Env, Source: req.Source,
-			Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY,
+			Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY, Restart: req.Restart,
 		}
 		if req.Columns != 0 || req.Rows != 0 {
 			restart := value.(protocol.RestartRequest)
@@ -1104,7 +1104,8 @@ func appProcessFromWire(item wireProcess) app.Process {
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: output.Cursor(item.LaunchCursor), State: app.State(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
-		Followers: item.Followers,
+		Followers: item.Followers, Restart: app.RestartPolicy(item.Restart), Relaunches: item.Relaunches,
+		NextLaunchAt: item.NextLaunchAt,
 	}
 	if item.Readiness != nil {
 		result.Readiness = &app.Readiness{

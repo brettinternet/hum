@@ -16,9 +16,23 @@ Use the bundled hum MCP tools when available. Pass the absolute current project 
 - Use `wait` for a bounded later condition, including before another client starts the name.
 - For intermediate work, use `stop`, run the work, then `start`; the durable session keeps terminal observers attached.
 - After process-definition changes, use `restart`.
+- A manifest process may opt into `restart: on-failure`; the default is `never`.
+  Unexpected exits retry after 1s, 2s, 4s, 8s, and 16s, at most five times.
+  Inspect retained `logs` before editing a crashing process again.
 - Use `remove` only to discard the runtime session, retained output, and launch state; it never edits `hum.yaml`.
 - Use `down` only when the developer asks you to stop everything in the project; a later `up` restarts only resolved definitions.
 - For a bounded prompt response, observe with `logs` or `wait --match`, answer with `input` (or CLI fallback `hum input NAME --text VALUE`), then confirm with `wait --match`. Text sends exact bytes without a newline; use `hum input NAME --base64 PADDED_VALUE` for awkward bytes, and require strict padded base64 (standard alphabet) without whitespace. Payloads are 1-32768 bytes. Input targets only a running TTY, is at-most-once with no resend across a launch race, writes once at its launch cursor, fails immediately on ownership conflict, and never starts, waits, queues, retries, retains, or explicitly echoes input.
+
+## Crash relaunch policy
+
+Only explicit manifest definitions may use `restart: on-failure`; discovered and
+ad-hoc sessions always use `never`, and manifest values are strict. Spawn
+failures consume attempts, a child that survives 30 seconds resets the counter,
+and explicit lifecycle controls cancel pending work. Automatic attempts retain
+the last effective argv, cwd, environment, readiness, and TTY. Snapshots expose
+`restart`, `relaunches`, and `next_launch_at`; followers stay attached through
+backoff and exhaustion, while bounded logs retain failures and system boundaries.
+Read the failing incarnation's output before changing the definition.
 
 ## Conservative discovery
 

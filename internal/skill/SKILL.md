@@ -17,9 +17,26 @@ Use MCP as the primary integration. Use this skill only for shell-only fallback 
 - Never use unbounded `hum logs <name> --follow`; it is for interactive terminals.
 - For intermediate work, use `hum stop <name>`, run the work, then `hum start <name>`; the durable session keeps observers attached.
 - After process-definition changes, use `hum restart <name>`.
+- A manifest process may opt into `restart: on-failure`; the default is `never`.
+  It retries unexpected non-zero or signal exits after 1s, 2s, 4s, 8s, and 16s,
+  for at most five automatic attempts. Read `hum status NAME` and the retained
+  `hum logs NAME` output before editing a failing/crashing process again; recovery does
+  not replace diagnosis.
 - Use `hum remove <name>` only to discard the runtime session, retained output, and launch state; it never edits `hum.yaml`.
 - Use `hum down` to stop everything in the current project; a later `hum up` restarts only resolved definitions.
 - To answer a bounded TTY prompt, observe with `hum logs` or `hum wait --match`, answer with `hum input <name> --text <value>`, then confirm with `hum wait --match`. Text is sent as exact bytes without a newline. Use `--base64 <value>` for exact binary bytes; it requires strict padded base64 (standard alphabet) without whitespace. Payloads are 1-32768 bytes. Input requires a running TTY, is at-most-once with no resend across a launch race, writes once at its initial launch cursor, fails immediately on ownership conflict, and never starts, waits, queues, retries, retains, or explicitly echoes bytes.
+
+## Crash relaunch policy
+
+Only explicit manifest definitions may set `restart: on-failure`; discovered and
+ad-hoc sessions remain `never`. Manifest values are strict. Spawn failures
+consume attempts, an automatic launch that survives 30 seconds resets the
+counter, and explicit start/up/restart/stop/down/remove or shutdown cancels
+pending work. Automatic attempts reuse the last effective launch specification.
+Snapshots expose `restart`, `relaunches`, and `next_launch_at`; followers remain
+attached through backoff and exhaustion, and retained bounded logs include the
+failed incarnation and system boundaries. Inspect those logs before editing
+again. The failing incarnation's retained output is the diagnostic source.
 
 ## Conservative discovery
 

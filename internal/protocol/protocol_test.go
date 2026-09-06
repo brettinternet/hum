@@ -37,7 +37,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":7}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":8}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -355,7 +355,7 @@ func TestStatusGetRequestResponseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","root":"/work/project","tty":false,"pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0}}`+"\n"; got != want {
+	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","root":"/work/project","tty":false,"pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0,"restart":"never","relaunches":0}}`+"\n"; got != want {
 		t.Fatalf("get response JSON = %s, want %s", got, want)
 	}
 
@@ -509,7 +509,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":7}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":8}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError
@@ -696,7 +696,7 @@ func TestReadinessFieldProtocolRoundTrip(t *testing.T) {
 		Op: OpStart, Name: "api", Source: "manifest:hum.yaml",
 		Argv: []string{"server", "--port", "8080"}, Cwd: "/project",
 		Env:   []string{"TOKEN=do-not-echo"},
-		Ready: &ReadinessConfig{Match: `listening`, Timeout: 1500 * time.Millisecond},
+		Ready: &ReadinessConfig{Match: `listening`, Timeout: 1500 * time.Millisecond}, Restart: RestartNever,
 	}
 	raw, err := json.Marshal(request)
 	if err != nil {
@@ -747,7 +747,7 @@ func TestReadinessFieldProtocolRoundTrip(t *testing.T) {
 func TestExplicitRootRequestRoundTrip(t *testing.T) {
 	start := StartRequest{
 		Op: OpStart, Name: "api", Root: "/outer/project", Cwd: "/outer/project/tool",
-		Argv: []string{"server"}, Env: []string{"TOKEN=secret"},
+		Argv: []string{"server"}, Env: []string{"TOKEN=secret"}, Restart: RestartNever,
 	}
 	raw, err := json.Marshal(start)
 	if err != nil {

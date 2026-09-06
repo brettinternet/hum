@@ -12,7 +12,19 @@ import (
 
 // Version is the current private protocol version. The hello exchange carries
 // this value on every connection.
-const Version = 7
+const Version = 8
+
+const (
+	RestartNever     = "never"
+	RestartOnFailure = "on-failure"
+)
+
+func effectiveRestart(policy string) string {
+	if policy == "" {
+		return RestartNever
+	}
+	return policy
+}
 
 // CurrentVersion is an explicit alias for Version for callers that prefer a
 // descriptive name.
@@ -216,6 +228,7 @@ type StartRequest struct {
 	Ready   *ReadinessConfig `json:"ready,omitempty"`
 	TTY     bool             `json:"tty"`
 	TTYSize *TTYSize         `json:"tty_size,omitempty"`
+	Restart string           `json:"restart"`
 }
 
 // TTYSize is a terminal size in character cells.
@@ -226,7 +239,7 @@ type TTYSize struct {
 
 // NewStartRequest builds a process start request.
 func NewStartRequest(name string, argv []string, cwd string, env []string) StartRequest {
-	return StartRequest{Op: OpStart, Name: name, Argv: argv, Cwd: cwd, Env: env}
+	return StartRequest{Op: OpStart, Name: name, Argv: argv, Cwd: cwd, Env: env, Restart: RestartNever}
 }
 
 // MarshalJSON writes the stable start request fields in protocol order.
@@ -242,7 +255,8 @@ func (r StartRequest) MarshalJSON() ([]byte, error) {
 		Ready   *ReadinessConfig `json:"ready,omitempty"`
 		TTY     bool             `json:"tty"`
 		TTYSize *TTYSize         `json:"tty_size,omitempty"`
-	}{Op: OpStart, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize})
+		Restart string           `json:"restart"`
+	}{Op: OpStart, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart)})
 }
 
 // UnmarshalJSON decodes a start request and validates its operation when
@@ -259,6 +273,7 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 		Ready   *ReadinessConfig `json:"ready"`
 		TTY     bool             `json:"tty"`
 		TTYSize *TTYSize         `json:"tty_size"`
+		Restart string           `json:"restart"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -269,7 +284,7 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	r.Op = OpStart
 	r.Name, r.Argv, r.Cwd, r.Root, r.Env = wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env
 	r.Source, r.Ready = wire.Source, wire.Ready
-	r.TTY, r.TTYSize = wire.TTY, wire.TTYSize
+	r.TTY, r.TTYSize, r.Restart = wire.TTY, wire.TTYSize, effectiveRestart(wire.Restart)
 	return nil
 }
 
@@ -660,6 +675,7 @@ type RestartRequest struct {
 	Ready   *ReadinessConfig `json:"ready,omitempty"`
 	TTY     bool             `json:"tty"`
 	TTYSize *TTYSize         `json:"tty_size,omitempty"`
+	Restart string           `json:"restart,omitempty"`
 }
 
 // NewRestartRequest builds a restart request that preserves the retained
@@ -682,7 +698,8 @@ func (r RestartRequest) MarshalJSON() ([]byte, error) {
 		Ready   *ReadinessConfig `json:"ready,omitempty"`
 		TTY     bool             `json:"tty"`
 		TTYSize *TTYSize         `json:"tty_size,omitempty"`
-	}{Op: OpRestart, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize})
+		Restart string           `json:"restart,omitempty"`
+	}{Op: OpRestart, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: r.Restart})
 }
 
 // UnmarshalJSON decodes a restart request.
@@ -699,6 +716,7 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 		Ready   *ReadinessConfig `json:"ready"`
 		TTY     bool             `json:"tty"`
 		TTYSize *TTYSize         `json:"tty_size"`
+		Restart string           `json:"restart"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -708,7 +726,7 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	}
 	r.Op, r.Name, r.Cwd, r.Root = OpRestart, wire.Name, wire.Cwd, wire.Root
 	r.Update, r.Argv, r.Env, r.Source, r.Ready = wire.Update, wire.Argv, wire.Env, wire.Source, wire.Ready
-	r.TTY, r.TTYSize = wire.TTY, wire.TTYSize
+	r.TTY, r.TTYSize, r.Restart = wire.TTY, wire.TTYSize, wire.Restart
 	return nil
 }
 
@@ -907,7 +925,35 @@ type Process struct {
 	ExitedAt     time.Time  `json:"exited_at,omitempty"`
 	RestartCount int        `json:"restart_count,omitempty"`
 	Followers    int        `json:"followers"`
+	Restart      string     `json:"restart"`
+	Relaunches   int        `json:"relaunches"`
+	NextLaunchAt *time.Time `json:"next_launch_at,omitempty"`
 	Readiness    *Readiness `json:"readiness,omitempty"`
+}
+
+// MarshalJSON normalizes the default policy while retaining the stable flat
+// process snapshot shape.
+func (p Process) MarshalJSON() ([]byte, error) {
+	if p.Restart == "" {
+		p.Restart = RestartNever
+	}
+	type processJSON Process
+	return json.Marshal(processJSON(p))
+}
+
+// UnmarshalJSON normalizes snapshots emitted by older peers that predate the
+// restart-policy fields.
+func (p *Process) UnmarshalJSON(data []byte) error {
+	type processJSON Process
+	var value processJSON
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*p = Process(value)
+	if p.Restart == "" {
+		p.Restart = RestartNever
+	}
+	return nil
 }
 
 // ProcessResponse is a descriptive alias for Process.

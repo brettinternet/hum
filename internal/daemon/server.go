@@ -519,7 +519,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		if req.Columns != 0 || req.Rows != 0 {
 			ttySize = &app.TTYSize{Columns: req.Columns, Rows: req.Rows}
 		}
-		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Source: req.Source, Root: req.Root, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...), Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize})
+		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Source: req.Source, Root: req.Root, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...), Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize, Restart: app.RestartPolicy(req.Restart)})
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
@@ -609,6 +609,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 			Update: req.Update, Source: req.Source, Root: req.Root, Cwd: req.Cwd,
 			Argv: append([]string(nil), req.Argv...), Env: append([]string(nil), req.Env...),
 			Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize,
+			Restart: app.RestartPolicy(req.Restart),
 		}
 		process, err := s.supervisor.Restart(context.Background(), req.Cwd, req.Name, options)
 		if err != nil {
@@ -1021,6 +1022,7 @@ type wireRequest struct {
 	Env              []string             `json:"env,omitempty"`
 	Source           string               `json:"source,omitempty"`
 	Ready            *wireReadinessConfig `json:"ready,omitempty"`
+	Restart          string               `json:"restart,omitempty"`
 	Update           bool                 `json:"update,omitempty"`
 	TTY              bool                 `json:"tty"`
 	Columns          uint16               `json:"columns,omitempty"`
@@ -1092,6 +1094,9 @@ type wireProcess struct {
 	ExitedAt     time.Time        `json:"exited_at,omitempty"`
 	RestartCount int              `json:"restart_count,omitempty"`
 	Followers    int              `json:"followers"`
+	Restart      string           `json:"restart"`
+	Relaunches   int              `json:"relaunches"`
+	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
 	Readiness    *wireReadiness   `json:"readiness,omitempty"`
 }
 
@@ -1204,7 +1209,8 @@ func wireProcessFromApp(item app.Process) wireProcess {
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: uint64(item.LaunchCursor), State: string(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
-		Followers: item.Followers,
+		Followers: item.Followers, Restart: string(item.Restart), Relaunches: item.Relaunches,
+		NextLaunchAt: item.NextLaunchAt,
 	}
 	if item.Readiness != nil {
 		result.Readiness = &wireReadiness{

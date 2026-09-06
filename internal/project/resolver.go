@@ -227,11 +227,12 @@ func discoverDefinitions(root string) ([]Definition, error) {
 
 func discoveredDefinition(root, source string, argv ...string) Definition {
 	return Definition{
-		Name:   "dev",
-		Source: source,
-		Argv:   append([]string(nil), argv...),
-		Cwd:    root,
-		Ready:  nil,
+		Name:    "dev",
+		Source:  source,
+		Argv:    append([]string(nil), argv...),
+		Cwd:     root,
+		Ready:   nil,
+		Restart: RestartNever,
 	}
 }
 

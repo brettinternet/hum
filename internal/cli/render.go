@@ -34,6 +34,9 @@ type listProcessJSON struct {
 	ExitedAt     time.Time        `json:"exited_at,omitempty"`
 	RestartCount int              `json:"restart_count,omitempty"`
 	Followers    int              `json:"followers"`
+	Restart      string           `json:"restart"`
+	Relaunches   int              `json:"relaunches"`
+	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
 	Readiness    string           `json:"readiness,omitempty"`
 	ReadyCursor  *protocol.Cursor `json:"ready_cursor,omitempty"`
 }
@@ -57,6 +60,9 @@ type statusJSON struct {
 	ExitStatus   *int             `json:"exit_status"`
 	RestartCount int              `json:"restart_count"`
 	Followers    int              `json:"followers"`
+	Restart      string           `json:"restart"`
+	Relaunches   int              `json:"relaunches"`
+	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
 	NextCursor   protocol.Cursor  `json:"next_cursor"`
 }
 
@@ -74,6 +80,9 @@ func statusJSONFor(process app.Process) statusJSON {
 		State:        string(process.State),
 		RestartCount: process.RestartCount,
 		Followers:    process.Followers,
+		Restart:      string(effectiveProcessRestart(process)),
+		Relaunches:   process.Relaunches,
+		NextLaunchAt: process.NextLaunchAt,
 		NextCursor:   protocol.Cursor(process.NextCursor),
 	}
 	result.Readiness, result.ReadyCursor = processReadinessFields(process)
@@ -112,6 +121,9 @@ type restartResult struct {
 	PID          int              `json:"pid"`
 	Restarts     int              `json:"restarts"`
 	LaunchCursor protocol.Cursor  `json:"launch_cursor"`
+	Restart      string           `json:"restart"`
+	Relaunches   int              `json:"relaunches"`
+	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
 	Readiness    string           `json:"readiness,omitempty"`
 	ReadyCursor  *protocol.Cursor `json:"ready_cursor,omitempty"`
 }
@@ -169,6 +181,9 @@ func processJSON(process app.Process) listProcessJSON {
 		ExitedAt:     process.ExitedAt,
 		RestartCount: process.RestartCount,
 		Followers:    process.Followers,
+		Restart:      string(effectiveProcessRestart(process)),
+		Relaunches:   process.Relaunches,
+		NextLaunchAt: process.NextLaunchAt,
 	}
 	if process.NextCursor != 0 {
 		nextCursor := protocol.Cursor(process.NextCursor)
@@ -323,6 +338,9 @@ func renderListHuman(w io.Writer, processes []app.Process, all bool) error {
 				prefix += fmt.Sprintf("\tready_cursor=%d", *readyCursor)
 			}
 		}
+		if effectiveProcessRestart(process) == app.RestartOnFailure {
+			prefix += "\trestart=on-failure"
+		}
 		if _, err := fmt.Fprintln(w, prefix); err != nil {
 			return err
 		}
@@ -441,12 +459,27 @@ func renderWaitHuman(w io.Writer, result app.WaitResult) error {
 
 func renderStatusHuman(w io.Writer, process app.Process) error {
 	status := statusJSONFor(process)
+	restartLabel := status.Restart
+	exhausted := status.Restart == string(app.RestartOnFailure) && status.Relaunches == 5 && status.NextLaunchAt == nil && status.ExitStatus != nil && *status.ExitStatus != 0
+	if exhausted {
+		restartLabel = "on-failure (gave up after 5 relaunch attempts)"
+	}
 	if _, err := fmt.Fprintf(w,
-		"name: %s\nsource: %s\nproject_root: %s\ntty: %t\npid: %d\npgid: %d\ncwd: %s\nargv: %s\nstarted_at: %s\nstate: %s\n",
+		"name: %s\nsource: %s\nproject_root: %s\ntty: %t\npid: %d\npgid: %d\ncwd: %s\nargv: %s\nstarted_at: %s\nstate: %s\nrestart: %s\n",
 		status.Name, status.Source, status.ProjectRoot, status.TTY, status.PID, status.PGID, status.Cwd,
-		shellJoin(status.Argv), status.StartedAt, status.State,
+		shellJoin(status.Argv), status.StartedAt, status.State, restartLabel,
 	); err != nil {
 		return err
+	}
+	if status.NextLaunchAt != nil {
+		remaining := time.Until(*status.NextLaunchAt)
+		seconds := int64(0)
+		if remaining > 0 {
+			seconds = int64((remaining + time.Second - 1) / time.Second)
+		}
+		if _, err := fmt.Fprintf(w, "relaunching in %ds (attempt %d/5)\n", seconds, status.Relaunches+1); err != nil {
+			return err
+		}
 	}
 	if status.Readiness != "" {
 		if _, err := fmt.Fprintf(w, "readiness: %s\n", status.Readiness); err != nil {
@@ -465,6 +498,6 @@ func renderStatusHuman(w io.Writer, process app.Process) error {
 	} else if _, err := fmt.Fprintf(w, "exit_status: %d\n", *status.ExitStatus); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(w, "restart_count: %d\nfollowers: %d\nnext_cursor: %d\n", status.RestartCount, status.Followers, status.NextCursor)
+	_, err := fmt.Fprintf(w, "relaunches: %d\nrestart_count: %d\nfollowers: %d\nnext_cursor: %d\n", status.Relaunches, status.RestartCount, status.Followers, status.NextCursor)
 	return err
 }

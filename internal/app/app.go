@@ -29,6 +29,36 @@ const (
 	StateExited  State = "exited"
 )
 
+// RestartPolicy controls the bounded automatic relaunch behavior of a
+// retained session. Only declared manifest processes may use on-failure;
+// discovered and ad hoc launches are normalized to never by their callers.
+type RestartPolicy string
+
+const (
+	RestartNever           RestartPolicy = "never"
+	RestartOnFailure       RestartPolicy = "on-failure"
+	RestartPolicyNever                   = RestartNever
+	RestartPolicyOnFailure               = RestartOnFailure
+)
+
+func validRestartPolicy(policy RestartPolicy) bool {
+	return policy == "" || policy == RestartNever || policy == RestartOnFailure
+}
+
+func effectiveRestartPolicy(policy RestartPolicy) RestartPolicy {
+	if policy == "" {
+		return RestartNever
+	}
+	return policy
+}
+
+func restartPolicyForSource(source string, policy RestartPolicy) RestartPolicy {
+	if source != "manifest" && !strings.HasPrefix(source, "manifest:") {
+		return RestartNever
+	}
+	return effectiveRestartPolicy(policy)
+}
+
 // ReadinessConfig describes an output expression used to mark a manifest
 // process ready. Match is compiled once when the process is admitted.
 type ReadinessConfig struct {
@@ -65,6 +95,12 @@ type StartRequest struct {
 	Ready   *ReadinessConfig
 	TTY     bool
 	TTYSize *TTYSize
+	Restart RestartPolicy
+
+	// The following fields are supervisor-internal. They let the timer claim a
+	// relaunch through the ordinary launch path without exposing a second API.
+	automaticRecord     *record
+	automaticGeneration uint64
 }
 
 // TTYSize is a pseudo-terminal size in character cells.
@@ -93,6 +129,9 @@ type Process struct {
 	ExitedAt     time.Time
 	RestartCount int
 	Followers    int
+	Restart      RestartPolicy
+	Relaunches   int
+	NextLaunchAt *time.Time
 	Readiness    *Readiness
 }
 
@@ -136,6 +175,7 @@ type RestartOptions struct {
 	Ready   *ReadinessConfig
 	TTY     bool
 	TTYSize *TTYSize
+	Restart RestartPolicy
 }
 
 // Options configures a Supervisor. A zero OutputLimits value delegates to the
@@ -668,14 +708,24 @@ type record struct {
 	argv   []string
 	env    []string
 
-	readyConfig  *ReadinessConfig
-	readyPattern *regexp.Regexp
-	tracker      *readinessTracker
-	tty          bool
-	ttySize      *TTYSize
-	input        *InputLease
-	inputMu      sync.Mutex
-	inputOp      *inputOperation
+	readyConfig         *ReadinessConfig
+	readyPattern        *regexp.Regexp
+	tracker             *readinessTracker
+	tty                 bool
+	restart             RestartPolicy
+	relaunches          int
+	relaunchExhausted   bool
+	nextLaunchAt        time.Time
+	relaunchPending     bool
+	relaunchGeneration  uint64
+	automaticCurrent    bool
+	automaticStarting   bool
+	automaticGeneration uint64
+	controlIntent       bool
+	ttySize             *TTYSize
+	input               *InputLease
+	inputMu             sync.Mutex
+	inputOp             *inputOperation
 	// incarnation changes for every successful launch, including same-store
 	// restarts. Each incarnation owns one tracker; an old tracker can never
 	// update a later launch.
@@ -792,6 +842,10 @@ type Supervisor struct {
 	shutdownStarted bool
 	shutdownDone    chan struct{}
 	shutdownErr     error
+	// timersDone wakes relaunch and stability callbacks when the supervisor
+	// closes, including tests that inject a manually controlled timer.
+	timersDone chan struct{}
+	timersOnce sync.Once
 }
 
 const (
@@ -849,6 +903,7 @@ func New(opts Options) (*Supervisor, error) {
 		after:          after,
 		startProcess:   starter,
 		shutdownDone:   make(chan struct{}),
+		timersDone:     make(chan struct{}),
 	}, nil
 }
 
@@ -912,6 +967,147 @@ func (s *Supervisor) trackStore(key string, store *output.Store) {
 	})
 }
 
+const (
+	maxAutomaticRelaunches  = 5
+	relaunchStabilityWindow = 30 * time.Second
+)
+
+func relaunchDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > maxAutomaticRelaunches {
+		attempt = maxAutomaticRelaunches
+	}
+	return time.Second * time.Duration(1<<(attempt-1))
+}
+
+// cancelRelaunchLocked invalidates both pending backoff and stability
+// callbacks. It is called while holding Supervisor.mu, before any operator
+// signal is sent, which gives exit and control operations one linearization
+// point per record.
+func (s *Supervisor) cancelRelaunchLocked(rec *record, reset bool) {
+	if rec == nil {
+		return
+	}
+	rec.relaunchGeneration++
+	rec.relaunchPending = false
+	rec.nextLaunchAt = time.Time{}
+	rec.automaticStarting = false
+	rec.automaticCurrent = false
+	if reset {
+		rec.relaunches = 0
+		rec.relaunchExhausted = false
+	}
+}
+
+func truncateSystemEntry(text string, limit int) string {
+	if limit > 0 && len(text) > limit {
+		text = text[:limit]
+	}
+	return text
+}
+
+func (s *Supervisor) appendSystemLocked(rec *record, text string) {
+	if rec == nil || rec.store == nil {
+		return
+	}
+	_ = func() error {
+		_, err := rec.store.Append(output.System, s.now(), truncateSystemEntry(text, s.outputLimits.RetainedBytes))
+		return err
+	}()
+}
+
+// scheduleRelaunchLocked records the durable backoff boundary before starting
+// the timer. The caller must hold Supervisor.mu.
+func (s *Supervisor) scheduleRelaunchLocked(rec *record) {
+	if rec == nil || s.closed || rec.restart != RestartOnFailure || rec.relaunchPending {
+		return
+	}
+	if rec.relaunches >= maxAutomaticRelaunches {
+		rec.nextLaunchAt = time.Time{}
+		if !rec.relaunchExhausted {
+			rec.relaunchExhausted = true
+			s.appendSystemLocked(rec, "gave up after 5 relaunch attempts\n")
+		}
+		return
+	}
+	attempt := rec.relaunches + 1
+	delay := relaunchDelay(attempt)
+	rec.relaunchGeneration++
+	generation := rec.relaunchGeneration
+	rec.relaunchPending = true
+	next := s.now().Add(delay)
+	// Visibility deliberately has whole-second precision. Countdown rendering
+	// still uses this same boundary and rounds up to avoid early claims.
+	rec.nextLaunchAt = next.Truncate(time.Second)
+	s.appendSystemLocked(rec, fmt.Sprintf("relaunching in %ds (attempt %d/5)\n", int(delay/time.Second), attempt))
+	timer := s.after(delay)
+	go s.relaunchTimer(rec, generation, timer)
+}
+
+func (s *Supervisor) relaunchTimer(rec *record, generation uint64, timer <-chan time.Time) {
+	select {
+	case <-timer:
+	case <-s.timersDone:
+		return
+	}
+	// stopMu serializes timer claims with stop/down/restart. Start wins the
+	// competing explicit path atomically by reserving s.starting while holding
+	// Supervisor.mu.
+	rec.stopMu.Lock()
+	defer rec.stopMu.Unlock()
+	s.mu.Lock()
+	if s.closed || s.records[rec.key] != rec || !rec.relaunchPending || rec.relaunchGeneration != generation || rec.automaticStarting || !rec.terminal {
+		s.mu.Unlock()
+		return
+	}
+	rec.relaunchPending = false
+	rec.nextLaunchAt = time.Time{}
+	rec.automaticStarting = true
+	rec.automaticGeneration = generation
+	s.starting[rec.key] = struct{}{}
+	request := StartRequest{
+		Name: rec.name, Root: rec.root, Cwd: rec.cwd,
+		automaticRecord: rec, automaticGeneration: generation,
+	}
+	s.mu.Unlock()
+	if _, err := s.Start(request); err != nil {
+		s.automaticLaunchFailed(rec, generation, err)
+	}
+}
+
+func (s *Supervisor) automaticLaunchFailed(rec *record, generation uint64, launchErr error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.records[rec.key] != rec || s.closed || rec.relaunchGeneration != generation || !rec.automaticStarting {
+		return
+	}
+	rec.automaticStarting = false
+	rec.relaunches++
+	s.appendSystemLocked(rec, fmt.Sprintf("relaunch failed: %v\n", launchErr))
+	s.scheduleRelaunchLocked(rec)
+}
+
+func (s *Supervisor) scheduleStability(rec *record, generation, incarnation uint64) {
+	timer := s.after(relaunchStabilityWindow)
+	go func() {
+		select {
+		case <-timer:
+		case <-s.timersDone:
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.closed || s.records[rec.key] != rec || rec.terminal || !rec.automaticCurrent || rec.automaticGeneration != generation || rec.incarnation != incarnation {
+			return
+		}
+		rec.relaunches = 0
+		rec.automaticCurrent = false
+		rec.relaunchGeneration++
+	}()
+}
+
 // Start launches a process with direct argv execution and returns its initial
 // immutable snapshot. A client disappearing after Start has no lifecycle
 // effect; only Stop or Shutdown sends signals.
@@ -919,6 +1115,10 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if err := ValidateName(req.Name); err != nil {
 		return Process{}, err
 	}
+	if !validRestartPolicy(req.Restart) {
+		return Process{}, fmt.Errorf("%w: restart must be never or on-failure", ErrInvalidRequest)
+	}
+	automatic := req.automaticRecord != nil
 	requestCwd, err := absoluteClean(req.Cwd)
 	if err != nil {
 		return Process{}, err
@@ -933,6 +1133,25 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		return Process{}, err
 	}
 	key := keyFor(root, req.Name)
+
+	// Explicit launches serialize with stop/down/restart for an existing
+	// retained record. This makes the name reservation the control-operation
+	// linearization point: if Start wins, a later Stop waits and stops the new
+	// child; if Stop wins, Start observes the resulting terminal record.
+	var explicitRecord *record
+	if !automatic {
+		s.mu.RLock()
+		explicitRecord = s.records[key]
+		_, reserved := s.starting[key]
+		s.mu.RUnlock()
+		if reserved {
+			return Process{}, fmt.Errorf("%w: %q is being started", ErrNameInUse, req.Name)
+		}
+		if explicitRecord != nil {
+			explicitRecord.stopMu.Lock()
+			defer explicitRecord.stopMu.Unlock()
+		}
+	}
 
 	var readyConfig *ReadinessConfig
 	var readyPattern *regexp.Regexp
@@ -959,11 +1178,19 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		s.mu.Unlock()
 		return Process{}, &DuplicateError{Root: root, Name: req.Name, PID: pid}
 	}
-	if _, ok := s.starting[key]; ok {
+	if _, ok := s.starting[key]; ok && !(automatic && s.records[key] == req.automaticRecord && req.automaticGeneration == req.automaticRecord.automaticGeneration) {
 		s.mu.Unlock()
 		return Process{}, fmt.Errorf("%w: %q is being started", ErrNameInUse, req.Name)
 	}
 	rec := s.records[key]
+	if !automatic && rec != nil && rec != explicitRecord {
+		s.mu.Unlock()
+		return Process{}, fmt.Errorf("%w: %q changed while start was being reserved", ErrNameInUse, req.Name)
+	}
+	if automatic && (rec == nil || rec != req.automaticRecord || !rec.automaticStarting || rec.automaticGeneration != req.automaticGeneration) {
+		s.mu.Unlock()
+		return Process{}, fmt.Errorf("%w: stale automatic relaunch", ErrSupervisorClosed)
+	}
 	var inputToClose *InputLease
 	if rec == nil {
 		if len(req.Argv) == 0 || req.Argv[0] == "" {
@@ -977,9 +1204,21 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		}
 		done := make(chan struct{})
 		close(done)
-		rec = &record{key: key, name: req.Name, root: root, store: store, state: StateExited, terminal: true, done: done}
+		rec = &record{key: key, name: req.Name, root: root, store: store, state: StateExited, terminal: true, done: done, restart: restartPolicyForSource(req.Source, req.Restart)}
+		if !automatic && explicitRecord == nil {
+			rec.stopMu.Lock()
+			explicitRecord = rec
+			defer rec.stopMu.Unlock()
+		}
 		s.trackStore(key, store)
 		s.records[key] = rec
+	}
+	if !automatic {
+		// An explicit launch wins over any pending timer and starts a fresh
+		// crash loop. The generation invalidates callbacks that already woke.
+		s.cancelRelaunchLocked(rec, true)
+		rec.controlIntent = false
+		rec.automaticCurrent = false
 	}
 	if len(req.Argv) != 0 {
 		if req.Argv[0] == "" {
@@ -991,6 +1230,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		rec.argv = append([]string(nil), req.Argv...)
 		rec.env = append([]string{}, req.Env...)
 		rec.readyConfig, rec.readyPattern = readyConfig, readyPattern
+		if !automatic {
+			rec.restart = restartPolicyForSource(req.Source, req.Restart)
+		}
 		// An explicit argv replaces a stopped retained definition, including
 		// its TTY choice. Calls without argv intentionally retain it.
 		rec.tty = req.TTY
@@ -1032,6 +1274,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		ttySize = &size
 	}
 	wasLaunched := rec.incarnation != 0
+	// Explicit and automatic launches both reserve the name until the child
+	// has been published or the launch fails. Automatic claims already passed
+	// through this reservation, so this assignment is idempotent.
 	s.starting[key] = struct{}{}
 	s.launches.Add(1)
 	s.mu.Unlock()
@@ -1091,7 +1336,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 
 	s.mu.Lock()
 	delete(s.starting, key)
-	if s.closed || s.records[key] != rec {
+	if s.closed || s.records[key] != rec || automatic && (!rec.automaticStarting || rec.automaticGeneration != req.automaticGeneration || rec.relaunchGeneration != req.automaticGeneration) {
 		s.mu.Unlock()
 		if tracker != nil {
 			tracker.close()
@@ -1115,6 +1360,12 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	rec.done = make(chan struct{})
 	rec.incarnation++
 	rec.tracker = tracker
+	if automatic {
+		rec.relaunches++
+		rec.automaticCurrent = true
+		rec.automaticStarting = false
+		rec.automaticGeneration = req.automaticGeneration
+	}
 	input := rec.input
 	if input != nil {
 		input.beginIncarnation()
@@ -1123,6 +1374,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	s.mu.Unlock()
 	if input != nil {
 		input.emit(InputEvent{State: InputRunning, LaunchCursor: launchCursor, TTY: tty})
+	}
+	if automatic {
+		s.scheduleStability(rec, req.automaticGeneration, rec.incarnation)
 	}
 	go s.reconcile(rec)
 	return started, nil
@@ -1139,6 +1393,9 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 	if len(options) == 1 {
 		update = options[0]
 	}
+	if !validRestartPolicy(update.Restart) {
+		return Process{}, fmt.Errorf("%w: restart must be never or on-failure", ErrInvalidRequest)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1146,6 +1403,10 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 	if err != nil {
 		return Process{}, err
 	}
+	// Serialize explicit restart with a timer claim and with stop/down. This
+	// preserves the existing stop-then-start semantics when the timer wins.
+	rec.stopMu.Lock()
+	defer rec.stopMu.Unlock()
 	var (
 		updatedCwd      string
 		updatedArgv     []string
@@ -1213,6 +1474,12 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		s.mu.Unlock()
 		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
 	}
+	if _, starting := s.starting[rec.key]; starting {
+		s.mu.Unlock()
+		return Process{}, fmt.Errorf("%w: %q is being started", ErrNameInUse, rec.name)
+	}
+	s.cancelRelaunchLocked(rec, true)
+	rec.controlIntent = !rec.terminal
 	restartStore := rec.store
 	s.starting[rec.key] = struct{}{}
 	rec.restarting = true
@@ -1254,8 +1521,6 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		s.launches.Done()
 	}()
 
-	rec.stopMu.Lock()
-	defer rec.stopMu.Unlock()
 	if err := s.stopRecord(ctx, rec); err != nil {
 		return Process{}, err
 	}
@@ -1283,6 +1548,7 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		rec.env = append([]string(nil), updatedEnv...)
 		rec.readyConfig = updatedReady
 		rec.readyPattern = updatedPattern
+		rec.restart = restartPolicyForSource(update.Source, update.Restart)
 		rec.tty = updatedTTY
 		if updatedTTYSize != nil {
 			rec.ttySize = updatedTTYSize
@@ -1371,6 +1637,10 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 	rec.start = startedAt
 	rec.cursor = launchCursor
 	rec.restartCount++
+	rec.relaunches = 0
+	rec.nextLaunchAt = time.Time{}
+	rec.automaticCurrent = false
+	rec.automaticStarting = false
 	rec.launchBoundary = true
 	rec.state = StateRunning
 	rec.result = process.Result{}
@@ -1443,11 +1713,23 @@ func (s *Supervisor) reconcile(rec *record) {
 	input := rec.input
 	cursor := rec.cursor
 	tty := rec.tty
+	unexpected := !rec.controlIntent && (result.ExitCode != 0 || result.ExitCode < 0)
+	control := rec.controlIntent
+	rec.controlIntent = false
+	automaticIncarnation := rec.automaticCurrent
+	rec.automaticCurrent = false
 	if input != nil {
 		input.endIncarnation()
 	}
 	s.insertCompletedLocked(rec)
 	close(rec.done)
+	if control || !unexpected || rec.restart != RestartOnFailure {
+		s.cancelRelaunchLocked(rec, true)
+	} else if automaticIncarnation || rec.incarnation != 0 {
+		// The first unexpected exit starts attempt one; an automatic child that
+		// failed before the stability window advances to the next attempt.
+		s.scheduleRelaunchLocked(rec)
+	}
 	s.evictLocked()
 	s.mu.Unlock()
 	if input != nil {
@@ -1494,7 +1776,7 @@ func (s *Supervisor) evictLocked() {
 				index = i
 				break
 			}
-			if rec.restarting || rec.input != nil || rec.store != nil && rec.store.SubscriberCount() != 0 {
+			if rec.restarting || rec.relaunchPending || rec.automaticStarting || rec.input != nil || rec.store != nil && rec.store.SubscriberCount() != 0 {
 				continue
 			}
 			if _, reserved := s.starting[rec.key]; reserved {
@@ -1566,7 +1848,9 @@ func (s *Supervisor) Get(cwd, name string) (Process, error) {
 }
 
 // List returns deterministic snapshots for one project root. By default only
-// active records are returned; includeCompleted includes retained terminals.
+// active records are returned; a terminal crash-loop record with pending
+// work or exhausted retries remains visible so operators can inspect or reset
+// it. includeCompleted includes all retained terminals.
 func (s *Supervisor) List(cwd string, includeCompleted bool) ([]Process, error) {
 	root, err := DiscoverProjectRoot(cwd)
 	if err != nil {
@@ -1575,7 +1859,11 @@ func (s *Supervisor) List(cwd string, includeCompleted bool) ([]Process, error) 
 	s.mu.RLock()
 	items := make([]Process, 0)
 	for _, rec := range s.records {
-		if rec.root != root || !includeCompleted && rec.terminal {
+		if rec.root != root {
+			continue
+		}
+		_, starting := s.starting[rec.key]
+		if !includeCompleted && rec.terminal && !rec.relaunchPending && !rec.relaunchExhausted && !starting {
 			continue
 		}
 		items = append(items, rec.snapshotLocked())
@@ -1632,7 +1920,7 @@ func (s *Supervisor) ensureSession(cwd, name string) (*record, error) {
 	}
 	done := make(chan struct{})
 	close(done)
-	rec := &record{key: key, name: name, root: root, cwd: root, store: store, state: StateExited, terminal: true, done: done}
+	rec := &record{key: key, name: name, root: root, cwd: root, store: store, state: StateExited, terminal: true, done: done, restart: RestartNever}
 	s.trackStore(key, store)
 	s.records[key] = rec
 	return rec, nil
@@ -1678,7 +1966,7 @@ func (s *Supervisor) PrepareTTY(req StartRequest) error {
 		}
 		done := make(chan struct{})
 		close(done)
-		rec = &record{key: key, name: req.Name, root: root, cwd: requestCwd, store: store, state: StateExited, terminal: true, done: done}
+		rec = &record{key: key, name: req.Name, root: root, cwd: requestCwd, store: store, state: StateExited, terminal: true, done: done, restart: RestartNever}
 		s.trackStore(key, store)
 		s.records[key] = rec
 	}
@@ -2319,13 +2607,26 @@ func (s *Supervisor) Signal(cwd, name string, sig os.Signal) error {
 	if err != nil {
 		return err
 	}
-	s.mu.RLock()
-	if s.records[rec.key] != rec || rec.terminal || rec.child == nil {
-		s.mu.RUnlock()
+	s.mu.Lock()
+	if s.records[rec.key] != rec {
+		s.mu.Unlock()
+		return nil
+	}
+	// Explicit TERM/KILL forwarding is an operator control boundary too. Mark
+	// it before the syscall so a concurrent exit cannot start a crash loop. A
+	// signal arriving while backoff is pending still cancels that work even
+	// though there is no child to signal.
+	if signal, ok := sig.(syscall.Signal); ok && (signal == syscall.SIGTERM || signal == syscall.SIGKILL) {
+		s.cancelRelaunchLocked(rec, true)
+		rec.controlIntent = !rec.terminal
+	}
+	if rec.terminal || rec.child == nil {
+		s.evictLocked()
+		s.mu.Unlock()
 		return nil
 	}
 	child := rec.child
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	return child.Signal(sig)
 }
 
@@ -2346,13 +2647,23 @@ func (s *Supervisor) Stop(ctx context.Context, cwd, name string) error {
 }
 
 func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
-	s.mu.RLock()
-	if s.records[rec.key] != rec || rec.terminal || rec.child == nil {
-		s.mu.RUnlock()
+	s.mu.Lock()
+	if s.records[rec.key] != rec {
+		s.mu.Unlock()
+		return nil
+	}
+	// Register operator intent before reading the child or sending TERM. An
+	// exit that acquires this same lock afterwards is expected, regardless of
+	// its status; a pending timer is invalidated immediately.
+	s.cancelRelaunchLocked(rec, true)
+	rec.controlIntent = !rec.terminal
+	if rec.terminal || rec.child == nil {
+		s.evictLocked()
+		s.mu.Unlock()
 		return nil
 	}
 	child := rec.child
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
 	termErr := child.Signal(syscall.SIGTERM)
 	if signalMeansDone(termErr) {
@@ -2442,23 +2753,40 @@ func (s *Supervisor) Remove(ctx context.Context, cwd, name string) error {
 	if err != nil {
 		return err
 	}
-	s.mu.RLock()
-	_, starting := s.starting[rec.key]
-	s.mu.RUnlock()
-	if starting {
+	// Reserve removal before cancellation so a terminal record cannot be
+	// evicted by stopRecord while this operation is waiting on a pending
+	// relaunch or completed-record limit.
+	rec.stopMu.Lock()
+	s.mu.Lock()
+	if s.records[rec.key] != rec {
+		s.mu.Unlock()
+		rec.stopMu.Unlock()
+		return &NotFoundError{Root: rec.root, Name: rec.name}
+	}
+	if _, starting := s.starting[rec.key]; starting {
+		s.mu.Unlock()
+		rec.stopMu.Unlock()
 		return fmt.Errorf("%w: %q is being started", ErrNameInUse, name)
 	}
-	rec.stopMu.Lock()
+	rec.restarting = true
+	s.mu.Unlock()
 	err = s.stopRecord(ctx, rec)
-	rec.stopMu.Unlock()
 	if err != nil {
+		s.mu.Lock()
+		rec.restarting = false
+		s.evictLocked()
+		s.mu.Unlock()
+		rec.stopMu.Unlock()
 		return err
 	}
 	s.mu.Lock()
 	if s.records[rec.key] != rec {
+		rec.restarting = false
 		s.mu.Unlock()
+		rec.stopMu.Unlock()
 		return &NotFoundError{Root: rec.root, Name: rec.name}
 	}
+	rec.restarting = false
 	delete(s.records, rec.key)
 	s.removeCompletedLocked(rec)
 	store := rec.store
@@ -2502,6 +2830,14 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	}
 	s.shutdownStarted = true
 	s.closed = true
+	s.timersOnce.Do(func() { close(s.timersDone) })
+	// Shutdown is an operator control boundary for every retained record, not
+	// only currently running children. Clear pending backoff before waiting so
+	// no callback can claim a launch after the daemon closes.
+	for _, rec := range s.records {
+		s.cancelRelaunchLocked(rec, true)
+		rec.controlIntent = !rec.terminal
+	}
 	s.mu.Unlock()
 
 	// Let launches which crossed the closed check finish their non-registry
@@ -2579,9 +2915,15 @@ func (r *record) snapshotLocked() Process {
 		State:        r.state,
 		RestartCount: r.restartCount,
 		Followers:    r.followers,
+		Restart:      effectiveRestartPolicy(r.restart),
+		Relaunches:   r.relaunches,
 	}
 	if r.store != nil {
 		model.NextCursor = r.store.NextCursor()
+	}
+	if r.relaunchPending {
+		next := r.nextLaunchAt
+		model.NextLaunchAt = &next
 	}
 	if !r.terminal && r.source != "" {
 		switch {

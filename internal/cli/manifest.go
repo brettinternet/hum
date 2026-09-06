@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"hum/internal/app"
@@ -71,15 +72,41 @@ func readinessConfig(definition project.Definition) *protocol.ReadinessConfig {
 	return &protocol.ReadinessConfig{Match: definition.Ready.Match, Timeout: definition.Ready.Timeout}
 }
 
+func restartPolicy(definition project.Definition) string {
+	if definition.Restart == "" {
+		return string(project.RestartNever)
+	}
+	return string(definition.Restart)
+}
+
+func protocolRestartPolicy(definition project.Definition) string {
+	return restartPolicy(definition)
+}
+
+func effectiveAppRestart(policy app.RestartPolicy) app.RestartPolicy {
+	if policy == "" {
+		return app.RestartNever
+	}
+	return policy
+}
+
+func effectiveProcessRestart(process app.Process) app.RestartPolicy {
+	if process.Source != "manifest" && !strings.HasPrefix(process.Source, "manifest:") {
+		return app.RestartNever
+	}
+	return effectiveAppRestart(process.Restart)
+}
+
 func manifestProcess(definition project.Definition, root string) app.Process {
 	return app.Process{
-		Name:   definition.Name,
-		Source: definition.Source,
-		Root:   root,
-		TTY:    definition.TTY,
-		Cwd:    definition.Cwd,
-		Argv:   append([]string(nil), definition.Argv...),
-		State:  app.State("stopped"),
+		Name:    definition.Name,
+		Source:  definition.Source,
+		Root:    root,
+		TTY:     definition.TTY,
+		Cwd:     definition.Cwd,
+		Argv:    append([]string(nil), definition.Argv...),
+		State:   app.State("stopped"),
+		Restart: app.RestartPolicy(restartPolicy(definition)),
 	}
 }
 
@@ -113,15 +140,18 @@ func mergeManifestProcesses(manifest manifestState, running []app.Process) []app
 // Error is deliberately a string so every result remains easy to consume as
 // one NDJSON object without exposing daemon internals.
 type manifestLaunchResult struct {
-	Name         string   `json:"name"`
-	Outcome      string   `json:"outcome"`
-	Source       string   `json:"source"`
-	Argv         []string `json:"argv"`
-	PID          *int     `json:"pid,omitempty"`
-	LaunchCursor *uint64  `json:"launch_cursor,omitempty"`
-	Readiness    string   `json:"readiness,omitempty"`
-	ReadyCursor  *uint64  `json:"ready_cursor,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	Name         string     `json:"name"`
+	Outcome      string     `json:"outcome"`
+	Source       string     `json:"source"`
+	Argv         []string   `json:"argv"`
+	PID          *int       `json:"pid,omitempty"`
+	LaunchCursor *uint64    `json:"launch_cursor,omitempty"`
+	Readiness    string     `json:"readiness,omitempty"`
+	ReadyCursor  *uint64    `json:"ready_cursor,omitempty"`
+	Restart      string     `json:"restart"`
+	Relaunches   int        `json:"relaunches"`
+	NextLaunchAt *time.Time `json:"next_launch_at,omitempty"`
+	Error        string     `json:"error,omitempty"`
 }
 type manifestWaitItem struct {
 	index      int
@@ -141,15 +171,19 @@ func newManifestLaunchResult(definition project.Definition, outcome string) mani
 		Outcome: outcome,
 		Source:  definition.Source,
 		Argv:    append([]string(nil), definition.Argv...),
+		Restart: restartPolicy(definition),
 	}
 }
 
 func manifestLaunchResultFor(definition project.Definition, process app.Process, outcome string) manifestLaunchResult {
 	result := manifestLaunchResult{
-		Name:    process.Name,
-		Outcome: outcome,
-		Source:  process.Source,
-		Argv:    append([]string(nil), process.Argv...),
+		Name:         process.Name,
+		Outcome:      outcome,
+		Source:       process.Source,
+		Argv:         append([]string(nil), process.Argv...),
+		Restart:      string(effectiveProcessRestart(process)),
+		Relaunches:   process.Relaunches,
+		NextLaunchAt: process.NextLaunchAt,
 	}
 	if process.PID > 0 {
 		pid := process.PID
@@ -405,14 +439,15 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 	}
 
 	process, startErr := client.Start(ctx, daemon.StartRequest{
-		Name:   definition.Name,
-		Source: definition.Source,
-		Root:   root,
-		Cwd:    definition.Cwd,
-		Argv:   append([]string(nil), definition.Argv...),
-		Env:    append([]string(nil), env...),
-		Ready:  readinessConfig(definition),
-		TTY:    definition.TTY,
+		Name:    definition.Name,
+		Source:  definition.Source,
+		Root:    root,
+		Cwd:     definition.Cwd,
+		Argv:    append([]string(nil), definition.Argv...),
+		Env:     append([]string(nil), env...),
+		Ready:   readinessConfig(definition),
+		TTY:     definition.TTY,
+		Restart: protocolRestartPolicy(definition),
 	})
 	if startErr == nil {
 		outcome := "started"

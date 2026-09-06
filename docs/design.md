@@ -141,6 +141,7 @@ processes:
     ready:
       match: "Local:"
       timeout: 30s
+    restart: on-failure
 ```
 
 Each entry requires a safe name and a non-empty string argv. Optional `cwd` is
@@ -154,7 +155,7 @@ cwd, empty/non-string argv, and shell text are errors with file and entry
 context. Definitions are name-sorted and carry `source: manifest`.
 
 The manifest defines processes only: no runtime settings, dependencies, ports,
-HTTP checks, restart policy, or environment values/files. Projects needing
+HTTP checks, or environment values/files. Projects needing
 environment activation must commit a runner and put it in argv; CLI and MCP do
 not activate mise, nvm, direnv, or shell hooks.
 
@@ -240,6 +241,31 @@ persisted and is zero when no session exists. Ctrl+C detaches only the observer.
 unlaunched and remains bounded (30 seconds by default). Exited and ad hoc
 records omit readiness.
 
+### Crash relaunch policy
+
+A manifest entry may set `restart` to `never` (the default) or `on-failure`;
+validation rejects every other value and non-string YAML scalar with file and
+entry context. Discovery and ad-hoc sessions are always `never`, and `hum init`
+comments an inert `restart: on-failure` example. `on-failure` schedules one
+second, two seconds, four seconds, eight seconds, and sixteen seconds of
+backoff, for at most five automatic attempts. Non-zero or signal exits trigger
+the loop unless an explicit operator control owns the exit; exit zero, stop,
+down, restart, remove, and shutdown cancel and reset it. A spawn failure consumes
+an attempt and appends a bounded `relaunch failed: ...` system entry. An
+automatic child alive for 30 seconds resets the counter. The generation token
+and supervisor lock linearize exit, timer claim, and operator intent, so stale
+timers never launch and a manual start/restart wins without two children.
+
+Automatic attempts reuse the last effective argv, cwd, environment, readiness,
+and TTY and do not reread the manifest; an explicit start/up/restart adopts
+changed definitions. Readiness and client timeout do not trigger relaunch.
+`restart`, `relaunches`, and optional whole-second `next_launch_at` appear in
+process, CLI JSON, and MCP snapshots. Pending records resist completed-record
+eviction. Followers stay attached through the exit/wait boundary, backoff, and
+exhaustion; bounded logs retain child failures and relaunch/gave-up boundaries.
+Agents should read the failing incarnation's retained output before editing
+again.
+
 ## Daemon and environments
 
 One daemon serves each private runtime directory at `hum.sock`. `serve --daemon`,
@@ -276,8 +302,8 @@ tool.
 
 ## Non-goals
 
-The foundation has no arbitrary or unbounded input API, queued input, automatic
-crash restart/backoff, remote transport, authentication, web UI, persistent
+The foundation has no arbitrary or unbounded input API, queued input,
+remote transport, authentication, web UI, persistent
 process history, plugin system, OS service installation, or environment
 literals/files.
 The runtime directory contains only the socket, PID/startup state, and bounded

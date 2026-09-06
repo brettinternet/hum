@@ -150,6 +150,7 @@ func renderInitManifest(candidates []Definition, outcome InitOutcome, reason str
 		document.WriteString("#   \"dev\":\n")
 		document.WriteString("#     argv:\n")
 		document.WriteString("#       - \"command\"\n")
+		document.WriteString("#     # restart: on-failure\n")
 		document.WriteString("version: 1\n")
 		document.WriteString("processes: {}\n")
 		return []byte(document.String())
@@ -167,6 +168,7 @@ func renderInitManifest(candidates []Definition, outcome InitOutcome, reason str
 	document.WriteString("    # ready:\n")
 	document.WriteString("    #   match: \"Local:\"\n")
 	document.WriteString("    #   timeout: 30s\n")
+	document.WriteString("    # restart: on-failure\n")
 	return []byte(document.String())
 }
 

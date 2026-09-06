@@ -78,6 +78,21 @@ processes:
     argv: [./tools/run-with-project-env, bun, run, dev]
 ```
 
+## Crash relaunch policy
+
+A manifest process can opt in with `restart: on-failure`; `never` is the
+strict default and the only other accepted value. Discovery and ad-hoc sessions
+always use `never`, and invalid or non-string values fail manifest validation.
+The policy retries non-zero or signal exits after 1s, 2s, 4s, 8s, and 16s, at
+most five times. Spawn failures consume an attempt. An automatic child alive for
+30 seconds resets the counter; stop, down, restart, remove, shutdown, and a
+manual start cancel pending work. Automatic launches retain their last argv,
+cwd, environment, readiness, and TTY, so explicitly restart after changing a
+definition. Read `restart`, `relaunches`, and `next_launch_at` in status/list
+snapshots. Followers stay attached and bounded logs retain failure and relaunch
+boundaries. Always read the failing incarnation's retained output with `logs`
+before editing again.
+
 ## Shell-only fallback
 
 When MCP is unavailable, `hum skill` prints the embedded Agent Skills file for

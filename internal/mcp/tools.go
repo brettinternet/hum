@@ -25,12 +25,13 @@ var ErrDaemonUnavailable = errors.New("daemon unavailable")
 
 // Definition is one explicit or discovered project process.
 type Definition struct {
-	Name   string
-	Source string
-	Argv   []string
-	Cwd    string
-	Ready  *protocol.ReadinessConfig
-	TTY    bool
+	Name    string
+	Source  string
+	Argv    []string
+	Cwd     string
+	Ready   *protocol.ReadinessConfig
+	TTY     bool
+	Restart string
 }
 
 // Resolution is the canonical project root and its process definitions.
@@ -189,10 +190,13 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"start": map[string]any{"type": "string"}, "launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 		"next_cursor": map[string]any{"type": "integer", "minimum": 0}, "state": map[string]any{"type": "string"},
 		"exit": exit, "exit_code": map[string]any{"type": "integer"}, "exited_at": map[string]any{"type": "string"},
-		"restart_count": map[string]any{"type": "integer", "minimum": 0},
-		"followers":     map[string]any{"type": "integer", "minimum": 0, "description": "Live run and logs --follow clients attached to this supervision session."},
-		"readiness":     readiness,
-	}, "name", "source", "root", "tty", "cwd", "argv", "state", "launch_cursor", "followers")
+		"restart_count":  map[string]any{"type": "integer", "minimum": 0},
+		"followers":      map[string]any{"type": "integer", "minimum": 0, "description": "Live run and logs --follow clients attached to this supervision session."},
+		"restart":        map[string]any{"type": "string", "enum": []string{"never", "on-failure"}},
+		"relaunches":     map[string]any{"type": "integer", "minimum": 0, "maximum": 5},
+		"next_launch_at": map[string]any{"type": "string"},
+		"readiness":      readiness,
+	}, "name", "source", "root", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError}, "name", "outcome")
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
@@ -218,11 +222,11 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 	}, "name", "bytes", "launch_cursor")
 	return []toolDefinition{
-		{Name: "start", Description: "Start one resolved project definition through the hum daemon; waits for configured readiness by default.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
-		{Name: "up", Description: "Start every resolved project definition through the hum daemon; waits for configured readiness by default.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: map[string]any{"type": "array", "items": launch}},
+		{Name: "start", Description: "Start one resolved project definition through the hum daemon; waits for configured readiness by default. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
+		{Name: "up", Description: "Start every resolved project definition through the hum daemon; waits for configured readiness by default. Manifest restart: on-failure uses bounded crash relaunches.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: map[string]any{"type": "array", "items": launch}},
 		{Name: "down", Description: "Stop every running runtime record in the project and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: map[string]any{"type": "array", "items": stop}},
-		{Name: "list", Description: "Merge resolved definitions with all daemon runtime records in the project, including ad_hoc records.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: map[string]any{"type": "array", "items": process}},
-		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
+		{Name: "list", Description: "Merge resolved definitions with all daemon runtime records in the project, including ad_hoc records. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: map[string]any{"type": "array", "items": process}},
+		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
 		{Name: "logs", Description: "Read a bounded cursor-based output window for an existing declared or ad_hoc runtime record. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0}, "tail": map[string]any{"type": "integer", "minimum": 0}, "max_entries": map[string]any{"type": "integer", "minimum": 1}, "max_bytes": map[string]any{"type": "integer", "minimum": 1}}, "project_root", "name"), OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0}, "match": map[string]any{"type": "string"}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Write one exact, bounded payload to an already-running TTY incarnation at its initial launch cursor with at-most-once behavior; never starts, waits, queues, retries, resends, retains, or explicitly echoes input and fails immediately on ownership conflict.", InputSchema: inputSchema, OutputSchema: inputResult},
@@ -346,16 +350,28 @@ func findDefinition(resolution Resolution, name string) (Definition, bool) {
 	return Definition{}, false
 }
 
+func effectiveRestart(policy string) string {
+	if policy == "" {
+		return "never"
+	}
+	return policy
+}
+
 func normalizeProcess(process protocol.Process) protocol.Process {
 	process.Argv = append([]string(nil), process.Argv...)
 	if process.Source == "" {
 		process.Source = "ad_hoc"
 	}
+	if process.Source != "manifest" && !strings.HasPrefix(process.Source, "manifest:") {
+		process.Restart = protocol.RestartNever
+	} else {
+		process.Restart = effectiveRestart(process.Restart)
+	}
 	return process
 }
 
 func stoppedProcess(root string, definition Definition) protocol.Process {
-	return protocol.Process{Name: definition.Name, Source: definition.Source, Root: root, TTY: definition.TTY, Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: "stopped"}
+	return protocol.Process{Name: definition.Name, Source: definition.Source, Root: root, TTY: definition.TTY, Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: "stopped", Restart: effectiveRestart(definition.Restart)}
 }
 
 func (s *Server) environment() []string {
@@ -466,7 +482,7 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 	if err != nil && mapError(err).Code != string(protocol.ErrorNotFound) {
 		return protocol.Process{}, false, mapError(err)
 	}
-	process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: definition.Name, Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd, Root: resolution.Root, Env: s.environment(), Source: definition.Source, Ready: definition.Ready, TTY: definition.TTY})
+	process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: definition.Name, Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd, Root: resolution.Root, Env: s.environment(), Source: definition.Source, Ready: definition.Ready, TTY: definition.TTY, Restart: effectiveRestart(definition.Restart)})
 	if err == nil || mapError(err).Code != string(protocol.ErrorNameInUse) {
 		return process, false, err
 	}
@@ -840,6 +856,10 @@ func mcpInputSessionNotRunningError(name string) *ToolError {
 	return &ToolError{Code: "session_not_running", Message: fmt.Sprintf("session %q is not running; start it with hum start %s", name, name)}
 }
 
+func processNeedsRestartControl(process protocol.Process) bool {
+	return process.NextLaunchAt != nil || process.Restart == protocol.RestartOnFailure && process.Relaunches > 0
+}
+
 type stopResult struct {
 	Name  string     `json:"name"`
 	State string     `json:"state"`
@@ -873,7 +893,7 @@ func (s *Server) down(ctx context.Context, resolution Resolution) (any, error) {
 	results := make([]stopResult, 0, len(byName))
 	for _, process := range sortedProcesses(byName) {
 		result := stopResult{Name: process.Name, State: "not_running"}
-		if process.State == "running" || process.State == "starting" {
+		if process.State == "running" || process.State == "starting" || processNeedsRestartControl(process) {
 			if stopErr := client.Stop(ctx, protocol.StopRequest{Op: protocol.OpStop, Name: process.Name, Cwd: resolution.Root}); stopErr != nil {
 				result.State = "error"
 				result.Error = mapError(stopErr)
@@ -908,6 +928,7 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, name string
 	if definition, ok := findDefinition(resolution, name); ok {
 		request.Root, request.Cwd, request.Update = resolution.Root, definition.Cwd, true
 		request.Argv, request.Env, request.Source, request.Ready, request.TTY = append([]string(nil), definition.Argv...), s.environment(), definition.Source, definition.Ready, definition.TTY
+		request.Restart = effectiveRestart(definition.Restart)
 	} else {
 		if _, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: resolution.Root}); err != nil {
 			return nil, mapError(err)
@@ -937,7 +958,7 @@ func (s *Server) stop(ctx context.Context, resolution Resolution, name string) (
 		}
 		return nil, mapped
 	}
-	if process.State != "running" && process.State != "starting" {
+	if process.State != "running" && process.State != "starting" && !processNeedsRestartControl(process) {
 		return map[string]string{"name": name, "state": "not_running"}, nil
 	}
 	if err := client.Stop(ctx, protocol.StopRequest{Op: protocol.OpStop, Name: name, Cwd: resolution.Root}); err != nil {

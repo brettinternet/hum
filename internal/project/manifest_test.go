@@ -51,14 +51,14 @@ processes:
 			Source: "manifest",
 			Argv:   []string{"go", "run", "./api", "--port=8080"},
 			Cwd:    root,
-			Ready:  &ReadyDefinition{Match: "listening", Timeout: 2 * time.Second},
+			Ready:  &ReadyDefinition{Match: "listening", Timeout: 2 * time.Second}, Restart: RestartNever,
 		},
 		{
 			Name:   "web",
 			Source: "manifest",
 			Argv:   []string{"go", "run", "./web"},
 			Cwd:    filepath.Join(root, "web"),
-			Ready:  &ReadyDefinition{Match: "ready:", Timeout: 30 * time.Second},
+			Ready:  &ReadyDefinition{Match: "ready:", Timeout: 30 * time.Second}, Restart: RestartNever,
 		},
 	}
 	if !reflect.DeepEqual(definitions, want) {

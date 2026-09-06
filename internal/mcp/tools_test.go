@@ -56,7 +56,7 @@ func (f *fakeClient) Start(_ context.Context, req protocol.StartRequest) (protoc
 	if err := f.startErr[req.Name]; err != nil {
 		return protocol.Process{}, err
 	}
-	p := protocol.Process{Name: req.Name, Source: req.Source, Root: req.Root, Cwd: req.Cwd, Argv: append([]string(nil), req.Argv...), State: "running", LaunchCursor: 7}
+	p := protocol.Process{Name: req.Name, Source: req.Source, Root: req.Root, Cwd: req.Cwd, Argv: append([]string(nil), req.Argv...), State: "running", LaunchCursor: 7, Restart: req.Restart}
 	if req.Ready != nil {
 		p.Readiness = &protocol.Readiness{State: protocol.ReadinessStarting, Match: req.Ready.Match}
 	}

@@ -88,7 +88,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:        "start",
 			Usage:       "ensure one or more named sessions are running",
 			ArgsUsage:   "NAME...",
-			Description: "Start is idempotent for running sessions and relaunches retained stopped sessions. Absent names resolve from hum.yaml or conventional discovery. It waits for resolved readiness unless --no-wait is set.",
+			Description: "Start is idempotent for running sessions and relaunches retained stopped sessions. Absent names resolve from hum.yaml or conventional discovery. It waits for resolved readiness unless --no-wait is set. Declared restart: on-failure sessions recover unexpected crashes with five bounded attempts; explicit start cancels pending backoff and uses the current definition.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after the process is spawned"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
@@ -102,7 +102,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:        "up",
 			Usage:       "ensure every manifest process is running",
 			ArgsUsage:   "",
-			Description: "Up resolves every hum.yaml declaration in lexical order, continues after launch failures, and waits for readiness concurrently unless --no-wait is set.",
+			Description: "Up resolves every hum.yaml declaration in lexical order, continues after launch failures, and waits for readiness concurrently unless --no-wait is set. A declared restart: on-failure session retries unexpected crashes with bounded 1s/2s/4s/8s/16s backoff; automatic attempts retain their effective launch spec.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", Usage: "return after processes are spawned"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "maximum readiness wait duration"},
@@ -131,7 +131,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:     "list supervised processes (current project by default)",
 			ArgsUsage: "",
 			Description: "List is read-only and does not start an empty daemon. " +
-				"Use --all to include processes from every project; followed records show their live followers count, while unfollowed human output is unchanged. When nothing is running, it reports that state.",
+				"Use --all to include processes from every project; followed records show their live followers count, while unfollowed human output is unchanged. JSON includes restart, relaunches, and pending next_launch_at fields. When nothing is running, it reports that state.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "all", Aliases: []string{"a"}, Usage: "list processes from every project"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
@@ -144,7 +144,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Name:      "status",
 			Usage:     "show one supervised process (read-only)",
 			ArgsUsage: "NAME",
-			Description: "Status only reads one named process and never starts a daemon. It reports followers, the live attached run and logs --follow count, as a read-only observation. " +
+			Description: "Status only reads one named process and never starts a daemon. It reports followers, the live attached run and logs --follow count, as a read-only observation. JSON and human output expose restart policy, relaunches, and pending backoff. Read retained failing output before editing a recovering process. " +
 				"If no daemon is available, resolved manifest names point to hum start <name>; undefined names keep the hum run <name> -- <command> guidance.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write stable JSON"},
@@ -218,7 +218,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			ArgsUsage: "NAME...",
 			Description: "Restart applies the graceful stop sequence and attempts to relaunch requested names with each one's recorded command, working directory, and environment. " +
 				"Names are attempted in order; the first error stops the remaining restarts, so it reports only successful attempts; each result includes the new PID and launch cursor. " +
-				"It restarts processes, not the daemon. " +
+				"It restarts processes, not the daemon. A manifest may set restart: on-failure (never is the default) for five bounded crash relaunches; inspect retained failing logs before editing again. " +
 				"If no daemon is available, it reports Nothing is running and points to hum run <name> -- <command> as the launch command.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, Usage: "write one stable JSON object per name"},
@@ -452,7 +452,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 			return client.Start(ctx, daemon.StartRequest{Name: name, Source: "ad_hoc", Argv: argv, Cwd: cwd, Env: os.Environ(), TTY: cmd.Bool("tty")})
 		}
 		if declared {
-			return client.Start(ctx, daemon.StartRequest{Name: name, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: os.Environ(), Ready: readinessConfig(definition), TTY: definition.TTY})
+			return client.Start(ctx, daemon.StartRequest{Name: name, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: os.Environ(), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition)})
 		}
 		return client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root})
 	}
@@ -956,15 +956,17 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	running := make(map[string]bool, len(processes))
+	resettable := make(map[string]bool, len(processes))
 	for _, process := range processes {
 		if process.State == app.StateRunning {
 			running[process.Name] = true
 		}
+		resettable[process.Name] = process.NextLaunchAt != nil || process.Restart == app.RestartOnFailure && process.Relaunches > 0
 	}
 	var firstErr error
 	for _, name := range names {
 		result := stopResult{Name: name}
-		if !running[name] {
+		if !running[name] && !resettable[name] {
 			result.Status = "not_running"
 		} else {
 			stopErr := client.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: cwd})
@@ -1028,6 +1030,10 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	return nil
 }
 
+func processNeedsRestartControl(process app.Process) bool {
+	return process.NextLaunchAt != nil || process.Restart == app.RestartOnFailure && process.Relaunches > 0
+}
+
 func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
 	if err := requireNoArgs(cmd, "down"); err != nil {
 		return err
@@ -1088,7 +1094,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	workers := make(chan workerResult, len(names))
 	var waitGroup sync.WaitGroup
 	for index, name := range names {
-		if byName[name].State != app.StateRunning {
+		if byName[name].State != app.StateRunning && !processNeedsRestartControl(byName[name]) {
 			continue
 		}
 		waitGroup.Add(1)
@@ -1185,6 +1191,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 			request.Source = definition.Source
 			request.Ready = readinessConfig(definition)
 			request.TTY = definition.TTY
+			request.Restart = protocolRestartPolicy(definition)
 		}
 		process, err := client.Restart(ctx, request)
 		if err != nil {
@@ -1198,6 +1205,9 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 			PID:          process.PID,
 			Restarts:     process.RestartCount,
 			LaunchCursor: protocol.Cursor(process.LaunchCursor),
+			Restart:      string(effectiveProcessRestart(process)),
+			Relaunches:   process.Relaunches,
+			NextLaunchAt: process.NextLaunchAt,
 			Readiness:    readiness,
 			ReadyCursor:  readyCursor,
 		}
@@ -1374,7 +1384,7 @@ func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command,
 				results[index] = manifestLaunchResultFor(definition, current, "already_running")
 				continue
 			}
-			process, startErr := client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root, TTY: current.TTY})
+			process, startErr := client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root, TTY: current.TTY, Restart: string(app.RestartNever)})
 			if startErr != nil {
 				results[index] = manifestLaunchError(definition, startErr)
 			} else {

@@ -23,16 +23,30 @@ type yamlEntry struct {
 	value *yaml.Node
 }
 
+// RestartPolicy controls whether a declared process is relaunched after an
+// unexpected exit. The zero value is intentionally not used for parsed
+// definitions: parsers and all runtime adapters normalize it to RestartNever.
+type RestartPolicy string
+
+const (
+	RestartNever     RestartPolicy = "never"
+	RestartOnFailure RestartPolicy = "on-failure"
+	// Descriptive aliases used by callers that prefer the policy-prefixed name.
+	RestartPolicyNever     = RestartNever
+	RestartPolicyOnFailure = RestartOnFailure
+)
+
 var (
 	manifestFields = map[string]struct{}{
 		"version":   {},
 		"processes": {},
 	}
 	processFields = map[string]struct{}{
-		"argv":  {},
-		"cwd":   {},
-		"ready": {},
-		"tty":   {},
+		"argv":    {},
+		"cwd":     {},
+		"ready":   {},
+		"tty":     {},
+		"restart": {},
 	}
 	readyFields = map[string]struct{}{
 		"match":   {},
@@ -42,12 +56,13 @@ var (
 
 // Definition is one named process declared by a project manifest.
 type Definition struct {
-	Name   string
-	Source string
-	Argv   []string
-	Cwd    string
-	Ready  *ReadyDefinition
-	TTY    bool
+	Name    string
+	Source  string
+	Argv    []string
+	Cwd     string
+	Ready   *ReadyDefinition
+	TTY     bool
+	Restart RestartPolicy
 }
 
 // ReadyDefinition describes the output expression and timeout used to
@@ -227,7 +242,17 @@ func parseProcess(root, filename, context string, node *yaml.Node) (Definition, 
 			return Definition{}, manifestError(filename, context, "tty must be a boolean: %v", err)
 		}
 	}
-	return Definition{Argv: argv, Cwd: cwd, Ready: ready, TTY: tty}, nil
+	restart := RestartNever
+	if restartNode, ok := fields["restart"]; ok {
+		if !isStringScalar(restartNode) {
+			return Definition{}, manifestError(filename, context, "restart must be a string (never or on-failure)")
+		}
+		restart = RestartPolicy(restartNode.Value)
+		if restart != RestartNever && restart != RestartOnFailure {
+			return Definition{}, manifestError(filename, context, "restart %q is invalid (want never or on-failure)", restartNode.Value)
+		}
+	}
+	return Definition{Argv: argv, Cwd: cwd, Ready: ready, TTY: tty, Restart: restart}, nil
 }
 
 func parseArgv(filename, context string, node *yaml.Node) ([]string, error) {

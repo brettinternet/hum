@@ -22,7 +22,7 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 			return wireRequest{}, errors.New("start request is missing payload")
 		}
 		wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env = req.Start.Name, req.Start.Argv, req.Start.Cwd, req.Start.Root, req.Start.Env
-		wire.Source, wire.Ready, wire.TTY = req.Start.Source, wireReadinessConfigFromProtocol(req.Start.Ready), req.Start.TTY
+		wire.Source, wire.Ready, wire.TTY, wire.Restart = req.Start.Source, wireReadinessConfigFromProtocol(req.Start.Ready), req.Start.TTY, req.Start.Restart
 		if req.Start.TTYSize != nil {
 			wire.Columns, wire.Rows = req.Start.TTYSize.Columns, req.Start.TTYSize.Rows
 		}
@@ -67,7 +67,7 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		}
 		wire.Name, wire.Cwd, wire.Root = req.Restart.Name, req.Restart.Cwd, req.Restart.Root
 		wire.Update, wire.Argv, wire.Env = req.Restart.Update, req.Restart.Argv, req.Restart.Env
-		wire.Source, wire.Ready, wire.TTY = req.Restart.Source, wireReadinessConfigFromProtocol(req.Restart.Ready), req.Restart.TTY
+		wire.Source, wire.Ready, wire.TTY, wire.Restart = req.Restart.Source, wireReadinessConfigFromProtocol(req.Restart.Ready), req.Restart.TTY, req.Restart.Restart
 		if req.Restart.TTYSize != nil {
 			wire.Columns, wire.Rows = req.Restart.TTYSize.Columns, req.Restart.TTYSize.Rows
 		}
@@ -212,7 +212,8 @@ func protocolProcessFromWire(item wireProcess) protocol.Process {
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: protocol.Cursor(item.LaunchCursor), State: item.State,
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
-		Followers: item.Followers,
+		Followers: item.Followers, Restart: item.Restart, Relaunches: item.Relaunches,
+		NextLaunchAt: item.NextLaunchAt,
 	}
 	if item.Readiness != nil {
 		result.Readiness = &protocol.Readiness{

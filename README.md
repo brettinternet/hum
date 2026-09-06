@@ -76,6 +76,33 @@ bounded by eviction. `down` stops all project processes; a later `up` restarts r
 definitions, not retained ad hoc sessions. Daemon loss ends followers nonzero
 with a diagnostic; followers do not reconnect.
 
+### Crash relaunch
+
+A manifest process may opt into the bounded policy `restart: on-failure` (the
+only other value is `never`, which is the default). Unknown values and non-string
+values are rejected with the manifest file and process context. Discovered
+processes and ad-hoc sessions always use `never`; `hum init` leaves an inert,
+commented `restart: on-failure` example in generated templates.
+
+For an opted-in process, a non-zero exit or signal not owned by an explicit
+`stop`, `down`, `restart`, `remove`, or shutdown (including their TERM/KILL
+control) schedules at most five
+automatic relaunches after 1s, 2s, 4s, 8s, and 16s. A spawn failure consumes
+that attempt and is retained as a bounded system entry. An automatic
+incarnation that survives 30 seconds resets the counter; exit zero and
+operator controls also reset it. Backoff is generation-guarded, so a stop or
+manual start/restart wins cleanly and no stale timer can launch a child.
+Automatic relaunches reuse the last effective argv, cwd, environment, readiness,
+and TTY rather than rereading the manifest; use an explicit start/restart to
+adopt edits. Readiness timeout never triggers a relaunch.
+
+Status, list, CLI JSON, and MCP snapshots expose `restart`, `relaunches`, and
+`next_launch_at` while backoff is pending. Retained logs include each failed
+incarnation and the `relaunching`, spawn-failure, and final `gave up` boundaries;
+followers remain attached through backoff and exhaustion. Before editing again,
+agents should read the failing incarnation's retained output with `hum logs` (or
+MCP `logs`) so the crash is diagnosed rather than hidden by recovery.
+
 ## Install
 
 Install the latest macOS or Linux release with [mise](https://mise.jdx.dev/):

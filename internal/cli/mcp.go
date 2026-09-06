@@ -60,7 +60,7 @@ func (mcpResolver) Resolve(_ context.Context, root string) (mcpserver.Resolution
 		definitions = append(definitions, mcpserver.Definition{
 			Name: definition.Name, Source: definition.Source,
 			Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd,
-			Ready: readinessConfig(definition), TTY: definition.TTY,
+			Ready: readinessConfig(definition), TTY: definition.TTY, Restart: restartPolicy(definition),
 		})
 	}
 	return mcpserver.Resolution{Root: manifest.root, Definitions: definitions}, nil
@@ -146,7 +146,8 @@ func mcpProcess(process app.Process) protocol.Process {
 		Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...), Start: process.Start,
 		LaunchCursor: protocol.Cursor(process.LaunchCursor), State: string(process.State), Exit: mcpExit(process.Exit),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
-		Followers: process.Followers,
+		Followers: process.Followers, Restart: string(process.Restart), Relaunches: process.Relaunches,
+		NextLaunchAt: process.NextLaunchAt,
 	}
 	if process.NextCursor != 0 {
 		cursor := protocol.Cursor(process.NextCursor)

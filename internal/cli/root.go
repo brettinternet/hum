@@ -20,6 +20,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 			"hum serve runs the daemon in the foreground, while hum serve --daemon runs it detached. " +
 			"Bounded reads and controls do not start an empty daemon: list, status, logs without --follow, wait, input, restart, stop, remove, and shutdown inspect or control existing work. " +
 			"logs --follow and wait ensure a daemon exists so they can observe a future launch. When nothing is running, bounded status, logs, and restart provide launch guidance. " +
+			"Manifest processes may opt into restart: on-failure; it retries crashes at 1s, 2s, 4s, 8s, and 16s, at most five times, while discovered and ad-hoc processes remain never. Spawn failures consume attempts and a 30-second survivor resets the loop; controls cancel pending work. Read retained failing output before editing again. " +
 			"Stopping named processes and shutting down the daemon are separate operations.",
 		Version:   version + " (built " + buildTime + ")",
 		Writer:    writer,

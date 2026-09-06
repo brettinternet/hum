@@ -24,6 +24,9 @@ modes:
   stream <marker>
       Write <marker>.started, emit live stdout/stderr fragments, report
       counted SIGINTs, and write <marker>.terminated on SIGTERM.
+  relaunch <marker>
+      Increment <marker>, fail the first two launches, then print ready and
+      remain alive until SIGTERM.
   burst <gate> <count>
       Emit alternating stdout:NNNN and stderr:NNNN lines, wait for <gate>
       after the first half, then emit the remaining lines.
@@ -80,6 +83,11 @@ func run(args []string) (int, error) {
 			return 0, errors.New("stream requires exactly one non-empty marker path")
 		}
 		return runStream(args[1])
+	case "relaunch":
+		if len(args) != 2 || args[1] == "" {
+			return 0, errors.New("relaunch requires exactly one non-empty marker path")
+		}
+		return runRelaunch(args[1])
 	case "burst":
 		if len(args) != 3 || args[1] == "" {
 			return 0, errors.New("burst requires a gate path and positive count")
@@ -170,6 +178,40 @@ func selectedTestEnvironment() map[string]string {
 		env[key] = value
 	}
 	return env
+}
+
+func runRelaunch(marker string) (int, error) {
+	count := 0
+	if contents, err := os.ReadFile(marker); err == nil {
+		parsed, parseErr := strconv.Atoi(strings.TrimSpace(string(contents)))
+		if parseErr != nil {
+			return 0, fmt.Errorf("read relaunch count: %w", parseErr)
+		}
+		count = parsed
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return 0, fmt.Errorf("read relaunch marker: %w", err)
+	}
+	count++
+	if err := writeMarker(marker, strconv.Itoa(count)); err != nil {
+		return 0, fmt.Errorf("write relaunch marker: %w", err)
+	}
+	if _, err := fmt.Fprintf(os.Stdout, "launch-%d\n", count); err != nil {
+		return 0, err
+	}
+	if count < 3 {
+		return 1, nil
+	}
+	if _, err := fmt.Fprintln(os.Stdout, "ready"); err != nil {
+		return 0, err
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(signals)
+	sig := <-signals
+	if sig == syscall.SIGTERM {
+		return 0, nil
+	}
+	return 130, nil
 }
 
 func runStream(marker string) (int, error) {
