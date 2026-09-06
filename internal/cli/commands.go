@@ -156,15 +156,18 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		{
 			Name:      "logs",
 			Usage:     "read retained process output (read-only)",
-			ArgsUsage: "NAME",
-			Description: "Logs reads bounded retained output without changing process state. " +
+			ArgsUsage: "[NAME...]",
+			Description: "Logs reads bounded retained output without changing process state. One or more names may be supplied; names are selected in command-line order. " +
+				"With no names, the current project's declarations are resolved once in lexical order, with no ad-hoc sessions included. Duplicate names are rejected, and --after-cursor is only supported for one explicit name. " +
+				"Aggregate filters, tails, and byte or entry limits apply independently to each selected session; bounded JSON is named NDJSON and bounded human entries use an atomic [NAME] prefix. " +
 				"Bounded child output and child-output matches use terminal-control-stripped text; system entries remain raw. " +
 				"Patterns containing raw ESC bytes no longer match stripped child text; a ^ anchor now matches colourised output whose raw first byte is ESC. " +
 				"Stored bytes, cursors, and limit accounting remain raw; control-only bounded child entries remain present with empty text. " +
-				"--follow ensures a daemon exists, may attach before the first launch, and follows the named session across exit, wait, and launch boundaries. " +
+				"--follow ensures a daemon exists, may attach before the first launch, and follows each selected named session with one follower across exit, wait, and launch boundaries. " +
+				"Aggregate follow serializes writes, keeps per-session errors named and isolated, and cancels every follower on daemon loss or output failure. " +
 				"With --follow --match, selection uses stripped child text but selected entries are emitted raw; attached run output is also raw. " +
 				"Stripping is per entry, so split sequences and carriage-return redraw frames are not collapsed; there is no --raw flag or other raw opt-out. " +
-				"Following is read-only, so Ctrl+C cancels only the follower and never signals the managed process. Without --follow, an unavailable daemon reports Nothing is running.",
+				"Following is read-only, so Ctrl+C cancels only the follower for one name and closes all followers in an aggregate; it never signals the managed process or any other managed process. Without --follow, an unavailable daemon reports Nothing is running.",
 			Flags: []urfavecli.Flag{
 				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "select stdout, stderr, or both"},
 				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, Usage: "select the final N entries"},
@@ -690,11 +693,8 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 
 func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
 	args := cmd.Args().Slice()
-	if len(args) == 0 {
-		return errors.New("logs requires a process name")
-	}
 	if len(args) != 1 {
-		return errors.New("logs accepts exactly one process name")
+		return aggregateLogsCommand(ctx, cmd, version, buildTime, writer, errWriter, args)
 	}
 	stream := cmd.String("stream")
 	if stream != "stdout" && stream != "stderr" && stream != "both" {
@@ -763,13 +763,7 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		}
 		defer follower.Close()
 		if process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd}); getErr == nil && process.State != app.StateRunning {
-			message := fmt.Sprintf("%s waiting for next launch\n", name)
-			if len(process.Argv) == 0 {
-				message = fmt.Sprintf("%s waiting for first launch\n", name)
-				if _, declared := manifest.byName[name]; !declared {
-					message = fmt.Sprintf("%s waiting for first launch (name does not resolve; hum run %s -- COMMAND may create it)\n", name, name)
-				}
-			}
+			message := logsWaitingMessage(name, process, manifest)
 			if cmd.Bool("json") {
 				err = encodeJSON(writer, eventJSON(name, output.Event{Read: &output.ReadResult{Entries: []output.Entry{{Stream: output.System, Time: time.Now(), Text: message}}}}))
 			} else {
@@ -806,6 +800,377 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	return writeCursorTrailer(errWriter, result)
+}
+
+type aggregateLogFollowerResult struct {
+	index int
+	event output.Event
+	err   error
+}
+
+func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer, args []string) error {
+	stream := cmd.String("stream")
+	if stream != "stdout" && stream != "stderr" && stream != "both" {
+		return fmt.Errorf("stream must be one of stdout, stderr, or both: %q", stream)
+	}
+	tail := cmd.Int("tail")
+	if tail < 0 {
+		return errors.New("tail must not be negative")
+	}
+	limitBytes := cmd.Int("limit-bytes")
+	if limitBytes < 0 {
+		return errors.New("limit-bytes must not be negative")
+	}
+
+	ctx = nonNilContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(args) > 0 {
+		if duplicate := duplicateLogName(args); duplicate != "" {
+			return fmt.Errorf("logs contains duplicate process name %q", duplicate)
+		}
+	}
+	if cmd.IsSet("after-cursor") {
+		return errors.New("logs --after-cursor is only supported for one explicit process name")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("current directory: %w", err)
+	}
+
+	var manifest manifestState
+	if len(args) == 0 {
+		// The no-name form is intentionally strict: it has the same definition
+		// set as up, rather than falling back to an ad-hoc session.
+		manifest, err = loadManifest(cwd)
+	} else {
+		manifest, err = loadManifestOrEmpty(cwd)
+	}
+	if err != nil {
+		return err
+	}
+	names := append([]string(nil), args...)
+	if len(args) == 0 {
+		names = make([]string, 0, len(manifest.defs))
+		for _, definition := range manifest.defs {
+			names = append(names, definition.Name)
+		}
+	}
+	if len(names) == 0 {
+		return newUserFacingError("No process declarations resolve for logs. Define processes in hum.yaml or run hum init.")
+	}
+
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return err
+	}
+	maxBytes := int(cfg.ReadBytes)
+	if limitBytes != 0 {
+		maxBytes = limitBytes
+	}
+	request := daemon.OutputRequest{
+		Cwd: cwd, Tail: tail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
+		MaxEntries: cfg.ReadEntries, MaxBytes: maxBytes,
+	}
+	var client *daemon.Client
+	if cmd.Bool("follow") {
+		client, err = runDaemonClient(ctx, cfg)
+	} else {
+		client, err = daemonClient(ctx, cfg)
+	}
+	if err != nil {
+		if client != nil {
+			_ = client.Close()
+		}
+		if cmd.Bool("follow") || !daemonUnavailable(err) {
+			return err
+		}
+		return renderAggregateLogsUnavailable(writer, errWriter, cmd.Bool("json"), names, manifest)
+	}
+	defer client.Close()
+	if cmd.Bool("follow") {
+		return aggregateLogsFollow(ctx, cmd, client, request, names, manifest, writer, errWriter)
+	}
+	return aggregateLogsRead(ctx, cmd, client, request, names, writer, errWriter)
+}
+
+func aggregateLogNamedError(name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", name, err)
+}
+
+func duplicateLogName(names []string) string {
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if _, ok := seen[name]; ok {
+			return name
+		}
+		seen[name] = struct{}{}
+	}
+	return ""
+}
+
+func renderAggregateLogsUnavailable(writer, errWriter io.Writer, jsonOutput bool, names []string, manifest manifestState) error {
+	renderer := newAggregateLogRenderer(writer, errWriter, jsonOutput)
+	var firstErr error
+	for _, name := range names {
+		nameErr := newUserFacingError(logsUnavailableMessage)
+		if definition, ok := manifest.byName[name]; ok {
+			nameErr = manifestUnavailableMessage(definition)
+		}
+		if firstErr == nil {
+			firstErr = aggregateLogNamedError(name, nameErr)
+		}
+		if err := renderer.writeError(name, aggregateLogWireError(nameErr)); err != nil {
+			return err
+		}
+	}
+	return firstErr
+}
+
+func aggregateLogsRead(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, request daemon.OutputRequest, names []string, writer, errWriter io.Writer) error {
+	renderer := newAggregateLogRenderer(writer, errWriter, cmd.Bool("json"))
+	var firstErr error
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		request.Name = name
+		result, err := client.Output(ctx, request)
+		if err != nil {
+			if aggregateLogFatalError(err) {
+				return err
+			}
+			if firstErr == nil {
+				firstErr = aggregateLogNamedError(name, err)
+			}
+			if writeErr := renderer.writeError(name, aggregateLogWireError(err)); writeErr != nil {
+				return writeErr
+			}
+			continue
+		}
+		if err := renderer.writeEvent(name, output.Event{Read: &result}); err != nil {
+			return err
+		}
+		if err := renderer.writeCursor(name, result); err != nil {
+			return err
+		}
+	}
+	return firstErr
+}
+
+func aggregateLogsFollow(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, request daemon.OutputRequest, names []string, manifest manifestState, writer, errWriter io.Writer) error {
+	renderer := newAggregateLogRenderer(writer, errWriter, cmd.Bool("json"))
+	signals := notifyFollowSignals()
+	defer signal.Stop(signals)
+
+	followCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	followers := make([]*daemon.Follower, len(names))
+	var readers sync.WaitGroup
+	var closeOnce sync.Once
+	closeAll := func() {
+		closeOnce.Do(func() {
+			cancel()
+			for _, follower := range followers {
+				if follower != nil {
+					_ = follower.Close()
+				}
+			}
+			readers.Wait()
+		})
+	}
+	defer closeAll()
+
+	var firstErr error
+	for index, name := range names {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		follower, err := client.Follow(ctx, daemon.FollowRequest{
+			Name: name, Cwd: request.Cwd, After: request.After, Tail: request.Tail, Stream: request.Stream,
+			Match: request.Match, MaxEntries: request.MaxEntries, MaxBytes: request.MaxBytes,
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if aggregateLogFatalError(err) {
+				return err
+			}
+			if firstErr == nil {
+				firstErr = aggregateLogNamedError(name, err)
+			}
+			if writeErr := renderer.writeError(name, aggregateLogWireError(err)); writeErr != nil {
+				return writeErr
+			}
+			continue
+		}
+		followers[index] = follower
+	}
+
+	// Match the single-name follow lifecycle message without changing the
+	// fixed membership selected before the daemon was contacted.
+	for index, follower := range followers {
+		if follower == nil {
+			continue
+		}
+		name := names[index]
+		process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: request.Cwd})
+		if getErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if aggregateLogFatalError(getErr) {
+				return getErr
+			}
+			if firstErr == nil {
+				firstErr = aggregateLogNamedError(name, getErr)
+			}
+			if writeErr := renderer.writeError(name, aggregateLogWireError(getErr)); writeErr != nil {
+				return writeErr
+			}
+			_ = follower.Close()
+			followers[index] = nil
+			continue
+		}
+		if process.State == app.StateRunning {
+			continue
+		}
+		message := logsWaitingMessage(name, process, manifest)
+		if err := renderer.writeEvent(name, output.Event{Read: &output.ReadResult{Entries: []output.Entry{{Stream: output.System, Time: time.Now(), Text: message}}}}); err != nil {
+			return err
+		}
+	}
+
+	events := make(chan aggregateLogFollowerResult, len(names))
+	active := 0
+	for index, follower := range followers {
+		if follower == nil {
+			continue
+		}
+		active++
+		readers.Add(1)
+		go func(index int, follower *daemon.Follower) {
+			defer readers.Done()
+			for {
+				event, err := follower.Next(followCtx)
+				result := aggregateLogFollowerResult{index: index, event: event, err: err}
+				select {
+				case events <- result:
+				case <-followCtx.Done():
+					return
+				}
+				if err != nil {
+					return
+				}
+			}
+		}(index, follower)
+	}
+	if active == 0 {
+		return firstErr
+	}
+
+	for active > 0 {
+		select {
+		case <-ctx.Done():
+			return nil
+		case sig, ok := <-signals:
+			if !ok {
+				signals = nil
+				continue
+			}
+			if sig == nil {
+				continue
+			}
+			return nil
+		case result := <-events:
+			name := names[result.index]
+			if result.err != nil {
+				if ctx.Err() != nil || followCtx.Err() != nil {
+					return nil
+				}
+				cleanClose := false
+				fatal := aggregateLogFatalError(result.err)
+				if errors.Is(result.err, io.EOF) {
+					_, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: request.Cwd})
+					cleanClose = getErr == nil || isNotFound(getErr)
+					fatal = !cleanClose && aggregateLogFatalError(getErr)
+				}
+				if fatal {
+					return result.err
+				}
+				if !cleanClose {
+					if firstErr == nil {
+						firstErr = aggregateLogNamedError(name, result.err)
+					}
+					if err := renderer.writeError(name, aggregateLogWireError(result.err)); err != nil {
+						return err
+					}
+				}
+				_ = followers[result.index].Close()
+				followers[result.index] = nil
+				active--
+				if active == 0 {
+					return firstErr
+				}
+				continue
+			}
+			if err := renderer.writeEvent(name, result.event); err != nil {
+				return err
+			}
+		}
+	}
+	return firstErr
+}
+
+func logsWaitingMessage(name string, process app.Process, manifest manifestState) string {
+	message := fmt.Sprintf("%s waiting for next launch\n", name)
+	if len(process.Argv) == 0 {
+		message = fmt.Sprintf("%s waiting for first launch\n", name)
+		if _, declared := manifest.byName[name]; !declared {
+			message = fmt.Sprintf("%s waiting for first launch (name does not resolve; hum run %s -- COMMAND may create it)\n", name, name)
+		}
+	}
+	return message
+}
+
+func aggregateLogFatalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if daemonUnavailable(err) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var wire *daemon.WireError
+	if errors.As(err, &wire) && wire != nil {
+		switch wire.Code {
+		case protocol.ErrorSupervisorClosed, protocol.ErrorVersionMismatch:
+			return true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func aggregateLogWireError(err error) *protocol.WireError {
+	var wire *daemon.WireError
+	if errors.As(err, &wire) && wire != nil {
+		copy := *wire
+		return &copy
+	}
+	message := "aggregate logs failed"
+	if err != nil {
+		message = err.Error()
+	}
+	return protocol.NewWireError(protocol.ErrorInternal, message, nil)
 }
 
 const defaultWaitTimeout = 30 * time.Second

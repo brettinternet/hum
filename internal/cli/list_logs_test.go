@@ -75,6 +75,181 @@ func TestList(t *testing.T) {
 	}
 }
 
+func TestLogsMultipleNames(t *testing.T) {
+	runtimeDir := hum006ListLogsTempDir(t, "aggregate-runtime")
+	hum006ListLogsStartDaemon(t, runtimeDir, 4096)
+	project := hum006ListLogsProject(t, "aggregate-project")
+
+	for _, item := range []struct {
+		name string
+		text string
+	}{
+		{name: "first", text: "first"},
+		{name: "second", text: "second"},
+	} {
+		script := fmt.Sprintf("printf '%s-0\\n'; printf '%s-1\\n'", item.text, item.text)
+		if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", item.name, "--detach", "--", "/bin/sh", "-c", script); err != nil {
+			t.Fatalf("start %s: %v (stdout=%q stderr=%q)", item.name, err, stdout, stderr)
+		}
+		hum006ListLogsWaitForText(t, project, item.name, item.text+"-1\n")
+	}
+
+	jsonOutput, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "second", "first", "--json", "--stream", "stdout", "--limit-bytes", "9")
+	if err != nil {
+		t.Fatalf("aggregate logs: %v (stderr=%q)", err, stderr)
+	}
+	objects := hum006ListLogsDecodeJSONLines(t, jsonOutput)
+	if len(objects) != 2 {
+		t.Fatalf("aggregate JSON = %q, decoded %d objects; want one per selected name", jsonOutput, len(objects))
+	}
+	for index, want := range []struct {
+		name string
+		text string
+	}{{"second", "second-0\n"}, {"first", "first-0\n"}} {
+		if objects[index]["op"] != "event" || objects[index]["name"] != want.name {
+			t.Fatalf("aggregate object %d = %#v, want named event for %s", index, objects[index], want.name)
+		}
+		entries := hum006ListLogsEntries(t, objects[index])
+		if got := hum006ListLogsEntryTexts(t, entries); !hum006ListLogsEqualStrings(got, []string{want.text}) {
+			t.Fatalf("aggregate object %d entries = %#v, want %q", index, got, want.text)
+		}
+	}
+	if !hum006ListLogsBool(objects[0], "more") || !hum006ListLogsBool(objects[1], "more") {
+		t.Fatalf("aggregate JSON = %q, want independent more=true limits", jsonOutput)
+	}
+
+	human, humanErr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "first", "second", "--tail", "1", "--stream", "stdout")
+	if err != nil {
+		t.Fatalf("aggregate human logs: %v (stderr=%q)", err, humanErr)
+	}
+	if !strings.Contains(human, "[first] first-1\n") || !strings.Contains(human, "[second] second-1\n") {
+		t.Fatalf("aggregate human output = %q, want atomic name prefixes", human)
+	}
+	if !strings.Contains(humanErr, "[first] next cursor:") || !strings.Contains(humanErr, "[second] next cursor:") {
+		t.Fatalf("aggregate human stderr = %q, want one cursor trailer per name", humanErr)
+	}
+
+	manifestProject := hum006ListLogsProject(t, "aggregate-manifest")
+	writeManifestCLITestFile(t, manifestProject, `version: 1
+processes:
+  zeta:
+    argv: [/bin/sh, -c, "printf 'zeta\\n'"]
+  alpha:
+    argv: [/bin/sh, -c, "printf 'alpha\\n'"]
+`)
+	for _, name := range []string{"zeta", "alpha"} {
+		if stdout, stderr, err := hum006ListLogsRunAt(t, manifestProject, context.Background(), "start", name, "--no-wait"); err != nil {
+			t.Fatalf("start declared %s: %v (stdout=%q stderr=%q)", name, err, stdout, stderr)
+		}
+		hum006ListLogsWaitForText(t, manifestProject, name, name+"\n")
+	}
+	if stdout, stderr, err := hum006ListLogsRunAt(t, manifestProject, context.Background(), "run", "rogue", "--detach", "--", "/bin/sh", "-c", "printf 'rogue\\n'"); err != nil {
+		t.Fatalf("start ad-hoc session: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+	}
+	hum006ListLogsWaitForText(t, manifestProject, "rogue", "rogue\n")
+	noName, stderr, err := hum006ListLogsRunAt(t, manifestProject, context.Background(), "logs", "--json")
+	if err != nil {
+		t.Fatalf("no-name aggregate logs: %v (stderr=%q)", err, stderr)
+	}
+	noNameObjects := hum006ListLogsDecodeJSONLines(t, noName)
+	if len(noNameObjects) != 2 || noNameObjects[0]["name"] != "alpha" || noNameObjects[1]["name"] != "zeta" {
+		t.Fatalf("no-name aggregate = %q, want lexical alpha,zeta declarations only", noName)
+	}
+	for _, object := range noNameObjects {
+		if object["name"] == "rogue" {
+			t.Fatalf("no-name aggregate = %q, must exclude ad-hoc sessions", noName)
+		}
+	}
+}
+
+func TestLogsAggregateValidationAndLifecycle(t *testing.T) {
+	validationRuntime := hum006ListLogsTempDir(t, "aggregate-validation-only-runtime")
+	t.Setenv("HUM_RUNTIME_DIR", validationRuntime)
+	validationProject := hum006ListLogsProject(t, "aggregate-validation-only-project")
+	if _, _, err := hum006ListLogsRunAt(t, validationProject, context.Background(), "logs", "one", "one"); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate aggregate validation error = %v, want duplicate rejection", err)
+	}
+	if _, _, err := hum006ListLogsRunAt(t, validationProject, context.Background(), "logs", "one", "two", "--after-cursor", "0"); err == nil || !strings.Contains(err.Error(), "after-cursor") {
+		t.Fatalf("aggregate cursor validation error = %v, want pre-daemon rejection", err)
+	}
+	writeManifestCLITestFile(t, validationProject, "version: 1\nprocesses: {}\n")
+	for _, args := range [][]string{{"logs"}, {"logs", "--follow"}} {
+		if _, _, err := hum006ListLogsRunAt(t, validationProject, context.Background(), args...); err == nil || !strings.Contains(err.Error(), "No process declarations resolve") {
+			t.Fatalf("empty declaration logs %v error = %v, want actionable guidance", args, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(validationRuntime, "hum.sock")); !os.IsNotExist(err) {
+		t.Fatalf("aggregate validation socket = %v, want no daemon startup", err)
+	}
+
+	hum006ListLogsStartDaemon(t, validationRuntime, 4096)
+	gate := filepath.Join(validationProject, "second.release")
+	if stdout, stderr, err := hum006ListLogsRunAt(t, validationProject, context.Background(), "run", "first", "--detach", "--", "/bin/sh", "-c", "printf 'first-ready\\n'; sleep 30"); err != nil {
+		t.Fatalf("start first removal fixture: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+	}
+	if stdout, stderr, err := hum006ListLogsRunAt(t, validationProject, context.Background(), "run", "second", "--detach", "--", "/bin/sh", "-c", fmt.Sprintf("while [ ! -f %s ]; do sleep 0.02; done; printf 'second-after-remove\\n'; sleep 30", strconv.Quote(gate))); err != nil {
+		t.Fatalf("start second removal fixture: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+	}
+	hum006ListLogsWaitForText(t, validationProject, "first", "first-ready\n")
+
+	oldwd := hum006ListLogsEnterDir(t, validationProject)
+	followContext, cancelFollow := context.WithCancel(context.Background())
+	capture := hum006ListLogsFirstWriteWriter()
+	followResult := make(chan error, 1)
+	go func() {
+		var stderr bytes.Buffer
+		followResult <- NewRootCommand("test", "test", capture, &stderr).Run(followContext, []string{"hum", "logs", "first", "second", "--follow", "--json"})
+	}()
+	select {
+	case <-capture.first:
+	case <-time.After(3 * time.Second):
+		cancelFollow()
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatal("timed out waiting for aggregate removal follower")
+	}
+	if stdout, stderr, err := hum006ListLogsRunHere(context.Background(), "remove", "first"); err != nil {
+		cancelFollow()
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatalf("remove first followed session: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+	}
+	if stdout, stderr, err := hum006ListLogsRunHere(context.Background(), "run", "first", "--detach", "--", "/bin/sh", "-c", "printf 'first-recreated\\n'; sleep 30"); err != nil {
+		cancelFollow()
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatalf("recreate first followed name: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+	}
+	if err := os.WriteFile(gate, []byte("release\n"), 0o600); err != nil {
+		cancelFollow()
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(capture.String(), "second-after-remove\\n") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(capture.String(), "second-after-remove\\n") {
+		cancelFollow()
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatalf("aggregate output after removal = %q, want second follower to remain active", capture.String())
+	}
+	if strings.Contains(capture.String(), "EOF") || strings.Contains(capture.String(), "first-recreated") {
+		cancelFollow()
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatalf("aggregate output after remove/recreate = %q, want old first follower to close cleanly", capture.String())
+	}
+	cancelFollow()
+	select {
+	case err := <-followResult:
+		if err != nil {
+			hum006ListLogsLeaveDir(t, oldwd)
+			t.Fatalf("aggregate removal follow returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatal("aggregate removal follow did not cancel")
+	}
+	hum006ListLogsLeaveDir(t, oldwd)
+}
+
 func TestLogsFollow(t *testing.T) {
 	runtimeDir := hum006ListLogsTempDir(t, "runtime")
 	hum006ListLogsStartDaemon(t, runtimeDir, 128)

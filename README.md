@@ -51,7 +51,7 @@ processes:
 ```sh
 hum up
 hum status web
-hum logs worker --tail 50
+hum logs web worker --tail 50
 hum stop web
 # run migrations, installs, or other intermediate work
 hum start web
@@ -75,6 +75,19 @@ without a live daemon session report zero. Unobserved completed sessions remain
 bounded by eviction. `down` stops all project processes; a later `up` restarts resolved
 definitions, not retained ad hoc sessions. Daemon loss ends followers nonzero
 with a diagnostic; followers do not reconnect.
+
+After `hum up`, use `hum logs --follow` to watch every current declaration in one
+terminal. `hum logs [NAME...]` accepts names in selection order. Omitting names
+resolves the current project's declarations once in lexical order, excludes ad-hoc
+sessions, and keeps that membership fixed for the command. Duplicate names are rejected, and
+`--after-cursor` remains a single-explicit-name option. Aggregate bounded reads apply
+`--stream`, `--match`, `--tail`, and each byte or entry limit independently to every
+name; output follows selection order. Human aggregate entries are written atomically
+with a `[NAME]` prefix, while JSON uses the existing named NDJSON event objects.
+Aggregate follow opens one follower per selected session, serializes writes, keeps
+session errors named and isolated, and closes every follower on daemon loss or
+output failure. Ctrl+C closes those followers without signaling any managed process.
+A single explicit name retains the existing human and JSON output unchanged.
 
 ## Install
 

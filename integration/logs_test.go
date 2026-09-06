@@ -3,6 +3,7 @@ package integration
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,9 +55,10 @@ type logsitJSONLine struct {
 }
 
 type logsitProcess struct {
-	Name  string `json:"name"`
-	PID   int    `json:"pid"`
-	State string `json:"state"`
+	Name      string `json:"name"`
+	PID       int    `json:"pid"`
+	State     string `json:"state"`
+	Followers int    `json:"followers"`
 }
 
 type logsitListResponse struct {
@@ -205,6 +207,87 @@ func TestLogFollowers(t *testing.T) {
 		t.Fatalf("stop canceled process: code=%d stdout=%q stderr=%q err=%v", stopped.Code, stopped.Stdout, stopped.Stderr, stopped.Err)
 	}
 	testutil.WaitForFile(t, cancelMarker+".terminated", logsitWaitTimeout)
+}
+
+func TestLogsFollowMultipleProcesses(t *testing.T) {
+	harness := logsitNewHarness(t)
+	manifest := "version: 1\nprocesses:\n"
+	manifest += fmt.Sprintf("  alpha:\n    argv: [%q, %q, %q]\n", "/bin/sh", "-c", "printf 'alpha-up\\n'; sleep 30")
+	manifest += fmt.Sprintf("  beta:\n    argv: [%q, %q, %q]\n", "/bin/sh", "-c", "printf 'beta-up\\n'; sleep 30")
+	if err := os.WriteFile(filepath.Join(harness.project, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	follower := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "--follow")
+	logsitWaitFollowerText(t, follower, "[alpha] alpha waiting for first launch\n")
+	logsitWaitFollowerText(t, follower, "[beta] beta waiting for first launch\n")
+	if started := testutil.Run(t, harness.hum, harness.project, harness.env, "up", "--no-wait"); started.Code != 0 {
+		t.Fatalf("up: code=%d stdout=%q stderr=%q err=%v", started.Code, started.Stdout, started.Stderr, started.Err)
+	}
+	logsitWaitFollowerText(t, follower, "[alpha] alpha-up\n")
+	logsitWaitFollowerText(t, follower, "[beta] beta-up\n")
+
+	adhoc := testutil.Run(t, harness.hum, harness.project, harness.env, "run", "ad-hoc", "--detach", "--", "/bin/sh", "-c", "printf 'ad-hoc-output\\n'; sleep 30")
+	if adhoc.Code != 0 {
+		t.Fatalf("ad-hoc run: code=%d stdout=%q stderr=%q err=%v", adhoc.Code, adhoc.Stdout, adhoc.Stderr, adhoc.Err)
+	}
+	logsitWaitOutput(t, harness, "ad-hoc", []string{"--json"}, func(lines []logsitJSONLine) bool {
+		return len(lines) == 1 && logsitHasEntryText(lines[0].Event.Entries, "ad-hoc-output\n")
+	})
+	if output := follower.Stdout(); strings.Contains(output, "[ad-hoc]") {
+		t.Fatalf("no-name aggregate included ad-hoc output: %q", output)
+	}
+	if follower.Exited() {
+		t.Fatal("no-name aggregate follower exited before down")
+	}
+
+	if down := testutil.Run(t, harness.hum, harness.project, harness.env, "down"); down.Code != 0 {
+		t.Fatalf("down: code=%d stdout=%q stderr=%q err=%v", down.Code, down.Stdout, down.Stderr, down.Err)
+	}
+	logsitWaitFollowerText(t, follower, "[alpha] alpha waiting for next launch\n")
+	logsitWaitFollowerText(t, follower, "[beta] beta waiting for next launch\n")
+	if output := follower.Stdout(); strings.Contains(output, "[ad-hoc]") {
+		t.Fatalf("no-name aggregate included ad-hoc output after down: %q", output)
+	}
+
+	if started := testutil.Run(t, harness.hum, harness.project, harness.env, "up", "--no-wait"); started.Code != 0 {
+		t.Fatalf("second up: code=%d stdout=%q stderr=%q err=%v", started.Code, started.Stdout, started.Stderr, started.Err)
+	}
+	deadline := time.Now().Add(logsitWaitTimeout)
+	for time.Now().Before(deadline) {
+		output := follower.Stdout()
+		if strings.Count(output, "[alpha] alpha-up\n") >= 2 && strings.Count(output, "[beta] beta-up\n") >= 2 {
+			break
+		}
+		time.Sleep(logsitPollInterval)
+	}
+	output := follower.Stdout()
+	if strings.Count(output, "[alpha] alpha-up\n") < 2 || strings.Count(output, "[beta] beta-up\n") < 2 {
+		t.Fatalf("aggregate follow did not resume after second up: %q", output)
+	}
+	if strings.Contains(output, "[ad-hoc]") {
+		t.Fatalf("fixed no-name aggregate membership included ad-hoc output: %q", output)
+	}
+
+	if err := follower.Signal(os.Interrupt); err != nil {
+		t.Fatalf("interrupt aggregate follower: %v", err)
+	}
+	if err := follower.Wait(logsitFollowerTimeout); err != nil {
+		t.Fatalf("aggregate follower wait after interrupt: %v; stdout=%q stderr=%q", err, follower.Stdout(), follower.Stderr())
+	}
+	listed := logsitRunList(t, harness)
+	for _, name := range []string{"alpha", "beta"} {
+		process, ok := logsitProcessByName(listed, name)
+		if !ok {
+			t.Fatalf("list after aggregate interrupt = %#v, missing %s", listed, name)
+		}
+		if process.State != "running" || process.PID <= 0 || !testutil.ProcessAlive(process.PID) {
+			t.Fatalf("process %s after aggregate interrupt = %#v, want a live running child", name, process)
+		}
+		if process.Followers != 0 {
+			t.Fatalf("process %s after aggregate interrupt = %#v, want zero followers", name, process)
+		}
+	}
 }
 
 func TestNDJSONFollow(t *testing.T) {
