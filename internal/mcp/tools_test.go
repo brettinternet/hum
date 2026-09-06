@@ -532,6 +532,52 @@ func TestUpReportsRemovedManifestSessions(t *testing.T) {
 	}
 }
 
+func TestUpAdapterParity(t *testing.T) {
+	if got := durationToMCPTimeout(time.Nanosecond); got != 1 {
+		t.Fatalf("positive sub-millisecond readiness timeout = %dms, want 1ms", got)
+	}
+	ready := &protocol.ReadinessConfig{Match: "new"}
+	next := time.Now().Add(time.Minute)
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"db": {
+			Name: "db", Source: "manifest", State: "running", Argv: []string{"db"},
+			Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"},
+		},
+		"pending": {
+			Name: "pending", Source: "manifest", State: "exited", Argv: []string{"pending"},
+			Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"},
+			Restart:   protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
+		},
+	}}
+	definitions := []Definition{
+		{Name: "api", Source: "manifest", Argv: []string{"api"}, Cwd: ".", Ready: ready, After: []string{"db"}},
+		{Name: "db", Source: "manifest", Argv: []string{"db"}, Cwd: ".", Ready: ready},
+		{Name: "pending", Source: "manifest", Argv: []string{"pending"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "ready"}, Restart: protocol.RestartOnFailure},
+	}
+	server, root, _ := newTestServer(t, definitions, client)
+	for name, process := range client.processes {
+		process.Root, process.Cwd = root, root
+		client.processes[name] = process
+	}
+	value, err := server.callTool(context.Background(), "up", args(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := value.([]launchResult)
+	if got := []string{results[0].Name, results[1].Name, results[2].Name}; !reflect.DeepEqual(got, []string{"api", "db", "pending"}) {
+		t.Fatalf("adapter ordering=%v", got)
+	}
+	if results[0].Outcome != "skipped" || !reflect.DeepEqual(results[0].BlockedBy, []string{"db"}) || results[0].Guidance != "" {
+		t.Fatalf("adapter blocked result=%#v", results[0])
+	}
+	if results[1].Outcome != "definition_drift" || !reflect.DeepEqual(results[1].ChangedFields, []string{"readiness_match"}) || results[1].Guidance != "hum restart db" {
+		t.Fatalf("adapter drift result=%#v", results[1])
+	}
+	if results[2].Outcome != "recovery_pending" || results[2].Process == nil || results[2].Process.Readiness == nil || results[2].Process.Readiness.Match != "ready" || results[2].Process.NextLaunchAt == nil {
+		t.Fatalf("adapter recovery result=%#v", results[2])
+	}
+}
+
 func TestUpReportsRemovedManifestSessionsWithoutDefinitions(t *testing.T) {
 	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
 	client := &fakeClient{processes: map[string]protocol.Process{
@@ -710,7 +756,7 @@ func TestStartUp(t *testing.T) {
 		"api": {Name: "api", Source: "hum.yaml", Root: root, State: "running", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "new"}},
 	}}
 	initial := protocol.Process{Name: "api", Source: "hum.yaml", Root: root, State: "running", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}}
-	current, outcome, err := s.waitForReadiness(context.Background(), matchClient, Resolution{Root: root}, Definition{Name: "api", Ready: &protocol.ReadinessConfig{Match: "new"}}, initial, "already_running", defaultTimeoutMS)
+	current, outcome, err := s.mcpWaitForReadiness(context.Background(), matchClient, Resolution{Root: root}, Definition{Name: "api", Ready: &protocol.ReadinessConfig{Match: "new"}}, initial, "already_running", defaultTimeoutMS)
 	if err != nil || outcome != "already_running" || current.Readiness.Match != "new" || len(matchClient.waits) != 0 {
 		t.Fatalf("changed readiness match = %#v outcome=%q waits=%#v err=%v", current, outcome, matchClient.waits, err)
 	}

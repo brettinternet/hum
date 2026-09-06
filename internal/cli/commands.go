@@ -16,6 +16,7 @@ import (
 
 	"hum/internal/app"
 	"hum/internal/daemon"
+	"hum/internal/orchestrate"
 	"hum/internal/output"
 	"hum/internal/project"
 	"hum/internal/protocol"
@@ -1981,7 +1982,7 @@ func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client
 					return
 				}
 				timeout = manifestRemainingTimeout(timeout, state.observedAt)
-				result, waitErr := manifestReadinessResult(client, ctx, cwd, state.definition, state.process, state.result.Outcome, timeout)
+				result, waitErr := cliReadinessResult(client, ctx, cwd, state.definition, state.process, state.result.Outcome, timeout)
 				if waitErr != nil {
 					result = manifestLaunchError(state.definition, waitErr)
 				}
@@ -2001,7 +2002,7 @@ func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client
 				return
 			}
 			timeout = manifestRemainingTimeout(timeout, state.observedAt)
-			result, waitErr := manifestReadinessResult(client, ctx, cwd, state.definition, state.process, state.result.Outcome, timeout)
+			result, waitErr := cliReadinessResult(client, ctx, cwd, state.definition, state.process, state.result.Outcome, timeout)
 			if waitErr != nil {
 				result = manifestLaunchError(state.definition, waitErr)
 			}
@@ -2050,7 +2051,7 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 			return result, process, observedAt
 		},
 		readiness: func(ctx context.Context, definition project.Definition, process app.Process, outcome string, timeout time.Duration) (manifestLaunchResult, error) {
-			return manifestReadinessResult(client, ctx, cwd, definition, process, outcome, timeout)
+			return cliReadinessResult(client, ctx, cwd, definition, process, outcome, timeout)
 		},
 		skipped: func(ctx context.Context, definition project.Definition, blocked []string) manifestLaunchResult {
 			return manifestLaunchSkipped(ctx, client, manifest.root, definition, blocked)
@@ -2060,135 +2061,71 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 }
 
 func manifestUpScheduleWithOps(ctx context.Context, cmd *urfavecli.Command, manifest manifestState, names []string, timeoutOverride time.Duration, progress *manifestProgressRenderer, ops manifestUpScheduleOps) ([]manifestLaunchResult, error) {
-	definitions := make([]project.Definition, 0, len(names))
+	definitions := make([]orchestrate.Definition, 0, len(names))
 	for _, name := range names {
 		if definition, ok := manifest.byName[name]; ok {
-			definitions = append(definitions, definition)
+			definitions = append(definitions, cliOrchestrateDefinition(definition))
 		}
 	}
-	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
-	results := make([]manifestLaunchResult, len(definitions))
-	done := make([]bool, len(definitions))
-	byName := make(map[string]int, len(definitions))
-	for index, definition := range definitions {
-		byName[definition.Name] = index
-	}
-	var mu sync.Mutex
-	cond := sync.NewCond(&mu)
-	wakeDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			mu.Lock()
-			cond.Broadcast()
-			mu.Unlock()
-		case <-wakeDone:
-		}
-	}()
-	defer close(wakeDone)
-	var workers sync.WaitGroup
-	for index, definition := range definitions {
-		workers.Add(1)
-		go func(index int, definition project.Definition) {
-			defer workers.Done()
-			mu.Lock()
-			for {
-				allDone := true
-				for _, dependency := range definition.After {
-					dependencyIndex, ok := byName[dependency]
-					if !ok || !done[dependencyIndex] {
-						allDone = false
-						break
-					}
-				}
-				if allDone || ctx.Err() != nil {
-					break
-				}
-				cond.Wait()
-			}
-			if ctx.Err() != nil {
-				result := manifestLaunchError(definition, ctx.Err())
-				if progress != nil {
-					progress.writeInitial(definition, result)
-				}
-				results[index] = result
-				done[index] = true
-				cond.Broadcast()
-				mu.Unlock()
+	sharedResults, err := orchestrate.OrchestrateUp(ctx, orchestrate.UpOptions{
+		Root: manifest.root, Definitions: definitions, Names: names, NoWait: cmd.Bool("no-wait"),
+		TimeoutFor: func(definition orchestrate.Definition) (time.Duration, error) {
+			projectDefinition := manifest.byName[definition.Name]
+			return manifestTimeoutForResult(cmd, projectDefinition, timeoutOverride)
+		},
+	}, orchestrate.UpOperations{
+		Start: func(ctx context.Context, definition orchestrate.Definition) (orchestrate.StartResult, error) {
+			projectDefinition := manifest.byName[definition.Name]
+			result, process, observedAt := ops.start(ctx, projectDefinition)
+			shared := cliSharedLaunchResult(projectDefinition, result, &process)
+			return orchestrate.StartResult{Result: shared, Process: cliOrchestrateProcess(process), ObservedAt: observedAt}, nil
+		},
+		Readiness: func(ctx context.Context, definition orchestrate.Definition, process orchestrate.Process, outcome string, timeout time.Duration) (orchestrate.Result, error) {
+			projectDefinition := manifest.byName[definition.Name]
+			appProcess := cliAppProcess(process)
+			result, waitErr := ops.readiness(ctx, projectDefinition, appProcess, outcome, timeout)
+			return cliSharedLaunchResult(projectDefinition, result, &appProcess), waitErr
+		},
+		Skipped: func(ctx context.Context, definition orchestrate.Definition, blocked []string) orchestrate.Result {
+			projectDefinition := manifest.byName[definition.Name]
+			return cliSharedLaunchResult(projectDefinition, ops.skipped(ctx, projectDefinition, blocked), nil)
+		},
+		OnProgress: func(event orchestrate.ProgressEvent) {
+			if progress == nil {
 				return
 			}
-			blocked := make([]string, 0, len(definition.After))
-			for _, dependency := range definition.After {
-				dependencyIndex := byName[dependency]
-				if !manifestResultSatisfiesGate(results[dependencyIndex]) {
-					blocked = append(blocked, dependency)
-				}
-			}
-			if len(blocked) != 0 {
-				sort.Strings(blocked)
-				mu.Unlock()
-				skipped := ops.skipped(ctx, definition, blocked)
-				if progress != nil {
-					progress.writeInitial(definition, skipped)
-				}
-				mu.Lock()
-				results[index] = skipped
-				done[index] = true
-				cond.Broadcast()
-				mu.Unlock()
-				return
-			}
-			mu.Unlock()
-
-			result, process, observedAt := ops.start(ctx, definition)
-			waitsForReadiness := manifestProgressWaitsForReadiness(definition, result)
-			if progress != nil {
-				progress.writeInitial(definition, result)
-			}
-			if (result.Outcome == "started" || result.Outcome == "already_running") && !cmd.Bool("no-wait") && definition.Ready != nil && process.State == app.StateRunning {
-				timeout, timeoutErr := manifestTimeoutForResult(cmd, definition, timeoutOverride)
-				if timeoutErr != nil {
-					result = manifestLaunchError(definition, timeoutErr)
-				} else {
-					timeout = manifestRemainingTimeout(timeout, observedAt)
-					result, timeoutErr = ops.readiness(ctx, definition, process, result.Outcome, timeout)
-					if timeoutErr != nil {
-						result = manifestLaunchError(definition, timeoutErr)
-					}
-				}
-			}
-			if progress != nil && waitsForReadiness {
+			projectDefinition := manifest.byName[event.Definition.Name]
+			result := cliManifestLaunchResult(projectDefinition, event.Result)
+			if event.Terminal {
 				progress.writeTerminal(result)
+			} else {
+				progress.writeInitial(projectDefinition, result)
 			}
-			mu.Lock()
-			results[index] = result
-			done[index] = true
-			cond.Broadcast()
-			mu.Unlock()
-		}(index, definition)
-	}
-	workers.Wait()
+		},
+	})
 	if progress != nil {
-		if err := progress.Close(); err != nil {
-			return results, err
+		if closeErr := progress.Close(); closeErr != nil && err == nil {
+			err = closeErr
 		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	results := make([]manifestLaunchResult, 0, len(sharedResults))
+	for _, shared := range sharedResults {
+		definition := manifest.byName[shared.Name]
+		if definition.Name == "" {
+			definition = undefinedManifestDefinition(shared.Name)
+		}
+		results = append(results, cliManifestLaunchResult(definition, shared))
 	}
 	return results, nil
 }
 
 func manifestProgressWaitsForReadiness(definition project.Definition, result manifestLaunchResult) bool {
-	if definition.Ready == nil {
-		return false
-	}
-	if result.Outcome != "started" && result.Outcome != "already_running" {
-		return false
-	}
-	return result.Readiness == app.ReadinessStarting || (result.Outcome == "started" && result.Readiness == "")
+	return orchestrate.ProgressWaitsForReadiness(cliOrchestrateDefinition(definition), cliSharedLaunchResult(definition, result, nil))
 }
 
-func manifestResultSatisfiesGate(result manifestLaunchResult) bool {
-	return (result.Outcome == "started" || result.Outcome == "already_running") && result.Readiness == app.ReadinessReady
-}
 func notifyFollowSignals() chan os.Signal {
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)

@@ -11,6 +11,14 @@ Process names are scoped to the nearest Git root, or the caller's working
 directory when no Git marker exists. macOS and Linux are supported; Windows is
 not.
 
+## Shared orchestration
+
+`internal/orchestrate` owns the manifest `up` DAG scheduler, per-node readiness
+wait, and the shared `definition_drift`, `removed_definition`, recovery, and
+skipped classifications. CLI and MCP only adapt their daemon snapshots and
+render the resulting common model, so launch ordering, readiness gates, and
+stable outcome fields cannot diverge.
+
 ## CLI
 
 ```text

@@ -9,13 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
+	"hum/internal/orchestrate"
 	"hum/internal/protocol"
 )
 
@@ -127,6 +126,10 @@ func unavailable(err error) bool { return errors.Is(err, ErrDaemonUnavailable) }
 func mapError(err error) *ToolError {
 	if err == nil {
 		return nil
+	}
+	var classified *orchestrate.Error
+	if errors.As(err, &classified) && classified != nil {
+		return &ToolError{Code: string(classified.KindValue()), Message: classified.Error()}
 	}
 	var tool *ToolError
 	if errors.As(err, &tool) {
@@ -356,139 +359,115 @@ func findDefinition(resolution Resolution, name string) (Definition, bool) {
 }
 
 func effectiveRestart(policy string) string {
-	if policy == "" {
-		return "never"
-	}
-	return policy
+	return orchestrate.EffectiveRestart(policy)
 }
 
 func normalizeProcess(process protocol.Process) protocol.Process {
-	process.Argv = append([]string(nil), process.Argv...)
-	if process.Source == "" {
-		process.Source = "ad_hoc"
-	}
-	if !isManifestSource(process.Source) {
-		process.Restart = protocol.RestartNever
-	} else {
-		process.Restart = effectiveRestart(process.Restart)
-	}
-	return process
+	return protocolProcess(orchestrate.NormalizeProcess(orchestrateProcess(process)))
 }
 
-func isManifestSource(source string) bool {
-	return source == "manifest" || source == "hum.yaml" || strings.HasPrefix(source, "manifest:") || strings.HasPrefix(source, "hum.yaml:")
+func mcpDefinitionDriftResult(resolution Resolution, definition Definition, process protocol.Process) launchResult {
+	return mcpLaunchResult(definition, orchestrate.DefinitionDriftResult(resolution.Root, mcpDefinition(definition), orchestrateProcess(process)))
 }
 
-func sameManifestSource(left, right string) bool {
-	return left == right || isManifestSource(left) && isManifestSource(right)
-}
-
-func canonicalManifestCwd(root, cwd string) string {
-	if cwd == "" {
-		cwd = root
-	}
-	if !filepath.IsAbs(cwd) {
-		cwd = filepath.Join(root, cwd)
-	}
-	absolute, err := filepath.Abs(cwd)
-	if err != nil {
-		absolute = filepath.Clean(cwd)
-	}
-	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
-		return filepath.Clean(resolved)
-	}
-	return filepath.Clean(absolute)
-}
-
-func processReadinessMatch(process protocol.Process) (bool, string) {
-	if process.Readiness == nil || process.Readiness.State == protocol.ReadinessRunningUnverified {
-		return false, ""
-	}
-	return true, process.Readiness.Match
-}
-
-func definitionChangedFields(root string, definition Definition, process protocol.Process) []string {
-	changed := make([]string, 0, 5)
-	if !slices.Equal(definition.Argv, process.Argv) {
-		changed = append(changed, "argv")
-	}
-	if canonicalManifestCwd(root, definition.Cwd) != canonicalManifestCwd(root, process.Cwd) {
-		changed = append(changed, "cwd")
-	}
-	definitionReady, definitionMatch := false, ""
-	if definition.Ready != nil {
-		definitionReady, definitionMatch = true, definition.Ready.Match
-	}
-	processReady, processMatch := processReadinessMatch(process)
-	if definitionReady != processReady || definitionMatch != processMatch {
-		changed = append(changed, "readiness_match")
-	}
-	if definition.TTY != process.TTY {
-		changed = append(changed, "tty")
-	}
-	if effectiveRestart(definition.Restart) != effectiveRestart(process.Restart) {
-		changed = append(changed, "restart")
-	}
-	sort.Strings(changed)
-	return changed
-}
-
-func processSupportsDrift(process protocol.Process) bool {
-	if process.State == "running" {
-		return true
-	}
-	return process.State == "exited" && (process.NextLaunchAt != nil || process.Restart == protocol.RestartOnFailure && process.Relaunches >= automaticRelaunchLimit)
-}
-
-func definitionDriftResult(resolution Resolution, definition Definition, process protocol.Process) launchResult {
-	process = normalizeProcess(process)
-	return launchResult{
-		Name:          definition.Name,
-		Outcome:       "definition_drift",
-		Process:       &process,
-		ChangedFields: definitionChangedFields(resolution.Root, definition, process),
-		Guidance:      fmt.Sprintf("hum restart %s", definition.Name),
-	}
-}
-
-func removedDefinitionResults(resolution Resolution, processes []protocol.Process) []launchResult {
-	declared := make(map[string]struct{}, len(resolution.Definitions))
+func mcpRemovedDefinitionResults(resolution Resolution, processes []protocol.Process) []launchResult {
+	definitions := make([]orchestrate.Definition, 0, len(resolution.Definitions))
 	for _, definition := range resolution.Definitions {
-		declared[definition.Name] = struct{}{}
+		definitions = append(definitions, mcpDefinition(definition))
 	}
-	results := make([]launchResult, 0)
+	sharedProcesses := make([]orchestrate.Process, 0, len(processes))
 	for _, process := range processes {
-		if process.Name == "" || !isManifestSource(process.Source) || !processSupportsDrift(process) {
-			continue
-		}
-		if _, ok := declared[process.Name]; ok {
-			continue
-		}
-		if process.Root != "" && canonicalManifestCwd(resolution.Root, process.Root) != canonicalManifestCwd(resolution.Root, resolution.Root) {
-			continue
-		}
-		process = normalizeProcess(process)
-		results = append(results, launchResult{
-			Name: process.Name, Outcome: "removed_definition", Process: &process,
-			Guidance: fmt.Sprintf("hum stop %s or hum remove %s", process.Name, process.Name),
-		})
+		sharedProcesses = append(sharedProcesses, orchestrateProcess(process))
 	}
-	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+	sharedResults := orchestrate.RemovedDefinitionResults(resolution.Root, definitions, sharedProcesses)
+	results := make([]launchResult, 0, len(sharedResults))
+	for _, shared := range sharedResults {
+		definition := Definition{Name: shared.Name, Source: "manifest"}
+		results = append(results, mcpLaunchResult(definition, shared))
+	}
 	return results
 }
 
-func recoveryOutcome(process protocol.Process) (string, bool) {
-	process = normalizeProcess(process)
-	if process.State != "exited" {
-		return "", false
+func mcpDefinition(definition Definition) orchestrate.Definition {
+	shared := orchestrate.Definition{
+		Name: definition.Name, Source: definition.Source, Argv: append([]string(nil), definition.Argv...),
+		Cwd: definition.Cwd, After: append([]string(nil), definition.After...), TTY: definition.TTY,
+		Restart: effectiveRestart(definition.Restart),
 	}
-	if process.NextLaunchAt != nil {
-		return "recovery_pending", true
+	if definition.Ready != nil {
+		shared.Ready = &orchestrate.ReadinessConfig{Match: definition.Ready.Match, Timeout: definition.Ready.Timeout}
 	}
-	if process.Restart == protocol.RestartOnFailure && process.Relaunches >= automaticRelaunchLimit {
-		return "recovery_exhausted", true
+	return shared
+}
+
+func orchestrateProcess(process protocol.Process) orchestrate.Process {
+	shared := orchestrate.Process{
+		Name: process.Name, Source: process.Source, Root: process.Root, TTY: process.TTY,
+		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
+		Start: process.Start, LaunchCursor: uint64(process.LaunchCursor), State: process.State,
+		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
+		Followers: process.Followers, Restart: process.Restart, Relaunches: process.Relaunches,
+		NextLaunchAt: process.NextLaunchAt,
 	}
-	return "", false
+	if process.NextCursor != nil {
+		cursor := uint64(*process.NextCursor)
+		shared.NextCursor = &cursor
+	}
+	if process.Exit != nil {
+		shared.Exit = &orchestrate.Exit{Code: process.Exit.Code, Time: process.Exit.Time, Error: process.Exit.Error}
+	}
+	if process.Readiness != nil {
+		readiness := &orchestrate.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
+		if process.Readiness.Cursor != nil {
+			cursor := uint64(*process.Readiness.Cursor)
+			readiness.Cursor = &cursor
+		}
+		shared.Readiness = readiness
+	}
+	return shared
+}
+
+func protocolProcess(process orchestrate.Process) protocol.Process {
+	process = orchestrate.NormalizeProcess(process)
+	result := protocol.Process{
+		Name: process.Name, Source: process.Source, Root: process.Root, TTY: process.TTY,
+		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
+		Start: process.Start, LaunchCursor: protocol.Cursor(process.LaunchCursor), State: process.State,
+		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
+		Followers: process.Followers, Restart: process.Restart, Relaunches: process.Relaunches,
+		NextLaunchAt: process.NextLaunchAt,
+	}
+	if process.NextCursor != nil {
+		cursor := protocol.Cursor(*process.NextCursor)
+		result.NextCursor = &cursor
+	}
+	if process.Exit != nil {
+		result.Exit = &protocol.Exit{Code: process.Exit.Code, Time: process.Exit.Time, Error: process.Exit.Error}
+	}
+	if process.Readiness != nil {
+		readiness := &protocol.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
+		if process.Readiness.Cursor != nil {
+			cursor := protocol.Cursor(*process.Readiness.Cursor)
+			readiness.Cursor = &cursor
+		}
+		result.Readiness = readiness
+	}
+	return result
+}
+
+func mcpLaunchResult(definition Definition, shared orchestrate.Result) launchResult {
+	result := launchResult{Name: shared.Name, Outcome: shared.Outcome, BlockedBy: append([]string(nil), shared.BlockedBy...), ExistingState: shared.ExistingState, ChangedFields: append([]string(nil), shared.ChangedFields...), Guidance: shared.Guidance}
+	if result.Name == "" {
+		result.Name = definition.Name
+	}
+	if shared.Process != nil {
+		process := protocolProcess(*shared.Process)
+		result.Process = &process
+	}
+	if shared.Error != nil {
+		result.Error = mapError(shared.Error)
+	}
+	return result
 }
 
 func stoppedProcess(root string, definition Definition) protocol.Process {
@@ -512,39 +491,21 @@ func positiveTimeout(value int64) (int64, error) {
 	return value, nil
 }
 func readinessTimeout(override int64, definition Definition) (int64, error) {
+	if override < 0 {
+		return 0, &ToolError{Code: "invalid_request", Message: "timeout_ms must be positive"}
+	}
+	var duration time.Duration
 	if override != 0 {
-		return positiveTimeout(override)
-	}
-	if definition.Ready != nil && definition.Ready.Timeout > 0 {
-		milliseconds := definition.Ready.Timeout / time.Millisecond
-		if milliseconds < 1 {
-			milliseconds = 1
+		if override > int64((1<<63-1)/int64(time.Millisecond)) {
+			return 0, &ToolError{Code: "invalid_request", Message: "timeout_ms is too large"}
 		}
-		return int64(milliseconds), nil
+		duration = time.Duration(override) * time.Millisecond
 	}
-	return defaultTimeoutMS, nil
-}
-
-func sameProcessIncarnation(observed, current protocol.Process) bool {
-	return observed.PID == current.PID && observed.LaunchCursor == current.LaunchCursor
-}
-
-func readinessBeforeDeadline(readiness *protocol.Readiness, deadline time.Time) bool {
-	if readiness == nil {
-		return true
+	resolved, err := orchestrate.ReadinessTimeout(duration, mcpDefinition(definition))
+	if err != nil {
+		return 0, &ToolError{Code: "invalid_request", Message: err.Error()}
 	}
-	if !readiness.Time.IsZero() && readiness.Time.After(deadline) {
-		return false
-	}
-	return !time.Now().After(deadline)
-}
-
-func remainingTimeoutMS(deadline time.Time) int64 {
-	remaining := time.Until(deadline)
-	if remaining < time.Millisecond {
-		return 0
-	}
-	return remaining.Milliseconds()
+	return mcpTimeoutMilliseconds(resolved)
 }
 
 func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage) (any, error) {
@@ -612,168 +573,77 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	}
 }
 func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution Resolution, definition Definition, preserveRecovery bool) (protocol.Process, bool, string, error) {
-	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: definition.Name, Cwd: resolution.Root})
-	if err == nil && process.State == "running" {
-		if !sameManifestSource(process.Source, definition.Source) {
-			return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorNameInUse), Message: fmt.Sprintf("declared process %q is occupied by an ad_hoc launch", definition.Name)}
-		}
-		if changed := definitionChangedFields(resolution.Root, definition, process); len(changed) != 0 {
-			return normalizeProcess(process), true, "definition_drift", nil
-		}
-		if definition.TTY && !process.TTY {
-			return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: fmt.Sprintf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)}
-		}
-		return process, true, "", nil
-	}
-	if err == nil && sameManifestSource(process.Source, definition.Source) && processSupportsDrift(process) {
-		if changed := definitionChangedFields(resolution.Root, definition, process); len(changed) != 0 {
-			return normalizeProcess(process), true, "definition_drift", nil
-		}
-	}
-	if err == nil && preserveRecovery && sameManifestSource(process.Source, definition.Source) {
-		if outcome, ok := recoveryOutcome(process); ok {
-			return normalizeProcess(process), true, outcome, nil
-		}
-	}
-	if err != nil && mapError(err).Code != string(protocol.ErrorNotFound) {
-		return protocol.Process{}, false, "", mapError(err)
-	}
-	process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: definition.Name, Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd, Root: resolution.Root, Env: s.environment(), Source: definition.Source, Ready: definition.Ready, TTY: definition.TTY, Restart: effectiveRestart(definition.Restart)})
-	if err == nil || mapError(err).Code != string(protocol.ErrorNameInUse) {
-		return process, false, "", err
-	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		current, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: definition.Name, Cwd: resolution.Root})
-		if getErr == nil && current.State == "running" {
-			if !sameManifestSource(current.Source, definition.Source) {
-				return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorNameInUse), Message: fmt.Sprintf("declared process %q is occupied by an ad_hoc launch", definition.Name)}
+	shared := orchestrate.Ensure(ctx, resolution.Root, mcpDefinition(definition), s.environment(), preserveRecovery, orchestrate.EnsureOperations{
+		Get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
+			current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: root})
+			return orchestrateProcess(current), err
+		},
+		Start: func(ctx context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
+			var ready *protocol.ReadinessConfig
+			if request.Ready != nil {
+				ready = &protocol.ReadinessConfig{Match: request.Ready.Match, Timeout: request.Ready.Timeout}
 			}
-			if changed := definitionChangedFields(resolution.Root, definition, current); len(changed) != 0 {
-				return normalizeProcess(current), true, "definition_drift", nil
-			}
-			if definition.TTY && !current.TTY {
-				return protocol.Process{}, false, "", &ToolError{Code: string(protocol.ErrorInputNotTTY), Message: fmt.Sprintf("declared process %q is running without a tty; stop it and rerun with tty: true", definition.Name)}
-			}
-			return current, true, "", nil
-		}
-		timer := time.NewTimer(5 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return protocol.Process{}, false, "", ctx.Err()
-		case <-timer.C:
-		}
+			current, err := client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: request.Name, Argv: append([]string(nil), request.Argv...), Cwd: request.Cwd, Root: request.Root, Env: append([]string(nil), request.Env...), Source: request.Source, Ready: ready, TTY: request.TTY, Restart: request.Restart})
+			return orchestrateProcess(current), err
+		},
+		IsNotFound:  func(err error) bool { return mapError(err).Code == string(protocol.ErrorNotFound) },
+		IsNameInUse: func(err error) bool { return mapError(err).Code == string(protocol.ErrorNameInUse) },
+	})
+	process := protocol.Process{}
+	if shared.Result.Process != nil {
+		process = protocolProcess(*shared.Result.Process)
+	} else if shared.Process.Name != "" || shared.Process.State != "" {
+		process = protocolProcess(shared.Process)
 	}
-	return protocol.Process{}, false, "", err
+	if shared.Result.Error != nil {
+		return process, false, "", shared.Result.Error
+	}
+	classification := ""
+	switch shared.Result.Outcome {
+	case "definition_drift", "recovery_pending", "recovery_exhausted":
+		classification = shared.Result.Outcome
+	}
+	return process, shared.Already, classification, nil
 }
 
-func launchOutcome(already bool, definition Definition) string {
-	if already {
-		return "already_running"
+func (s *Server) mcpWaitForReadiness(ctx context.Context, client Client, resolution Resolution, definition Definition, process protocol.Process, initial string, timeout int64) (protocol.Process, string, error) {
+	shared, err := orchestrate.WaitForReadiness(ctx, resolution.Root, mcpDefinition(definition), orchestrateProcess(process), initial, time.Duration(timeout)*time.Millisecond, orchestrate.ReadinessOperations{
+		Get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
+			current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: root})
+			return orchestrateProcess(current), err
+		},
+		Wait: func(ctx context.Context, request orchestrate.WaitRequest) (orchestrate.WaitResult, error) {
+			milliseconds, err := mcpTimeoutMilliseconds(request.Timeout)
+			if err != nil {
+				return orchestrate.WaitResult{}, err
+			}
+			waited, err := client.Wait(ctx, protocol.WaitRequest{Op: protocol.OpWait, Name: request.Name, Cwd: request.Cwd, Match: request.Match, TimeoutMS: milliseconds})
+			result := orchestrate.WaitResult{Outcome: string(waited.Outcome), Cursor: uint64(waited.Cursor)}
+			if waited.Exit != nil {
+				result.Exit = &orchestrate.Exit{Code: waited.Exit.Code, Time: waited.Exit.Time, Error: waited.Exit.Error}
+			}
+			return result, err
+		},
+		IsNotFound: func(err error) bool { return mapError(err).Code == string(protocol.ErrorNotFound) },
+	})
+	if err != nil {
+		return protocol.Process{}, "", err
 	}
-	if definition.Ready == nil {
-		return protocol.ReadinessRunningUnverified
+	if shared.Process == nil {
+		return protocol.Process{}, shared.Outcome, nil
 	}
-	return "started"
+	return protocolProcess(*shared.Process), shared.Outcome, nil
 }
 
-func (s *Server) waitForReadiness(ctx context.Context, client Client, resolution Resolution, definition Definition, process protocol.Process, initial string, timeout int64) (protocol.Process, string, error) {
-	recordedMatch := definition.Ready.Match
-	if process.Readiness != nil && process.Readiness.Match != "" {
-		recordedMatch = process.Readiness.Match
+func mcpTimeoutMilliseconds(timeout time.Duration) (int64, error) {
+	milliseconds := timeout / time.Millisecond
+	if milliseconds <= 0 {
+		milliseconds = 1
 	}
-	deadline := time.Now().Add(time.Duration(timeout) * time.Millisecond)
-	readCurrent := func() (protocol.Process, string, bool, error) {
-		current, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: process.Name, Cwd: resolution.Root})
-		if getErr != nil {
-			return protocol.Process{}, "", false, getErr
-		}
-		if !sameProcessIncarnation(process, current) {
-			return current, "exited_before_ready", true, nil
-		}
-		if current.State != "running" {
-			return current, "exited_before_ready", true, nil
-		}
-		if current.Readiness == nil || current.Readiness.State == protocol.ReadinessRunningUnverified {
-			return current, initial, true, nil
-		}
-		if current.Readiness.State == protocol.ReadinessReady {
-			if !readinessBeforeDeadline(current.Readiness, deadline) {
-				return current, "timed_out", true, nil
-			}
-			return current, initial, true, nil
-		}
-		if current.Readiness.State != protocol.ReadinessStarting || current.Readiness.Match != recordedMatch {
-			return current, initial, true, nil
-		}
-		return current, "", false, nil
+	if milliseconds > (1<<63 - 1) {
+		return 0, errors.New("timeout is too large")
 	}
-	current, outcome, done, err := readCurrent()
-	if err != nil {
-		return protocol.Process{}, "", err
-	}
-	if done {
-		return current, outcome, nil
-	}
-	waitTimeout := remainingTimeoutMS(deadline)
-	if waitTimeout == 0 {
-		return current, "timed_out", nil
-	}
-	// A nil After uses the daemon's launch-scoped default. Supplying the
-	// observed cursor here would exclude a first-launch match at cursor zero.
-	waited, err := client.Wait(ctx, protocol.WaitRequest{Op: protocol.OpWait, Name: process.Name, Cwd: resolution.Root, Match: recordedMatch, TimeoutMS: waitTimeout})
-	if err != nil {
-		return protocol.Process{}, "", err
-	}
-	if waited.Outcome == protocol.WaitExited {
-		current, _, _, getErr := readCurrent()
-		return current, "exited_before_ready", getErr
-	}
-	current, outcome, done, err = readCurrent()
-	if err != nil {
-		return protocol.Process{}, "", err
-	}
-	if done {
-		// Wait observed the readiness match on this incarnation before it
-		// exited, even if reconciliation removed durable readiness before Get.
-		if waited.Outcome == protocol.WaitMatched && outcome == "exited_before_ready" && sameProcessIncarnation(process, current) {
-			cursor := waited.Cursor
-			current.Readiness = &protocol.Readiness{State: protocol.ReadinessReady, Cursor: &cursor, Match: recordedMatch}
-			return current, initial, nil
-		}
-		return current, outcome, nil
-	}
-	if waited.Outcome == protocol.WaitTimedOut {
-		return current, "timed_out", nil
-	}
-	if waited.Outcome != protocol.WaitMatched {
-		return protocol.Process{}, "", fmt.Errorf("unknown readiness wait outcome %q", waited.Outcome)
-	}
-	for {
-		remaining := time.Until(deadline)
-		if remaining < time.Millisecond {
-			return current, "timed_out", nil
-		}
-		timerDuration := time.Millisecond
-		if remaining < timerDuration {
-			timerDuration = remaining
-		}
-		timer := time.NewTimer(timerDuration)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return protocol.Process{}, "", ctx.Err()
-		case <-timer.C:
-		}
-		current, outcome, done, err = readCurrent()
-		if err != nil {
-			return protocol.Process{}, "", err
-		}
-		if done {
-			return current, outcome, nil
-		}
-	}
+	return int64(milliseconds), nil
 }
 
 func (s *Server) start(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
@@ -813,13 +683,13 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		return nil, mapError(err)
 	}
 	if classification == "definition_drift" {
-		return definitionDriftResult(resolution, definition, process), nil
+		return mcpDefinitionDriftResult(resolution, definition, process), nil
 	}
-	outcome := launchOutcome(already, definition)
+	outcome := orchestrate.LaunchOutcome(already, mcpDefinition(definition))
 	if definition.Ready == nil {
 		process.Readiness = &protocol.Readiness{State: protocol.ReadinessRunningUnverified}
 	} else if !input.NoWait {
-		process, outcome, err = s.waitForReadiness(ctx, client, resolution, definition, process, outcome, timeout)
+		process, outcome, err = s.mcpWaitForReadiness(ctx, client, resolution, definition, process, outcome, timeout)
 		if err != nil {
 			return nil, mapError(err)
 		}
@@ -844,7 +714,6 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		return nil, &ToolError{Code: "invalid_request", Message: "timeout_ms must be positive"}
 	}
 	definitions := append([]Definition(nil), resolution.Definitions...)
-	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
 	if input.NoWait && definitionsHaveAfter(definitions) {
 		return nil, &ToolError{Code: "invalid_request", Message: "up no_wait is not allowed when definitions declare after dependencies"}
 	}
@@ -861,172 +730,125 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		if err != nil {
 			return nil, mapError(err)
 		}
-		return removedDefinitionResults(resolution, processes), nil
+		return mcpRemovedDefinitionResults(resolution, processes), nil
 	}
 	client, err := s.client(ctx, true)
 	if err != nil {
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	results := make([]launchResult, len(definitions))
-	done := make([]bool, len(definitions))
-	byName := make(map[string]int, len(definitions))
-	for index, definition := range definitions {
-		byName[definition.Name] = index
-		results[index].Name = definition.Name
 
+	sharedDefinitions := make([]orchestrate.Definition, 0, len(definitions))
+	for _, definition := range definitions {
+		sharedDefinitions = append(sharedDefinitions, mcpDefinition(definition))
 	}
-	var mu sync.Mutex
-	cond := sync.NewCond(&mu)
-	wakeDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			mu.Lock()
-			cond.Broadcast()
-			mu.Unlock()
-		case <-wakeDone:
-		}
-	}()
-	defer close(wakeDone)
-	var workers sync.WaitGroup
-	for index, definition := range definitions {
-		workers.Add(1)
-		go func(index int, definition Definition) {
-			defer workers.Done()
-			mu.Lock()
-			for {
-				allDone := true
-				for _, dependency := range definition.After {
-					dependencyIndex, ok := byName[dependency]
-					if !ok || !done[dependencyIndex] {
-						allDone = false
-						break
-					}
-				}
-				if allDone || ctx.Err() != nil {
-					break
-				}
-				cond.Wait()
+	sharedResults, err := orchestrate.OrchestrateUp(ctx, orchestrate.UpOptions{
+		Root: resolution.Root, Definitions: sharedDefinitions, NoWait: input.NoWait,
+		TimeoutFor: func(definition orchestrate.Definition) (time.Duration, error) {
+			return mcpTimeoutDuration(input.TimeoutMS, definition)
+		},
+	}, orchestrate.UpOperations{
+		Start: func(ctx context.Context, definition orchestrate.Definition) (orchestrate.StartResult, error) {
+			projectDefinition, ok := findDefinition(resolution, definition.Name)
+			if !ok {
+				return orchestrate.StartResult{Result: orchestrate.ErrorResult(definition, errors.New("definition not found"))}, nil
 			}
-			if ctx.Err() != nil {
-				results[index].Outcome = "error"
-				results[index].Error = mapError(ctx.Err())
-				done[index] = true
-				cond.Broadcast()
-				mu.Unlock()
-				return
-			}
-			blocked := make([]string, 0, len(definition.After))
-			for _, dependency := range definition.After {
-				dependencyIndex := byName[dependency]
-				if !launchResultSatisfiesGate(results[dependencyIndex]) {
-					blocked = append(blocked, dependency)
-				}
-			}
-			if len(blocked) != 0 {
-				sort.Strings(blocked)
-				mu.Unlock()
-				skipped := launchResult{Name: definition.Name, Outcome: "skipped", BlockedBy: blocked}
-				if current, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: definition.Name, Cwd: resolution.Root}); getErr == nil {
-					current = normalizeProcess(current)
-					skipped.Process = &current
-					if current.State == "running" {
-						skipped.ExistingState = "running"
-					} else {
-						skipped.ExistingState = "exited"
-					}
-				}
-				mu.Lock()
-				results[index] = skipped
-				done[index] = true
-				cond.Broadcast()
-				mu.Unlock()
-				return
-			}
-			mu.Unlock()
-
 			observedAt := time.Now()
-			process, already, recovery, startErr := s.ensureDefinition(ctx, client, resolution, definition, true)
-			if startErr == nil && !already && !process.Start.IsZero() {
+			process, already, classification, startErr := s.ensureDefinition(ctx, client, resolution, projectDefinition, true)
+			if startErr != nil {
+				return orchestrate.StartResult{Result: orchestrate.ErrorResult(definition, startErr), Process: orchestrateProcess(process), ObservedAt: observedAt}, nil
+			}
+			if !already && !process.Start.IsZero() {
 				observedAt = process.Start
-			} else if startErr == nil && already {
+			} else if already {
 				observedAt = time.Now()
 			}
-			result := launchResult{Name: definition.Name}
-			if startErr != nil {
-				result.Outcome = "error"
-				result.Error = mapError(startErr)
+			var result orchestrate.Result
+			if classification == "definition_drift" {
+				result = orchestrate.DefinitionDriftResult(resolution.Root, definition, orchestrateProcess(process))
 			} else {
-				if recovery != "" {
-					result.Outcome = recovery
-				} else {
-					result.Outcome = launchOutcome(already, definition)
+				outcome := classification
+				if outcome == "" {
+					outcome = orchestrate.LaunchOutcome(already, definition)
 				}
-				if recovery == "definition_drift" {
-					result = definitionDriftResult(resolution, definition, process)
-				} else if definition.Ready == nil && process.State == "running" {
-					process.Readiness = &protocol.Readiness{State: protocol.ReadinessRunningUnverified}
-				}
-				process = normalizeProcess(process)
-				result.Process = &process
-				if result.Outcome != "definition_drift" && !input.NoWait && definition.Ready != nil && process.State == "running" {
-					timeout, timeoutErr := readinessTimeout(input.TimeoutMS, definition)
-					if timeoutErr != nil {
-						result.Process = nil
-						result.Outcome = "error"
-						result.Error = mapError(timeoutErr)
-					} else {
-						timeout = remainingReadinessTimeout(timeout, observedAt)
-						process, outcome, waitErr := s.waitForReadiness(ctx, client, resolution, definition, process, result.Outcome, timeout)
-						if waitErr != nil {
-							result.Process = nil
-							result.Outcome = "error"
-							result.Error = mapError(waitErr)
-						} else {
-							process = normalizeProcess(process)
-							result.Outcome = outcome
-							result.Process = &process
-						}
-					}
-				}
+				result = orchestrate.ResultForProcess(definition, orchestrateProcess(process), outcome)
 			}
-			mu.Lock()
-			results[index] = result
-			done[index] = true
-			cond.Broadcast()
-			mu.Unlock()
-		}(index, definition)
+			return orchestrate.StartResult{Result: result, Process: orchestrateProcess(process), ObservedAt: observedAt, Already: already}, nil
+		},
+		Readiness: func(ctx context.Context, definition orchestrate.Definition, process orchestrate.Process, outcome string, timeout time.Duration) (orchestrate.Result, error) {
+			projectDefinition, ok := findDefinition(resolution, definition.Name)
+			if !ok {
+				return orchestrate.ErrorResult(definition, errors.New("definition not found")), nil
+			}
+			current, currentOutcome, waitErr := s.mcpWaitForReadiness(ctx, client, resolution, projectDefinition, protocolProcess(process), outcome, durationToMCPTimeout(timeout))
+			if waitErr != nil {
+				return orchestrate.Result{}, waitErr
+			}
+			return orchestrate.ResultForProcess(definition, orchestrateProcess(current), currentOutcome), nil
+		},
+		Skipped: func(ctx context.Context, definition orchestrate.Definition, blocked []string) orchestrate.Result {
+			return orchestrate.SkippedResult(ctx, resolution.Root, definition, blocked, func(ctx context.Context, name, root string) (orchestrate.Process, error) {
+				current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: root})
+				return orchestrateProcess(current), err
+			})
+		},
+		List: func(ctx context.Context) ([]orchestrate.Process, error) {
+			processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, IncludeCompleted: true})
+			if err != nil {
+				return nil, err
+			}
+			shared := make([]orchestrate.Process, 0, len(processes))
+			for _, process := range processes {
+				shared = append(shared, orchestrateProcess(process))
+			}
+			return shared, nil
+		},
+	})
+	if err != nil {
+		return nil, mapError(err)
 	}
-	workers.Wait()
-	processes, listErr := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, IncludeCompleted: true})
-	if listErr != nil {
-		return nil, mapError(listErr)
+	results := make([]launchResult, 0, len(sharedResults))
+	for _, shared := range sharedResults {
+		definition, ok := findDefinition(resolution, shared.Name)
+		if !ok {
+			definition = Definition{Name: shared.Name, Source: "manifest"}
+		}
+		results = append(results, mcpLaunchResult(definition, shared))
 	}
-	results = append(results, removedDefinitionResults(resolution, processes)...)
-	sort.SliceStable(results, func(i, j int) bool { return results[i].Name < results[j].Name })
 	return results, nil
 }
 
-func remainingReadinessTimeout(timeout int64, observedAt time.Time) int64 {
-	remaining := timeout - time.Since(observedAt).Milliseconds()
-	if remaining <= 0 {
+func mcpTimeoutDuration(override int64, definition orchestrate.Definition) (time.Duration, error) {
+	if override < 0 {
+		return 0, &ToolError{Code: "invalid_request", Message: "timeout_ms must be positive"}
+	}
+	var duration time.Duration
+	if override != 0 {
+		if override > int64((1<<63-1)/int64(time.Millisecond)) {
+			return 0, &ToolError{Code: "invalid_request", Message: "timeout_ms is too large"}
+		}
+		duration = time.Duration(override) * time.Millisecond
+	}
+	return orchestrate.ReadinessTimeout(duration, definition)
+}
+
+func durationToMCPTimeout(timeout time.Duration) int64 {
+	if timeout <= 0 {
 		return 0
 	}
-	return remaining
+	milliseconds := timeout / time.Millisecond
+	if timeout%time.Millisecond != 0 {
+		milliseconds++
+	}
+	return int64(milliseconds)
 }
 
 func definitionsHaveAfter(definitions []Definition) bool {
+	shared := make([]orchestrate.Definition, 0, len(definitions))
 	for _, definition := range definitions {
-		if len(definition.After) != 0 {
-			return true
-		}
+		shared = append(shared, mcpDefinition(definition))
 	}
-	return false
-}
-
-func launchResultSatisfiesGate(result launchResult) bool {
-	return (result.Outcome == "started" || result.Outcome == "already_running") && result.Process != nil && result.Process.Readiness != nil && result.Process.Readiness.State == protocol.ReadinessReady
+	return orchestrate.DefinitionsHaveAfter(shared)
 }
 
 func (s *Server) list(ctx context.Context, resolution Resolution) (any, error) {

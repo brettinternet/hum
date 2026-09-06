@@ -19,6 +19,7 @@ import (
 
 	"hum/internal/app"
 	"hum/internal/daemon"
+	"hum/internal/orchestrate"
 	"hum/internal/output"
 	"hum/internal/project"
 	"hum/internal/protocol"
@@ -152,6 +153,47 @@ func manifestCLIRecoveryStubDaemon(t *testing.T, processes map[string]protocol.P
 		}
 	}()
 	return runtimeDir, operations, done
+}
+
+func TestUpAdapterParity(t *testing.T) {
+	root := t.TempDir()
+	definition := project.Definition{
+		Name: "api", Source: "manifest", Cwd: ".", Argv: []string{"new"},
+		Ready: &project.ReadyDefinition{Match: "new"}, After: []string{"db"},
+	}
+	process := app.Process{
+		Name: "api", Source: "manifest", Root: root, Cwd: root, Argv: []string{"old"},
+		State: app.StateRunning, PID: 41, LaunchCursor: 9,
+		Readiness: &app.Readiness{State: app.ReadinessStarting, Match: "old"},
+	}
+	sharedDrift := orchestrate.DefinitionDriftResult(root, cliOrchestrateDefinition(definition), cliOrchestrateProcess(process))
+	drift := cliManifestLaunchResult(definition, sharedDrift)
+	if drift.Name != "api" || drift.Outcome != "definition_drift" || !reflect.DeepEqual(drift.ChangedFields, []string{"argv", "readiness_match"}) || drift.Guidance != "hum restart api" || drift.PID == nil || *drift.PID != 41 {
+		t.Fatalf("CLI adapter drift=%#v", drift)
+	}
+	sharedSkipped := orchestrate.Result{Name: "web", Outcome: "skipped", BlockedBy: []string{"api", "db"}, Guidance: ""}
+	skipped := cliManifestLaunchResult(project.Definition{Name: "web", Source: "manifest", Argv: []string{"web"}}, sharedSkipped)
+	if skipped.Name != "web" || skipped.Outcome != "skipped" || !reflect.DeepEqual(skipped.BlockedBy, []string{"api", "db"}) || skipped.Guidance != "" {
+		t.Fatalf("CLI adapter skipped=%#v", skipped)
+	}
+
+	nextLaunch := time.Now().Add(time.Minute)
+	exitCode := 23
+	retained := manifestLaunchResult{
+		Name: "web", Outcome: "skipped", Source: "manifest", Argv: []string{"web"}, State: string(app.StateExited),
+		Restart: string(app.RestartOnFailure), Relaunches: 2, NextLaunchAt: &nextLaunch, ExitCode: &exitCode,
+	}
+	retainedRoundTrip := cliManifestLaunchResult(project.Definition{Name: "web"}, cliSharedLaunchResult(project.Definition{Name: "web"}, retained, nil))
+	if retainedRoundTrip.Restart != retained.Restart || retainedRoundTrip.Relaunches != 2 || retainedRoundTrip.NextLaunchAt == nil || retainedRoundTrip.ExitCode == nil || *retainedRoundTrip.ExitCode != exitCode {
+		t.Fatalf("CLI adapter retained skipped snapshot=%#v", retainedRoundTrip)
+	}
+
+	stale := app.Process{Name: "api", Source: "manifest", Argv: []string{"api"}, State: app.StateRunning, PID: 41, Restart: app.RestartNever}
+	freshExit := manifestLaunchResult{Name: "api", Outcome: "exited_before_ready", Source: "manifest", Argv: []string{"api"}, State: string(app.StateExited), Restart: string(app.RestartNever), ExitCode: &exitCode}
+	freshRoundTrip := cliManifestLaunchResult(definition, cliSharedLaunchResult(definition, freshExit, &stale))
+	if freshRoundTrip.State != string(app.StateExited) || freshRoundTrip.PID != nil || freshRoundTrip.ExitCode == nil || *freshRoundTrip.ExitCode != exitCode {
+		t.Fatalf("CLI adapter fresh readiness snapshot=%#v", freshRoundTrip)
+	}
 }
 
 func TestUpEmptyManifest(t *testing.T) {
@@ -593,7 +635,7 @@ func TestManifestReadinessSurvivesExitAfterMatch(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	result, err := manifestReadinessResult(client, ctx, "/tmp/project", definition, process, "started", time.Second)
+	result, err := cliReadinessResult(client, ctx, "/tmp/project", definition, process, "started", time.Second)
 	if err != nil {
 		t.Fatalf("manifest readiness: %v", err)
 	}
@@ -703,7 +745,7 @@ func TestManifestReadinessRefreshesExitedSnapshot(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	result, err := manifestReadinessResult(client, ctx, "/tmp/project", definition, process, "started", time.Second)
+	result, err := cliReadinessResult(client, ctx, "/tmp/project", definition, process, "started", time.Second)
 	if err != nil {
 		t.Fatalf("manifest readiness: %v", err)
 	}
