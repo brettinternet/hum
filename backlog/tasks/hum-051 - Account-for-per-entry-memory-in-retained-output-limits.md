@@ -1,19 +1,22 @@
 ---
 id: HUM-051
-title: Account for per-entry memory in retained output limits
+title: Bound retained output by text and entry overhead
 status: To Do
 assignee: []
 created_date: '2026-09-06 16:15'
+updated_date: '2026-09-06 17:20'
 labels:
   - output
   - daemon
 milestone: m-4
 dependencies: []
 modified_files:
-  - internal/output/ring.go
   - internal/output/types.go
+  - internal/output/ring.go
   - internal/output/ring_test.go
   - internal/app/app.go
+  - internal/app/app_test.go
+  - internal/cli/surface_test.go
   - docs/design.md
 priority: medium
 type: bug
@@ -23,18 +26,22 @@ ordinal: 28700
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: the retained-output budget (`--output-bytes`, default 4 MiB) bounds daemon memory, not just text bytes: each entry is charged its text length plus a fixed per-entry overhead (roughly the Entry struct plus string header, about 100 bytes), and eviction or `remove` releases memory to the OS (debug.FreeOSMemory after large evictions or on a slow timer).
+Outcome: the per-process retained-output budget (`--output-bytes`, default 4 MiB) bounds both retained text and entry cardinality. Each stored entry is charged `len(text) + 128` bytes, where 128 is the documented conservative fixed overhead for entry metadata, string/slice storage, and allocator slack. The charged size is used for oversize rejection, eviction, initial/growing ring capacity, and the invariant that accounted retained bytes never exceed the configured budget. Read byte limits remain text-byte limits, preserving the wire and CLI contract.
 
-Why now (measured 2026-09-06): 300k short lines totalling 2.0 MB of text raised daemon RSS from 11 MB to 66 MB (~188 B per entry, ~27x amplification) and `hum remove` on every record returned none of it after 120 s. A chatty dev server left running all day grows the shared daemon monotonically.
+Scope: change the in-memory output ring accounting and capacity rules, expose the fixed charge within the output package for exact tests, clear evicted slots so text becomes unreachable, and document the distinction between retention charge and read bytes. Removing a process must release references so ordinary Go garbage collection can reclaim them; the daemon must not force global GC or promise immediate RSS return.
 
-Non-goals: compressing output, changing the wire protocol, persistent storage.
+Why now (measured 2026-09-06): 300k short lines totaling 2.0 MB of text raised daemon RSS from 11 MB to 66 MB because text-only accounting allows hundreds of thousands of entry records under a 4 MiB budget. A chatty development server can therefore grow the shared daemon far beyond the configured bound.
+
+Non-goals: exact RSS bounding, forcing memory back to the OS, calling `runtime.GC` or `debug.FreeOSMemory` from request paths, compressing output, changing wire fields, changing read-limit semantics, or persistent storage.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/output -run '^TestRetentionChargesEntryOverhead$' -count=1 -v` exits 0 and prints PASS: 300k ten-byte entries under a 4 MiB limit retain far fewer than 300k entries and the ring's accounted size never exceeds the limit.
-- [ ] #2 `go test ./internal/daemon -run '^TestRemoveReleasesMemory$' -count=1 -v` exits 0 and prints PASS: runtime.MemStats HeapInuse after remove and FreeOSMemory is below 25% of its peak.
-- [ ] #3 `task ci` exits 0.
+- [ ] #1 `go test ./internal/output -run '^TestRetentionChargesEntryOverhead$' -count=1 -v` exits 0 and prints PASS, proving each entry is charged exactly `len(text)+128`, an entry whose charged size exceeds the budget is rejected without mutation, and accounted retained bytes never exceed the limit across append and eviction.
+- [ ] #2 `go test ./internal/output -run '^TestRetentionBoundsShortEntryCardinality$' -count=1 -v` exits 0 and prints PASS, proving 300k ten-byte appends under a 4 MiB limit retain at most `floor(4MiB/138)` entries, preserve chronological reads/cursors, bound backing capacity to the charged entry limit, and clear evicted slots.
+- [ ] #3 `go test ./internal/app -run '^TestRemoveReleasesOutputReferences$' -count=1 -v` exits 0 and prints PASS, proving remove makes the process output store and its entries unreachable without invoking forced GC; `rg -n 'FreeOSMemory|runtime\.GC' internal/app internal/daemon` prints no matches.
+- [ ] #4 `go test ./internal/cli -run '^TestOutputByteDocs$' -count=1 -v` exits 0 and prints PASS, proving help and docs/design.md distinguish charged retention bytes from text-only read limits without claiming an exact RSS cap.
+- [ ] #5 `task ci` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
@@ -46,3 +53,11 @@ Non-goals: compressing output, changing the wire protocol, persistent storage.
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Define the 128-byte fixed retention charge and apply charged-size arithmetic to append, oversize, eviction, and capacity bounds.
+2. Clear evicted storage and prove removed stores hold no reachable entries without forcing garbage collection.
+3. Add accounting/cardinality/regression tests and document retention-charge versus read-byte semantics.
+<!-- SECTION:PLAN:END -->

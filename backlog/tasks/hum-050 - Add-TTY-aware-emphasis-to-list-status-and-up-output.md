@@ -4,10 +4,12 @@ title: 'Add TTY-aware emphasis to list, status, and up output'
 status: To Do
 assignee: []
 created_date: '2026-09-06 16:15'
+updated_date: '2026-09-06 17:21'
 labels:
   - cli
 milestone: m-4
-dependencies: []
+dependencies:
+  - HUM-054
 modified_files:
   - internal/cli/render.go
   - internal/cli/render_test.go

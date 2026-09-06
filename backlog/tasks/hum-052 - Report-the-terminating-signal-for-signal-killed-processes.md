@@ -4,13 +4,15 @@ title: Report the terminating signal for signal-killed processes
 status: To Do
 assignee: []
 created_date: '2026-09-06 16:15'
+updated_date: '2026-09-06 17:21'
 labels:
   - process
   - protocol
   - cli
   - mcp
 milestone: m-4
-dependencies: []
+dependencies:
+  - HUM-054
 modified_files:
   - internal/process/process.go
   - internal/app/app.go
