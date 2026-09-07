@@ -169,6 +169,21 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 		},
 		{
+			Name:          "attach",
+			Usage:         "attach to a running supervision session",
+			UsageText:     "hum attach NAME [--tail N]",
+			ArgsUsage:     "NAME",
+			ShellComplete: completeProcessNames,
+			Description:   "Join one currently running session without starting, restarting, or waiting for it; retained output is replayed before live output, --tail N selects the final N entries, and --tail 0 starts with live output only. A TTY target forwards raw input and terminal resizes under the existing exclusive input lease, while another attachment and every non-TTY attachment follow output only; Ctrl+C detaches without stopping the child. Use `hum logs NAME --follow` for a read-only follower that can wait across launches, or `hum run NAME` for start-or-attach behavior.\n\nExamples:\n  hum attach console\n  hum attach console --tail 50",
+			Flags: []urfavecli.Flag{
+				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "replay final N retained entries; omit for the configured default or use 0 for live output only"},
+			},
+			OnUsageError: onUsageError,
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return attachCommand(ctx, cmd, version, buildTime, writer, errWriter)
+			},
+		},
+		{
 			Name:          "logs",
 			Usage:         "read retained process output",
 			UsageText:     "hum logs [NAME...] [--follow] [--json]",
@@ -787,6 +802,204 @@ func logReadBounds(after *protocol.Cursor, tail, defaultEntries int, tailSet, fo
 		return tail, 0
 	}
 	return tail, defaultEntries
+}
+
+func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
+	args := cmd.Args().Slice()
+	if len(args) == 0 {
+		return errors.New("attach requires a process name")
+	}
+	if len(args) != 1 {
+		return errors.New("attach accepts exactly one process name")
+	}
+	tail := cmd.Int("tail")
+	if tail < 0 {
+		return errors.New("tail must not be negative")
+	}
+	ctx = nonNilContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	selection, err := selectedProjectDirectory(cmd)
+	if err != nil {
+		return err
+	}
+	manifest, err := loadManifestOrEmpty(selection.cwd)
+	if err != nil {
+		return err
+	}
+	manifest.selector = selection.selector
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, cfg)
+	if err != nil {
+		if daemonUnavailable(err) {
+			return newUserFacingError(runUnavailableMessage)
+		}
+		return err
+	}
+	defer client.Close()
+
+	name := args[0]
+	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+	if err != nil {
+		if isNotFound(err) {
+			return inputNotFoundError(name, manifest.selector)
+		}
+		return err
+	}
+	if process.State != app.StateRunning {
+		return inputSessionNotRunningError(name, manifest.selector)
+	}
+
+	root := process.Root
+	if root == "" {
+		root = manifest.root
+	}
+	inputCwd := process.Cwd
+	if inputCwd == "" {
+		inputCwd = root
+	}
+	var localInput *ttyInput
+	if process.TTY {
+		inputRequest := ttyInputRequest(name, inputCwd, project.Definition{}, nil)
+		inputRequest.Root = root
+		inputRequest.Cwd = inputCwd
+		inputRequest.Argv = nil
+		inputRequest.Source = ""
+		inputRequest.Ready = nil
+		session, attachErr := client.InputAttach(ctx, inputRequest)
+		if attachErr != nil {
+			if !isInputConflict(attachErr) {
+				return attachErr
+			}
+			if _, writeErr := fmt.Fprintln(errWriter, "tty input is already owned; following output only"); writeErr != nil {
+				return writeErr
+			}
+		} else {
+			localInput, err = newTTYInput(session, errWriter)
+			if err != nil {
+				_ = session.Release()
+				return err
+			}
+			if _, writeErr := fmt.Fprintln(errWriter, "tty input attached; press Ctrl-] to detach input"); writeErr != nil {
+				localInput.close()
+				return writeErr
+			}
+			localInput.start()
+			defer localInput.close()
+		}
+	}
+
+	replayTail := tail
+	if !cmd.IsSet("tail") {
+		replayTail = cfg.ReadEntries
+	}
+	var snapshot, replayOldest *protocol.Cursor
+	if replayTail > 0 {
+		metadata, metadataErr := client.Output(ctx, daemon.OutputRequest{
+			Name: name, Cwd: root, Tail: 1, Stream: protocol.StreamBoth,
+			MaxEntries: 1, MaxBytes: int(cfg.ReadBytes),
+		})
+		if metadataErr != nil {
+			return metadataErr
+		}
+		if metadata.Latest != nil {
+			cursor := protocol.Cursor(*metadata.Latest)
+			snapshot = &cursor
+		}
+		if metadata.Oldest != nil {
+			cursor := protocol.Cursor(*metadata.Oldest)
+			replayOldest = &cursor
+		}
+	} else if process.NextCursor != 0 {
+		cursor := protocol.Cursor(process.NextCursor - 1)
+		snapshot = &cursor
+	}
+	// Subscribe at the snapshot boundary before paging retained output. This
+	// buffers newer output without subjecting an exact tail to one response's
+	// byte cap, and avoids a gap between replay and live delivery.
+	follower, err := client.Follow(context.Background(), daemon.FollowRequest{
+		Name: name, Cwd: root, After: snapshot, Stream: protocol.StreamBoth,
+		MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes),
+	})
+	if err != nil {
+		return err
+	}
+	defer follower.Close()
+	live, liveFailure, cancelLive := bufferFollower(follower, 16)
+	defer cancelLive()
+
+	expectedReplay := 0
+	if snapshot != nil && replayOldest != nil {
+		expectedReplay = replayTail
+		retainedAtSnapshot := uint64(*snapshot) - uint64(*replayOldest) + 1
+		if retainedAtSnapshot < uint64(expectedReplay) {
+			expectedReplay = int(retainedAtSnapshot)
+		}
+	}
+	var replay []output.Entry
+	var pageAfter *protocol.Cursor
+	for snapshot != nil && replayTail > 0 {
+		page, readErr := client.Output(ctx, daemon.OutputRequest{
+			Name: name, Cwd: root, After: pageAfter, Stream: protocol.StreamBoth,
+			MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes),
+		})
+		if readErr != nil {
+			return readErr
+		}
+		for _, entry := range page.Entries {
+			if protocol.Cursor(entry.Cursor) <= *snapshot {
+				replay = append(replay, entry)
+				if len(replay) > replayTail {
+					replay = replay[len(replay)-replayTail:]
+				}
+			}
+		}
+		if page.Next == nil {
+			break
+		}
+		next := protocol.Cursor(*page.Next)
+		if next >= *snapshot || !page.More {
+			break
+		}
+		if pageAfter != nil && next <= *pageAfter {
+			return errors.New("attach retained-output replay made no progress")
+		}
+		pageAfter = &next
+		select {
+		case liveErr := <-liveFailure:
+			return liveErr
+		default:
+		}
+	}
+	if len(replay) != expectedReplay {
+		return errors.New("attach retained output changed during replay; reconnect to continue")
+	}
+	for _, entry := range replay {
+		if err := writeAttachedEntry(writer, errWriter, entry); err != nil {
+			return err
+		}
+	}
+
+	signals := notifyFollowSignals()
+	defer signal.Stop(signals)
+	return bufferedFollowLoop(ctx, follower, signals, live, liveFailure, func(event output.Event) error {
+		if event.Read == nil {
+			return nil
+		}
+		if event.Read.Truncated {
+			return errors.New("attach live output was truncated; reconnect to continue")
+		}
+		for _, entry := range event.Read.Entries {
+			if err := writeAttachedEntry(writer, errWriter, entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
@@ -2417,6 +2630,67 @@ func notifyFollowSignals() chan os.Signal {
 type followerResult struct {
 	event output.Event
 	err   error
+}
+
+func bufferFollower(follower *daemon.Follower, capacity int) (<-chan followerResult, <-chan error, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	results := make(chan followerResult, capacity)
+	failures := make(chan error, 1)
+	go func() {
+		for {
+			event, err := follower.Next(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			select {
+			case results <- followerResult{event: event, err: err}:
+				if err != nil {
+					return
+				}
+			default:
+				failures <- errors.New("attach live output exceeded its replay buffer; reconnect to continue")
+				cancel()
+				_ = follower.Close()
+				return
+			}
+		}
+	}()
+	return results, failures, cancel
+}
+
+func bufferedFollowLoop(parent context.Context, follower *daemon.Follower, signals <-chan os.Signal, results <-chan followerResult, failures <-chan error, onEvent func(output.Event) error) error {
+	parent = nonNilContext(parent)
+	for {
+		select {
+		case err := <-failures:
+			return err
+		case result := <-results:
+			if parent.Err() != nil {
+				return nil
+			}
+			if result.err != nil {
+				if errors.Is(result.err, context.Canceled) || errors.Is(result.err, context.DeadlineExceeded) || errors.Is(result.err, io.EOF) {
+					return nil
+				}
+				return result.err
+			}
+			if err := onEvent(result.event); err != nil {
+				return err
+			}
+		case sig, ok := <-signals:
+			if !ok {
+				signals = nil
+				continue
+			}
+			if sig == os.Interrupt || sig == syscall.SIGTERM || sig == syscall.SIGHUP {
+				_ = follower.Close()
+				return nil
+			}
+		case <-parent.Done():
+			_ = follower.Close()
+			return nil
+		}
+	}
 }
 
 func followLoop(parent context.Context, follower *daemon.Follower, signals <-chan os.Signal, onEvent func(output.Event) error, onSignal func(os.Signal) (bool, error)) (exitCode int, exited bool, err error) {
