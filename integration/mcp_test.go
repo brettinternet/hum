@@ -321,3 +321,166 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 		t.Fatalf("lost ad hoc restart=%s error=%v", lostRaw, lostErr)
 	}
 }
+
+// upParitySummary is the subset HUM-035's shared-scheduler contract requires to
+// match at both adapters. The projections nest process data differently, so
+// each field is read from wherever its own adapter reports it.
+type upParitySummary struct {
+	Name           string
+	Outcome        string
+	Readiness      string
+	ReadinessMatch string
+	ChangedFields  []string
+	BlockedBy      []string
+	Guidance       string
+}
+
+// TestUpAdapterParityAcrossSurfaces drives one project state through both `hum
+// up --json` and the MCP up tool and compares the shared fields. The
+// per-adapter unit tests exercise each projection over different inputs and
+// cannot observe a divergence between the two surfaces.
+func TestUpAdapterParityAcrossSurfaces(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := testutil.BuildHum(t)
+	projectRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
+	initial := `version: 1
+processes:
+  db:
+    argv: [/bin/sh, -c, "sleep 30"]
+    ready: {match: old}
+  api:
+    argv: [/bin/sh, -c, "sleep 30"]
+    ready: {match: api-ready}
+    after: [db]
+`
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
+	})
+	started := testutil.Run(t, hum, projectRoot, env, "start", "--json", "--no-wait", "db")
+	if started.Code != 0 {
+		t.Fatalf("start db = code %d stdout=%q stderr=%q", started.Code, started.Stdout, started.Stderr)
+	}
+	// Drift db so up reports a drifted prerequisite and a dependent skip: one
+	// call covers ordering, outcome, readiness, changed_fields, blocked_by, and
+	// guidance without launching anything, so both surfaces observe the same
+	// definitions and process snapshots.
+	drifted := strings.Replace(initial, "match: old", "match: new", 1)
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(drifted), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cliRun := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if cliRun.Code != 1 || cliRun.Stderr != "" {
+		t.Fatalf("cli up = code %d stdout=%q stderr=%q", cliRun.Code, cliRun.Stdout, cliRun.Stderr)
+	}
+	cliObjects := make([]map[string]any, 0, 2)
+	for _, line := range strings.Split(strings.TrimSpace(cliRun.Stdout), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var object map[string]any
+		if err := json.Unmarshal([]byte(line), &object); err != nil {
+			t.Fatalf("decode cli up line %q: %v", line, err)
+		}
+		cliObjects = append(cliObjects, object)
+	}
+
+	session := newMCPTestSession(t, hum, projectRoot, env)
+	raw, isErr := session.call(t, "up", projectRoot, nil)
+	if isErr {
+		t.Fatalf("mcp up error: %s", raw)
+	}
+	var mcpObjects []map[string]any
+	if err := json.Unmarshal(raw, &mcpObjects); err != nil {
+		t.Fatalf("decode mcp up results %s: %v", raw, err)
+	}
+
+	cli := upParitySummaries(t, cliObjects)
+	adapter := upParitySummaries(t, mcpObjects)
+	if len(cli) != 2 {
+		t.Fatalf("cli up results = %#v, want db drift and api skip", cli)
+	}
+	if !reflect.DeepEqual(cli, adapter) {
+		t.Fatalf("adapter parity mismatch:\n cli=%#v\n mcp=%#v", cli, adapter)
+	}
+	// Guard against the comparison passing on two empty projections.
+	if cli[0].Name != "api" || cli[0].Outcome != "skipped" || !reflect.DeepEqual(cli[0].BlockedBy, []string{"db"}) {
+		t.Fatalf("expected api skipped blocked by db, got %#v", cli[0])
+	}
+	if cli[1].Name != "db" || cli[1].Outcome != "definition_drift" || !reflect.DeepEqual(cli[1].ChangedFields, []string{"readiness_match"}) || cli[1].Guidance != "hum restart db" {
+		t.Fatalf("expected db definition drift with restart guidance, got %#v", cli[1])
+	}
+}
+
+func upParitySummaries(t *testing.T, objects []map[string]any) []upParitySummary {
+	t.Helper()
+	summaries := make([]upParitySummary, 0, len(objects))
+	for _, object := range objects {
+		readiness, match := upParityReadiness(object)
+		summaries = append(summaries, upParitySummary{
+			Name:           upParityString(object, "name"),
+			Outcome:        upParityString(object, "outcome"),
+			Readiness:      readiness,
+			ReadinessMatch: match,
+			ChangedFields:  upParityStrings(t, object, "changed_fields"),
+			BlockedBy:      upParityStrings(t, object, "blocked_by"),
+			Guidance:       upParityString(object, "guidance"),
+		})
+	}
+	return summaries
+}
+
+// upParityReadiness reads readiness from the flat CLI shape or the nested MCP
+// process snapshot, whichever the adapter used.
+func upParityReadiness(object map[string]any) (string, string) {
+	state, match := upParityString(object, "readiness"), upParityString(object, "readiness_match")
+	process, ok := object["process"].(map[string]any)
+	if !ok {
+		return state, match
+	}
+	nested, ok := process["readiness"].(map[string]any)
+	if !ok {
+		return state, match
+	}
+	if state == "" {
+		state = upParityString(nested, "state")
+	}
+	if match == "" {
+		match = upParityString(nested, "match")
+	}
+	return state, match
+}
+
+func upParityString(object map[string]any, key string) string {
+	value, _ := object[key].(string)
+	return value
+}
+
+func upParityStrings(t *testing.T, object map[string]any, key string) []string {
+	t.Helper()
+	raw, ok := object[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want a string list", key, raw)
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			t.Fatalf("%s contains %#v, want a string", key, item)
+		}
+		values = append(values, text)
+	}
+	return values
+}
