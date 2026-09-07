@@ -12,6 +12,74 @@ import (
 	"hum/internal/skill"
 )
 
+func TestREADMEQuickstartStructure(t *testing.T) {
+	content, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	readme := string(content)
+	if words := len(strings.Fields(readme)); words > 900 {
+		t.Errorf("README.md has %d words, want at most 900", words)
+	}
+
+	headings := markdownH2Positions(readme)
+	install, installOK := headings["Install"]
+	quickstart, quickstartOK := headings["Quickstart"]
+	codingAgents, codingAgentsOK := headings["Coding agents"]
+	if !installOK || !quickstartOK || !codingAgentsOK {
+		t.Fatalf("README.md heading positions: Install=%d Quickstart=%d Coding agents=%d", install, quickstart, codingAgents)
+	}
+	if !(install < quickstart && quickstart < codingAgents) {
+		t.Errorf("README.md headings out of order: Install=%d Quickstart=%d Coding agents=%d", install, quickstart, codingAgents)
+	}
+
+	quickstartEnd := len(readme)
+	for _, position := range headings {
+		if position > quickstart && position < quickstartEnd {
+			quickstartEnd = position
+		}
+	}
+	if quickstartEnd == len(readme) {
+		t.Fatal("README.md Quickstart has no following top-level section")
+	}
+	quickstartSection := readme[quickstart:quickstartEnd]
+	for _, command := range []string{"hum run", "hum up", "hum logs --follow", "hum down"} {
+		if !strings.Contains(quickstartSection, command) {
+			t.Errorf("README.md Quickstart missing %q", command)
+		}
+	}
+}
+
+func markdownH2Positions(markdown string) map[string]int {
+	positions := make(map[string]int)
+	inFence := false
+	position := 0
+	for _, line := range strings.Split(markdown, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+		} else if !inFence && strings.HasPrefix(line, "## ") && !strings.HasPrefix(line, "### ") {
+			positions[strings.TrimSpace(strings.TrimPrefix(line, "## "))] = position
+		}
+		position += len(line) + 1
+	}
+	return positions
+}
+
+func TestMarkdownH2PositionsIgnoresFences(t *testing.T) {
+	markdown := "```md\n## Install\n```\n## Quickstart\n~~~\n## Coding agents\n~~~\n"
+	got := markdownH2Positions(markdown)
+	if _, ok := got["Install"]; ok {
+		t.Error("fenced Install heading was treated as a section")
+	}
+	if _, ok := got["Coding agents"]; ok {
+		t.Error("fenced Coding agents heading was treated as a section")
+	}
+	if _, ok := got["Quickstart"]; !ok {
+		t.Error("unfenced Quickstart heading was not found")
+	}
+}
+
 func TestStatusAndWaitSurface(t *testing.T) {
 	var output, errorOutput bytes.Buffer
 	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
