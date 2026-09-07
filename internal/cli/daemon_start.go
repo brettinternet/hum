@@ -20,7 +20,7 @@ const (
 	daemonChildEnvValue  = "1"
 	daemonStartupTimeout = 5 * time.Second
 	daemonStartupPoll    = 10 * time.Millisecond
-	daemonDialTimeout    = 100 * time.Millisecond
+	daemonDialTimeout    = time.Second
 )
 
 func isDaemonChild() bool {
