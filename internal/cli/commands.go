@@ -986,10 +986,10 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 		if client != nil {
 			_ = client.Close()
 		}
-		if cmd.Bool("follow") || !daemonUnavailable(err) {
+		if cmd.Bool("follow") || cmd.Bool("json") || !daemonUnavailable(err) {
 			return err
 		}
-		return renderAggregateLogsUnavailable(writer, errWriter, cmd.Bool("json"), names, manifest)
+		return renderAggregateLogsUnavailable(writer, errWriter, false, names, manifest)
 	}
 	defer client.Close()
 	if cmd.Bool("follow") {
@@ -1982,14 +1982,6 @@ func shutdownCommand(ctx context.Context, cmd *urfavecli.Command, version, build
 		}
 		if isActiveProcesses(shutdownErr) {
 			if cmd.Bool("json") {
-				encodeErr := encodeJSON(writer, struct {
-					Status    string   `json:"status"`
-					Message   string   `json:"message"`
-					Processes []string `json:"processes,omitempty"`
-				}{Status: "error", Message: shutdownErr.Error(), Processes: activeProcessNames(shutdownErr)})
-				if encodeErr != nil {
-					return encodeErr
-				}
 				return shutdownErr
 			}
 			return newUserFacingError(activeProcessesShutdownMessage(activeProcessNames(shutdownErr)))

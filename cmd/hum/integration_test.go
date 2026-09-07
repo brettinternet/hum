@@ -446,14 +446,19 @@ func TestBuiltBinaryIntegration(t *testing.T) {
 	if refusedShutdown.code == 0 {
 		t.Fatalf("shutdown without force unexpectedly succeeded: stdout=%q stderr=%q", refusedShutdown.stdout, refusedShutdown.stderr)
 	}
-	refusedStatus, err := integrationShutdownStatusFromJSON(refusedShutdown.stdout)
-	if err != nil {
-		t.Fatalf("decode refused shutdown JSON: %v (stdout=%q)", err, refusedShutdown.stdout)
+	var refusedError struct {
+		Error *protocol.WireError `json:"error"`
 	}
-	if refusedStatus != "error" {
-		t.Fatalf("refused shutdown status = %q, want error", refusedStatus)
+	if err := json.Unmarshal([]byte(refusedShutdown.stdout), &refusedError); err != nil || refusedError.Error == nil {
+		t.Fatalf("decode refused shutdown JSON error: %v (stdout=%q)", err, refusedShutdown.stdout)
 	}
-	if !strings.Contains(refusedShutdown.stdout+refusedShutdown.stderr, "guard") {
+	if refusedError.Error.Code != protocol.ErrorActiveProcesses {
+		t.Fatalf("refused shutdown code = %q, want %q", refusedError.Error.Code, protocol.ErrorActiveProcesses)
+	}
+	if refusedShutdown.stderr != "" {
+		t.Fatalf("refused shutdown stderr = %q, want empty", refusedShutdown.stderr)
+	}
+	if !strings.Contains(refusedShutdown.stdout, "guard") {
 		t.Fatalf("refused shutdown did not name active guard: stdout=%q stderr=%q", refusedShutdown.stdout, refusedShutdown.stderr)
 	}
 	if err := integrationAssertProcessAlive(guardProcess.PID); err != nil {

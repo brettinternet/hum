@@ -177,8 +177,8 @@ func TestInputCommand(t *testing.T) {
 	if err == nil {
 		t.Fatal("JSON invalid input succeeded")
 	}
-	var failure inputErrorResult
-	if decodeErr := json.Unmarshal([]byte(jsonError), &failure); decodeErr != nil || !strings.Contains(failure.Error, "base64") {
+	var failure jsonErrorEnvelope
+	if decodeErr := json.Unmarshal([]byte(jsonError), &failure); decodeErr != nil || failure.Error == nil || !strings.Contains(failure.Error.Message, "base64") {
 		t.Fatalf("JSON error=%q decode=%v", jsonError, decodeErr)
 	}
 }

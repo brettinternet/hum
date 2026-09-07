@@ -76,7 +76,27 @@ Human-readable output is the default. JSON process snapshots include `name`,
 `source`, `argv`, and the integer `followers` count, plus identity, readiness,
 cursors, and errors when applicable. Human `status` always prints `followers`;
 human `list` adds `followers=N` only to followed records, leaving ordinary
-unfollowed list output unchanged. `start` and `up` emit one NDJSON launch result per name. `up` uses
+unfollowed list output unchanged. JSON-capable commands classify failures as
+`usage`, `daemon_unavailable`, `manifest_invalid`, or `internal` and emit one
+newline-terminated `{"error":{"code":"...","message":"..."}}` object on
+stdout when no JSON has been written. Daemon wire failures retain their wire
+code. JSON failures never add a hum diagnostic to stderr, and exit codes remain
+unchanged. The `start`/`up` NDJSON streams and `logs --follow` append one final
+typed `error` event after earlier events when a later failure occurs; they do
+not buffer the stream. This contract applies only when standalone `--json` or
+the documented `-j` appears before the payload separator. Attached
+`run --json` is the exception: it remains raw child output, including child
+stderr, and payload text that merely resembles `--json` is not a JSON mode
+request.
+
+| JSON error code | Meaning |
+| --- | --- |
+| `usage` | command or flag input is invalid |
+| `daemon_unavailable` | the daemon cannot be contacted |
+| `manifest_invalid` | manifest or project discovery configuration is invalid |
+| `internal` | an unexpected local CLI failure |
+
+`start` and `up` emit one NDJSON launch result per name. `up` uses
 lexical declaration order, attempts every entry, and applies this exit-code
 precedence: request error or `definition_drift` (1), early exit (3), timeout
 (2), success (0). `definition_drift` includes sorted `changed_fields` for
