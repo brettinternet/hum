@@ -105,7 +105,7 @@ func TestLogsMultipleNames(t *testing.T) {
 	for index, want := range []struct {
 		name string
 		text string
-	}{{"second", "second-0\n"}, {"first", "first-0\n"}} {
+	}{{"second", "second-1\n"}, {"first", "first-1\n"}} {
 		if objects[index]["op"] != "event" || objects[index]["name"] != want.name {
 			t.Fatalf("aggregate object %d = %#v, want named event for %s", index, objects[index], want.name)
 		}
@@ -158,6 +158,80 @@ processes:
 	for _, object := range noNameObjects {
 		if object["name"] == "rogue" {
 			t.Fatalf("no-name aggregate = %q, must exclude ad-hoc sessions", noName)
+		}
+	}
+}
+
+func TestLogsDefaultNewestWindow(t *testing.T) {
+	runtimeDir := hum006ListLogsTempDir(t, "default-window-runtime")
+	hum006ListLogsStartDaemon(t, runtimeDir, 4096)
+	project := hum006ListLogsProject(t, "default-window-project")
+	script := `i=0; while [ "$i" -lt 202 ]; do printf "line-%03d\n" "$i"; i=$((i+1)); done`
+	writeManifestCLITestFile(t, project, "version: 1\nprocesses:\n  window:\n    argv: [/bin/sh, -c, "+strconv.Quote(script)+"]\n")
+	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "start", "window", "--no-wait"); err != nil {
+		t.Fatalf("start default-window process: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+	}
+	hum006ListLogsWaitForText(t, project, "window", "line-201\n")
+
+	assertLines := func(label, text string, first, last int) {
+		t.Helper()
+		objects := hum006ListLogsDecodeJSONLines(t, text)
+		if len(objects) != 1 {
+			t.Fatalf("%s JSON = %q, decoded %d objects; want one", label, text, len(objects))
+		}
+		entries := hum006ListLogsEntries(t, objects[0])
+		texts := hum006ListLogsEntryTexts(t, entries)
+		if len(texts) != last-first+1 {
+			t.Fatalf("%s entries = %d, want %d", label, len(texts), last-first+1)
+		}
+		for index, got := range texts {
+			want := fmt.Sprintf("line-%03d\n", first+index)
+			if got != want {
+				t.Fatalf("%s entry %d = %q, want %q", label, index, got, want)
+			}
+		}
+	}
+
+	single, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "window", "--json", "--stream", "stdout")
+	if err != nil {
+		t.Fatalf("single default logs: %v (stderr=%q)", err, stderr)
+	}
+	assertLines("single default", single, 102, 201)
+
+	aggregate, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "--json", "--stream", "stdout")
+	if err != nil {
+		t.Fatalf("aggregate default logs: %v (stderr=%q)", err, stderr)
+	}
+	assertLines("aggregate default", aggregate, 102, 201)
+
+	forward, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "window", "--json", "--stream", "stdout", "--after-cursor", "0")
+	if err != nil {
+		t.Fatalf("explicit after logs: %v (stderr=%q)", err, stderr)
+	}
+	assertLines("explicit after", forward, 1, 100)
+	forwardObjects := hum006ListLogsDecodeJSONLines(t, forward)
+	if !hum006ListLogsBool(forwardObjects[0], "more") {
+		t.Fatalf("explicit after JSON = %q, want more=true for forward page", forward)
+	}
+}
+
+func TestCursorDocs(t *testing.T) {
+	design, err := os.ReadFile("../../docs/design.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phrase := range []string{"Logs output", "`next`", "`next_cursor`", "last source cursor consumed", "next cursor that will be assigned"} {
+		if !strings.Contains(string(design), phrase) {
+			t.Fatalf("docs/design.md missing cursor guidance %q", phrase)
+		}
+	}
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phrase := range []string{"newest default window", "oldest retained entry", "Logs `next`", "process `next_cursor`"} {
+		if !strings.Contains(string(readme), phrase) {
+			t.Fatalf("README.md missing cursor/window guidance %q", phrase)
 		}
 	}
 }

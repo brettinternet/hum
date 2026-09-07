@@ -276,9 +276,11 @@ func (r *ring) readBounded(opts ReadOptions, result ReadResult, start, maxEntrie
 }
 
 // readTail walks backwards from the newest retained entry until the final
-// Tail matches are known, evaluating the filter once per entry, then returns
-// those matches in chronological order. Every source entry in range counts as
-// consumed, so Next is the newest retained cursor even when nothing matched.
+// Tail matches are known, evaluating the filter once per entry. Bounds are
+// applied while walking backwards so entry- and byte-clipped tails retain the
+// newest matches, then the selected entries are returned chronologically.
+// Every source entry in range counts as consumed when no bound blocks it, so
+// Next is the newest retained cursor even when nothing matched.
 func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, maxBytes int) (ReadResult, error) {
 	tail := opts.Tail
 	if tail > r.count-start {
@@ -289,6 +291,9 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 	}
 	next := r.entries[(r.head+r.count-1)%len(r.entries)].Cursor
 
+	// selected is newest-first. Keeping that order until bounds are applied is
+	// what makes a clipped tail keep its newest entries rather than its oldest
+	// prefix.
 	selected := make([]int, 0, tail)
 	for offset := r.count - 1; offset >= start && len(selected) < tail; offset-- {
 		if matchesRead(r.entries[(r.head+offset)%len(r.entries)], opts) {
@@ -298,9 +303,6 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 	if len(selected) == 0 {
 		result.Next = &next
 		return result, nil
-	}
-	for i, j := 0, len(selected)-1; i < j; i, j = i+1, j-1 {
-		selected[i], selected[j] = selected[j], selected[i]
 	}
 
 	// Valid entries are nonempty, so MaxBytes also bounds the tail result's
@@ -333,11 +335,14 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 		tailResult = append(tailResult, entry)
 		usedBytes += len(entry.Text)
 	}
+	for i, j := 0, len(tailResult)-1; i < j; i, j = i+1, j-1 {
+		tailResult[i], tailResult[j] = tailResult[j], tailResult[i]
+	}
 	result.Entries = tailResult
 	if blockedSet {
-		// The blocked matching entry and everything after it remains unread.
-		// Cursors are contiguous while retained, so its predecessor is the
-		// greatest source cursor safely consumed by this bounded result.
+		// The blocked matching entry is older than the entries returned above.
+		// Its predecessor is the greatest source cursor safely consumed by this
+		// bounded result; callers can use Next for forward paging of older data.
 		if blocked > 0 {
 			previous := blocked - 1
 			result.Next = &previous

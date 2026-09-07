@@ -142,7 +142,7 @@ hum logs web worker --tail 50
 hum logs web --stream stdout --match Listening
 ```
 
-Without names, logs selects the current project declarations once, in lexical order. Ad-hoc sessions are excluded. Named output is prefixed with `[NAME]`; JSON uses named NDJSON events. Limits and filters apply independently to each process. Ctrl+C closes log followers without stopping processes.
+Without names, logs selects lexical declarations once; ad-hoc sessions are excluded. Bounded reads without `--after-cursor` show the newest default window; explicit cursors page forward from the oldest retained entry. Output is `[NAME]`-prefixed or named NDJSON; Ctrl+C only closes followers. Logs `next` is the consumed cursor; process `next_cursor` is the next assigned cursor.
 
 ## Shell completion
 

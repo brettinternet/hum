@@ -1033,6 +1033,36 @@ func TestObservationTools(t *testing.T) {
 	}
 }
 
+func TestLogsDefaultNewestWindow(t *testing.T) {
+	newest := protocol.Cursor(201)
+	client := &fakeClient{
+		processes: map[string]protocol.Process{"raw": {Name: "raw", State: "running", LaunchCursor: 5}},
+		output:    protocol.OutputResult{Entries: []protocol.OutputEntry{{Cursor: newest, Text: "newest"}}},
+	}
+	s, root, _ := newTestServer(t, nil, client)
+
+	value, err := s.callTool(context.Background(), "logs", args(root, "name", "raw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := value.(protocol.OutputResult)
+	if !ok || len(result.Entries) != 1 || result.Entries[0].Cursor != newest {
+		t.Fatalf("default logs result = %#v, want newest retained entry", value)
+	}
+	defaultRequest := client.outputs[len(client.outputs)-1]
+	if defaultRequest.After != nil || defaultRequest.Tail != protocol.DefaultReadEntries || defaultRequest.MaxEntries != protocol.DefaultReadEntries {
+		t.Fatalf("default logs request = %#v, want newest default tail=%d", defaultRequest, protocol.DefaultReadEntries)
+	}
+
+	if _, err := s.callTool(context.Background(), "logs", args(root, "name", "raw", "after", 50)); err != nil {
+		t.Fatal(err)
+	}
+	forwardRequest := client.outputs[len(client.outputs)-1]
+	if forwardRequest.After == nil || *forwardRequest.After != 50 || forwardRequest.Tail != 0 || forwardRequest.MaxEntries != 0 {
+		t.Fatalf("explicit after logs request = %#v, want unchanged forward paging", forwardRequest)
+	}
+}
+
 func TestRemoveAdHocProcessTools(t *testing.T) {
 	client := &fakeClient{processes: map[string]protocol.Process{"raw": {Name: "raw", Argv: []string{"sleep", "1"}, Cwd: "/tmp", State: "running"}, "api": {Name: "api", Source: "old", Argv: []string{"old"}, State: "running"}}}
 	defs := []Definition{{Name: "api", Source: "hum.yaml", Argv: []string{"new"}, Cwd: "/work"}}
