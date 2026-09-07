@@ -876,7 +876,7 @@ func TestStartUp(t *testing.T) {
 	if p.Readiness == nil || p.Readiness.State != protocol.ReadinessReady {
 		t.Fatalf("start=%#v", p)
 	}
-	if len(client.waits) != 1 || client.waits[0].TimeoutMS < defaultTimeoutMS-1000 || client.waits[0].TimeoutMS > defaultTimeoutMS || client.waits[0].After == nil || *client.waits[0].After != 7 {
+	if len(client.waits) != 1 || client.waits[0].TimeoutMS > 100 || client.waits[0].After != nil {
 		t.Fatalf("wait=%#v", client.waits)
 	}
 	if len(client.starts[0].Env) != 1 {
@@ -938,7 +938,7 @@ func TestStartUp(t *testing.T) {
 	}
 	timeouts := []int64{concurrentClient.waits[0].TimeoutMS, concurrentClient.waits[1].TimeoutMS}
 	sort.Slice(timeouts, func(i, j int) bool { return timeouts[i] < timeouts[j] })
-	if timeouts[0] < 1 || timeouts[0] > 17 || timeouts[1] < defaultTimeoutMS-1000 || timeouts[1] > defaultTimeoutMS {
+	if timeouts[0] < 1 || timeouts[0] > 17 || timeouts[1] < 1 || timeouts[1] > 100 {
 		t.Fatalf("readiness timeouts = %v", timeouts)
 	}
 	timeoutClient := &fakeClient{keepStarting: true, waitResult: protocol.NewWaitResponse(protocol.WaitTimedOut, 9, nil)}
