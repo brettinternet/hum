@@ -79,7 +79,7 @@ pulls in prerequisites. If an `on-failure` prerequisite is recovering, rerun
 `up` after it is ready rather than expecting the same invocation to follow its
 successor.
 The server exposes `start`, `up`, `down`, `list`, `status`, `logs`, `wait`,
-`input`, `restart`, `stop`, and `remove`. Its bounded `input` tool accepts
+`input`, `restart`, `stop`, `remove`, and `signal`. Its bounded `input` tool accepts
 exact non-empty text or strict padded base64 without whitespace for an
 already-running TTY incarnation; text sends exact bytes without a newline and returns its launch cursor;
 it never starts, waits, queues, retries, retains, or echoes input and an
@@ -90,8 +90,15 @@ arbitrary-command `run` or unbounded follow tool; agents use bounded
 `wait` and `logs`. For restart-with-work, use
 `stop`, run the intermediate command, then `start`: the durable session preserves
 terminal followers. `remove` is different from `stop`: it discards retained
-runtime state and output but never edits `hum.yaml`. `down` preserves sessions;
-a later `up` starts resolved definitions only, leaving ad hoc sessions stopped.
+runtime state and output but never edits `hum.yaml`. The CLI form is
+`hum signal NAME SIGNAL [--json]`; the observational `signal`
+tool delivers one supported named or positive decimal signal to a running process
+group and returns `{"name":"NAME","signal":{"name":"SIGHUP","number":1},"status":"sent"}`
+with its canonical SIG-prefixed name and number; it never sets stop intent or
+cancels automatic relaunch, including for TERM and KILL. Invalid,
+missing, and stopped targets return `invalid_signal`, `not_found`, and
+`not_running`. `down` preserves sessions; a later `up` starts resolved
+definitions only, leaving ad hoc sessions stopped.
 
 See [the MCP design](design.md#mcp-adapter) for detailed behavior and
 failure semantics.

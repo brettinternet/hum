@@ -18,6 +18,7 @@ import (
 	"hum/internal/app"
 	"hum/internal/output"
 	"hum/internal/protocol"
+	sharedsignals "hum/internal/signals"
 )
 
 const (
@@ -617,14 +618,14 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		}
 		return wireResponseFromRead(req.Op, stripBoundedChildText(result)), false
 	case "signal":
-		sig, err := parseSignal(req.Signal)
+		parsed, err := sharedsignals.Parse(req.Signal)
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		if err := s.supervisor.Signal(req.Cwd, req.Name, sig); err != nil {
+		if err := s.supervisor.SignalObservational(req.Cwd, req.Name, parsed.Signal); err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		return wireResponse{Op: req.Op, OK: true}, false
+		return wireResponse{Op: req.Op, OK: true, Name: req.Name, Signal: &wireSignal{Name: parsed.Name, Number: parsed.Number}, Status: "sent"}, false
 	case "stop":
 		if err := s.supervisor.Stop(context.Background(), req.Cwd, req.Name); err != nil {
 			return dispatchError(req.Op, err), false
@@ -1076,23 +1077,6 @@ func streamMask(stream string) output.StreamMask {
 	}
 }
 
-func parseSignal(name string) (os.Signal, error) {
-	switch strings.ToUpper(strings.TrimPrefix(name, "SIG")) {
-	case "INT":
-		return syscall.SIGINT, nil
-	case "TERM":
-		return syscall.SIGTERM, nil
-	case "HUP":
-		return syscall.SIGHUP, nil
-	case "QUIT":
-		return syscall.SIGQUIT, nil
-	case "KILL":
-		return syscall.SIGKILL, nil
-	default:
-		return nil, fmt.Errorf("%w: %q", app.ErrInvalidSignal, name)
-	}
-}
-
 // wire DTOs intentionally contain no environment field on responses.
 type wireRequest struct {
 	Op               string               `json:"op"`
@@ -1144,6 +1128,8 @@ type wireResponse struct {
 	EvictedThrough *uint64                   `json:"evicted_through,omitempty"`
 	Truncated      bool                      `json:"truncated,omitempty"`
 	More           bool                      `json:"more,omitempty"`
+	Signal         *wireSignal               `json:"signal,omitempty"`
+	Status         string                    `json:"status,omitempty"`
 	Type           string                    `json:"type,omitempty"`
 	Outcome        string                    `json:"outcome,omitempty"`
 	Cursor         *uint64                   `json:"cursor,omitempty"`
@@ -1151,6 +1137,11 @@ type wireResponse struct {
 	Warnings       []protocol.StartupWarning `json:"warnings,omitempty"`
 	Exit           *wireExit                 `json:"exit,omitempty"`
 	Error          *wireError                `json:"error,omitempty"`
+}
+
+type wireSignal struct {
+	Name   string `json:"name"`
+	Number int    `json:"number"`
 }
 
 type wireError struct {
@@ -1255,11 +1246,13 @@ func errorCode(err error) string {
 	switch {
 	case errors.Is(err, app.ErrProcessNotFound):
 		return string(protocol.ErrorNotFound)
+	case errors.Is(err, app.ErrNotRunning):
+		return string(protocol.ErrorNotRunning)
 	case errors.Is(err, app.ErrNameInUse):
 		return string(protocol.ErrorNameInUse)
 	case errors.Is(err, app.ErrInvalidName), errors.Is(err, app.ErrInvalidRequest):
 		return string(protocol.ErrorInvalidRequest)
-	case errors.Is(err, app.ErrInvalidSignal):
+	case errors.Is(err, app.ErrInvalidSignal), errors.Is(err, sharedsignals.ErrInvalidSignal):
 		return string(protocol.ErrorInvalidSignal)
 	case errors.Is(err, app.ErrSupervisorClosed):
 		return string(protocol.ErrorSupervisorClosed)

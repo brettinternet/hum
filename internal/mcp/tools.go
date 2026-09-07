@@ -16,6 +16,7 @@ import (
 
 	"hum/internal/orchestrate"
 	"hum/internal/protocol"
+	sharedsignals "hum/internal/signals"
 )
 
 const (
@@ -302,6 +303,20 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"bytes":         map[string]any{"type": "integer", "minimum": 1},
 		"launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 	}, "name", "bytes", "launch_cursor")
+	signalInfo := objectSchema(map[string]any{
+		"name":   map[string]any{"type": "string", "description": "Canonical SIG-prefixed signal name."},
+		"number": map[string]any{"type": "integer", "minimum": 1, "description": "Signal number on the current Unix OS."},
+	}, "name", "number")
+	signalResult := objectSchema(map[string]any{
+		"name":   map[string]any{"type": "string"},
+		"signal": signalInfo,
+		"status": map[string]any{"type": "string", "enum": []string{"sent"}},
+	}, "name", "signal", "status")
+	signalSchema := objectSchema(map[string]any{
+		"project_root": root,
+		"name":         nameExisting,
+		"signal":       stringProperty("Case-insensitive signal name with an optional SIG prefix, or a positive decimal value present in the supported named signal table."),
+	}, "project_root", "name", "signal")
 	collectionResults := func(items map[string]any) map[string]any {
 		return objectSchema(map[string]any{"results": map[string]any{"type": "array", "items": items}, "warnings": startupWarningsSchema}, "results")
 	}
@@ -318,6 +333,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
 		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record while preserving its supervision session.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
 		{Name: "remove", Description: "Stop and discard one runtime supervision session, its retained launch specification, and output.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
+		{Name: "signal", Description: "Send one observational signal to a running declared or ad_hoc process group without changing stop intent or automatic relaunch policy. Signal names are case-insensitive with an optional SIG prefix, and positive decimal values are accepted only when they map to the supported named signal table; the result is canonical and reports sent.", InputSchema: signalSchema, OutputSchema: signalResult},
 	}
 }
 
@@ -343,6 +359,7 @@ type commonInput struct {
 	Match         string  `json:"match,omitempty"`
 	Text          *string `json:"text,omitempty"`
 	Base64        *string `json:"base64,omitempty"`
+	Signal        string  `json:"signal,omitempty"`
 
 	textSet   bool
 	base64Set bool
@@ -620,6 +637,11 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	} else if input.textSet || input.base64Set {
 		return nil, &ToolError{Code: "invalid_request", Message: "text and base64 are only valid for the input tool"}
 	}
+	if name != "signal" {
+		if _, present := input.fields["signal"]; present {
+			return nil, &ToolError{Code: "invalid_request", Message: "signal is only valid for the signal tool"}
+		}
+	}
 	if name == "input" && strings.TrimSpace(input.Name) == "" {
 		return nil, &ToolError{Code: "invalid_request", Message: "name is required"}
 	}
@@ -653,6 +675,8 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		return s.stop(ctx, resolution, input.Name)
 	case "remove":
 		return s.remove(ctx, resolution, input.Name)
+	case "signal":
+		return s.signal(ctx, resolution, input)
 	default:
 		panic("unreachable")
 	}
@@ -1182,6 +1206,61 @@ func (s *Server) remove(ctx context.Context, resolution Resolution, name string)
 		return nil, mapError(err)
 	}
 	return stopResult{Name: name, State: "removed"}, nil
+}
+
+type signalResultClient interface {
+	SignalResult(context.Context, protocol.SignalRequest) (protocol.SignalResult, error)
+}
+
+type signalErrorClient interface {
+	Signal(context.Context, protocol.SignalRequest) error
+}
+
+func (s *Server) signal(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
+	parsed, err := sharedsignals.Parse(input.Signal)
+	if err != nil {
+		return nil, &ToolError{Code: string(protocol.ErrorInvalidSignal), Message: err.Error()}
+	}
+	client, err := s.client(ctx, false)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer client.Close()
+	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Cwd: resolution.Root})
+	if err != nil {
+		mapped := mapError(err)
+		if mapped.Code == string(protocol.ErrorNotFound) {
+			return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process %q was not found; use hum start %s for a resolved name or hum run %s -- COMMAND", input.Name, input.Name, input.Name)}
+		}
+		return nil, mapped
+	}
+	if process.State != protocol.StateRunning {
+		return nil, &ToolError{Code: string(protocol.ErrorNotRunning), Message: fmt.Sprintf("process %q is not running; start it with hum start %s", input.Name, input.Name)}
+	}
+	request := protocol.NewSignalRequest(input.Name, resolution.Root, parsed.Name)
+	if resultClient, ok := client.(signalResultClient); ok {
+		result, signalErr := resultClient.SignalResult(ctx, request)
+		if signalErr != nil {
+			return nil, mapError(signalErr)
+		}
+		if result.Name == "" {
+			result.Name = input.Name
+		}
+		if result.Signal.Name == "" {
+			result.Signal = protocol.SignalInfo{Name: parsed.Name, Number: parsed.Number}
+		}
+		if result.Status == "" {
+			result.Status = "sent"
+		}
+		return result, nil
+	}
+	if legacy, ok := client.(signalErrorClient); ok {
+		if signalErr := legacy.Signal(ctx, request); signalErr != nil {
+			return nil, mapError(signalErr)
+		}
+		return protocol.SignalResult{Name: input.Name, Signal: protocol.SignalInfo{Name: parsed.Name, Number: parsed.Number}, Status: "sent"}, nil
+	}
+	return nil, &ToolError{Code: "internal", Message: "MCP daemon client does not support signal"}
 }
 
 type restartResult struct {

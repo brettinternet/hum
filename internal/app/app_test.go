@@ -60,6 +60,29 @@ type esrchChild struct {
 	once sync.Once
 }
 
+type signalPolicyChild struct {
+	pid     int
+	done    chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	signals []os.Signal
+}
+
+func (c *signalPolicyChild) PID() int              { return c.pid }
+func (c *signalPolicyChild) PGID() int             { return c.pid }
+func (c *signalPolicyChild) Done() <-chan struct{} { return c.done }
+func (c *signalPolicyChild) Wait() process.Result {
+	<-c.done
+	return process.Result{ExitCode: -1, ExitedAt: time.Now()}
+}
+func (c *signalPolicyChild) Signal(sig os.Signal) error {
+	c.mu.Lock()
+	c.signals = append(c.signals, sig)
+	c.mu.Unlock()
+	return nil
+}
+func (c *signalPolicyChild) release() { c.once.Do(func() { close(c.done) }) }
+
 func (c *esrchChild) PID() int  { return 1234 }
 func (c *esrchChild) PGID() int { return 1234 }
 func (c *esrchChild) Done() <-chan struct{} {
@@ -1218,6 +1241,39 @@ func TestSessionSubscribeSurvivesCompletedLimitEviction(t *testing.T) {
 	if _, err := s.Get(root, "first"); err != nil {
 		t.Fatalf("bounded retained first session disappeared: %v", err)
 	}
+}
+
+func TestObservationalSignalPreservesLifecyclePolicy(t *testing.T) {
+	root := makeProject(t, false)
+	child := &signalPolicyChild{pid: 4103, done: make(chan struct{})}
+	s := testSupervisor(t, Options{StartProcess: func(process.Spec) (Child, error) {
+		return child, nil
+	}})
+	if _, err := s.Start(StartRequest{
+		Name: "policy", Root: root, Cwd: root, Argv: []string{"policy"}, Source: "manifest", Restart: RestartOnFailure,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	rec := s.records[keyFor(root, "policy")]
+	rec.relaunchPending = true
+	rec.relaunches = 2
+	rec.nextLaunchAt = time.Now().Add(time.Second)
+	rec.controlIntent = false
+	s.mu.Unlock()
+	for _, sig := range []os.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+		if err := s.Signal(root, "policy", sig); err != nil {
+			t.Fatalf("observational %v: %v", sig, err)
+		}
+		s.mu.RLock()
+		pending, relaunches, controlIntent := rec.relaunchPending, rec.relaunches, rec.controlIntent
+		s.mu.RUnlock()
+		if !pending || relaunches != 2 || controlIntent {
+			t.Fatalf("after observational %v: pending=%t relaunches=%d control_intent=%t", sig, pending, relaunches, controlIntent)
+		}
+	}
+	child.release()
+	waitSubscriptionSignal(t, rec.done, "observational signal process")
 }
 
 func TestSignalForwardsInterrupt(t *testing.T) {

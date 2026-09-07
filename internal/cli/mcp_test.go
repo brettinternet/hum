@@ -15,9 +15,9 @@ func TestMCPHelp(t *testing.T) {
 	}
 	help := strings.ToLower(output.String())
 	for _, want := range []string{
-		"stdio", "one-time", "project_root", "absolute existing", "start and up", "resolved", "status, logs, wait, input, restart, and stop",
+		"stdio", "one-time", "project_root", "absolute existing", "start and up", "resolved", "status, logs, wait, input, restart, stop, remove, and signal",
 		"ad_hoc", "hum run", "daemon shutdown or replacement", "argv-based environment activation",
-		"eleven tools", "run, serve, and shutdown are not mcp tools",
+		"twelve tools", "run, serve, and shutdown are not mcp tools",
 		"64", "-32001", "-32600", "-32800", "notifications/cancelled", "serialized", "parent cancellation",
 	} {
 		if !strings.Contains(help, want) {

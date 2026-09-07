@@ -254,6 +254,7 @@ type ContextInputResizer interface {
 var (
 	ErrSupervisorClosed = errors.New("supervisor is shut down")
 	ErrProcessNotFound  = errors.New("supervised process not found")
+	ErrNotRunning       = errors.New("supervised process is not running")
 	ErrNameInUse        = errors.New("supervised process name is already running")
 	ErrInvalidName      = errors.New("invalid supervised process name")
 	ErrInvalidRequest   = errors.New("invalid request")
@@ -621,6 +622,21 @@ func (e *NotFoundError) Error() string {
 	return fmt.Sprintf("%s: %q in %s", ErrProcessNotFound, e.Name, e.Root)
 }
 func (e *NotFoundError) Unwrap() error { return ErrProcessNotFound }
+
+// NotRunningError identifies a known process record that has no running
+// incarnation to receive an observational signal.
+type NotRunningError struct {
+	Root string
+	Name string
+}
+
+func (e *NotRunningError) Error() string {
+	if e == nil || e.Name == "" {
+		return ErrNotRunning.Error()
+	}
+	return fmt.Sprintf("%s: %q; start it with hum start %s", ErrNotRunning, e.Name, e.Name)
+}
+func (e *NotRunningError) Unwrap() error { return ErrNotRunning }
 
 // InvalidName reports whether name is safe to use as a portable process name.
 func ValidName(name string) bool {
@@ -2847,8 +2863,10 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 	}
 }
 
-// Signal forwards sig to the process group. Client cancellation is not
-// involved; this method is an explicit lifecycle operation.
+// Signal forwards sig to the process group without changing supervision
+// policy. It is observational: even TERM and KILL do not set stop intent or
+// cancel a pending automatic relaunch. Stop, down, and restart are the
+// lifecycle-control paths.
 func (s *Supervisor) Signal(cwd, name string, sig os.Signal) error {
 	if sig == nil {
 		return ErrInvalidSignal
@@ -2860,28 +2878,31 @@ func (s *Supervisor) Signal(cwd, name string, sig os.Signal) error {
 	s.mu.Lock()
 	if s.records[rec.key] != rec {
 		s.mu.Unlock()
-		return nil
+		return &NotFoundError{Root: rec.root, Name: rec.name}
 	}
 	if rec.unresolved {
 		s.mu.Unlock()
-		return ErrUnresolved
-	}
-	// Explicit TERM/KILL forwarding is an operator control boundary too. Mark
-	// it before the syscall so a concurrent exit cannot start a crash loop. A
-	// signal arriving while backoff is pending still cancels that work even
-	// though there is no child to signal.
-	if signal, ok := sig.(syscall.Signal); ok && (signal == syscall.SIGTERM || signal == syscall.SIGKILL) {
-		s.cancelRelaunchLocked(rec, true)
-		rec.controlIntent = true
+		return &NotRunningError{Root: rec.root, Name: rec.name}
 	}
 	if rec.terminal || rec.child == nil {
-		s.evictLocked()
 		s.mu.Unlock()
-		return nil
+		return &NotRunningError{Root: rec.root, Name: rec.name}
 	}
 	child := rec.child
 	s.mu.Unlock()
-	return child.Signal(sig)
+	if err := child.Signal(sig); err != nil {
+		if signalMeansDone(err) {
+			return &NotRunningError{Root: rec.root, Name: rec.name}
+		}
+		return err
+	}
+	return nil
+}
+
+// SignalObservational is the explicit spelling for callers that need to make
+// the non-lifecycle semantics clear at the call site.
+func (s *Supervisor) SignalObservational(cwd, name string, sig os.Signal) error {
+	return s.Signal(cwd, name, sig)
 }
 
 // Stop sends SIGTERM to one group, waits at most StopGrace, then sends

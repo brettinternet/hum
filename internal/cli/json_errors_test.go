@@ -223,7 +223,7 @@ func TestJSONErrorModeDetection(t *testing.T) {
 	jsonCommands := map[string]bool{
 		"init": true, "run": true, "start": true, "up": true, "down": true,
 		"list": true, "status": true, "logs": true, "wait": true, "input": false,
-		"restart": true, "stop": true, "remove": true, "shutdown": true,
+		"restart": true, "stop": true, "remove": true, "signal": true, "shutdown": true,
 	}
 	for commandName, shortAlias := range jsonCommands {
 		t.Run(commandName+" long flag", func(t *testing.T) {
