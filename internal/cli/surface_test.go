@@ -575,3 +575,59 @@ func TestOutputByteDocs(t *testing.T) {
 		t.Fatalf("unexpected stderr: %q", errorOutput.String())
 	}
 }
+
+func TestPinnedToolchainDocs(t *testing.T) {
+	miseContent, err := os.ReadFile("../../mise.toml")
+	if err != nil {
+		t.Fatalf("read mise.toml: %v", err)
+	}
+	mise := string(miseContent)
+	for _, want := range []string{`go = "1.27.1"`, `staticcheck = "2026.2.1"`} {
+		if !strings.Contains(mise, want) {
+			t.Errorf("mise.toml missing pinned tool %q", want)
+		}
+	}
+	for _, tool := range []string{"go", "staticcheck"} {
+		for _, line := range strings.Split(mise, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, tool+" =") && strings.Contains(trimmed, "latest") {
+				t.Errorf("mise.toml leaves %s on latest: %q", tool, line)
+			}
+		}
+	}
+
+	goModContent, err := os.ReadFile("../../go.mod")
+	if err != nil {
+		t.Fatalf("read go.mod: %v", err)
+	}
+	goDirective := ""
+	for _, line := range strings.Split(string(goModContent), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "go ") {
+			goDirective = strings.TrimSpace(line)
+			break
+		}
+	}
+	if goDirective != "go 1.22" {
+		t.Errorf("go.mod directive = %q, want %q", goDirective, "go 1.22")
+	}
+
+	docsContent, err := os.ReadFile("../../docs/development.md")
+	if err != nil {
+		t.Fatalf("read docs/development.md: %v", err)
+	}
+	docs := strings.ToLower(string(docsContent))
+	for _, want := range []string{
+		"toolchain policy",
+		"go 1.27.1",
+		"staticcheck 2026.2.1",
+		"go 1.22",
+		"minimum supported",
+		"task check:go-min",
+		"task ci",
+		"upgrade",
+	} {
+		if !strings.Contains(docs, want) {
+			t.Errorf("docs/development.md missing %q", want)
+		}
+	}
+}
