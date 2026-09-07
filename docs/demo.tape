@@ -22,7 +22,7 @@ Set TypingSpeed 30ms
 Set Framerate 20
 
 Hide
-Type "export PATH=$PWD/bin:$PATH"
+Type "export PATH=$PWD/bin:$PATH; export PS1='hum@demo % '"
 Enter
 Type "export HUM_RUNTIME_DIR=$(mktemp -d); export DEMO_DIR=$(mktemp -d); cd $DEMO_DIR"
 Enter
@@ -30,10 +30,10 @@ Type "echo '#!/bin/sh' > clock.sh"
 Enter
 Type "echo 'while :; do date +%T; sleep 1; done' >> clock.sh; chmod +x clock.sh"
 Enter
-Type "tmux -f /dev/null new-session -s hum-demo"
+Type "tmux -f /dev/null new-session -s hum-demo bash --noprofile --norc"
 Enter
 Sleep 1s
-Type "clear"
+Type "tmux set-option status off; clear"
 Enter
 Show
 
