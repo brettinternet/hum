@@ -140,6 +140,9 @@ func (c *mcpDaemonClient) Input(ctx context.Context, request mcpserver.InputRequ
 	}
 	return mcpserver.InputResult{Name: request.Name, Bytes: result.Bytes, LaunchCursor: result.LaunchCursor}, nil
 }
+func (c *mcpDaemonClient) SignalResult(ctx context.Context, request protocol.SignalRequest) (protocol.SignalResult, error) {
+	return c.client.SignalResult(ctx, daemon.SignalRequest{Name: request.Name, Cwd: request.Cwd, Signal: request.Signal})
+}
 func (c *mcpDaemonClient) Stop(ctx context.Context, request protocol.StopRequest) error {
 	return c.client.Stop(ctx, request)
 }

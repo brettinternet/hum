@@ -12,9 +12,10 @@ import (
 
 // Version is the current private protocol version. The hello exchange carries
 // this value on every connection. Version 10 added explicit stopped terminal
-// snapshots and autonomous exit details; version 11 adds immutable output
-// time-window cutoffs in output and follow requests.
-const Version = 11
+// snapshots and autonomous exit details; version 11 added immutable output
+// time-window cutoffs in output and follow requests; version 12 adds canonical
+// observational process-group signal requests and responses.
+const Version = 12
 
 const (
 	RestartNever     = "never"

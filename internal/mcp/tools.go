@@ -116,6 +116,7 @@ type Client interface {
 	Output(context.Context, protocol.OutputRequest) (protocol.OutputResult, error)
 	Wait(context.Context, protocol.WaitRequest) (protocol.WaitResponse, error)
 	Input(context.Context, InputRequest) (InputResult, error)
+	SignalResult(context.Context, protocol.SignalRequest) (protocol.SignalResult, error)
 	Stop(context.Context, protocol.StopRequest) error
 	Remove(context.Context, protocol.RemoveRequest) error
 	Restart(context.Context, protocol.RestartRequest) (protocol.Process, error)
@@ -1208,14 +1209,6 @@ func (s *Server) remove(ctx context.Context, resolution Resolution, name string)
 	return stopResult{Name: name, State: "removed"}, nil
 }
 
-type signalResultClient interface {
-	SignalResult(context.Context, protocol.SignalRequest) (protocol.SignalResult, error)
-}
-
-type signalErrorClient interface {
-	Signal(context.Context, protocol.SignalRequest) error
-}
-
 func (s *Server) signal(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
 	parsed, err := sharedsignals.Parse(input.Signal)
 	if err != nil {
@@ -1238,29 +1231,20 @@ func (s *Server) signal(ctx context.Context, resolution Resolution, input common
 		return nil, &ToolError{Code: string(protocol.ErrorNotRunning), Message: fmt.Sprintf("process %q is not running; start it with hum start %s", input.Name, input.Name)}
 	}
 	request := protocol.NewSignalRequest(input.Name, resolution.Root, parsed.Name)
-	if resultClient, ok := client.(signalResultClient); ok {
-		result, signalErr := resultClient.SignalResult(ctx, request)
-		if signalErr != nil {
-			return nil, mapError(signalErr)
-		}
-		if result.Name == "" {
-			result.Name = input.Name
-		}
-		if result.Signal.Name == "" {
-			result.Signal = protocol.SignalInfo{Name: parsed.Name, Number: parsed.Number}
-		}
-		if result.Status == "" {
-			result.Status = "sent"
-		}
-		return result, nil
+	result, signalErr := client.SignalResult(ctx, request)
+	if signalErr != nil {
+		return nil, mapError(signalErr)
 	}
-	if legacy, ok := client.(signalErrorClient); ok {
-		if signalErr := legacy.Signal(ctx, request); signalErr != nil {
-			return nil, mapError(signalErr)
-		}
-		return protocol.SignalResult{Name: input.Name, Signal: protocol.SignalInfo{Name: parsed.Name, Number: parsed.Number}, Status: "sent"}, nil
+	if result.Name == "" {
+		result.Name = input.Name
 	}
-	return nil, &ToolError{Code: "internal", Message: "MCP daemon client does not support signal"}
+	if result.Signal.Name == "" {
+		result.Signal = protocol.SignalInfo{Name: parsed.Name, Number: parsed.Number}
+	}
+	if result.Status == "" {
+		result.Status = "sent"
+	}
+	return result, nil
 }
 
 type restartResult struct {

@@ -1470,8 +1470,8 @@ func TestHelloVersion(t *testing.T) {
 		}
 	})
 
-	t.Run("v11 client rejects a v10 daemon before immutable since cutoffs", func(t *testing.T) {
-		const oldDaemonVersion = 10
+	t.Run("v12 client rejects a v11 daemon before observational signals", func(t *testing.T) {
+		const oldDaemonVersion = 11
 		server := testServer(t, Config{WireVersion: oldDaemonVersion})
 		client, err := Dial(context.Background(), server.Paths().Socket)
 		if client == nil {
