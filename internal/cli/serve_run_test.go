@@ -1146,8 +1146,8 @@ func TestAttachNeverStartsSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterStop.State != app.StateExited {
-		t.Fatalf("stopped fixture state = %q, want exited", afterStop.State)
+	if afterStop.State != app.StateStopped {
+		t.Fatalf("stopped fixture state = %q, want stopped", afterStop.State)
 	}
 	if _, _, err := cliServeRunInvokeForTest("attach", "attach-stopped"); err == nil || !strings.Contains(err.Error(), "is not running") {
 		t.Fatalf("stopped attach error = %v, want not-running guidance", err)
