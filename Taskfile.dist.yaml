@@ -33,6 +33,10 @@ tasks:
     deps:
       - task: cli:check
 
+  check:go-min:
+    desc: Build and test source with the minimum supported Go version
+    cmd: CGO_ENABLED=0 mise exec go@1.22 -- go test ./...
+
   check:staged:
     desc: Format and run checks only for staged files
     aliases: [check-staged]

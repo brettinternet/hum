@@ -1,9 +1,9 @@
 [tools]
-go = "latest"
+go = "1.27.1"
 gitleaks = "latest"
 lefthook = "latest"
 task = "latest"
-staticcheck = "latest"
+staticcheck = "2026.2.1"
 
 # Backlog.md is the committed work queue.
 "github:MrLesk/Backlog.md" = { version = "latest", bin = "backlog" }
