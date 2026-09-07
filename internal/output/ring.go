@@ -278,9 +278,9 @@ func (r *ring) readBounded(opts ReadOptions, result ReadResult, start, maxEntrie
 // readTail walks backwards from the newest retained entry until the final
 // Tail matches are known, evaluating the filter once per entry. Bounds are
 // applied while walking backwards so entry- and byte-clipped tails retain the
-// newest matches, then the selected entries are returned chronologically.
-// Every source entry in range counts as consumed when no bound blocks it, so
-// Next is the newest retained cursor even when nothing matched.
+// newest matches, then the selected entries are returned chronologically. The
+// newest source cursor is consumed by this scan, so Next remains the newest
+// retained cursor even when older matches are clipped or nothing matched.
 func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, maxBytes int) (ReadResult, error) {
 	tail := opts.Tail
 	if tail > r.count-start {
@@ -310,14 +310,10 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 	tailResultCapacity := minInt(minInt(maxEntries, maxBytes), len(selected))
 	var tailResult []Entry
 	usedBytes := 0
-	var blocked Cursor
-	blockedSet := false
 	for _, offset := range selected {
 		entry := r.entries[(r.head+offset)%len(r.entries)]
 		if len(tailResult) >= maxEntries {
 			result.More = true
-			blocked = entry.Cursor
-			blockedSet = true
 			break
 		}
 		if len(entry.Text) > maxBytes && len(tailResult) == 0 {
@@ -325,8 +321,6 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 		}
 		if len(entry.Text) > maxBytes-usedBytes {
 			result.More = true
-			blocked = entry.Cursor
-			blockedSet = true
 			break
 		}
 		if tailResult == nil {
@@ -339,20 +333,11 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 		tailResult[i], tailResult[j] = tailResult[j], tailResult[i]
 	}
 	result.Entries = tailResult
-	if blockedSet {
-		// The blocked matching entry is older than the entries returned above.
-		// Its predecessor is the greatest source cursor safely consumed by this
-		// bounded result; callers can use Next for forward paging of older data.
-		if blocked > 0 {
-			previous := blocked - 1
-			result.Next = &previous
-		} else if opts.After != nil {
-			boundary := *opts.After
-			result.Next = &boundary
-		}
-	} else {
-		result.Next = &next
-	}
+	// Tail selection scans from the newest source entry. Even when an older
+	// matching entry is blocked by the result bound, Next must remain the
+	// highest consumed source cursor so subscriptions do not replay entries
+	// already delivered in this newest-first scan.
+	result.Next = &next
 	return result, nil
 }
 

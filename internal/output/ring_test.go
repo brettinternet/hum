@@ -370,8 +370,8 @@ func TestTailKeepsNewestBoundedWindow(t *testing.T) {
 	if got := []Cursor{entryBounded.Entries[0].Cursor, entryBounded.Entries[1].Cursor}; !reflect.DeepEqual(got, []Cursor{6, 7}) {
 		t.Fatalf("entry-bounded tail cursors = %v, want newest [6 7]", got)
 	}
-	if !entryBounded.More || entryBounded.Next == nil || *entryBounded.Next != 4 {
-		t.Fatalf("entry-bounded tail = %#v, want More and next cursor 4", entryBounded)
+	if !entryBounded.More || entryBounded.Next == nil || *entryBounded.Next != 7 {
+		t.Fatalf("entry-bounded tail = %#v, want More and highest consumed cursor 7", entryBounded)
 	}
 
 	byteBounded, err := r.read(ReadOptions{Tail: 8, MaxEntries: 8, MaxBytes: len("line-7\n") * 2})
@@ -381,8 +381,8 @@ func TestTailKeepsNewestBoundedWindow(t *testing.T) {
 	if got := []Cursor{byteBounded.Entries[0].Cursor, byteBounded.Entries[1].Cursor}; !reflect.DeepEqual(got, []Cursor{6, 7}) {
 		t.Fatalf("byte-bounded tail cursors = %v, want newest [6 7] chronologically", got)
 	}
-	if !byteBounded.More || byteBounded.Next == nil || *byteBounded.Next != 4 {
-		t.Fatalf("byte-bounded tail = %#v, want More and next cursor 4", byteBounded)
+	if !byteBounded.More || byteBounded.Next == nil || *byteBounded.Next != 7 {
+		t.Fatalf("byte-bounded tail = %#v, want More and highest consumed cursor 7", byteBounded)
 	}
 
 	filtered, err := r.read(ReadOptions{Tail: 4, Streams: StdoutMask, Match: regexp.MustCompile(`line-[02468]`), MaxEntries: 2, MaxBytes: 1024})
