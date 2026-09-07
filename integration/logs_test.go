@@ -305,6 +305,9 @@ func TestNDJSONFollow(t *testing.T) {
 	follower := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "eviction", "--follow", "--json", "--after-cursor", "0", "--stream", "both", "--limit-bytes", "4096")
 	logsitWaitFollowerText(t, follower, `"type":"eviction"`)
 	logsitReleaseGate(t, gate)
+	logsitWaitOutput(t, harness, "eviction", []string{"--json", "--stream", "stdout", "--match", "stdout:6999"}, func(lines []logsitJSONLine) bool {
+		return len(lines) == 1 && logsitHasEntryText(lines[0].Event.Entries, "stdout:6999\n")
+	})
 	logsitWaitFollowerText(t, follower, `"type":"exit"`)
 	if err := follower.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
