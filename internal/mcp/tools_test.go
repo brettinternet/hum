@@ -905,6 +905,7 @@ func TestUpReportsBlockedExistingState(t *testing.T) {
 		pid   int
 	}{
 		{name: "running", state: "running", pid: 41},
+		{name: "stopped", state: "stopped"},
 		{name: "exited", state: "exited"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -961,6 +962,41 @@ func TestDown(t *testing.T) {
 	}
 	if (*ensures)[0] {
 		t.Fatal("down created daemon")
+	}
+}
+
+func TestTerminalStateSnapshots(t *testing.T) {
+	exitedAt := time.Date(2026, time.September, 6, 12, 34, 56, 0, time.UTC)
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"stopped": {Name: "stopped", State: protocol.StateStopped},
+		"zero":    {Name: "zero", State: protocol.StateExited, Exit: &protocol.Exit{Code: 0, Time: exitedAt}, ExitCode: 0, ExitedAt: exitedAt},
+		"failed":  {Name: "failed", State: protocol.StateExited, Exit: &protocol.Exit{Code: 7, Time: exitedAt}, ExitCode: 7, ExitedAt: exitedAt},
+		"signal":  {Name: "signal", State: protocol.StateExited, Exit: &protocol.Exit{Code: -1, Time: exitedAt}, ExitCode: -1, ExitedAt: exitedAt},
+	}}
+	s, root, _ := newTestServer(t, nil, client)
+	listedValue, err := s.callTool(context.Background(), "list", args(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := listedValue.([]protocol.Process)
+	if len(listed) != 4 {
+		t.Fatalf("terminal list = %#v, want four snapshots", listed)
+	}
+	for _, want := range client.processes {
+		statusValue, statusErr := s.callTool(context.Background(), "status", args(root, "name", want.Name))
+		if statusErr != nil {
+			t.Fatal(statusErr)
+		}
+		got := statusValue.(protocol.Process)
+		if got.State != want.State || got.ExitCode != want.ExitCode || !got.ExitedAt.Equal(want.ExitedAt) || !reflect.DeepEqual(got.Exit, want.Exit) {
+			t.Fatalf("status %q = %#v, want %#v", want.Name, got, want)
+		}
+	}
+	for _, got := range listed {
+		want, ok := client.processes[got.Name]
+		if !ok || got.State != want.State || got.ExitCode != want.ExitCode || !got.ExitedAt.Equal(want.ExitedAt) || !reflect.DeepEqual(got.Exit, want.Exit) {
+			t.Fatalf("list snapshot = %#v, want matching terminal state", got)
+		}
 	}
 }
 

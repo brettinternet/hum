@@ -37,7 +37,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":9}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":10}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -319,6 +319,49 @@ func TestWaitRequestAndResponseShapes(t *testing.T) {
 	}
 }
 
+func TestTerminalStateWireRoundTrip(t *testing.T) {
+	at := time.Date(2026, time.September, 6, 12, 34, 56, 0, time.UTC)
+	cases := []struct {
+		name string
+		want Process
+	}{
+		{
+			name: "stopped",
+			want: Process{Name: "operator", Root: "/work/project", Cwd: "/work/project", Argv: []string{"sleep", "30"}, State: StateStopped},
+		},
+		{
+			name: "exited zero",
+			want: Process{Name: "zero", Root: "/work/project", Cwd: "/work/project", Argv: []string{"true"}, State: StateExited, Exit: &Exit{Code: 0, Time: at}, ExitCode: 0, ExitedAt: at},
+		},
+		{
+			name: "exited signal",
+			want: Process{Name: "signal", Root: "/work/project", Cwd: "/work/project", Argv: []string{"kill"}, State: StateExited, Exit: &Exit{Code: -1, Time: at}, ExitCode: -1, ExitedAt: at},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			line, err := MarshalLine(NewGetResponse(tc.want), 4096)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var response GetResponse
+			if err := NewDecoder(bytes.NewReader(line), 4096).Decode(&response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Process == nil {
+				t.Fatal("wire response omitted process")
+			}
+			got := response.Process
+			if got.State != tc.want.State {
+				t.Fatalf("state = %q, want %q", got.State, tc.want.State)
+			}
+			if !reflect.DeepEqual(got.Exit, tc.want.Exit) || got.ExitCode != tc.want.ExitCode || !got.ExitedAt.Equal(tc.want.ExitedAt) {
+				t.Fatalf("exit details = %#v, code=%d, at=%v; want %#v, code=%d, at=%v", got.Exit, got.ExitCode, got.ExitedAt, tc.want.Exit, tc.want.ExitCode, tc.want.ExitedAt)
+			}
+		})
+	}
+}
+
 func TestStatusGetRequestResponseRoundTrip(t *testing.T) {
 	request := NewGetRequest("api", "/work/project")
 	requestLine, err := MarshalLine(request, 4096)
@@ -509,7 +552,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":9}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":10}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError

@@ -444,10 +444,8 @@ func SkippedResult(ctx context.Context, root string, definition Definition, bloc
 			current = NormalizeProcess(current)
 			result.Process = &current
 			switch current.State {
-			case "running":
-				result.ExistingState = "running"
-			case "exited":
-				result.ExistingState = "exited"
+			case "running", "stopped", "exited":
+				result.ExistingState = current.State
 			}
 		}
 	}

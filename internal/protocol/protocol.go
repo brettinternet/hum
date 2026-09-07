@@ -11,13 +11,21 @@ import (
 )
 
 // Version is the current private protocol version. The hello exchange carries
-// this value on every connection. Version 9 is required for readiness matchers
-// on terminal recovery snapshots.
-const Version = 9
+// this value on every connection. Version 10 is required for explicit stopped
+// terminal snapshots and autonomous exit details.
+const Version = 10
 
 const (
 	RestartNever     = "never"
 	RestartOnFailure = "on-failure"
+
+	// Process states are shared by daemon snapshots and client renderers.
+	// stopped identifies termination owned by stop/down; exited identifies an
+	// autonomous terminal process and carries its exit details.
+	StateRunning    = "running"
+	StateExited     = "exited"
+	StateStopped    = "stopped"
+	StateUnresolved = "unresolved"
 )
 
 func effectiveRestart(policy string) string {

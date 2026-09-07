@@ -406,6 +406,77 @@ func TestProjectScopedNames(t *testing.T) {
 	}
 }
 
+func TestProcessTerminalState(t *testing.T) {
+	root := makeProject(t, false)
+	exitAt := time.Unix(100, 0)
+	children := map[string]*timedChild{
+		"stopped": {pid: 7001, done: make(chan struct{}), result: process.Result{ExitCode: -1, ExitedAt: exitAt}},
+		"zero":    {pid: 7002, done: make(chan struct{}), result: process.Result{ExitCode: 0, ExitedAt: exitAt.Add(time.Second)}},
+		"failed":  {pid: 7003, done: make(chan struct{}), result: process.Result{ExitCode: 7, ExitedAt: exitAt.Add(2 * time.Second)}},
+		"signal":  {pid: 7004, done: make(chan struct{}), result: process.Result{ExitCode: -1, ExitedAt: exitAt.Add(3 * time.Second)}},
+	}
+	s := testSupervisor(t, Options{
+		StartProcess: func(spec process.Spec) (Child, error) {
+			name := spec.Argv[len(spec.Argv)-1]
+			child := children[name]
+			if child == nil {
+				return nil, fmt.Errorf("unknown test child %q", name)
+			}
+			return child, nil
+		},
+	})
+	start := func(name string) (<-chan struct{}, error) {
+		if _, err := s.Start(StartRequest{Name: name, Cwd: root, Argv: []string{"fake", name}}); err != nil {
+			return nil, err
+		}
+		return recordDone(t, s, root, name), nil
+	}
+
+	stoppedDone, err := start("stopped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(context.Background(), root, "stopped"); err != nil {
+		t.Fatal(err)
+	}
+	<-stoppedDone
+	stopped, err := s.Get(root, "stopped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.State != StateStopped || stopped.Exit != nil || stopped.ExitCode != 0 || !stopped.ExitedAt.IsZero() {
+		t.Fatalf("operator-stopped snapshot = %#v, want stopped without autonomous exit details", stopped)
+	}
+
+	for _, name := range []string{"zero", "failed", "signal"} {
+		done, startErr := start(name)
+		if startErr != nil {
+			t.Fatal(startErr)
+		}
+		children[name].release()
+		<-done
+		got, getErr := s.Get(root, name)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		wantCode := children[name].result.ExitCode
+		if got.State != StateExited || got.Exit == nil || got.ExitCode != wantCode || got.Exit.ExitCode != wantCode || !got.Exit.ExitedAt.Equal(children[name].result.ExitedAt) {
+			t.Fatalf("autonomous %s snapshot = %#v, want exited code %d", name, got, wantCode)
+		}
+	}
+
+	if err := s.Stop(context.Background(), root, "zero"); err != nil {
+		t.Fatal(err)
+	}
+	zero, err := s.Get(root, "zero")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zero.State != StateExited || zero.Exit == nil || zero.ExitCode != 0 || !zero.ExitedAt.Equal(children["zero"].result.ExitedAt) {
+		t.Fatalf("stop after autonomous exit = %#v, want original exited snapshot", zero)
+	}
+}
+
 func TestStopProcessTree(t *testing.T) {
 	root := makeProject(t, false)
 	s := testSupervisor(t, Options{StopGrace: 25 * time.Millisecond})
@@ -424,11 +495,11 @@ func TestStopProcessTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stopped.State != StateExited || stopped.Exit == nil {
-		t.Fatalf("stopped model = %#v", stopped)
+	if stopped.State != StateStopped || stopped.Exit != nil {
+		t.Fatalf("stopped model = %#v, want stopped without autonomous exit details", stopped)
 	}
-	if stopped.ExitCode != -1 {
-		t.Fatalf("stopped exit code = %d, want signal status -1 (started as %d)", stopped.ExitCode, model.PID)
+	if stopped.ExitCode != 0 || !stopped.ExitedAt.IsZero() {
+		t.Fatalf("stopped exit details = code %d at %v, want zero values (started as %d)", stopped.ExitCode, stopped.ExitedAt, model.PID)
 	}
 }
 
@@ -454,8 +525,8 @@ func TestStopTreatsESRCHAsExited(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if model.State != StateExited {
-		t.Fatalf("ESRCH model state = %s, want exited", model.State)
+	if model.State != StateStopped {
+		t.Fatalf("ESRCH model state = %s, want stopped", model.State)
 	}
 }
 
@@ -480,8 +551,8 @@ func TestShutdownProcessTrees(t *testing.T) {
 		t.Fatalf("shutdown list length = %d, want 3", len(items))
 	}
 	for _, item := range items {
-		if item.State != StateExited {
-			t.Errorf("%s state = %s, want exited", item.Name, item.State)
+		if item.State != StateStopped {
+			t.Errorf("%s state = %s, want stopped", item.Name, item.State)
 		}
 	}
 }
@@ -504,8 +575,8 @@ func TestShutdownCompletesAfterCanceledContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Name != "stubborn" || items[0].State != StateExited {
-		t.Fatalf("canceled shutdown records = %#v, want one exited record", items)
+	if len(items) != 1 || items[0].Name != "stubborn" || items[0].State != StateStopped {
+		t.Fatalf("canceled shutdown records = %#v, want one stopped record", items)
 	}
 }
 

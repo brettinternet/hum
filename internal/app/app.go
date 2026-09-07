@@ -28,6 +28,7 @@ type State string
 const (
 	StateRunning    State = "running"
 	StateExited     State = "exited"
+	StateStopped    State = "stopped"
 	StateUnresolved State = "unresolved"
 )
 
@@ -743,11 +744,15 @@ type record struct {
 	automaticCurrent    bool
 	automaticStarting   bool
 	automaticGeneration uint64
-	controlIntent       bool
-	ttySize             *TTYSize
-	input               *InputLease
-	inputMu             sync.Mutex
-	inputOp             *inputOperation
+	// controlIntent suppresses autonomous relaunch after any explicit control
+	// operation. operatorStop separately identifies stop/down termination so
+	// Signal and restart remain autonomous/continuation semantics.
+	controlIntent bool
+	operatorStop  bool
+	ttySize       *TTYSize
+	input         *InputLease
+	inputMu       sync.Mutex
+	inputOp       *inputOperation
 	// incarnation changes for every successful launch, including same-store
 	// restarts. Each incarnation owns one tracker; an old tracker can never
 	// update a later launch.
@@ -1375,6 +1380,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		// crash loop. The generation invalidates callbacks that already woke.
 		s.cancelRelaunchLocked(rec, true)
 		rec.controlIntent = false
+		rec.operatorStop = false
 		rec.automaticCurrent = false
 	}
 	if len(req.Argv) != 0 {
@@ -1923,9 +1929,14 @@ func (s *Supervisor) reconcile(rec *record) {
 	rec.result = result
 	rec.terminalAt = result.ExitedAt
 	rec.terminal = true
-	rec.state = StateExited
+	if rec.operatorStop {
+		rec.state = StateStopped
+	} else {
+		rec.state = StateExited
+	}
 	store := rec.store
 	terminalProcess := rec.snapshotLocked()
+	rec.operatorStop = false
 	republish := rec.pendingExit
 	rec.pendingExit = false
 	tracker := rec.tracker
@@ -2901,7 +2912,8 @@ func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
 	}
 	// Register operator intent before reading the child or sending TERM. An
 	// exit that acquires this same lock afterwards is expected, regardless of
-	// its status; a pending timer is invalidated immediately.
+	// its status; a pending timer is invalidated immediately. An incarnation
+	// that already terminated autonomously remains exited.
 	s.cancelRelaunchLocked(rec, true)
 	rec.controlIntent = !rec.terminal || rec.persisting
 	if rec.terminal || rec.child == nil {
@@ -2914,6 +2926,7 @@ func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
 		s.mu.Unlock()
 		return nil
 	}
+	rec.operatorStop = true
 	child := rec.child
 	s.mu.Unlock()
 
@@ -3095,6 +3108,7 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	for _, rec := range s.records {
 		s.cancelRelaunchLocked(rec, true)
 		rec.controlIntent = !rec.terminal || rec.persisting
+		rec.operatorStop = !rec.terminal
 	}
 	s.mu.Unlock()
 
@@ -3211,7 +3225,10 @@ func (r *record) snapshotLocked() Process {
 	if r.terminal && (r.relaunchPending || r.relaunchExhausted) && r.readyConfig != nil {
 		model.Readiness = &Readiness{State: ReadinessStarting, Match: r.readyConfig.Match}
 	}
-	if r.terminal {
+	if r.terminal && r.state == StateExited {
+		// Exit details describe an autonomous terminal incarnation. An
+		// operator-stopped record deliberately exposes only its stopped state,
+		// so clients cannot present the intentional stop as an autonomous exit.
 		result := r.result
 		model.Exit = &result
 		model.ExitCode = result.ExitCode

@@ -95,7 +95,7 @@ func statusJSONFor(process app.Process) statusJSON {
 	if result.Argv == nil {
 		result.Argv = []string{}
 	}
-	if process.State == app.StateExited || process.Exit != nil {
+	if process.State == app.StateExited {
 		exitStatus := process.ExitCode
 		result.ExitStatus = &exitStatus
 	}
@@ -615,7 +615,7 @@ func manifestProgressTerminalLine(result manifestLaunchResult) string {
 func manifestProgressSkippedText(result manifestLaunchResult) string {
 	line := "skipped (blocked by " + manifestProgressText(strings.Join(result.BlockedBy, ", ")) + ")"
 	switch result.ExistingState {
-	case "running", "exited":
+	case "running", "stopped", "exited":
 		return line + "; existing process " + result.ExistingState
 	default:
 		return line + "; not launched"
@@ -657,7 +657,7 @@ func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
 	if result.Outcome == "skipped" {
 		line := fmt.Sprintf("%s: skipped (blocked by %s)", result.Name, strings.Join(result.BlockedBy, ", "))
 		switch result.ExistingState {
-		case "running", "exited":
+		case "running", "stopped", "exited":
 			line += "; existing process " + result.ExistingState
 		default:
 			line += "; not launched"
