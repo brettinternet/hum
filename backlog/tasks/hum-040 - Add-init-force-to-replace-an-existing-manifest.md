@@ -1,10 +1,10 @@
 ---
 id: HUM-040
 title: Add init --force to replace an existing manifest
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-06 16:15'
-updated_date: '2026-09-06 17:32'
+updated_date: '2026-09-07 05:38'
 labels:
   - cli
 milestone: m-4
@@ -36,20 +36,20 @@ Non-goals: merging, backups, following symlinks, preserving comments, or cross-f
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/project -run '^TestInitManifestForceReplace$' -count=1 -v` exits 0 and prints PASS, proving same-directory mode-0600 temp creation, complete write/sync/close before atomic rename, replacement content, and no leftover temp file.
-- [ ] #2 `go test ./internal/project -run '^TestInitManifestForcePreservesOriginalOnFailure$' -count=1 -v` exits 0 and prints PASS for discovery, render, write, sync, close, and rename failures plus symlink and non-regular targets, with the original bytes unchanged and no temporary file left behind.
-- [ ] #3 `go test ./internal/cli -run '^TestInitForce$' -count=1 -v` exits 0 and prints PASS for human and JSON outcome replaced, unchanged refusal/output without --force, help text, and actionable non-regular-target errors.
-- [ ] #4 `task ci` exits 0.
+- [x] #1 `go test ./internal/project -run '^TestInitManifestForceReplace$' -count=1 -v` exits 0 and prints PASS, proving same-directory mode-0600 temp creation, complete write/sync/close before atomic rename, replacement content, and no leftover temp file.
+- [x] #2 `go test ./internal/project -run '^TestInitManifestForcePreservesOriginalOnFailure$' -count=1 -v` exits 0 and prints PASS for discovery, render, write, sync, close, and rename failures plus symlink and non-regular targets, with the original bytes unchanged and no temporary file left behind.
+- [x] #3 `go test ./internal/cli -run '^TestInitForce$' -count=1 -v` exits 0 and prints PASS for human and JSON outcome replaced, unchanged refusal/output without --force, help text, and actionable non-regular-target errors.
+- [x] #4 `task ci` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -59,3 +59,23 @@ Non-goals: merging, backups, following symlinks, preserving comments, or cross-f
 2. Preserve the existing no-force path and stable human/JSON output.
 3. Exercise success, every pre-rename failure class, non-regular targets, cleanup, and final gates.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed for implementation in an isolated worktree on 2026-09-07.
+
+Implementation commit 0432dfc; merged to main as 698edf1.
+Review: fixed successful-publish cleanup so a concurrently recreated temporary pathname is not deleted; added regression coverage.
+AC#1 PASS — `go test ./internal/project -run '^TestInitManifestForceReplace$' -count=1 -v` exited 0 and printed PASS.
+AC#2 PASS — `go test ./internal/project -run '^TestInitManifestForcePreservesOriginalOnFailure$' -count=1 -v` exited 0 and printed PASS.
+AC#3 PASS — `go test ./internal/cli -run '^TestInitForce$' -count=1 -v` exited 0 and printed PASS.
+AC#4 PASS — `task ci` exited 0 on rebased implementation commit 0432dfc; implementation tree is unchanged in merge commit 698edf1.
+Independent verifier: PASS for AC#1–AC#4; confirmed exactly the seven declared files changed and no tests were deleted, skipped, or weakened.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added `hum init --force` with fail-closed regular-target validation and same-directory mode-0600 write/sync/close/atomic-rename replacement. Added human/JSON `replaced` output, preserved no-force behavior, documented the flag, and covered success, cleanup, failure, and non-regular targets. All focused acceptance tests and `task ci` passed; independent verification passed every criterion.
+<!-- SECTION:FINAL_SUMMARY:END -->
