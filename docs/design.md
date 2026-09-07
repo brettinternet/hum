@@ -72,8 +72,17 @@ command intentionally adds no short aliases, including for `--json`.
 
 `--project DIR` resolves DIR relative to the invocation directory, requires an existing directory, cleans it to an absolute path, and applies the nearest-Git-root-or-directory-fallback rule. The resolved project root scopes names and manifests. An ad-hoc `run` keeps the selected DIR as the child cwd; a manifest definition keeps its declared root-relative `cwd`. `init` writes at the resolved root, and `list --all` uses the selected project while merging unlaunched declarations. Guidance and stable next-command fields preserve a canonical shell-safe absolute `--project` selector, including paths with spaces. `serve`, `shutdown`, `mcp`, and `skill` reject an explicit project selector because their scope is daemon-global, request-scoped, or static. Existing `-d` remains `serve --daemon` and `run --detach`.
 
-Human-readable output is the default. JSON process snapshots include `name`,
-`source`, `argv`, and the integer `followers` count, plus identity, readiness,
+Human-readable output is the default. When stdout is a terminal, `TERM` is
+not `dumb`, and `NO_COLOR` is absent, `list`, `status`, and `up` use a fixed
+minimal palette: running and ready are green, starting is yellow,
+operator-stopped is cyan, an autonomous successful exit is dim, and failed
+exits, errors, timed-out and definition-drift results, exhausted recovery, and
+dependency-skipped results are red; list headers are bold. Any presence of
+`NO_COLOR`, including an empty value, disables styling, as does `TERM=dumb`.
+Piped output and JSON never contain ANSI styling. Only renderer-owned lifecycle
+labels are styled; names, paths, messages, and child output remain unchanged.
+
+JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus identity, readiness,
 cursors, and errors when applicable. Human `status` always prints `followers`;
 human `list` adds `followers=N` only to followed records, leaving ordinary
 unfollowed list output unchanged. JSON-capable commands classify failures as
