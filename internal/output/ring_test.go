@@ -421,6 +421,14 @@ func TestTailKeepsNewestBoundedWindow(t *testing.T) {
 	if got := []Cursor{forward.Entries[0].Cursor, forward.Entries[1].Cursor}; !reflect.DeepEqual(got, []Cursor{2, 3}) || !forward.More {
 		t.Fatalf("explicit after read = %#v, want oldest eligible forward page [2 3] with More", forward)
 	}
+
+	tailedForward, err := r.read(ReadOptions{After: &after, Tail: 2, MaxEntries: 2, MaxBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []Cursor{tailedForward.Entries[0].Cursor, tailedForward.Entries[1].Cursor}; !reflect.DeepEqual(got, []Cursor{6, 7}) || tailedForward.More {
+		t.Fatalf("explicit after with tail read = %#v, want newest eligible tail [6 7] without More", tailedForward)
+	}
 }
 
 func TestTailLargerThanDefaultEntriesReturnsNewest(t *testing.T) {

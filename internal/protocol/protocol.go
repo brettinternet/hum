@@ -453,8 +453,8 @@ const (
 const DefaultReadEntries = 100
 
 // OutputRequest asks for one bounded retained-output read. A nil After with a
-// positive Tail selects a newest window; an explicit After keeps forward
-// paging from the oldest eligible retained entry.
+// positive Tail selects a newest window; an explicit After without Tail keeps
+// forward paging from the oldest eligible retained entry.
 type OutputRequest struct {
 	Op         Operation `json:"op"`
 	Name       string    `json:"name"`

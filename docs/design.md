@@ -91,8 +91,8 @@ emits bounded NDJSON events. `logs` accepts optional, repeatable names in select
 order. With no names, it resolves the current declaration set once in lexical order,
 without adding ad-hoc sessions; duplicate names are rejected. Bounded logs without
 `--after-cursor` select the newest configured entry window, equivalent to the default
-`--tail`; an explicit `--after-cursor` keeps forward paging from the oldest eligible
-retained entry. `--after-cursor` is rejected before daemon startup for an aggregate
+`--tail`; an explicit `--after-cursor` without `--tail` keeps forward paging from
+the oldest eligible retained entry. `--after-cursor` is rejected before daemon startup for an aggregate
 invocation. Aggregate filters, tail, and entry or byte limits apply independently per
 selected name, bounded output is returned in selection order, human entries are atomic
 `[NAME]`-prefixed writes, and aggregate JSON uses named NDJSON event objects.
@@ -158,8 +158,8 @@ daemon it reports resolved definitions as stopped. `status`, `logs`, `wait`,
 `restart`, `stop`, and `remove` operate on resolved and ad hoc records in the
 project. The recommended interactive workflow is `hum up` followed by
 `hum logs --follow`. Bounded `logs` without `--after-cursor` shows the newest default
-entry window; use an explicit cursor to page forward from the oldest eligible retained
-entry. `logs` with multiple names follows the explicit selection order; its no-name
+entry window; use an explicit cursor without `--tail` to page forward from the oldest
+eligible retained entry. `logs` with multiple names follows the explicit selection order; its no-name
 form uses the same lexical declarations as `up`, does not include ad-hoc records, and
 does not change membership when declarations or runtime records change. Each aggregate
 name receives its own filters and bounded limits. Human output prefixes
@@ -450,8 +450,8 @@ goroutines behind.
 
 The tools share CLI definition, readiness, cursor, collision, and aggregate
 semantics. Bounded MCP `logs` without `after` selects the newest default entry
-window, while explicit `after` keeps forward paging from the oldest eligible retained
-entry. Its output keeps `next` as the last source cursor consumed; process snapshots
+window, while explicit `after` without `tail` keeps forward paging from the oldest
+eligible retained entry. Its output keeps `next` as the last source cursor consumed; process snapshots
 keep `next_cursor` as the next cursor to be assigned. `up` applies the same client-side
 `after` DAG scheduler and lexical results as the CLI; independent roots launch
 concurrently, dependents wait for all direct prerequisites to be ready, and skipped entries include sorted direct

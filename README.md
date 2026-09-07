@@ -142,7 +142,7 @@ hum logs web worker --tail 50
 hum logs web --stream stdout --match Listening
 ```
 
-Without names, logs selects lexical declarations once; ad-hoc sessions are excluded. Bounded reads without `--after-cursor` show the newest default window; explicit cursors page forward from the oldest retained entry. Output is `[NAME]`-prefixed or named NDJSON; Ctrl+C only closes followers. Logs `next` is the consumed cursor; process `next_cursor` is the next assigned cursor.
+Without names, logs selects lexical declarations once; ad-hoc sessions are excluded. Bounded reads without `--after-cursor` show the newest default window; explicit cursors without `--tail` page forward from the oldest retained entry. Output is `[NAME]`-prefixed or named NDJSON; Ctrl+C only closes followers. Logs `next` is the consumed cursor; process `next_cursor` is the next assigned cursor.
 
 ## Shell completion
 
