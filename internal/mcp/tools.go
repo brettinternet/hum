@@ -195,6 +195,11 @@ func mapError(err error) *ToolError {
 	if unavailable(err) {
 		return &ToolError{Code: "unavailable", Message: err.Error()}
 	}
+	// Shutdown cancels in-flight requests without marking them cancelled, so a
+	// context error here is an abandoned request rather than an adapter defect.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return &ToolError{Code: "cancelled", Message: "request was cancelled before it completed"}
+	}
 	return &ToolError{Code: "internal", Message: err.Error()}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -818,7 +819,16 @@ func TestErrorMapping(t *testing.T) {
 	for _, tc := range []struct {
 		err  error
 		code string
-	}{{protocol.NewWireError(protocol.ErrorNotFound, "gone", map[string]any{"name": "x"}), "not_found"}, {ErrDaemonUnavailable, "unavailable"}, {errors.New("boom"), "internal"}} {
+	}{
+		{protocol.NewWireError(protocol.ErrorNotFound, "gone", map[string]any{"name": "x"}), "not_found"},
+		{ErrDaemonUnavailable, "unavailable"},
+		// Shutdown abandons in-flight requests; that is not an adapter defect,
+		// so it must not be indistinguishable from one.
+		{context.Canceled, "cancelled"},
+		{fmt.Errorf("up api: %w", context.Canceled), "cancelled"},
+		{context.DeadlineExceeded, "cancelled"},
+		{errors.New("boom"), "internal"},
+	} {
 		if got := mapError(tc.err); got.Code != tc.code {
 			t.Errorf("mapError(%v)=%s", tc.err, got.Code)
 		}
@@ -866,7 +876,7 @@ func TestStartUp(t *testing.T) {
 	if p.Readiness == nil || p.Readiness.State != protocol.ReadinessReady {
 		t.Fatalf("start=%#v", p)
 	}
-	if len(client.waits) != 1 || client.waits[0].TimeoutMS < defaultTimeoutMS-1000 || client.waits[0].TimeoutMS > defaultTimeoutMS || client.waits[0].After != nil {
+	if len(client.waits) != 1 || client.waits[0].TimeoutMS < defaultTimeoutMS-1000 || client.waits[0].TimeoutMS > defaultTimeoutMS || client.waits[0].After == nil || *client.waits[0].After != 7 {
 		t.Fatalf("wait=%#v", client.waits)
 	}
 	if len(client.starts[0].Env) != 1 {
