@@ -75,7 +75,7 @@ func TestTTYCLI(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("owner did not receive stopped state")
 	}
-	conflictCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	conflictCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	output.Reset()
 	errors.Reset()

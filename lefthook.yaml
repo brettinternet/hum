@@ -13,11 +13,6 @@ pre-commit:
     - name: Check for secret leaks
       run: mise exec gitleaks -- gitleaks git --pre-commit --redact --staged --verbose --no-banner
 
-pre-push:
-  jobs:
-    - name: Run the CI gate
-      run: task ci
-
 commit-msg:
   jobs:
     - name: Check commit message

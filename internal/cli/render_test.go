@@ -34,8 +34,10 @@ func renderTestTTY(t *testing.T) *os.File {
 	if err != nil {
 		t.Fatalf("open pty: %v", err)
 	}
-	_ = master.Close()
-	t.Cleanup(func() { _ = slave.Close() })
+	t.Cleanup(func() {
+		_ = slave.Close()
+		_ = master.Close()
+	})
 	return slave
 }
 

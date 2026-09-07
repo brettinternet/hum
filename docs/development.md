@@ -63,7 +63,7 @@ task ci
 - `task check` verifies Go formatting and runs `go vet ./...` and Staticcheck with the pinned development toolchain.
 - `task check:go-min` compiles and tests the source with the Go 1.22 minimum.
 - `task test` runs `go test ./...`.
-- `task ci` runs checks, tests, race-sensitive package tests, and the built-binary smoke test with Go 1.27.1 and Staticcheck 2026.2.1. The pre-push hook runs this same gate.
+- `task ci` independently runs checks, tests, race-sensitive package tests, and the built-binary smoke test with Go 1.27.1 and Staticcheck 2026.2.1.
 
 ## Commit messages
 

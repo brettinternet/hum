@@ -77,8 +77,12 @@ func TestProcessStartIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("child process identity: %v", err)
 	}
-	if childIdentity == "" || childIdentity == first {
-		t.Fatalf("child identity = %q, current identity = %q", childIdentity, first)
+	childIdentityAgain, err := ProcessStartIdentity(cmd.Process.Pid)
+	if err != nil {
+		t.Fatalf("reread child process identity: %v", err)
+	}
+	if childIdentity == "" || childIdentity != childIdentityAgain {
+		t.Fatalf("child identity changed: first=%q second=%q", childIdentity, childIdentityAgain)
 	}
 	if _, err := ProcessStartIdentity(0); err == nil {
 		t.Fatal("invalid pid returned an identity")

@@ -499,6 +499,46 @@ func TestTTYLeaseClosedBeforeNonTTYReplacement(t *testing.T) {
 	_ = started
 }
 
+func TestPrepareTTYRejectsOccupiedRetainedSession(t *testing.T) {
+	root := makeProject(t, false)
+	s, err := New(Options{StartProcess: func(process.Spec) (Child, error) {
+		return &ttyLeaseChild{pid: 9400, done: make(chan struct{}), result: process.Result{ExitCode: 0, ExitedAt: time.Now()}}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown(context.Background())
+	if _, err := s.Start(StartRequest{Name: "dev", Cwd: root, Argv: []string{"original"}, TTY: true}); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.AcquireInput(root, "dev", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if _, err := lease.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(context.Background(), root, "dev"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lease.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.PrepareTTY(StartRequest{Name: "dev", Root: root, Cwd: root, Argv: []string{"replacement"}, TTY: true})
+	if !errors.Is(err, ErrInputConflict) {
+		t.Fatalf("prepare occupied TTY = %v, want %v", err, ErrInputConflict)
+	}
+	snapshot, err := s.Get(root, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Argv) != 1 || snapshot.Argv[0] != "original" {
+		t.Fatalf("occupied TTY argv = %#v, want original launch spec", snapshot.Argv)
+	}
+}
+
 func TestPrepareTTYPreservesRetainedLaunchSpec(t *testing.T) {
 	root := makeProject(t, false)
 	nested := filepath.Join(root, "tools")

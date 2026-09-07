@@ -2243,6 +2243,9 @@ func (s *Supervisor) PrepareTTY(req StartRequest) error {
 		s.trackStore(key, store)
 		s.records[key] = rec
 	}
+	if rec.input != nil {
+		return &InputConflictError{Name: req.Name}
+	}
 	if !rec.terminal {
 		if !rec.tty {
 			return fmt.Errorf("%w: %q is running without a tty; stop it and rerun with --tty", ErrInputNotTTY, req.Name)
