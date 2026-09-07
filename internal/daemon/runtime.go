@@ -554,8 +554,11 @@ func reclaimRuntimeGroup(group RuntimeGroup, grace time.Duration) (string, error
 		return "reclaimed", nil
 	}
 	// Never escalate a group whose leader changed incarnation or leadership
-	// while TERM was in flight.
-	if err := runtimeGroupVerification(group); err != nil {
+	// while TERM was in flight. A leader that exited during the grace is not
+	// such a change: this group was verified before TERM and was just observed
+	// alive, and a PGID cannot be recycled while its group is non-empty, so
+	// the survivors are still the recorded group.
+	if err := runtimeGroupVerification(group); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "unresolved", err
 	}
 	if err := syscall.Kill(-group.PGID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {

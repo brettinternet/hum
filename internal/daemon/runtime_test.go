@@ -192,6 +192,36 @@ func TestStartupReclaimsRecordedGroups(t *testing.T) {
 	})
 }
 
+// TestStartupKillsSurvivorAfterLeaderExit covers the escalation path when TERM
+// removes the recorded leader but leaves the rest of its group running. The
+// group must be killed rather than retained as unresolved, which would leave an
+// orphan holding its port while hum reports the name stopped.
+func TestStartupKillsSurvivorAfterLeaderExit(t *testing.T) {
+	cmd, done, _ := startRuntimeTestSurvivorGroup(t)
+	pgid := cmd.Process.Pid
+	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
+	writePriorRuntimeState(t, runtimeDir, RuntimeGroup{
+		ProjectRoot: t.TempDir(), Name: "survivor", LeaderPID: pgid,
+		PGID: pgid, StartIdentity: mustProcessIdentity(t, pgid),
+	})
+	server := testServer(t, Config{RuntimeDir: runtimeDir, StopGrace: 100 * time.Millisecond})
+	warnings := server.StartupWarnings()
+	if len(warnings) != 1 || warnings[0].Outcome != "reclaimed" {
+		t.Fatalf("startup warnings = %+v, want one reclaimed group", warnings)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recorded leader was not reaped")
+	}
+	if !waitRuntimeGroupGone(pgid, 3*time.Second) {
+		t.Fatal("surviving group member outlived reclamation")
+	}
+	if got := readTestRuntimeState(t, server.Paths().State).Groups; len(got) != 0 {
+		t.Fatalf("reclaimed group retained: %+v", got)
+	}
+}
+
 func TestStartupNeverSignalsReusedProcessIdentity(t *testing.T) {
 	cmd, done := startRuntimeTestGroup(t, false)
 	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
@@ -214,6 +244,12 @@ func TestStartupNeverSignalsReusedProcessIdentity(t *testing.T) {
 	}
 	if err != nil && !errors.Is(err, app.ErrNameInUse) && !errors.Is(err, app.ErrUnresolved) {
 		t.Fatalf("duplicate start error = %v", err)
+	}
+
+	// A retained unresolved record has no child to stop, so it must not make
+	// daemon shutdown report a failure to the operator.
+	if err := server.Supervisor().Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown with an unresolved record = %v, want nil", err)
 	}
 
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -260,6 +296,44 @@ func writePriorRuntimeState(t *testing.T, runtimeDir string, groups ...RuntimeGr
 	}
 	if err := os.WriteFile(NewRuntimePaths(runtimeDir).State, append(data, '\n'), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// startRuntimeTestSurvivorGroup starts a leader that exits on TERM while a
+// child in the same group ignores it, which is how a real wrapper (sh, npm)
+// leaves a port-holding survivor behind.
+func startRuntimeTestSurvivorGroup(t *testing.T) (*exec.Cmd, <-chan error, string) {
+	t.Helper()
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	childReady := filepath.Join(dir, "child-ready")
+	script := fmt.Sprintf("trap 'exit 0' TERM; /bin/sh -c %q & echo ready > %q; wait",
+		fmt.Sprintf("trap '' TERM; echo ready > %s; while :; do sleep 1; done", childReady), ready)
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		_, readyErr := os.Stat(ready)
+		_, childErr := os.Stat(childReady)
+		if readyErr == nil && childErr == nil {
+			return cmd, done, childReady
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("survivor process group did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

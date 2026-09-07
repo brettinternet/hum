@@ -3186,6 +3186,11 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	s.mu.RLock()
 	active := make([]*record, 0)
 	for _, rec := range s.records {
+		// An unresolved record has no child to signal and is retained
+		// deliberately, so stopping it would only fail the whole shutdown.
+		if rec.unresolved {
+			continue
+		}
 		if !rec.terminal || rec.persisting {
 			active = append(active, rec)
 		}
