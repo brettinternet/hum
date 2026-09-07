@@ -28,6 +28,7 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 			"Every tool requires an absolute existing project_root. up honors manifest after readiness dependencies with concurrent roots, lexical results, and sorted direct blocked_by skips; no_wait is rejected before daemon contact when after is declared. start is explicitly named and never pulls in prerequisites. start and up accept only resolved explicit or discovered definitions and may start the daemon; status, logs, wait, input, restart, and stop control existing declared or ad_hoc records and never start it. " +
 			"A process handed off by hum run is available as ad_hoc while its daemon retains the record; daemon shutdown or replacement loses that launch definition. " +
 			"Bounded child-output logs and matches use terminal-control-stripped text, while system entries, stored bytes, cursors, and limit accounting remain raw; there is no --raw flag or other raw opt-out. " +
+			"MCP wait timeout results include process_observed from the same daemon wait request without an extra round trip; false includes no-process guidance. " +
 			"Explicit definitions use deterministic argv-based environment activation with the MCP server environment. " +
 			"The eleven tools are start, up, down, list, status, logs, wait, input, restart, stop, and remove; run, serve, and shutdown are not MCP tools.",
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -127,7 +128,9 @@ func (c *mcpDaemonClient) Wait(ctx context.Context, request protocol.WaitRequest
 	if err != nil {
 		return protocol.WaitResponse{}, err
 	}
-	return protocol.NewWaitResponse(protocol.WaitOutcome(result.Outcome), protocol.Cursor(result.Cursor), mcpExit(result.Exit)), nil
+	response := protocol.NewWaitResponse(protocol.WaitOutcome(result.Outcome), protocol.Cursor(result.Cursor), mcpExit(result.Exit))
+	response.ProcessObserved = result.ProcessObserved
+	return response, nil
 }
 func (c *mcpDaemonClient) Input(ctx context.Context, request mcpserver.InputRequest) (mcpserver.InputResult, error) {
 	result, err := c.client.Input(ctx, daemon.InputRequest{Name: request.Name, Cwd: request.Cwd, Root: request.Root, Data: append([]byte(nil), request.Data...)})

@@ -204,6 +204,14 @@ subsequent names. Results preserve input order; exit precedence: 1 > 3 > 2 > 0
 for request/error, `exited_before_ready`, `timed_out`, and
 success. There is no whole-invocation timeout.
 
+`wait` timeout results include `process_observed` in CLI JSON and MCP structured
+content. The daemon records it during that single wait request without an extra
+`get` round trip: it is `true` when a matching runtime record existed initially
+or appeared and later stopped or was removed, and `false` only when no record
+was observed. Human CLI output for `false` adds `no process named "NAME" was
+observed during the wait; check the name or start it first.`; undeclared names
+remain eligible for future launch waiting.
+
 `list` merges current definitions with all project runtime records. Without a
 daemon it reports resolved definitions as stopped. `status`, `logs`, `wait`,
 `restart`, `stop`, and `remove` operate on resolved and ad hoc records in the

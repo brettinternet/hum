@@ -294,7 +294,14 @@ func (c *Client) wait(ctx context.Context, req WaitRequest) (app.WaitResult, err
 	default:
 		return app.WaitResult{}, fmt.Errorf("daemon wait response has unknown outcome %q", response.Outcome)
 	}
-	result := app.WaitResult{Outcome: outcome, Cursor: output.Cursor(*response.Cursor)}
+	processObserved := false
+	if outcome == app.WaitTimedOut {
+		if response.ProcessObserved == nil {
+			return app.WaitResult{}, errors.New("daemon wait timeout response omitted process_observed")
+		}
+		processObserved = *response.ProcessObserved
+	}
+	result := app.WaitResult{Outcome: outcome, Cursor: output.Cursor(*response.Cursor), ProcessObserved: processObserved}
 	if response.Exit != nil {
 		result.Exit = &processResult{ExitCode: response.Exit.Code, Err: errorFromString(response.Exit.Error), ExitedAt: response.Exit.Time}
 	}

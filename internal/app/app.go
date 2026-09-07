@@ -160,11 +160,14 @@ type WaitOptions struct {
 }
 
 // WaitResult is the stable result of a Wait call. Exit is populated when the
-// process exits before a matching entry is observed.
+// process exits before a matching entry is observed. ProcessObserved is set
+// on timeout results when a runtime process record existed at any point during
+// this wait request; a pre-launch session alone does not count as observed.
 type WaitResult struct {
-	Outcome WaitOutcome
-	Cursor  output.Cursor
-	Exit    *process.Result
+	Outcome         WaitOutcome
+	Cursor          output.Cursor
+	Exit            *process.Result
+	ProcessObserved bool
 }
 
 // RestartOptions optionally replaces a retained launch specification. Update
@@ -872,9 +875,10 @@ func (r *record) waitInputOperations() {
 type Supervisor struct {
 	mu sync.RWMutex
 
-	records  map[string]*record
-	starting map[string]struct{}
-	complete []*record
+	records             map[string]*record
+	starting            map[string]struct{}
+	processObservations map[string]uint64
+	complete            []*record
 
 	completedLimit int
 	stopGrace      time.Duration
@@ -943,19 +947,20 @@ func New(opts Options) (*Supervisor, error) {
 		}
 	}
 	return &Supervisor{
-		records:        make(map[string]*record),
-		starting:       make(map[string]struct{}),
-		completedLimit: completedLimit,
-		stopGrace:      opts.StopGrace,
-		outputLimits:   opts.OutputLimits,
-		maxLineBytes:   maxLineBytes,
-		now:            now,
-		after:          after,
-		startProcess:   starter,
-		persistStart:   opts.PersistStart,
-		persistExit:    opts.PersistExit,
-		shutdownDone:   make(chan struct{}),
-		timersDone:     make(chan struct{}),
+		records:             make(map[string]*record),
+		starting:            make(map[string]struct{}),
+		processObservations: make(map[string]uint64),
+		completedLimit:      completedLimit,
+		stopGrace:           opts.StopGrace,
+		outputLimits:        opts.OutputLimits,
+		maxLineBytes:        maxLineBytes,
+		now:                 now,
+		after:               after,
+		startProcess:        starter,
+		persistStart:        opts.PersistStart,
+		persistExit:         opts.PersistExit,
+		shutdownDone:        make(chan struct{}),
+		timersDone:          make(chan struct{}),
 	}, nil
 }
 
@@ -1232,6 +1237,7 @@ func (s *Supervisor) AddUnresolved(root, name string, pid, pgid int, startIdenti
 		unresolved: true,
 	}
 	s.records[key] = rec
+	s.processObservations[key]++
 	s.trackStore(key, store)
 	return nil
 }
@@ -1551,6 +1557,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	rec.done = make(chan struct{})
 	rec.doneClosed = false
 	rec.incarnation++
+	s.processObservations[key]++
 	rec.tracker = tracker
 	if automatic {
 		rec.relaunches++
@@ -1870,6 +1877,7 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 	rec.done = make(chan struct{})
 	rec.doneClosed = false
 	rec.incarnation++
+	s.processObservations[rec.key]++
 	rec.tracker = launchTracker
 	input := rec.input
 	if input != nil {
@@ -2792,6 +2800,18 @@ func (f *Follower) Close() {
 	})
 }
 
+// waitProcessObserved reports whether rec held a runtime incarnation or any
+// replacement record for the same key acquired one after the wait began.
+func (s *Supervisor) waitProcessObserved(rec *record, initialObservation uint64) bool {
+	if s == nil || rec == nil {
+		return false
+	}
+	s.mu.RLock()
+	observed := rec.incarnation != 0 || rec.unresolved || s.processObservations[rec.key] != initialObservation
+	s.mu.RUnlock()
+	return observed
+}
+
 // Wait blocks until output matching opts.Match is observed, the process exits,
 // or ctx reaches its deadline. It consumes a private subscription from the
 // process launch cursor by default, so concurrent waiters do not interfere.
@@ -2820,6 +2840,8 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 		return WaitResult{}, &NotFoundError{Root: root, Name: processName}
 	}
 	store := rec.store
+	initialObservation := s.processObservations[rec.key]
+	observed := rec.incarnation != 0 || rec.unresolved
 	after := opts.After
 	if after == nil {
 		if rec.terminal {
@@ -2842,11 +2864,24 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 	for {
 		event, err := sub.Next(ctx)
 		if err != nil {
+			observed = observed || s.waitProcessObserved(rec, initialObservation)
 			if errors.Is(err, context.DeadlineExceeded) {
-				return WaitResult{Outcome: WaitTimedOut, Cursor: sub.Cursor()}, nil
+				return WaitResult{Outcome: WaitTimedOut, Cursor: sub.Cursor(), ProcessObserved: observed}, nil
+			}
+			if errors.Is(err, output.ErrStoreClosed) {
+				// Removing a runtime record closes its output store. Keep this
+				// request's observation alive until the daemon wait deadline so
+				// the timeout result can report that the record existed.
+				<-ctx.Done()
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					observed = observed || s.waitProcessObserved(rec, initialObservation)
+					return WaitResult{Outcome: WaitTimedOut, Cursor: sub.Cursor(), ProcessObserved: observed}, nil
+				}
+				return WaitResult{}, ctx.Err()
 			}
 			return WaitResult{}, err
 		}
+		observed = observed || s.waitProcessObserved(rec, initialObservation)
 		if event.Read != nil {
 			if opts.Match != nil && len(event.Read.Entries) != 0 {
 				return WaitResult{Outcome: WaitMatched, Cursor: sub.Cursor()}, nil

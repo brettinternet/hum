@@ -37,7 +37,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":12}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":13}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -182,6 +182,60 @@ func TestStartFollowRemoveOperationRequestsRoundTripThroughDecoder(t *testing.T)
 	}
 }
 
+func TestWaitProcessObservedRoundTrip(t *testing.T) {
+	at := time.Date(2026, time.September, 3, 11, 22, 33, 0, time.UTC)
+	cases := []struct {
+		name             string
+		value            WaitResponse
+		wantJSON         string
+		wantProcessField bool
+	}{
+		{
+			name:             "timeout true",
+			value:            WaitResponse{Op: OpWait, OK: true, Outcome: WaitTimedOut, Cursor: 7, ProcessObserved: true},
+			wantJSON:         `{"op":"wait","ok":true,"outcome":"timed_out","cursor":7,"process_observed":true}`,
+			wantProcessField: true,
+		},
+		{
+			name:             "timeout false",
+			value:            WaitResponse{Op: OpWait, OK: true, Outcome: WaitTimedOut, Cursor: 8},
+			wantJSON:         `{"op":"wait","ok":true,"outcome":"timed_out","cursor":8,"process_observed":false}`,
+			wantProcessField: true,
+		},
+		{
+			name:     "successful match unchanged",
+			value:    NewWaitResponse(WaitMatched, 9, nil),
+			wantJSON: `{"op":"wait","ok":true,"outcome":"matched","cursor":9}`,
+		},
+		{
+			name:     "successful exit unchanged",
+			value:    NewWaitResponse(WaitExited, 10, &Exit{Code: 17, Time: at}),
+			wantJSON: `{"op":"wait","ok":true,"outcome":"exited","cursor":10,"exit":{"code":17,"time":"2026-09-03T11:22:33Z"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded, err := json.Marshal(tc.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(encoded); got != tc.wantJSON {
+				t.Fatalf("wait response JSON = %s, want %s", got, tc.wantJSON)
+			}
+			var decoded WaitResponse
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.ProcessObserved != tc.value.ProcessObserved {
+				t.Fatalf("decoded process_observed = %v, want %v", decoded.ProcessObserved, tc.value.ProcessObserved)
+			}
+			if tc.wantProcessField && decoded.Outcome != WaitTimedOut {
+				t.Fatalf("decoded timeout outcome = %q", decoded.Outcome)
+			}
+		})
+	}
+}
+
 func TestWaitRequestAndResponseShapes(t *testing.T) {
 	request := NewWaitRequest("api", "/work/project", 1500)
 	encoded, err := json.Marshal(request)
@@ -251,7 +305,7 @@ func TestWaitRequestAndResponseShapes(t *testing.T) {
 		{
 			name:  "timed out",
 			value: NewWaitResponse(WaitTimedOut, 11, nil),
-			want:  `{"op":"wait","ok":true,"outcome":"timed_out","cursor":11}`,
+			want:  `{"op":"wait","ok":true,"outcome":"timed_out","cursor":11,"process_observed":false}`,
 		},
 	}
 	for _, tc := range responseCases {
@@ -552,7 +606,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":12}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":13}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError
