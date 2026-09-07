@@ -4,7 +4,7 @@ title: Share the up scheduler and drift classification between CLI and MCP
 status: Done
 assignee: []
 created_date: '2026-09-06 16:15'
-updated_date: '2026-09-06 20:31'
+updated_date: '2026-09-07 14:41'
 labels:
   - cli
   - mcp
@@ -76,6 +76,8 @@ AC#3 PASS — duplicate-function `rg` assertion exited 0 with no matches.
 AC#4 PASS — `go test ./internal/cli ./internal/mcp ./internal/orchestrate ./integration -count=1` passed.
 AC#5 PASS — `task ci` passed on final implementation commit 806c49f.
 Independent verifier reproduced PASS for AC#1–AC#5 and confirmed the modified-file contract, no weakened/deleted/skipped tests, and no protected gate changes. Reviewer findings fixed: CLI now preserves fresh readiness and retained skipped snapshots; MCP rounds positive sub-millisecond remaining timeouts up; the new orchestrator test is race-free (`go test -race ./internal/orchestrate -count=1` PASS).
+
+Post-completion review (2026-09-07): AC#2 named the two same-named TestUpAdapterParity tests as proof that both adapters yield identical fields, but they exercise each adapter separately over different definitions and process snapshots and never compare CLI output to MCP output. The stated property is now covered by integration TestUpAdapterParityAcrossSurfaces (commit d497891), which drives one project state through hum up --json and the MCP up tool and compares ordering, outcome, readiness, changed_fields, blocked_by, and guidance.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

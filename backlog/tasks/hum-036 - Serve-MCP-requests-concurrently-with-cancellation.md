@@ -4,7 +4,7 @@ title: Serve MCP requests concurrently with cancellation
 status: Done
 assignee: []
 created_date: '2026-09-06 16:15'
-updated_date: '2026-09-06 21:40'
+updated_date: '2026-09-07 14:42'
 labels:
   - mcp
   - docs
@@ -77,6 +77,8 @@ AC#6 — task ci: PASS.
 Independent verifier: PASS for AC#1 through AC#6 after cancellation/backpressure and complete-frame review fixes. Reviewer findings were resolved and focused race tests remained green.
 
 Final implementation commit 50b8ea2; task ci passed after rebasing onto current main and on the final commit.
+
+Post-completion review (2026-09-07): the description's "waits at most two seconds for handlers" contradicts AC#4's "return within two seconds". The implementation grants handlers one second (serverShutdownWait) so the total return stays inside the tested two-second bound; raising the constant to two seconds fails three TestConcurrentServerShutdown subtests. AC#4 is the binding contract, so docs/design.md and docs/coding-agents.md were corrected to one second for handlers and a two-second return (commit 3604765). Separately, a request abandoned by shutdown reported tool error code internal, the adapter's catch-all for its own defects; it now reports cancelled (commit 1ca8b3b).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
