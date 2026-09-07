@@ -26,8 +26,9 @@ import (
 type State string
 
 const (
-	StateRunning State = "running"
-	StateExited  State = "exited"
+	StateRunning    State = "running"
+	StateExited     State = "exited"
+	StateUnresolved State = "unresolved"
 )
 
 // RestartPolicy controls the bounded automatic relaunch behavior of a
@@ -113,27 +114,30 @@ type TTYSize struct {
 // Process is an immutable read model. It intentionally has no environment or
 // output-store field; callers use Supervisor.Output for output access.
 type Process struct {
-	Name         string
-	Source       string
-	Root         string
-	TTY          bool
-	PID          int
-	PGID         int
-	Cwd          string
-	Argv         []string
-	Start        time.Time
-	LaunchCursor output.Cursor
-	NextCursor   output.Cursor
-	State        State
-	Exit         *process.Result
-	ExitCode     int
-	ExitedAt     time.Time
-	RestartCount int
-	Followers    int
-	Restart      RestartPolicy
-	Relaunches   int
-	NextLaunchAt *time.Time
-	Readiness    *Readiness
+	Name   string
+	Source string
+	Root   string
+	TTY    bool
+	PID    int
+	PGID   int
+	Cwd    string
+	Argv   []string
+	Start  time.Time
+	// StartIdentity is retained only inside the daemon lifecycle boundary. It
+	// is never serialized into client-facing protocol snapshots.
+	StartIdentity string
+	LaunchCursor  output.Cursor
+	NextCursor    output.Cursor
+	State         State
+	Exit          *process.Result
+	ExitCode      int
+	ExitedAt      time.Time
+	RestartCount  int
+	Followers     int
+	Restart       RestartPolicy
+	Relaunches    int
+	NextLaunchAt  *time.Time
+	Readiness     *Readiness
 }
 
 // WaitOutcome describes the terminal state observed by Wait.
@@ -184,6 +188,14 @@ type RestartOptions struct {
 // process is killed as soon as the TERM grace check is reached. Use the
 // configured project runtime values when a longer default grace is desired.
 type Options struct {
+	// PersistStart runs after a child has been assigned its immutable record but
+	// before Start returns success. A failure causes the child to be reconciled
+	// as a failed launch.
+	PersistStart func(Process) error
+	// PersistExit runs before a terminal wait is released to callers. A failure
+	// leaves the record unresolved so a later launch cannot bypass stale state.
+	PersistExit func(Process) error
+
 	// CompletedLimit is the global bound for terminal records. A zero value
 	// uses the default bound; positive values are exact.
 	CompletedLimit int
@@ -210,6 +222,12 @@ type Child interface {
 	Done() <-chan struct{}
 	Wait() process.Result
 	Signal(os.Signal) error
+}
+
+// IdentityChild is implemented by the production process child. Test seams
+// may omit it; the supervisor will attempt a direct host lookup as a fallback.
+type IdentityChild interface {
+	StartIdentity() string
 }
 
 // InputChild is the optional child capability used by TTY input leases. The
@@ -245,6 +263,7 @@ var (
 	ErrInputStopped     = errors.New("tty input incarnation has stopped")
 	ErrInputStale       = errors.New("tty input targets a stale incarnation")
 	ErrInputNotTTY      = errors.New("process does not have a tty")
+	ErrUnresolved       = errors.New("process identity is unresolved")
 )
 
 const maxInputBytes = 32 * 1024
@@ -734,14 +753,17 @@ type record struct {
 	// update a later launch.
 	incarnation uint64
 
-	child        Child
-	pid          int
-	pgid         int
-	store        *output.Store
-	start        time.Time
-	cursor       output.Cursor
-	restartCount int
-	followers    int
+	child         Child
+	pid           int
+	pgid          int
+	startIdentity string
+	unresolved    bool
+	persisting    bool
+	store         *output.Store
+	start         time.Time
+	cursor        output.Cursor
+	restartCount  int
+	followers     int
 	// launchBoundary identifies a successful same-store Restart. It is
 	// deliberately independent of restartCount because ordinary Start
 	// replacement creates a fresh output sequence.
@@ -756,6 +778,7 @@ type record struct {
 	terminalAt time.Time
 	terminal   bool
 	done       chan struct{}
+	doneClosed bool
 	stopMu     sync.Mutex
 }
 
@@ -839,6 +862,8 @@ type Supervisor struct {
 	now            func() time.Time
 	after          func(time.Duration) <-chan time.Time
 	startProcess   func(process.Spec) (Child, error)
+	persistStart   func(Process) error
+	persistExit    func(Process) error
 
 	closed          bool
 	launches        sync.WaitGroup
@@ -852,8 +877,9 @@ type Supervisor struct {
 }
 
 const (
-	defaultCompletedLimit = 20
-	defaultMaxLineBytes   = 64 * 1024
+	defaultCompletedLimit     = 20
+	defaultMaxLineBytes       = 64 * 1024
+	persistenceCleanupTimeout = 5 * time.Second
 )
 
 // New constructs a Supervisor and validates output limits before any launch.
@@ -905,6 +931,8 @@ func New(opts Options) (*Supervisor, error) {
 		now:            now,
 		after:          after,
 		startProcess:   starter,
+		persistStart:   opts.PersistStart,
+		persistExit:    opts.PersistExit,
 		shutdownDone:   make(chan struct{}),
 		timersDone:     make(chan struct{}),
 	}, nil
@@ -1117,6 +1145,119 @@ func (s *Supervisor) scheduleStability(rec *record, generation, incarnation uint
 // Start launches a process with direct argv execution and returns its initial
 // immutable snapshot. A client disappearing after Start has no lifecycle
 // effect; only Stop or Shutdown sends signals.
+// SetPersistenceHooks installs the runtime-state callbacks used by the daemon
+// after construction and before it admits launch requests. It is intentionally
+// small so tests and embedders can supply a custom Supervisor without taking
+// ownership of runtime files.
+func (s *Supervisor) SetPersistenceHooks(start func(Process) error, exit func(Process) error) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.persistStart = start
+	s.persistExit = exit
+	s.mu.Unlock()
+}
+
+// AddUnresolved records a process identity that cannot be safely reclaimed.
+// The record is deliberately non-terminal: its project/name remains reserved
+// until the runtime owner proves the recorded group has disappeared.
+func (s *Supervisor) markUnresolved(rec *record) {
+	if s == nil || rec == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.records[rec.key] == rec {
+		rec.unresolved = true
+		rec.state = StateUnresolved
+	}
+	s.mu.Unlock()
+}
+
+func (s *Supervisor) AddUnresolved(root, name string, pid, pgid int, startIdentity string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	canonicalRoot, err := absoluteClean(root)
+	if err != nil {
+		return err
+	}
+	if pid <= 0 || pgid <= 0 || startIdentity == "" {
+		return fmt.Errorf("%w: unresolved process identity is incomplete", ErrInvalidRequest)
+	}
+	key := keyFor(canonicalRoot, name)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrSupervisorClosed
+	}
+	if existing := s.records[key]; existing != nil {
+		if existing.unresolved && existing.pid == pid && existing.pgid == pgid && existing.startIdentity == startIdentity {
+			return nil
+		}
+		return fmt.Errorf("%w: %q", ErrNameInUse, name)
+	}
+	store, err := output.NewStore(s.outputLimits)
+	if err != nil {
+		return fmt.Errorf("output store: %w", err)
+	}
+	rec := &record{
+		key: key, name: name, root: canonicalRoot, cwd: canonicalRoot,
+		pid: pid, pgid: pgid, startIdentity: startIdentity, store: store,
+		state: StateUnresolved, done: make(chan struct{}), terminal: false,
+		unresolved: true,
+	}
+	s.records[key] = rec
+	s.trackStore(key, store)
+	return nil
+}
+
+// ClearUnresolved removes a blocker after an external identity check proves
+// its recorded process group is gone.
+func (s *Supervisor) ClearUnresolved(root, name string) error {
+	canonicalRoot, err := absoluteClean(root)
+	if err != nil {
+		return err
+	}
+	key := keyFor(canonicalRoot, name)
+	s.mu.Lock()
+	rec := s.records[key]
+	if rec == nil || !rec.unresolved {
+		s.mu.Unlock()
+		return nil
+	}
+	delete(s.records, key)
+	s.removeCompletedLocked(rec)
+	store := rec.store
+	rec.store = nil
+	s.mu.Unlock()
+	if store != nil {
+		store.Close(nil)
+	}
+	return nil
+}
+
+func (s *Supervisor) UnresolvedProcesses() []Process {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	items := make([]Process, 0)
+	for _, rec := range s.records {
+		if rec.unresolved {
+			items = append(items, rec.snapshotLocked())
+		}
+	}
+	s.mu.RUnlock()
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Root != items[j].Root {
+			return items[i].Root < items[j].Root
+		}
+		return items[i].Name < items[j].Name
+	})
+	return items
+}
+
 func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if err := ValidateName(req.Name); err != nil {
 		return Process{}, err
@@ -1156,6 +1297,13 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		if explicitRecord != nil {
 			explicitRecord.stopMu.Lock()
 			defer explicitRecord.stopMu.Unlock()
+			s.mu.RLock()
+			persisting := explicitRecord.persisting
+			persisted := explicitRecord.done
+			s.mu.RUnlock()
+			if persisting {
+				<-persisted
+			}
 		}
 	}
 
@@ -1175,7 +1323,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		s.mu.Unlock()
 		return Process{}, ErrSupervisorClosed
 	}
-	if current := s.records[key]; current != nil && !current.terminal {
+	if current := s.records[key]; current != nil && (!current.terminal || current.unresolved) {
 		pid := current.pid
 		if req.TTY && !current.tty {
 			s.mu.Unlock()
@@ -1210,7 +1358,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		}
 		done := make(chan struct{})
 		close(done)
-		rec = &record{key: key, name: req.Name, root: root, store: store, state: StateExited, terminal: true, done: done, restart: restartPolicyForSource(req.Source, req.Restart)}
+		rec = &record{key: key, name: req.Name, root: root, store: store, state: StateExited, terminal: true, done: done, doneClosed: true, restart: restartPolicyForSource(req.Source, req.Restart)}
 		if !automatic && explicitRecord == nil {
 			rec.stopMu.Lock()
 			explicitRecord = rec
@@ -1356,7 +1504,19 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		return Process{}, &NotFoundError{Root: root, Name: req.Name}
 	}
 	s.removeCompletedLocked(rec)
+	startIdentity := ""
+	if identityChild, ok := child.(IdentityChild); ok {
+		startIdentity = identityChild.StartIdentity()
+	}
+	if startIdentity == "" {
+		if identity, identityErr := process.ProcessStartIdentity(child.PID()); identityErr == nil {
+			startIdentity = identity
+		}
+	}
 	rec.child, rec.pid, rec.pgid = child, child.PID(), child.PGID()
+	rec.startIdentity = startIdentity
+	rec.unresolved = false
+	rec.persisting = false
 	rec.start, rec.cursor = startedAt, launchCursor
 	if wasLaunched {
 		rec.restartCount++
@@ -1364,6 +1524,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	rec.launchBoundary = launchBoundary
 	rec.state, rec.result, rec.terminalAt, rec.terminal = StateRunning, process.Result{}, time.Time{}, false
 	rec.done = make(chan struct{})
+	rec.doneClosed = false
 	rec.incarnation++
 	rec.tracker = tracker
 	if automatic {
@@ -1383,6 +1544,29 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	}
 	if automatic {
 		s.scheduleStability(rec, req.automaticGeneration, rec.incarnation)
+	}
+	if s.persistStart != nil {
+		if persistErr := s.persistStart(started); persistErr != nil {
+			// Reconciliation must observe the failed launch before cleanup can
+			// wait for its terminal transition. It is intentionally started only
+			// after the persistence attempt so a fast child cannot erase a state
+			// record that has not been written yet.
+			s.mu.Lock()
+			if s.records[rec.key] == rec {
+				s.cancelRelaunchLocked(rec, true)
+				rec.controlIntent = true
+			}
+			s.mu.Unlock()
+			go s.reconcile(rec)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), persistenceCleanupTimeout)
+			cleanupErr := s.stopRecord(cleanupCtx, rec)
+			cancel()
+			if cleanupErr != nil {
+				s.markUnresolved(rec)
+				return Process{}, errors.Join(persistErr, cleanupErr)
+			}
+			return Process{}, persistErr
+		}
 	}
 	go s.reconcile(rec)
 	return started, nil
@@ -1637,9 +1821,21 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
 	}
 	s.removeCompletedLocked(rec)
+	startIdentity := ""
+	if identityChild, ok := child.(IdentityChild); ok {
+		startIdentity = identityChild.StartIdentity()
+	}
+	if startIdentity == "" {
+		if identity, identityErr := process.ProcessStartIdentity(child.PID()); identityErr == nil {
+			startIdentity = identity
+		}
+	}
 	rec.child = child
 	rec.pid = child.PID()
 	rec.pgid = child.PGID()
+	rec.startIdentity = startIdentity
+	rec.unresolved = false
+	rec.persisting = false
 	rec.start = startedAt
 	rec.cursor = launchCursor
 	rec.restartCount++
@@ -1653,6 +1849,7 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 	rec.terminalAt = time.Time{}
 	rec.terminal = false
 	rec.done = make(chan struct{})
+	rec.doneClosed = false
 	rec.incarnation++
 	rec.tracker = launchTracker
 	input := rec.input
@@ -1660,13 +1857,32 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		input.beginIncarnation()
 	}
 	restarted := rec.snapshotLocked()
-	restartSucceeded = true
 	s.mu.Unlock()
 	if input != nil {
 		input.emit(InputEvent{State: InputRunning, LaunchCursor: launchCursor, TTY: tty})
 	}
 
+	if s.persistStart != nil {
+		if persistErr := s.persistStart(restarted); persistErr != nil {
+			s.mu.Lock()
+			if s.records[rec.key] == rec {
+				s.cancelRelaunchLocked(rec, true)
+				rec.controlIntent = true
+			}
+			s.mu.Unlock()
+			go s.reconcile(rec)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), persistenceCleanupTimeout)
+			cleanupErr := s.stopRecord(cleanupCtx, rec)
+			cancel()
+			if cleanupErr != nil {
+				s.markUnresolved(rec)
+				return Process{}, errors.Join(persistErr, cleanupErr)
+			}
+			return Process{}, persistErr
+		}
+	}
 	go s.reconcile(rec)
+	restartSucceeded = true
 	return restarted, nil
 }
 
@@ -1712,6 +1928,7 @@ func (s *Supervisor) reconcile(rec *record) {
 	rec.terminal = true
 	rec.state = StateExited
 	store := rec.store
+	terminalProcess := rec.snapshotLocked()
 	republish := rec.pendingExit
 	rec.pendingExit = false
 	tracker := rec.tracker
@@ -1723,20 +1940,20 @@ func (s *Supervisor) reconcile(rec *record) {
 	control := rec.controlIntent
 	rec.controlIntent = false
 	automaticIncarnation := rec.automaticCurrent
+	terminalIncarnation := rec.incarnation
+	terminalDone := rec.done
 	rec.automaticCurrent = false
 	if input != nil {
 		input.endIncarnation()
 	}
 	s.insertCompletedLocked(rec)
-	close(rec.done)
-	if control || !unexpected || rec.restart != RestartOnFailure {
+	shouldRelaunch := !control && unexpected && rec.restart == RestartOnFailure && (automaticIncarnation || rec.incarnation != 0)
+	if !shouldRelaunch {
 		s.cancelRelaunchLocked(rec, true)
-	} else if automaticIncarnation || rec.incarnation != 0 {
-		// The first unexpected exit starts attempt one; an automatic child that
-		// failed before the stability window advances to the next attempt.
-		s.scheduleRelaunchLocked(rec)
 	}
-	s.evictLocked()
+	if s.persistExit != nil {
+		rec.persisting = true
+	}
 	s.mu.Unlock()
 	if input != nil {
 		input.emit(InputEvent{State: InputStopped, LaunchCursor: cursor, TTY: tty})
@@ -1747,6 +1964,32 @@ func (s *Supervisor) reconcile(rec *record) {
 	if republish && store != nil {
 		store.NotifyExit(output.Exit{Code: result.ExitCode, Time: result.ExitedAt})
 	}
+	var persistErr error
+	if s.persistExit != nil {
+		persistErr = s.persistExit(terminalProcess)
+	}
+	s.mu.Lock()
+	currentIncarnation := s.records[rec.key] == rec && rec.incarnation == terminalIncarnation
+	if currentIncarnation {
+		rec.persisting = false
+		if persistErr != nil {
+			rec.unresolved = true
+			rec.state = StateUnresolved
+			s.cancelRelaunchLocked(rec, true)
+		} else if shouldRelaunch && !rec.controlIntent {
+			s.scheduleRelaunchLocked(rec)
+		}
+	}
+	// Waiters hold the incarnation's channel even if completed-record eviction
+	// removed this record while the durable exit update was in flight.
+	close(terminalDone)
+	if rec.done == terminalDone {
+		rec.doneClosed = true
+	}
+	if currentIncarnation {
+		s.evictLocked()
+	}
+	s.mu.Unlock()
 }
 
 func (s *Supervisor) insertCompletedLocked(rec *record) {
@@ -1782,7 +2025,7 @@ func (s *Supervisor) evictLocked() {
 				index = i
 				break
 			}
-			if rec.restarting || rec.relaunchPending || rec.relaunchExhausted || rec.automaticStarting || rec.input != nil || rec.store != nil && rec.store.SubscriberCount() != 0 {
+			if rec.unresolved || rec.restarting || rec.relaunchPending || rec.relaunchExhausted || rec.automaticStarting || rec.input != nil || rec.store != nil && rec.store.SubscriberCount() != 0 {
 				continue
 			}
 			if _, reserved := s.starting[rec.key]; reserved {
@@ -1972,7 +2215,7 @@ func (s *Supervisor) PrepareTTY(req StartRequest) error {
 		}
 		done := make(chan struct{})
 		close(done)
-		rec = &record{key: key, name: req.Name, root: root, cwd: requestCwd, store: store, state: StateExited, terminal: true, done: done, restart: RestartNever}
+		rec = &record{key: key, name: req.Name, root: root, cwd: requestCwd, store: store, state: StateExited, terminal: true, done: done, doneClosed: true, restart: RestartNever}
 		s.trackStore(key, store)
 		s.records[key] = rec
 	}
@@ -2611,13 +2854,17 @@ func (s *Supervisor) Signal(cwd, name string, sig os.Signal) error {
 		s.mu.Unlock()
 		return nil
 	}
+	if rec.unresolved {
+		s.mu.Unlock()
+		return ErrUnresolved
+	}
 	// Explicit TERM/KILL forwarding is an operator control boundary too. Mark
 	// it before the syscall so a concurrent exit cannot start a crash loop. A
 	// signal arriving while backoff is pending still cancels that work even
 	// though there is no child to signal.
 	if signal, ok := sig.(syscall.Signal); ok && (signal == syscall.SIGTERM || signal == syscall.SIGKILL) {
 		s.cancelRelaunchLocked(rec, true)
-		rec.controlIntent = !rec.terminal
+		rec.controlIntent = true
 	}
 	if rec.terminal || rec.child == nil {
 		s.evictLocked()
@@ -2651,12 +2898,21 @@ func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
 		s.mu.Unlock()
 		return nil
 	}
+	if rec.unresolved {
+		s.mu.Unlock()
+		return ErrUnresolved
+	}
 	// Register operator intent before reading the child or sending TERM. An
 	// exit that acquires this same lock afterwards is expected, regardless of
 	// its status; a pending timer is invalidated immediately.
 	s.cancelRelaunchLocked(rec, true)
-	rec.controlIntent = !rec.terminal
+	rec.controlIntent = !rec.terminal || rec.persisting
 	if rec.terminal || rec.child == nil {
+		if rec.persisting {
+			s.mu.Unlock()
+			_, waitErr := s.waitForDone(ctx, rec, -1)
+			return waitErr
+		}
 		s.evictLocked()
 		s.mu.Unlock()
 		return nil
@@ -2835,7 +3091,7 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	// no callback can claim a launch after the daemon closes.
 	for _, rec := range s.records {
 		s.cancelRelaunchLocked(rec, true)
-		rec.controlIntent = !rec.terminal
+		rec.controlIntent = !rec.terminal || rec.persisting
 	}
 	s.mu.Unlock()
 
@@ -2845,7 +3101,7 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	s.mu.RLock()
 	active := make([]*record, 0)
 	for _, rec := range s.records {
-		if !rec.terminal {
+		if !rec.terminal || rec.persisting {
 			active = append(active, rec)
 		}
 	}
@@ -2901,21 +3157,22 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 
 func (r *record) snapshotLocked() Process {
 	model := Process{
-		Name:         r.name,
-		Source:       r.source,
-		Root:         r.root,
-		TTY:          r.tty,
-		PID:          r.pid,
-		PGID:         r.pgid,
-		Cwd:          r.cwd,
-		Argv:         append([]string(nil), r.argv...),
-		Start:        r.start,
-		LaunchCursor: r.cursor,
-		State:        r.state,
-		RestartCount: r.restartCount,
-		Followers:    r.followers,
-		Restart:      effectiveRestartPolicy(r.restart),
-		Relaunches:   r.relaunches,
+		Name:          r.name,
+		Source:        r.source,
+		Root:          r.root,
+		TTY:           r.tty,
+		PID:           r.pid,
+		PGID:          r.pgid,
+		Cwd:           r.cwd,
+		Argv:          append([]string(nil), r.argv...),
+		Start:         r.start,
+		StartIdentity: r.startIdentity,
+		LaunchCursor:  r.cursor,
+		State:         r.state,
+		RestartCount:  r.restartCount,
+		Followers:     r.followers,
+		Restart:       effectiveRestartPolicy(r.restart),
+		Relaunches:    r.relaunches,
 	}
 	if r.store != nil {
 		model.NextCursor = r.store.NextCursor()
@@ -2924,7 +3181,10 @@ func (r *record) snapshotLocked() Process {
 		next := r.nextLaunchAt
 		model.NextLaunchAt = &next
 	}
-	if !r.terminal && r.source != "" {
+	if r.unresolved {
+		model.State = StateUnresolved
+	}
+	if !r.terminal && !r.unresolved && r.source != "" {
 		switch {
 		case r.readyConfig == nil:
 			model.Readiness = &Readiness{State: ReadinessRunningUnverified}

@@ -36,13 +36,15 @@ const (
 // Managed processes are intentionally not children of any request handler:
 // closing a client connection only cancels that request's response stream.
 type Server struct {
-	owner      *runtimeOwner
-	paths      RuntimePaths
-	listener   net.Listener
-	supervisor *app.Supervisor
-	version    int
-	maxLine    int
-	log        *boundedLog
+	owner          *runtimeOwner
+	paths          RuntimePaths
+	listener       net.Listener
+	supervisor     *app.Supervisor
+	version        int
+	maxLine        int
+	log            *boundedLog
+	warnings       []protocol.StartupWarning
+	unresolvedDone chan struct{}
 
 	projectsMu sync.Mutex
 	projects   map[string]struct{}
@@ -64,6 +66,7 @@ type Server struct {
 	shutdownResponses sync.WaitGroup
 	followers         sync.WaitGroup
 	closing           chan struct{}
+	unresolvedOnce    sync.Once
 }
 
 // NewServer creates a listener, claims runtime ownership, and constructs the
@@ -84,14 +87,14 @@ func NewServer(cfg Config) (*Server, error) {
 	if maxLine <= 0 {
 		maxLine = 64 * 1024
 	}
+	stopGrace := cfg.StopGrace
+	if stopGrace == 0 {
+		stopGrace = 10 * time.Second
+	}
 	var supervisor *app.Supervisor
 	if cfg.Supervisor != nil {
 		supervisor = cfg.Supervisor
 	} else {
-		stopGrace := cfg.StopGrace
-		if stopGrace == 0 {
-			stopGrace = 10 * time.Second
-		}
 		supervisor, err = app.New(app.Options{
 			CompletedLimit: cfg.CompletedLimit,
 			StopGrace:      stopGrace,
@@ -102,6 +105,15 @@ func NewServer(cfg Config) (*Server, error) {
 			owner.release()
 			return nil, fmt.Errorf("create supervisor: %w", err)
 		}
+	}
+	supervisor.SetPersistenceHooks(owner.persistProcess, owner.removeProcess)
+	warnings, err := owner.reconcileStartup(supervisor, stopGrace)
+	if err != nil {
+		if cfg.Supervisor == nil {
+			_ = supervisor.Shutdown(context.Background())
+		}
+		owner.release()
+		return nil, fmt.Errorf("startup reconciliation: %w", err)
 	}
 	log, err := openBoundedLog(paths.Log, cfg.LogBytes)
 	if err != nil {
@@ -123,20 +135,24 @@ func NewServer(cfg Config) (*Server, error) {
 	// The lock serializes only setup. It remains as a stable inode and is
 	// reacquired by cleanup so startup and teardown cannot race.
 	owner.unlockStartup()
-	return &Server{
-		owner:        owner,
-		paths:        paths,
-		listener:     listener,
-		supervisor:   supervisor,
-		version:      version,
-		maxLine:      maxLine,
-		log:          log,
-		projects:     make(map[string]struct{}),
-		serveDone:    make(chan struct{}),
-		ready:        make(chan struct{}),
-		shutdownDone: make(chan struct{}),
-		closing:      make(chan struct{}),
-	}, nil
+	server := &Server{
+		owner:          owner,
+		paths:          paths,
+		listener:       listener,
+		supervisor:     supervisor,
+		version:        version,
+		maxLine:        maxLine,
+		log:            log,
+		projects:       make(map[string]struct{}),
+		serveDone:      make(chan struct{}),
+		ready:          make(chan struct{}),
+		shutdownDone:   make(chan struct{}),
+		closing:        make(chan struct{}),
+		warnings:       append([]protocol.StartupWarning(nil), warnings...),
+		unresolvedDone: make(chan struct{}),
+	}
+	go server.monitorUnresolved()
+	return server, nil
 }
 
 // Paths returns the runtime artifacts owned by this server.
@@ -144,6 +160,37 @@ func (s *Server) Paths() RuntimePaths { return s.paths }
 
 // Supervisor returns the application supervisor owned by this daemon.
 func (s *Server) Supervisor() *app.Supervisor { return s.supervisor }
+
+// StartupWarnings returns the reconciliation summary retained for this daemon
+// lifetime. The returned slice is independent of server storage.
+func (s *Server) StartupWarnings() []protocol.StartupWarning {
+	if s == nil {
+		return nil
+	}
+	return append([]protocol.StartupWarning(nil), s.warnings...)
+}
+
+func (s *Server) monitorUnresolved() {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			for _, item := range s.supervisor.UnresolvedProcesses() {
+				group := RuntimeGroup{ProjectRoot: item.Root, Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}
+				if !runtimeGroupAlive(group.PGID) {
+					// Keep blocking duplicate launches until durable state no longer
+					// claims the unresolved group.
+					if s.owner.removeProcess(item) == nil {
+						_ = s.supervisor.ClearUnresolved(item.Root, item.Name)
+					}
+				}
+			}
+		case <-s.unresolvedDone:
+			return
+		}
+	}
+}
 
 // RuntimePaths is a descriptive alias for Paths at the server boundary.
 func (s *Server) RuntimePaths() RuntimePaths { return s.paths }
@@ -323,6 +370,7 @@ func (s *Server) shutdown(force bool) error {
 		}
 	}
 	s.shutdownStarted = true
+	s.unresolvedOnce.Do(func() { close(s.unresolvedDone) })
 	s.shutdownMu.Unlock()
 
 	var shutdownErr error
@@ -446,7 +494,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	if first.Hello.Version != s.version {
 		versionErr = &VersionMismatchError{ClientVersion: first.Hello.Version, DaemonVersion: s.version}
 		_ = writeProtocolError(encoder, protocol.OpHello, versionErr)
-	} else if err := encoder.EncodeResponse(protocol.Hello{Op: protocol.OpHello, Version: s.version}); err != nil {
+	} else if err := encoder.EncodeResponse(protocol.HelloResponse{Op: protocol.OpHello, Version: s.version, Warnings: s.StartupWarnings()}); err != nil {
 		return
 	}
 
@@ -486,6 +534,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		}
 		resp, terminal := s.dispatch(req)
 		writeErr := writeProtocolResponse(encoder, resp)
+
 		var oversized *protocol.OversizedError
 		if errors.As(writeErr, &oversized) {
 			message := fmt.Sprintf("response of %d bytes exceeds the %d byte message limit; request fewer entries or bytes", oversized.Size, oversized.Limit)
@@ -530,7 +579,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		s.trackProcess(p)
 		s.shutdownMu.Unlock()
 		process := wireProcessFromApp(p)
-		return wireResponse{Op: req.Op, OK: true, Process: &process}, false
+		return wireResponse{Op: req.Op, OK: true, Process: &process, Warnings: s.StartupWarnings()}, false
 	case "list":
 		if req.Cwd == "" {
 			req.Cwd = "."
@@ -542,7 +591,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		for _, p := range items {
 			s.trackProcess(p)
 		}
-		return wireResponse{Op: req.Op, OK: true, Processes: wireProcessesFromApp(items)}, false
+		return wireResponse{Op: req.Op, OK: true, Processes: wireProcessesFromApp(items), Warnings: s.StartupWarnings()}, false
 	case "get":
 		p, err := s.supervisor.Get(req.Cwd, req.Name)
 		if err != nil {
@@ -552,7 +601,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		process := wireProcessFromApp(p)
 		nextCursor := uint64(p.NextCursor)
 		process.NextCursor = &nextCursor
-		return wireResponse{Op: req.Op, OK: true, Process: &process}, false
+		return wireResponse{Op: req.Op, OK: true, Process: &process, Warnings: s.StartupWarnings()}, false
 	case "output":
 		store, err := s.supervisor.Output(req.Cwd, req.Name)
 		if err != nil {
@@ -1064,25 +1113,26 @@ type wireReadinessConfig struct {
 }
 
 type wireResponse struct {
-	Op             string        `json:"op,omitempty"`
-	Name           string        `json:"name,omitempty"`
-	OK             bool          `json:"ok,omitempty"`
-	Version        int           `json:"version,omitempty"`
-	Process        *wireProcess  `json:"process,omitempty"`
-	Processes      []wireProcess `json:"processes,omitempty"`
-	Entries        []wireEntry   `json:"entries,omitempty"`
-	Next           *uint64       `json:"next,omitempty"`
-	Oldest         *uint64       `json:"oldest,omitempty"`
-	Latest         *uint64       `json:"latest,omitempty"`
-	EvictedThrough *uint64       `json:"evicted_through,omitempty"`
-	Truncated      bool          `json:"truncated,omitempty"`
-	More           bool          `json:"more,omitempty"`
-	Type           string        `json:"type,omitempty"`
-	Outcome        string        `json:"outcome,omitempty"`
-	Cursor         *uint64       `json:"cursor,omitempty"`
-	Ready          bool          `json:"ready,omitempty"`
-	Exit           *wireExit     `json:"exit,omitempty"`
-	Error          *wireError    `json:"error,omitempty"`
+	Op             string                    `json:"op,omitempty"`
+	Name           string                    `json:"name,omitempty"`
+	OK             bool                      `json:"ok,omitempty"`
+	Version        int                       `json:"version,omitempty"`
+	Process        *wireProcess              `json:"process,omitempty"`
+	Processes      []wireProcess             `json:"processes,omitempty"`
+	Entries        []wireEntry               `json:"entries,omitempty"`
+	Next           *uint64                   `json:"next,omitempty"`
+	Oldest         *uint64                   `json:"oldest,omitempty"`
+	Latest         *uint64                   `json:"latest,omitempty"`
+	EvictedThrough *uint64                   `json:"evicted_through,omitempty"`
+	Truncated      bool                      `json:"truncated,omitempty"`
+	More           bool                      `json:"more,omitempty"`
+	Type           string                    `json:"type,omitempty"`
+	Outcome        string                    `json:"outcome,omitempty"`
+	Cursor         *uint64                   `json:"cursor,omitempty"`
+	Ready          bool                      `json:"ready,omitempty"`
+	Warnings       []protocol.StartupWarning `json:"warnings,omitempty"`
+	Exit           *wireExit                 `json:"exit,omitempty"`
+	Error          *wireError                `json:"error,omitempty"`
 }
 
 type wireError struct {
@@ -1207,6 +1257,8 @@ func errorCode(err error) string {
 		return string(protocol.ErrorInputStale)
 	case errors.Is(err, app.ErrInputNotTTY):
 		return string(protocol.ErrorInputNotTTY)
+	case errors.Is(err, app.ErrUnresolved):
+		return string(protocol.ErrorUnresolved)
 	default:
 		return string(protocol.ErrorInternal)
 	}

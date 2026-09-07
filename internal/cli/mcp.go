@@ -91,6 +91,13 @@ func mcpClientFactory(cfg config.Config) mcpserver.ClientFactory {
 
 type mcpDaemonClient struct{ client *daemon.Client }
 
+func (c *mcpDaemonClient) StartupWarnings() []protocol.StartupWarning {
+	if c == nil || c.client == nil {
+		return nil
+	}
+	return c.client.StartupWarnings()
+}
+
 func (c *mcpDaemonClient) Close() error { return c.client.Close() }
 func (c *mcpDaemonClient) Start(ctx context.Context, request protocol.StartRequest) (protocol.Process, error) {
 	process, err := c.client.Start(ctx, request)

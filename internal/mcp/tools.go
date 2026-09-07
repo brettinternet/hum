@@ -90,6 +90,18 @@ type Client interface {
 	Close() error
 }
 
+type startupWarningReader interface {
+	StartupWarnings() []protocol.StartupWarning
+}
+
+func startupWarnings(client Client) []protocol.StartupWarning {
+	reader, ok := client.(startupWarningReader)
+	if !ok {
+		return nil
+	}
+	return reader.StartupWarnings()
+}
+
 // ClientFactory returns the shared CLI daemon client adapter. ensure is true only for start and up.
 type ClientFactory func(context.Context, bool) (Client, error)
 
@@ -190,6 +202,8 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"time":  map[string]any{"type": "string"},
 		"error": map[string]any{"type": "string"},
 	}, "code", "time")
+	startupWarning := objectSchema(map[string]any{"project": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "project", "name", "outcome", "message")
+	startupWarningsSchema := map[string]any{"type": "array", "items": startupWarning}
 	process := objectSchema(map[string]any{
 		"name": map[string]any{"type": "string"}, "source": map[string]any{"type": "string"},
 		"root": map[string]any{"type": "string"}, "tty": map[string]any{"type": "boolean"}, "pid": map[string]any{"type": "integer"},
@@ -204,6 +218,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"relaunches":     map[string]any{"type": "integer", "minimum": 0, "maximum": 5},
 		"next_launch_at": map[string]any{"type": "string"},
 		"readiness":      readiness,
+		"warnings":       startupWarningsSchema,
 	}, "name", "source", "root", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
@@ -230,9 +245,9 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 	}, "name", "bytes", "launch_cursor")
 	collectionResults := func(items map[string]any) map[string]any {
-		return objectSchema(map[string]any{"results": map[string]any{"type": "array", "items": items}}, "results")
+		return objectSchema(map[string]any{"results": map[string]any{"type": "array", "items": items}, "warnings": startupWarningsSchema}, "results")
 	}
-	collectionProcesses := objectSchema(map[string]any{"processes": map[string]any{"type": "array", "items": process}}, "processes")
+	collectionProcesses := objectSchema(map[string]any{"processes": map[string]any{"type": "array", "items": process}, "warnings": startupWarningsSchema}, "processes")
 	return []toolDefinition{
 		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; it never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
 		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: collectionResults(launch)},
@@ -730,10 +745,12 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 			return nil, mapError(err)
 		}
 		defer client.Close()
+		recordStartupWarnings(ctx, startupWarnings(client))
 		processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, IncludeCompleted: true})
 		if err != nil {
 			return nil, mapError(err)
 		}
+		recordStartupWarnings(ctx, startupWarnings(client))
 		return mcpRemovedDefinitionResults(resolution, processes), nil
 	}
 	client, err := s.client(ctx, true)
@@ -741,6 +758,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		return nil, mapError(err)
 	}
 	defer client.Close()
+	recordStartupWarnings(ctx, startupWarnings(client))
 
 	sharedDefinitions := make([]orchestrate.Definition, 0, len(definitions))
 	for _, definition := range definitions {
@@ -811,6 +829,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 	if err != nil {
 		return nil, mapError(err)
 	}
+	recordStartupWarnings(ctx, startupWarnings(client))
 	results := make([]launchResult, 0, len(sharedResults))
 	for _, shared := range sharedResults {
 		definition, ok := findDefinition(resolution, shared.Name)
@@ -868,10 +887,12 @@ func (s *Server) list(ctx context.Context, resolution Resolution) (any, error) {
 		return nil, mapError(err)
 	}
 	defer client.Close()
+	recordStartupWarnings(ctx, startupWarnings(client))
 	processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, IncludeCompleted: true})
 	if err != nil {
 		return nil, mapError(err)
 	}
+	recordStartupWarnings(ctx, startupWarnings(client))
 	for _, process := range processes {
 		byName[process.Name] = normalizeProcess(process)
 	}
@@ -893,10 +914,12 @@ func (s *Server) status(ctx context.Context, resolution Resolution, name string)
 		return nil, mapError(err)
 	}
 	defer client.Close()
+	recordStartupWarnings(ctx, startupWarnings(client))
 	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: resolution.Root})
 	if err != nil {
 		return nil, mapError(err)
 	}
+	recordStartupWarnings(ctx, startupWarnings(client))
 	return normalizeProcess(process), nil
 }
 

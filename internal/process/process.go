@@ -70,8 +70,9 @@ type Result struct {
 
 // Child is one started process and its process group.
 type Child struct {
-	pid  int
-	pgid int
+	pid           int
+	pgid          int
+	startIdentity string
 
 	ttyMaster *os.File
 	tty       bool
@@ -145,6 +146,13 @@ func Start(spec Spec) (*Child, error) {
 		if err != nil {
 			return nil, fmt.Errorf("process: start tty %q: %w", argv[0], err)
 		}
+		startIdentity, identityErr := ProcessStartIdentity(cmd.Process.Pid)
+		if identityErr != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = cmd.Wait()
+			_ = master.Close()
+			return nil, fmt.Errorf("process: read tty start identity: %w", identityErr)
+		}
 		if spec.Started != nil {
 			if err := spec.Started(); err != nil {
 				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -154,18 +162,19 @@ func Start(spec Spec) (*Child, error) {
 			}
 		}
 		child := &Child{
-			pid:          cmd.Process.Pid,
-			pgid:         cmd.Process.Pid,
-			ttyMaster:    master,
-			tty:          true,
-			output:       spec.Output,
-			maxLineBytes: spec.MaxLineBytes,
-			idleFlush:    idleFlush,
-			now:          now,
-			done:         make(chan struct{}),
-			leaderDone:   make(chan struct{}),
-			groupGone:    make(chan struct{}),
-			res:          Result{},
+			pid:           cmd.Process.Pid,
+			pgid:          cmd.Process.Pid,
+			startIdentity: startIdentity,
+			ttyMaster:     master,
+			tty:           true,
+			output:        spec.Output,
+			maxLineBytes:  spec.MaxLineBytes,
+			idleFlush:     idleFlush,
+			now:           now,
+			done:          make(chan struct{}),
+			leaderDone:    make(chan struct{}),
+			groupGone:     make(chan struct{}),
+			res:           Result{},
 		}
 		go child.observeGroupExit()
 		go child.runTTY(cmd, master)
@@ -205,6 +214,17 @@ func Start(spec Spec) (*Child, error) {
 		_ = stderrWriter.Close()
 		return nil, fmt.Errorf("process: start %q: %w", argv[0], err)
 	}
+	startIdentity, identityErr := ProcessStartIdentity(cmd.Process.Pid)
+	if identityErr != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+		_ = stdin.Close()
+		_ = stdoutReader.Close()
+		_ = stdoutWriter.Close()
+		_ = stderrReader.Close()
+		_ = stderrWriter.Close()
+		return nil, fmt.Errorf("process: read start identity: %w", identityErr)
+	}
 	if spec.Started != nil {
 		if err := spec.Started(); err != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -225,16 +245,17 @@ func Start(spec Spec) (*Child, error) {
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 	child := &Child{
-		pid:          cmd.Process.Pid,
-		pgid:         cmd.Process.Pid,
-		output:       spec.Output,
-		maxLineBytes: spec.MaxLineBytes,
-		idleFlush:    idleFlush,
-		now:          now,
-		done:         make(chan struct{}),
-		leaderDone:   make(chan struct{}),
-		groupGone:    make(chan struct{}),
-		res:          Result{},
+		pid:           cmd.Process.Pid,
+		pgid:          cmd.Process.Pid,
+		startIdentity: startIdentity,
+		output:        spec.Output,
+		maxLineBytes:  spec.MaxLineBytes,
+		idleFlush:     idleFlush,
+		now:           now,
+		done:          make(chan struct{}),
+		leaderDone:    make(chan struct{}),
+		groupGone:     make(chan struct{}),
+		res:           Result{},
 	}
 	go child.observeGroupExit()
 	go child.run(cmd, stdoutReader, stderrReader)
@@ -250,6 +271,19 @@ func (c *Child) PID() int {
 func (c *Child) PGID() int {
 	return c.pgid
 }
+
+// StartIdentity returns the operating-system identity captured immediately
+// after the child was spawned. It changes when the operating system reuses a
+// PID, so callers must compare it before signaling a recorded process.
+func (c *Child) StartIdentity() string {
+	if c == nil {
+		return ""
+	}
+	return c.startIdentity
+}
+
+// ProcessStartIdentity reads the host process-start identity for pid.
+func ProcessStartIdentity(pid int) (string, error) { return processStartIdentity(pid) }
 
 // IsTTY reports whether the child owns a pseudo-terminal.
 func (c *Child) IsTTY() bool {

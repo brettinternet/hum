@@ -166,11 +166,11 @@ func writeProtocolResponse(encoder *protocol.Encoder, response wireResponse) err
 	}
 	switch response.Op {
 	case "start":
-		return encoder.EncodeResponse(protocol.StartResponse{Op: protocol.OpStart, OK: response.OK, Process: optionalProtocolProcess(response.Process), Error: nil})
+		return encoder.EncodeResponse(protocol.StartResponse{Op: protocol.OpStart, OK: response.OK, Process: optionalProtocolProcess(response.Process), Warnings: response.Warnings, Error: nil})
 	case "list":
-		return encoder.EncodeResponse(protocol.ListResponse{Op: protocol.OpList, OK: response.OK, Processes: protocolProcessesFromWire(response.Processes)})
+		return encoder.EncodeResponse(protocol.ListResponse{Op: protocol.OpList, OK: response.OK, Processes: protocolProcessesFromWire(response.Processes), Warnings: response.Warnings})
 	case "get":
-		return encoder.EncodeResponse(protocol.GetResponse{Op: protocol.OpGet, OK: response.OK, Process: optionalProtocolGetProcess(response.Process)})
+		return encoder.EncodeResponse(protocol.GetResponse{Op: protocol.OpGet, OK: response.OK, Process: optionalProtocolGetProcess(response.Process), Warnings: response.Warnings})
 	case "output":
 		return encoder.EncodeResponse(protocol.OutputResponse{Op: protocol.OpOutput, OK: response.OK, Entries: protocolEntriesFromWire(response.Entries), Next: protocolCursorFromUint64(response.Next), Oldest: protocolCursorFromUint64(response.Oldest), Latest: protocolCursorFromUint64(response.Latest), EvictedThrough: protocolCursorFromUint64(response.EvictedThrough), Truncated: response.Truncated, More: response.More})
 	case "signal":
@@ -188,7 +188,7 @@ func writeProtocolResponse(encoder *protocol.Encoder, response wireResponse) err
 	case "event":
 		return encoder.EncodeResponse(protocolStreamEventFromWire(response))
 	default:
-		return encoder.EncodeResponse(protocol.Response{Op: protocol.Operation(response.Op), OK: response.OK, Processes: protocolProcessesFromWire(response.Processes), Process: optionalProtocolProcess(response.Process), Entries: protocolEntriesFromWire(response.Entries), Error: nil})
+		return encoder.EncodeResponse(protocol.Response{Op: protocol.Operation(response.Op), OK: response.OK, Warnings: response.Warnings, Processes: protocolProcessesFromWire(response.Processes), Process: optionalProtocolProcess(response.Process), Entries: protocolEntriesFromWire(response.Entries), Error: nil})
 	}
 }
 

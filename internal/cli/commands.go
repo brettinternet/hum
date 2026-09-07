@@ -148,7 +148,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
-				return listCommand(ctx, cmd, version, buildTime, writer)
+				return listCommand(ctx, cmd, version, buildTime, writer, errWriter)
 			},
 		},
 		{
@@ -163,7 +163,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
-				return statusCommand(ctx, cmd, version, buildTime, writer)
+				return statusCommand(ctx, cmd, version, buildTime, writer, errWriter)
 			},
 		},
 		{
@@ -635,7 +635,11 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	return err
 }
 
-func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, errWriters ...io.Writer) error {
+	errWriter := io.Discard
+	if len(errWriters) != 0 && errWriters[0] != nil {
+		errWriter = errWriters[0]
+	}
 	if err := requireNoArgs(cmd, "list"); err != nil {
 		return err
 	}
@@ -678,17 +682,27 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	processes = mergeManifestProcesses(manifest, processes)
+	warnings := client.StartupWarnings()
+	if !cmd.Bool("json") {
+		if err := writeStartupWarnings(errWriter, warnings); err != nil {
+			return err
+		}
+	}
 	if cmd.Bool("json") {
 		items := make([]listProcessJSON, 0, len(processes))
 		for _, process := range processes {
 			items = append(items, processJSON(process))
 		}
-		return encodeJSON(writer, listJSON{Processes: items})
+		return encodeJSON(writer, listJSON{Processes: items, Warnings: warnings})
 	}
 	return renderListHuman(writer, processes, cmd.Bool("all"))
 }
 
-func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, errWriters ...io.Writer) error {
+	errWriter := io.Discard
+	if len(errWriters) != 0 && errWriters[0] != nil {
+		errWriter = errWriters[0]
+	}
 	args := cmd.Args().Slice()
 	if len(args) == 0 {
 		return errors.New("status requires a process name")
@@ -727,6 +741,12 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	defer client.Close()
 	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd})
+	warnings := client.StartupWarnings()
+	if !cmd.Bool("json") {
+		if warningErr := writeStartupWarnings(errWriter, warnings); warningErr != nil {
+			return warningErr
+		}
+	}
 	if err != nil {
 		if !isNotFound(err) {
 			return err
@@ -740,7 +760,9 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		process = manifestProcess(definition, manifest.root)
 	}
 	if cmd.Bool("json") {
-		return encodeJSON(writer, statusJSONFor(process))
+		result := statusJSONFor(process)
+		result.Warnings = warnings
+		return encodeJSON(writer, result)
 	}
 	return renderStatusHuman(writer, process)
 }
@@ -1895,6 +1917,20 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	}
 	for index := range results {
 		results[index] = manifestResultWithSelector(results[index], manifest.selector)
+	}
+	if ordered {
+		warnings := client.StartupWarnings()
+		if len(warnings) != 0 {
+			if cmd.Bool("json") {
+				if err := encodeJSON(writer, protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventWarning, Warnings: warnings}); err != nil {
+					return err
+				}
+			} else if progressWriter != nil {
+				if err := writeStartupWarnings(progressWriter, warnings); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	if ordered && len(results) == 0 && len(manifest.defs) == 0 {
 		if noCandidateErr != nil {
