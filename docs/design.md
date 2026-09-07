@@ -276,6 +276,10 @@ session.
   aggregate on daemon loss or output failure.
 - Ctrl+C closes all aggregate followers and never signals managed processes.
 - A single explicit name preserves the existing human and JSON output unchanged.
+- While the original process group remains alive after its recorded leader exits, `status` and
+  `list` report `state: descendants`, retain the PGID used as the lifecycle barrier, and report
+  PID 0 rather than presenting the dead leader as a live process. The snapshot becomes terminal
+  only after those descendants exit.
 - Terminal snapshots retain an autonomous child's exit status.
 - A child terminated by an OS signal is represented with `exit_status: -1` and an optional
   `signal` object containing its canonical name and number, for example

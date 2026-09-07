@@ -34,6 +34,11 @@ const (
 	WaitTimedOut = "timed_out"
 )
 
+// IsActiveState reports whether a process group still owns its lifecycle slot.
+func IsActiveState(state string) bool {
+	return state == "running" || state == "descendants"
+}
+
 // Definition is the protocol-independent form of one resolved manifest
 // definition. Adapters translate their project-specific definition types into
 // this small model before invoking orchestration.
@@ -386,7 +391,7 @@ func DefinitionChangedFields(root string, definition Definition, process Process
 // ProcessSupportsDrift identifies running and recovery-capable records whose
 // retained launch identity must not be silently replaced.
 func ProcessSupportsDrift(process Process) bool {
-	if process.State == "running" {
+	if IsActiveState(process.State) {
 		return true
 	}
 	return process.State == "exited" && (process.NextLaunchAt != nil || EffectiveRestart(process.Restart) == "on-failure" && process.Relaunches >= AutomaticRelaunchLimit)
@@ -775,7 +780,7 @@ func Ensure(ctx context.Context, root string, definition Definition, env []strin
 	}
 	current, err := ops.Get(ctx, definition.Name, lookupRoot)
 	if err == nil {
-		if current.State == "running" {
+		if IsActiveState(current.State) {
 			return classifyRunning(current)
 		}
 		if DefinitionMatchesProcess(definition, current) && ProcessSupportsDrift(current) {
@@ -816,7 +821,7 @@ func Ensure(ctx context.Context, root string, definition Definition, env []strin
 	deadline := time.Now().Add(time.Second)
 	for {
 		current, getErr := ops.Get(ctx, definition.Name, lookupRoot)
-		if getErr == nil && current.State == "running" {
+		if getErr == nil && IsActiveState(current.State) {
 			return classifyRunning(current)
 		}
 		if time.Now().After(deadline) {

@@ -415,7 +415,7 @@ func (s *Server) activeProcessNames() []string {
 			continue
 		}
 		for _, item := range items {
-			if item.State == app.StateRunning {
+			if app.IsActiveState(item.State) {
 				names = append(names, item.Root+": "+item.Name)
 			}
 		}

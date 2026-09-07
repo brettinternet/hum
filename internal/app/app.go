@@ -26,11 +26,17 @@ import (
 type State string
 
 const (
-	StateRunning    State = "running"
-	StateExited     State = "exited"
-	StateStopped    State = "stopped"
-	StateUnresolved State = "unresolved"
+	StateRunning     State = "running"
+	StateDescendants State = "descendants"
+	StateExited      State = "exited"
+	StateStopped     State = "stopped"
+	StateUnresolved  State = "unresolved"
 )
+
+// IsActiveState reports whether a process group still owns its lifecycle slot.
+func IsActiveState(state State) bool {
+	return state == StateRunning || state == StateDescendants
+}
 
 // RestartPolicy controls the bounded automatic relaunch behavior of a
 // retained session. Only declared manifest processes may use on-failure;
@@ -232,6 +238,12 @@ type Child interface {
 // may omit it; the supervisor will attempt a direct host lookup as a fallback.
 type IdentityChild interface {
 	StartIdentity() string
+}
+
+// DescendantChild exposes the intermediate lifecycle window after the recorded
+// group leader exits while another member of its process group remains alive.
+type DescendantChild interface {
+	HasSurvivingDescendants() bool
 }
 
 // InputChild is the optional child capability used by TTY input leases. The
@@ -3273,8 +3285,14 @@ func (r *record) snapshotLocked() Process {
 	}
 	if r.unresolved {
 		model.State = StateUnresolved
+	} else if !r.terminal && r.state == StateRunning {
+		if child, ok := r.child.(DescendantChild); ok && child.HasSurvivingDescendants() {
+			model.State = StateDescendants
+			model.PID = 0
+			model.StartIdentity = ""
+		}
 	}
-	if !r.terminal && !r.unresolved && r.source != "" {
+	if model.State == StateRunning && r.source != "" {
 		switch {
 		case r.readyConfig == nil:
 			model.Readiness = &Readiness{State: ReadinessRunningUnverified}

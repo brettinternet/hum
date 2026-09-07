@@ -173,6 +173,38 @@ func (c *timedChild) Signal(os.Signal) error {
 	return os.ErrProcessDone
 }
 
+type descendantStateChild struct {
+	pid        int
+	leaderDone chan struct{}
+	done       chan struct{}
+	leaderOnce sync.Once
+	doneOnce   sync.Once
+}
+
+func (c *descendantStateChild) PID() int              { return c.pid }
+func (c *descendantStateChild) PGID() int             { return c.pid }
+func (c *descendantStateChild) Done() <-chan struct{} { return c.done }
+func (c *descendantStateChild) StartIdentity() string { return "fake-start" }
+func (c *descendantStateChild) HasSurvivingDescendants() bool {
+	select {
+	case <-c.leaderDone:
+		return true
+	default:
+		return false
+	}
+}
+func (c *descendantStateChild) Wait() process.Result {
+	<-c.done
+	return process.Result{ExitCode: 0, ExitedAt: time.Now()}
+}
+func (c *descendantStateChild) Signal(os.Signal) error {
+	c.exitLeader()
+	c.exitGroup()
+	return nil
+}
+func (c *descendantStateChild) exitLeader() { c.leaderOnce.Do(func() { close(c.leaderDone) }) }
+func (c *descendantStateChild) exitGroup()  { c.doneOnce.Do(func() { close(c.done) }) }
+
 type subscriptionChild struct {
 	pid    int
 	done   chan struct{}
@@ -649,6 +681,52 @@ func TestStatusRunningSnapshotMetadataAndCursor(t *testing.T) {
 	}
 	if got.State != StateRunning || got.Exit != nil || got.ExitCode != 0 || !got.ExitedAt.IsZero() || got.RestartCount != 0 {
 		t.Fatalf("running lifecycle metadata = %#v", got)
+	}
+}
+
+func TestSnapshotDistinguishesSurvivingDescendants(t *testing.T) {
+	root := makeProject(t, false)
+	child := &descendantStateChild{
+		pid:        4102,
+		leaderDone: make(chan struct{}),
+		done:       make(chan struct{}),
+	}
+	s := testSupervisor(t, Options{
+		StartProcess: func(process.Spec) (Child, error) { return child, nil },
+	})
+
+	started, err := s.Start(StartRequest{
+		Name:   "descendants",
+		Source: "manifest",
+		Cwd:    root,
+		Argv:   []string{"/bin/test", "descendants"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.State != StateRunning || started.PID != child.pid || started.StartIdentity != "fake-start" {
+		t.Fatalf("live-leader snapshot = %#v, want running PID %d", started, child.pid)
+	}
+
+	child.exitLeader()
+	got, err := s.Get(root, "descendants")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateDescendants || got.PID != 0 || got.PGID != child.pid || got.StartIdentity != "" || got.Readiness != nil {
+		t.Fatalf("surviving-descendants snapshot = %#v, want descendants with no leader PID and PGID %d", got, child.pid)
+	}
+	listed, err := s.List(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].State != StateDescendants || listed[0].PID != 0 || listed[0].PGID != child.pid {
+		t.Fatalf("surviving-descendants list = %#v, want one descendants record with no leader PID", listed)
+	}
+
+	child.exitGroup()
+	if exited := waitExited(t, s, root, "descendants"); exited.PID != child.pid {
+		t.Fatalf("terminal snapshot PID = %d, want recorded leader PID %d", exited.PID, child.pid)
 	}
 }
 
