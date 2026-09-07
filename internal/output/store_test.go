@@ -12,7 +12,7 @@ import (
 
 func TestStatusNextCursorTracksSequenceWithoutMutatingRing(t *testing.T) {
 	store, err := NewStore(Limits{
-		RetainedBytes:      4,
+		RetainedBytes:      2 * (RetainedEntryOverhead + 2),
 		DefaultReadEntries: 16,
 		DefaultReadBytes:   16,
 	})
@@ -106,7 +106,7 @@ func TestSubscriptionCursorTracksConsumedOutputWait(t *testing.T) {
 }
 
 func TestFollowerEviction(t *testing.T) {
-	store, err := NewStore(Limits{RetainedBytes: 4, DefaultReadEntries: 100, DefaultReadBytes: 100})
+	store, err := NewStore(Limits{RetainedBytes: 2 * (RetainedEntryOverhead + 2), DefaultReadEntries: 100, DefaultReadBytes: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -762,7 +762,7 @@ func testFollowerConcurrentAppendAndCancel(t *testing.T) {
 }
 
 func testFollowerAppendDoesNotBlock(t *testing.T) {
-	store, err := NewStore(Limits{RetainedBytes: 128})
+	store, err := NewStore(Limits{RetainedBytes: 128 * (RetainedEntryOverhead + 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -845,7 +845,7 @@ func TestSystemEntryRestartMarkerIsMonotonicAndVisible(t *testing.T) {
 }
 
 func TestAppendObserverCapturesBeforeEviction(t *testing.T) {
-	store, err := NewStore(Limits{RetainedBytes: 8, DefaultReadEntries: 8, DefaultReadBytes: 64})
+	store, err := NewStore(Limits{RetainedBytes: RetainedEntryOverhead + 8, DefaultReadEntries: 8, DefaultReadBytes: 64})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -881,7 +881,7 @@ func TestAppendObserverCapturesBeforeEviction(t *testing.T) {
 }
 
 func TestAppendObserverCloseWaitsForInFlightAppend(t *testing.T) {
-	store, err := NewStore(Limits{RetainedBytes: 64})
+	store, err := NewStore(Limits{RetainedBytes: RetainedEntryOverhead + 64})
 	if err != nil {
 		t.Fatal(err)
 	}

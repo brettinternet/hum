@@ -48,7 +48,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 			&urfavecli.StringFlag{Name: "project", Aliases: []string{"C"}, Usage: "project directory; omit for the current directory; ad-hoc run uses it as cwd, manifest cwd stays project-relative"},
 			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon [$HUM_RUNTIME_DIR, then $XDG_RUNTIME_DIR/hum]", DefaultText: "$TMPDIR/hum-UID"},
 			&urfavecli.StringFlag{Name: "stop-grace", Usage: "grace period between SIGTERM and SIGKILL when stopping a process [$HUM_STOP_GRACE]", DefaultText: config.DefaultStopGrace.String()},
-			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained output bytes per process, at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
+			&urfavecli.StringFlag{Name: "output-bytes", Usage: "charged retained output bytes per process (text + 128 bytes per entry; read byte limits count text only), at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
 			&urfavecli.StringFlag{Name: "completed-records", Usage: "completed process records to retain [$HUM_COMPLETED_RECORDS]", DefaultText: strconv.Itoa(config.DefaultCompletedRecords)},
 		},
 		Commands:     newCLICommands(version, buildTime, writer, errWriter),

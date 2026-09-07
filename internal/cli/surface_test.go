@@ -548,3 +548,30 @@ func TestLifecycleHelp(t *testing.T) {
 		})
 	}
 }
+
+func TestOutputByteDocs(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+	if err := root.Run(context.Background(), []string{"hum", "--help"}); err != nil {
+		t.Fatalf("root help: %v", err)
+	}
+	help := strings.ToLower(output.String())
+	for _, want := range []string{"output-bytes", "charged retained output bytes per process", "text + 128 bytes per entry", "read byte limits count text only"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("root help missing %q: %q", want, output.String())
+		}
+	}
+	content, err := os.ReadFile("../../docs/design.md")
+	if err != nil {
+		t.Fatalf("read docs/design.md: %v", err)
+	}
+	docs := strings.ToLower(string(content))
+	for _, want := range []string{"len(text)+128", "--output-bytes", "--limit-bytes", "text bytes only", "not an exact rss cap"} {
+		if !strings.Contains(docs, want) {
+			t.Errorf("docs/design.md missing %q", want)
+		}
+	}
+	if errorOutput.Len() != 0 {
+		t.Fatalf("unexpected stderr: %q", errorOutput.String())
+	}
+}

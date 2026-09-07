@@ -1036,6 +1036,9 @@ func (s *Supervisor) cancelRelaunchLocked(rec *record, reset bool) {
 }
 
 func truncateSystemEntry(text string, limit int) string {
+	if limit > output.RetainedEntryOverhead {
+		limit -= output.RetainedEntryOverhead
+	}
 	if limit > 0 && len(text) > limit {
 		text = text[:limit]
 	}
@@ -1769,13 +1772,7 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		closeInputLease(inputToClose)
 	}
 	rec.waitInputOperations()
-	marker := fmt.Sprintf("%s restarted\n", rec.name)
-	if limit := s.outputLimits.RetainedBytes; limit > 0 && len(marker) > limit {
-		marker = "restarted"
-		if len(marker) > limit {
-			marker = marker[:limit]
-		}
-	}
+	marker := truncateSystemEntry(fmt.Sprintf("%s restarted\n", rec.name), s.outputLimits.RetainedBytes)
 	launchCursor, err := store.Append(output.System, s.now(), marker)
 	if err != nil {
 		return Process{}, fmt.Errorf("restart marker: %w", err)
@@ -3051,9 +3048,15 @@ func (s *Supervisor) Remove(ctx context.Context, cwd, name string) error {
 		// validated just before removal cannot start after ownership is cleared.
 		input.close()
 	}
+	tracker := rec.tracker
+	rec.tracker = nil
+	rec.readyConfig, rec.readyPattern = nil, nil
 	rec.input = nil
 	rec.store, rec.env, rec.argv, rec.child = nil, nil, nil, nil
 	s.mu.Unlock()
+	if tracker != nil {
+		tracker.close()
+	}
 	if input != nil {
 		closeInputLease(input)
 	}

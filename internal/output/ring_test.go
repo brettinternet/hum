@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -118,7 +119,7 @@ func TestReadFilters(t *testing.T) {
 }
 
 func TestTailResultCapacityHonorsByteLimit(t *testing.T) {
-	r, err := newRing(Limits{RetainedBytes: 32, DefaultReadEntries: 32, DefaultReadBytes: 32})
+	r, err := newRing(Limits{RetainedBytes: 8 * (RetainedEntryOverhead + 1), DefaultReadEntries: 32, DefaultReadBytes: 32})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestTailResultCapacityHonorsByteLimit(t *testing.T) {
 }
 
 func TestTailResultCapacityHonorsSparseFilter(t *testing.T) {
-	r, err := newRing(Limits{RetainedBytes: 32, DefaultReadEntries: 8, DefaultReadBytes: 8})
+	r, err := newRing(Limits{RetainedBytes: 8 * (RetainedEntryOverhead + 1), DefaultReadEntries: 8, DefaultReadBytes: 8})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +185,7 @@ func TestTailResultCapacityHonorsSparseFilter(t *testing.T) {
 func TestLargeTailPreservesChronologicalOrder(t *testing.T) {
 	const (
 		total    = 5000
-		retained = 2048
+		retained = 2048 * (RetainedEntryOverhead + 1)
 		tail     = 1024
 	)
 	r, err := newRing(Limits{RetainedBytes: retained, DefaultReadEntries: 8, DefaultReadBytes: retained})
@@ -217,7 +218,7 @@ func TestLargeTailPreservesChronologicalOrder(t *testing.T) {
 }
 
 func TestRingEviction(t *testing.T) {
-	r, err := newRing(Limits{RetainedBytes: 5, DefaultReadEntries: 16, DefaultReadBytes: 64})
+	r, err := newRing(Limits{RetainedBytes: 2*RetainedEntryOverhead + 5, DefaultReadEntries: 16, DefaultReadBytes: 64})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +257,7 @@ func TestRingEviction(t *testing.T) {
 	if _, err := r.append(Stdout, at, ""); !errors.Is(err, ErrEmptyText) {
 		t.Fatalf("empty text error = %v", err)
 	}
-	if _, err := r.append(Stdout, at, "123456"); !errors.Is(err, ErrEntryTooLarge) {
+	if _, err := r.append(Stdout, at, strings.Repeat("x", r.limits.RetainedBytes)); !errors.Is(err, ErrEntryTooLarge) {
 		t.Fatalf("oversized entry error = %v", err)
 	}
 	if r.next != before {
@@ -280,7 +281,7 @@ func TestRingEviction(t *testing.T) {
 }
 
 func TestCursorTruncation(t *testing.T) {
-	r, err := newRing(Limits{RetainedBytes: 6, DefaultReadEntries: 16, DefaultReadBytes: 64})
+	r, err := newRing(Limits{RetainedBytes: 3 * (RetainedEntryOverhead + 2), DefaultReadEntries: 16, DefaultReadBytes: 64})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +397,7 @@ func TestTailKeepsNewestBoundedWindow(t *testing.T) {
 		t.Fatalf("filtered tail = %#v, want More=true", filtered)
 	}
 
-	truncatedRing, err := newRing(Limits{RetainedBytes: 4, DefaultReadEntries: 4, DefaultReadBytes: 1024})
+	truncatedRing, err := newRing(Limits{RetainedBytes: 4 * (RetainedEntryOverhead + 1), DefaultReadEntries: 4, DefaultReadBytes: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,4 +456,109 @@ func TestTailLargerThanDefaultEntriesReturnsNewest(t *testing.T) {
 	if len(explicit.Entries) != 2 || !explicit.More {
 		t.Fatalf("tail 4 with explicit entry limit 2 = %#v, want two entries and More", explicit)
 	}
+}
+
+func TestRetentionChargesEntryOverhead(t *testing.T) {
+	const firstText = "a"
+	const secondText = "bbbb"
+	firstCharge := len(firstText) + RetainedEntryOverhead
+	secondCharge := len(secondText) + RetainedEntryOverhead
+	limit := firstCharge + secondCharge
+	r, err := newRing(Limits{RetainedBytes: limit, DefaultReadEntries: 100, DefaultReadBytes: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.append(Stdout, time.Time{}, firstText); err != nil {
+		t.Fatal(err)
+	}
+	if r.bytes != firstCharge {
+		t.Fatalf("first retained charge = %d, want %d", r.bytes, firstCharge)
+	}
+	if _, err := r.append(Stdout, time.Time{}, secondText); err != nil {
+		t.Fatal(err)
+	}
+	if r.bytes != limit || r.bytes > r.limits.RetainedBytes {
+		t.Fatalf("retained charge after two entries = %d, limit %d", r.bytes, r.limits.RetainedBytes)
+	}
+
+	next, count, bytes, entries := r.next, r.count, r.bytes, append([]Entry(nil), r.entries...)
+	tooLargeText := strings.Repeat("c", limit)
+	_, err = r.append(Stdout, time.Time{}, tooLargeText)
+	var tooLarge *EntryTooLargeError
+	tooLargeCharge := len(tooLargeText) + RetainedEntryOverhead
+	if !errors.As(err, &tooLarge) || tooLarge.Size != tooLargeCharge || tooLarge.Limit != limit {
+		t.Fatalf("oversized charged append error = %v, want size %d and limit %d", err, tooLargeCharge, limit)
+	}
+	if r.next != next || r.count != count || r.bytes != bytes || !equalEntries(r.entries, entries) {
+		t.Fatalf("oversized append mutated ring: next/count/bytes %d/%d/%d -> %d/%d/%d", next, count, bytes, r.next, r.count, r.bytes)
+	}
+
+	if _, err := r.append(Stdout, time.Time{}, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if r.bytes > r.limits.RetainedBytes {
+		t.Fatalf("retained charge after eviction = %d, limit %d", r.bytes, r.limits.RetainedBytes)
+	}
+	if r.entries[r.head].Text != secondText && r.entries[r.head].Text != "x" {
+		t.Fatalf("oldest retained entry after eviction = %#v", r.entries[r.head])
+	}
+}
+
+func TestRetentionBoundsShortEntryCardinality(t *testing.T) {
+	const (
+		limit = 4 << 20
+		text  = "0123456789"
+		total = 300000
+	)
+	perEntry := len(text) + RetainedEntryOverhead
+	maxEntries := limit / perEntry
+	r, err := newRing(Limits{RetainedBytes: limit, DefaultReadEntries: 100, DefaultReadBytes: total * len(text)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < total; i++ {
+		if _, err := r.append(Stdout, time.Time{}, text); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	if r.count > maxEntries || len(r.entries) > maxEntries || r.bytes > limit {
+		t.Fatalf("retention bounds count/capacity/bytes = %d/%d/%d, want count/capacity <= %d and bytes <= %d", r.count, len(r.entries), r.bytes, maxEntries, limit)
+	}
+	if r.bytes != r.count*perEntry {
+		t.Fatalf("retained accounting = %d, want %d entries * %d", r.bytes, r.count, perEntry)
+	}
+	result, err := r.read(ReadOptions{MaxEntries: maxEntries, MaxBytes: total * len(text)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != r.count || result.Next == nil || *result.Next != Cursor(total-1) {
+		t.Fatalf("chronological read count/next = %d/%v, want %d/%d", len(result.Entries), result.Next, r.count, total-1)
+	}
+	first := Cursor(total - r.count)
+	for i, entry := range result.Entries {
+		if entry.Cursor != first+Cursor(i) || entry.Text != text {
+			t.Fatalf("entry %d = %#v, want cursor %d and text %q", i, entry, first+Cursor(i), text)
+		}
+	}
+	active := make(map[int]bool, r.count)
+	for i := 0; i < r.count; i++ {
+		active[(r.head+i)%len(r.entries)] = true
+	}
+	for i, entry := range r.entries {
+		if !active[i] && entry != (Entry{}) {
+			t.Fatalf("evicted slot %d retains entry %#v", i, entry)
+		}
+	}
+}
+
+func equalEntries(a, b []Entry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -38,6 +38,12 @@ const (
 	BothStreams            = StdoutMask | StderrMask
 )
 
+// RetainedEntryOverhead is the conservative fixed charge for one retained
+// entry's metadata, string/slice storage, and allocator slack. Retention
+// accounting charges this in addition to the entry text bytes; read limits
+// continue to count text bytes only.
+const RetainedEntryOverhead = 128
+
 // Conservative defaults used when a Limits field is zero. DefaultReadBytes
 // equals the largest retained line so a default read always fits at least one
 // maximum-size entry instead of failing with EntryTooLargeError.

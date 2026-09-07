@@ -346,11 +346,15 @@ System entries remain raw, as do all stored bytes. Bounded `logs`, MCP `logs`,
 `wait --match`, readiness matches, and ring predicates use stripped child text.
 Patterns containing raw ESC bytes no longer match stripped child text; a `^`
 anchor now matches colourised output whose raw first byte is ESC. `logs --follow --match` selects with stripped text but emits selected raw
-entries. Control-only bounded child entries remain present with empty text, while
-raw stored lengths govern `MaxBytes`, entry-too-large errors, retention, and
-cursor accounting. There is no `--raw` flag or other raw opt-out. Stripping is
-not terminal emulation or redraw collapsing: a sequence split across entries can
-leave its tail visible, and carriage-return redraw frames remain separate.
+entries. Control-only bounded child entries remain present with empty text. Read
+byte limits (`MaxBytes`, `--limit-bytes`) count text bytes only, while retention
+(`--output-bytes`) charges each entry `len(text)+128` bytes for conservative
+metadata, string/slice storage, and allocator slack. The charged size controls
+retention rejection, eviction, capacity, and accounting, so short entries also
+bound retained cardinality; it is not an exact RSS cap. There is no `--raw` flag
+or other raw opt-out. Stripping is not terminal emulation or redraw collapsing:
+a sequence split across entries can leave its tail visible, and carriage-return
+redraw frames remain separate.
 Byte-bounded retention reports eviction explicitly; a live pre-launch or stopped
 follower reserves its
 session from completed-record eviction. Aggregate `logs --follow` creates one

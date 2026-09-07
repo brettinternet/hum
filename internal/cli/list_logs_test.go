@@ -164,7 +164,7 @@ processes:
 
 func TestLogsDefaultNewestWindow(t *testing.T) {
 	runtimeDir := hum006ListLogsTempDir(t, "default-window-runtime")
-	hum006ListLogsStartDaemon(t, runtimeDir, 4096)
+	hum006ListLogsStartDaemon(t, runtimeDir, 1<<16)
 	project := hum006ListLogsProject(t, "default-window-project")
 	script := `i=0; while [ "$i" -lt 202 ]; do printf "line-%03d\n" "$i"; i=$((i+1)); done`
 	writeManifestCLITestFile(t, project, "version: 1\nprocesses:\n  window:\n    argv: [/bin/sh, -c, "+strconv.Quote(script)+"]\n")
@@ -326,7 +326,7 @@ func TestLogsAggregateValidationAndLifecycle(t *testing.T) {
 
 func TestLogsFollow(t *testing.T) {
 	runtimeDir := hum006ListLogsTempDir(t, "runtime")
-	hum006ListLogsStartDaemon(t, runtimeDir, 128)
+	hum006ListLogsStartDaemon(t, runtimeDir, 1024)
 	project := hum006ListLogsProject(t, "project")
 
 	selectScript := "printf 'stdout-first\\n'; printf 'stderr-first\\n' >&2; printf 'stdout-match\\n'; printf 'stderr-ignore\\n' >&2; printf 'stdout-last\\n'; sleep 5"

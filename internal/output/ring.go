@@ -36,15 +36,13 @@ func newRing(limits Limits) (*ring, error) {
 		limits.DefaultReadBytes = DefaultReadBytes
 	}
 
-	// Every valid entry contains at least one byte, so retained bytes are an
-	// upper bound on the number of simultaneously retained entries. Start with
-	// the common read size, but avoid a large allocation for a tiny ring.
+	// Every valid entry consumes at least its text byte and the fixed retention
+	// charge, so the charged budget bounds the number of retained entries.
+	// Start with the common read size, but avoid a large allocation for a tiny
+	// ring.
 	capacity := limits.DefaultReadEntries
-	if capacity > limits.RetainedBytes {
-		capacity = limits.RetainedBytes
-	}
-	if capacity < 1 {
-		capacity = 1
+	if maxEntries := maxRetainedEntries(limits.RetainedBytes); capacity > maxEntries {
+		capacity = maxEntries
 	}
 	return &ring{
 		limits:  limits,
@@ -62,27 +60,28 @@ func (r *ring) append(stream Stream, at time.Time, text string) (Cursor, error) 
 	if len(text) == 0 {
 		return 0, &EmptyTextError{}
 	}
-	if len(text) > r.limits.RetainedBytes {
-		return 0, &EntryTooLargeError{Bytes: len(text), Size: len(text), Limit: r.limits.RetainedBytes}
+	charge := retainedEntryCharge(len(text))
+	if charge > r.limits.RetainedBytes {
+		return 0, &EntryTooLargeError{Bytes: charge, Size: charge, Limit: r.limits.RetainedBytes}
 	}
 	if r.next == ^Cursor(0) {
 		return 0, &CursorOverflowError{}
 	}
 
-	// Evict before adding when necessary. Besides preserving the byte bound at
-	// every observable point, subtraction-form arithmetic prevents bytes from
-	// overflowing int for a hostile near-MaxInt limit.
-	available := r.limits.RetainedBytes - len(text)
+	// Evict before adding when necessary. Besides preserving the charged byte
+	// bound at every observable point, subtraction-form arithmetic prevents
+	// bytes from overflowing int for a hostile near-MaxInt limit.
+	available := r.limits.RetainedBytes - charge
 	for r.count > 0 && r.bytes > available {
 		r.evictOldest()
 	}
 
-	r.ensureCapacity(r.count + 1)
+	r.ensureCapacity(r.count+1, charge)
 	index := (r.head + r.count) % len(r.entries)
 	cursor := r.next
 	r.entries[index] = Entry{Cursor: cursor, Stream: stream, Time: at, Text: text}
 	r.count++
-	r.bytes += len(text)
+	r.bytes += charge
 	r.next++
 	return cursor, nil
 }
@@ -369,7 +368,7 @@ func validStream(stream Stream) bool {
 	return stream == Stdout || stream == Stderr || stream == System
 }
 
-func (r *ring) ensureCapacity(need int) {
+func (r *ring) ensureCapacity(need, charge int) {
 	if need <= len(r.entries) {
 		return
 	}
@@ -377,12 +376,26 @@ func (r *ring) ensureCapacity(need int) {
 	if capacity < 1 {
 		capacity = 1
 	}
+	maxCapacity := maxRetainedEntriesForCharge(r.limits.RetainedBytes, charge)
+	if maxCapacity < need {
+		// Existing entries may be shorter than this incoming entry. The current
+		// count is already budget-valid after eviction, so never shrink below
+		// the capacity needed to place it.
+		maxCapacity = need
+	}
+	if capacity > maxCapacity {
+		capacity = maxCapacity
+	}
 	for capacity < need {
 		if capacity > int(^uint(0)>>1)/2 {
 			capacity = need
 			break
 		}
 		capacity *= 2
+		if capacity > maxCapacity {
+			capacity = maxCapacity
+			break
+		}
 	}
 	grown := make([]Entry, capacity)
 	for i := range r.count {
@@ -398,7 +411,7 @@ func (r *ring) evictOldest() {
 	}
 	index := r.head
 	entry := r.entries[index]
-	r.bytes -= len(entry.Text)
+	r.bytes -= retainedEntryCharge(len(entry.Text))
 	r.entries[index] = Entry{}
 	r.head = (r.head + 1) % len(r.entries)
 	r.count--
@@ -407,6 +420,22 @@ func (r *ring) evictOldest() {
 	if r.count == 0 {
 		r.head = 0
 	}
+}
+
+func retainedEntryCharge(textLen int) int {
+	maxInt := int(^uint(0) >> 1)
+	if textLen > maxInt-RetainedEntryOverhead {
+		return maxInt
+	}
+	return textLen + RetainedEntryOverhead
+}
+
+func maxRetainedEntries(limit int) int {
+	return maxRetainedEntriesForCharge(limit, RetainedEntryOverhead+1)
+}
+
+func maxRetainedEntriesForCharge(limit, charge int) int {
+	return limit / charge
 }
 
 func minInt(a, b int) int {

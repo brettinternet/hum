@@ -2064,7 +2064,7 @@ func TestManifestReadinessRetention(t *testing.T) {
 	child := newSubscriptionChild(6001, 0, time.Unix(201, 0), "")
 	s := testSupervisor(t, Options{
 		OutputLimits: output.Limits{
-			RetainedBytes:      8,
+			RetainedBytes:      output.RetainedEntryOverhead + 8,
 			DefaultReadEntries: 8,
 			DefaultReadBytes:   64,
 		},
@@ -2383,7 +2383,7 @@ func TestManifestReadinessCapturesSynchronousEvictedStart(t *testing.T) {
 	child := newSubscriptionChild(6501, 0, time.Unix(251, 0), "")
 	s := testSupervisor(t, Options{
 		OutputLimits: output.Limits{
-			RetainedBytes: 8, DefaultReadEntries: 8, DefaultReadBytes: 64,
+			RetainedBytes: output.RetainedEntryOverhead + 8, DefaultReadEntries: 8, DefaultReadBytes: 64,
 		},
 		StartProcess: func(spec process.Spec) (Child, error) {
 			child.store = spec.Output
@@ -2443,7 +2443,7 @@ func TestManifestRestartReadinessCapturesSynchronousEvictedStart(t *testing.T) {
 	)
 	s := testSupervisor(t, Options{
 		OutputLimits: output.Limits{
-			RetainedBytes: 8, DefaultReadEntries: 8, DefaultReadBytes: 64,
+			RetainedBytes: output.RetainedEntryOverhead + 8, DefaultReadEntries: 8, DefaultReadBytes: 64,
 		},
 		StartProcess: func(spec process.Spec) (Child, error) {
 			mu.Lock()
@@ -2772,5 +2772,48 @@ func TestPrelaunchFollowerSurvivesIdleRace(t *testing.T) {
 			t.Fatalf("iteration %d: attached pre-launch follower lost its session: %v", i, err)
 		}
 		second.Close()
+	}
+}
+
+func TestRemoveReleasesOutputReferences(t *testing.T) {
+	root := makeProject(t, false)
+	child := &timedChild{pid: 7201, done: make(chan struct{}), result: process.Result{ExitCode: 0}}
+	var launchedStore *output.Store
+	s := testSupervisor(t, Options{
+		StartProcess: func(spec process.Spec) (Child, error) {
+			launchedStore = spec.Output
+			return child, nil
+		},
+	})
+	if _, err := s.Start(StartRequest{Name: "released", Cwd: root, Argv: []string{"/bin/test", "released"}}); err != nil {
+		t.Fatal(err)
+	}
+	if launchedStore == nil {
+		t.Fatal("start did not provide an output store")
+	}
+	if _, err := launchedStore.Append(output.Stdout, time.Unix(1, 0), "retained output\n"); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.RLock()
+	rec := s.records[keyFor(root, "released")]
+	s.mu.RUnlock()
+	if rec == nil || rec.store == nil {
+		t.Fatal("started record did not retain its output store")
+	}
+	if err := s.Remove(context.Background(), root, "released"); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.RLock()
+	_, present := s.records[keyFor(root, "released")]
+	store, tracker := rec.store, rec.tracker
+	s.mu.RUnlock()
+	if present {
+		t.Fatal("removed record remains in supervisor registry")
+	}
+	if store != nil || tracker != nil {
+		t.Fatalf("removed record references store/tracker = %p/%p, want nil", store, tracker)
+	}
+	if _, err := launchedStore.Append(output.Stdout, time.Unix(2, 0), "after removal\n"); !errors.Is(err, output.ErrStoreClosed) {
+		t.Fatalf("append to removed store = %v, want ErrStoreClosed", err)
 	}
 }
