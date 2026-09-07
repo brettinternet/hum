@@ -1,10 +1,10 @@
 ---
 id: HUM-043
 title: Finish the README quickstart structure
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-06 16:15'
-updated_date: '2026-09-06 17:32'
+updated_date: '2026-09-07 02:01'
 labels:
   - docs
 milestone: m-4
@@ -38,19 +38,19 @@ Non-goals: behavior changes, expanding README back into a specification, rewriti
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/cli -run '^TestREADMEQuickstartStructure$' -count=1 -v` exits 0 and prints PASS, proving README.md is at most 900 words; top-level Install precedes Quickstart, which precedes Coding agents; and the quickstart contains hum run, hum up, hum logs --follow, and hum down.
-- [ ] #2 `go test ./internal/cli ./internal/skill -run 'Docs' -count=1` exits 0 with every removed README contract phrase still asserted against docs/design.md, docs/coding-agents.md, or the bundled skills.
-- [ ] #3 `task ci` exits 0.
+- [x] #1 `go test ./internal/cli -run '^TestREADMEQuickstartStructure$' -count=1 -v` exits 0 and prints PASS, proving README.md is at most 900 words; top-level Install precedes Quickstart, which precedes Coding agents; and the quickstart contains hum run, hum up, hum logs --follow, and hum down.
+- [x] #2 `go test ./internal/cli ./internal/skill -run 'Docs' -count=1` exits 0 with every removed README contract phrase still asserted against docs/design.md, docs/coding-agents.md, or the bundled skills.
+- [x] #3 `task ci` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -65,4 +65,18 @@ Non-goals: behavior changes, expanding README back into a specification, rewriti
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-09-06: README.md was simplified to about 620 words in commit 2df5cf2 (docs: simplify README) while the audit was running, and the audit re-pointed the contract phrase pins in the CLI docs tests (input, drift, restart policy, recovery, aggregate logs, terminal control, TTY) from README.md to docs/design.md, docs/coding-agents.md, and the skills; README keeps a pinned link to docs/design.md. Remaining: confirm the README headings match AC1 (Install, Quickstart, Coding agents) and record the verifier pass before closing.
+
+2026-09-06: Claimed for implementation on branch worktree; starting with README structure and focused docs tests.
+
+2026-09-07: Implemented README Install/Quickstart ordering and a copy-pasteable isolated lifecycle; added a regression test for word count, real top-level heading order, and required commands.
+AC#1 evidence: `go test ./internal/cli -run "^TestREADMEQuickstartStructure$" -count=1 -v` PASS on 6a83f6a; README is 888 words and required headings/commands are enforced.
+AC#2 evidence: `go test ./internal/cli ./internal/skill -run "Docs" -count=1` PASS on 6a83f6a.
+AC#3 evidence: `task ci` PASS on final implementation commit 6a83f6a (format, vet, staticcheck, full tests, race tests, build, smoke).
+Independent verifier: PASS for AC#1-#3 and all DoD claims on 6a83f6a; independently exercised detached run, up, followed clock logs, down, and shutdown in an isolated Git project. Final adversarial review found no validated findings. Diff is limited to declared files README.md and internal/cli/surface_test.go; no test was deleted, skipped, or weakened, and no protected gate file changed. Merged to main as f6be446.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added an under-900-word README flow with exact Install, Quickstart, and Coding agents ordering, a runnable one-minute lifecycle, and structural regression coverage. All focused docs tests and task ci passed on 6a83f6a; an independent verifier passed every criterion and the final review had no findings. Merged to main as f6be446.
+<!-- SECTION:FINAL_SUMMARY:END -->
