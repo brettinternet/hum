@@ -1025,10 +1025,26 @@ func stripBoundedChildText(result output.ReadResult) output.ReadResult {
 	return result
 }
 
+const maxSinceMilliseconds int64 = (1<<63 - 1) / int64(time.Millisecond)
+
 func readOptionsFromWire(req wireRequest) (output.ReadOptions, error) {
 	options := output.ReadOptions{Tail: req.Tail, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	if options.MaxBytes > maxBoundedReadBytes {
 		options.MaxBytes = maxBoundedReadBytes
+	}
+	if req.SinceMS < 0 {
+		return output.ReadOptions{}, fmt.Errorf("%w: since_ms must be positive", app.ErrInvalidRequest)
+	}
+	if req.SinceMS > maxSinceMilliseconds {
+		return output.ReadOptions{}, fmt.Errorf("%w: since_ms is too large", app.ErrInvalidRequest)
+	}
+	if req.SinceMS != 0 && req.SinceUnixNano != 0 {
+		return output.ReadOptions{}, fmt.Errorf("%w: since_ms and since_unix_nano cannot both be set", app.ErrInvalidRequest)
+	}
+	if req.SinceUnixNano != 0 {
+		options.Since = time.Unix(0, req.SinceUnixNano)
+	} else if req.SinceMS != 0 {
+		options.Since = time.Now().Add(-time.Duration(req.SinceMS) * time.Millisecond)
 	}
 	if req.After != nil {
 		cursor := output.Cursor(*req.After)
@@ -1098,6 +1114,8 @@ type wireRequest struct {
 	All              bool                 `json:"all,omitempty"`
 	IncludeCompleted bool                 `json:"include_completed,omitempty"`
 	After            *uint64              `json:"after,omitempty"`
+	SinceMS          int64                `json:"since_ms,omitempty"`
+	SinceUnixNano    int64                `json:"since_unix_nano,omitempty"`
 	Tail             int                  `json:"tail,omitempty"`
 	Stream           string               `json:"stream,omitempty"`
 	Match            string               `json:"match,omitempty"`

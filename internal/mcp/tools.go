@@ -21,7 +21,38 @@ import (
 const (
 	defaultTimeoutMS       = int64(30_000)
 	automaticRelaunchLimit = 5
+	maxSinceMilliseconds   = int64((1<<63 - 1) / int64(time.Millisecond))
 )
+
+func sinceCutoffUnixNano(cutoff time.Time) int64 {
+	if cutoff.IsZero() {
+		return 0
+	}
+	return cutoff.UnixNano()
+}
+
+func validateSinceMS(input commonInput) error {
+	if input.SinceMS < 0 {
+		return &ToolError{Code: "invalid_request", Message: "since_ms must be positive"}
+	}
+	if input.SinceMS > maxSinceMilliseconds {
+		return &ToolError{Code: "invalid_request", Message: "since_ms is too large"}
+	}
+	if _, sinceSet := input.fields["since_ms"]; sinceSet && input.SinceMS == 0 {
+		return &ToolError{Code: "invalid_request", Message: "since_ms must be positive"}
+	}
+	return nil
+}
+
+func captureSinceCutoff(input commonInput) (int64, error) {
+	if err := validateSinceMS(input); err != nil {
+		return 0, err
+	}
+	if input.SinceMS == 0 {
+		return 0, nil
+	}
+	return sinceCutoffUnixNano(time.Now().Add(-time.Duration(input.SinceMS) * time.Millisecond)), nil
+}
 
 // ErrDaemonUnavailable identifies a missing daemon without coupling MCP to the daemon package.
 var ErrDaemonUnavailable = errors.New("daemon unavailable")
@@ -281,7 +312,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "down", Description: "Stop every running runtime record in the project and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
 		{Name: "list", Description: "Merge resolved definitions with all daemon runtime records in the project, including ad_hoc records. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionProcesses},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
-		{Name: "logs", Description: "Read a bounded cursor-based output window for an existing declared or ad_hoc runtime record. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to read from; omitting it selects the newest default window."}, "tail": map[string]any{"type": "integer", "minimum": 0, "description": "Return at most this many of the most recent entries; omitting it uses the newest default window."}, "max_entries": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of entries to return in this window."}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum total text bytes to return across this window's entries."}}, "project_root", "name"), OutputSchema: output},
+		{Name: "logs", Description: "Read a bounded cursor-based output window for an existing declared or ad_hoc runtime record. since_ms uses one request-time cutoff and includes entries at or after it; it composes with the cursor, tail, and entry/byte bounds. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to read from; omitting it selects the newest default window."}, "since_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Positive duration in milliseconds from the request time; entries at or after the computed cutoff are included."}, "tail": map[string]any{"type": "integer", "minimum": 0, "description": "Return at most this many of the most recent entries; omitting it uses the newest default window."}, "max_entries": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of entries to return in this window."}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum total text bytes to return across this window's entries."}}, "project_root", "name"), OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Write one exact, bounded payload to an already-running TTY incarnation at its initial launch cursor with at-most-once behavior; never starts, waits, queues, retries, resends, retains, or explicitly echoes input and fails immediately on ownership conflict.", InputSchema: inputSchema, OutputSchema: inputResult},
 		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
@@ -299,17 +330,19 @@ func cloneProperties(src map[string]any) map[string]any {
 }
 
 type commonInput struct {
-	ProjectRoot string  `json:"project_root"`
-	Name        string  `json:"name,omitempty"`
-	NoWait      bool    `json:"no_wait,omitempty"`
-	TimeoutMS   int64   `json:"timeout_ms,omitempty"`
-	After       *uint64 `json:"after,omitempty"`
-	Tail        int     `json:"tail,omitempty"`
-	MaxEntries  int     `json:"max_entries,omitempty"`
-	MaxBytes    int     `json:"max_bytes,omitempty"`
-	Match       string  `json:"match,omitempty"`
-	Text        *string `json:"text,omitempty"`
-	Base64      *string `json:"base64,omitempty"`
+	ProjectRoot   string  `json:"project_root"`
+	Name          string  `json:"name,omitempty"`
+	NoWait        bool    `json:"no_wait,omitempty"`
+	TimeoutMS     int64   `json:"timeout_ms,omitempty"`
+	After         *uint64 `json:"after,omitempty"`
+	SinceMS       int64   `json:"since_ms,omitempty"`
+	SinceUnixNano int64   `json:"-"`
+	Tail          int     `json:"tail,omitempty"`
+	MaxEntries    int     `json:"max_entries,omitempty"`
+	MaxBytes      int     `json:"max_bytes,omitempty"`
+	Match         string  `json:"match,omitempty"`
+	Text          *string `json:"text,omitempty"`
+	Base64        *string `json:"base64,omitempty"`
 
 	textSet   bool
 	base64Set bool
@@ -565,6 +598,12 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	input, err := decodeInput(raw)
 	if err != nil {
 		return nil, err
+	}
+	if name == "logs" {
+		input.SinceUnixNano, err = captureSinceCutoff(input)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if name == "input" {
 		for field := range input.fields {
@@ -962,6 +1001,13 @@ func (s *Server) logs(ctx context.Context, resolution Resolution, input commonIn
 	if input.Tail < 0 || input.MaxEntries < 0 || input.MaxBytes < 0 {
 		return nil, &ToolError{Code: "invalid_request", Message: "log bounds cannot be negative"}
 	}
+	if err := validateSinceMS(input); err != nil {
+		return nil, err
+	}
+	sinceUnixNano := input.SinceUnixNano
+	if sinceUnixNano == 0 && input.SinceMS > 0 {
+		sinceUnixNano = sinceCutoffUnixNano(time.Now().Add(-time.Duration(input.SinceMS) * time.Millisecond))
+	}
 	client, err := s.client(ctx, false)
 	if err != nil {
 		return nil, mapError(err)
@@ -981,7 +1027,7 @@ func (s *Server) logs(ctx context.Context, resolution Resolution, input commonIn
 		// the oldest portion of the window instead of the most recent entries.
 		maxEntries = tail
 	}
-	request := protocol.OutputRequest{Op: protocol.OpOutput, Name: input.Name, Cwd: resolution.Root, Tail: tail, MaxEntries: maxEntries, MaxBytes: input.MaxBytes}
+	request := protocol.OutputRequest{Op: protocol.OpOutput, Name: input.Name, Cwd: resolution.Root, SinceUnixNano: sinceUnixNano, Tail: tail, MaxEntries: maxEntries, MaxBytes: input.MaxBytes}
 	if input.After != nil {
 		cursor := protocol.Cursor(*input.After)
 		request.After = &cursor

@@ -32,7 +32,7 @@ hum [--project DIR|-C DIR] list [--all] [--json]
 hum [--project DIR|-C DIR] status <name> [--json]
 hum [--project DIR|-C DIR] attach <name> [--tail N]
 hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|both] [--tail N] [--after-cursor N]
-           [--limit-bytes N] [--match REGEX] [--follow] [--json]
+           [--since DURATION] [--limit-bytes N] [--match REGEX] [--follow] [--json]
 hum [--project DIR|-C DIR] wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
 hum [--project DIR|-C DIR] restart <name>... [--no-wait] [--timeout DURATION] [--json]
@@ -67,7 +67,8 @@ Combined short options are unsupported; MCP fields have no aliases.
 | `-m` | `--match` | `logs`, `wait` |
 | `-f` | `--follow` | `logs` |
 
-`--force`, `--no-wait`, `--stop-processes`, `--runtime-dir`, `--stop-grace`,
+`--force`, `--since`, `--no-wait`, `--stop-processes`, `--runtime-dir`,
+`--stop-grace`,
 `--output-bytes`, and `--completed-records` remain long-only. The `input`
 command intentionally adds no short aliases, including for `--json`.
 
@@ -123,8 +124,14 @@ without adding ad-hoc sessions; duplicate names are rejected. Bounded logs witho
 `--after-cursor` select the newest configured entry window, equivalent to the default
 `--tail`; an explicit `--after-cursor` without `--tail` keeps forward paging from
 the oldest eligible retained entry. `--after-cursor` is rejected before daemon startup for an aggregate
-invocation. Aggregate filters, tail, and entry or byte limits apply independently per
-selected name, bounded output is returned in selection order, human entries are atomic
+invocation. `--since DURATION` requires a positive, valid duration and captures one
+inclusive request-time cutoff shared by every selected aggregate name; entries are
+evaluated in this order: after-cursor, since, stream, match, tail, then entry and
+byte bounds. It composes with follow: the cutoff filters the initial retained replay
+and later entries naturally pass. Invalid,
+zero, negative, or overflowing durations are rejected before daemon startup or contact.
+Aggregate filters, tail, and entry or byte limits apply independently per selected
+name, bounded output is returned in selection order, human entries are atomic
 `[NAME]`-prefixed writes, and aggregate JSON uses named NDJSON event objects.
 
 This human-only `hum up` progress is enabled only in default human mode while
@@ -511,7 +518,10 @@ goroutines behind.
 The tools share CLI definition, readiness, cursor, collision, and aggregate
 semantics. Bounded MCP `logs` without `after` selects the newest default entry
 window, while explicit `after` without `tail` keeps forward paging from the oldest
-eligible retained entry. Its output keeps `next` as the last source cursor consumed; process snapshots
+eligible retained entry. MCP `logs` accepts a positive `since_ms` duration and captures
+one immutable inclusive request-time cutoff before applying the same cursor, since,
+tail, and entry/byte ordering; invalid, zero, negative, or overflowing values are rejected
+without daemon contact. Its output keeps `next` as the last source cursor consumed; process snapshots
 keep `next_cursor` as the next cursor to be assigned. `up` applies the same client-side
 `after` DAG scheduler and lexical results as the CLI; independent roots launch
 concurrently, dependents wait for all direct prerequisites to be ready, and skipped entries include sorted direct

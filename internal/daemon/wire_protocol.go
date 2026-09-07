@@ -40,12 +40,12 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		if req.Output == nil {
 			return wireRequest{}, errors.New("output request is missing payload")
 		}
-		wire = wireRequestFromProtocolOutput(string(req.Op), req.Output.Name, req.Output.Cwd, req.Output.After, req.Output.Tail, req.Output.Stream, req.Output.Match, req.Output.MaxEntries, req.Output.MaxBytes)
+		wire = wireRequestFromProtocolOutput(string(req.Op), req.Output.Name, req.Output.Cwd, req.Output.After, req.Output.SinceMS, req.Output.SinceUnixNano, req.Output.Tail, req.Output.Stream, req.Output.Match, req.Output.MaxEntries, req.Output.MaxBytes)
 	case protocol.OpFollow:
 		if req.Follow == nil {
 			return wireRequest{}, errors.New("follow request is missing payload")
 		}
-		wire = wireRequestFromProtocolOutput(string(req.Op), req.Follow.Name, req.Follow.Cwd, req.Follow.After, req.Follow.Tail, req.Follow.Stream, req.Follow.Match, req.Follow.MaxEntries, req.Follow.MaxBytes)
+		wire = wireRequestFromProtocolOutput(string(req.Op), req.Follow.Name, req.Follow.Cwd, req.Follow.After, req.Follow.SinceMS, req.Follow.SinceUnixNano, req.Follow.Tail, req.Follow.Stream, req.Follow.Match, req.Follow.MaxEntries, req.Follow.MaxBytes)
 	case protocol.OpWait:
 		if req.Wait == nil {
 			return wireRequest{}, errors.New("wait request is missing payload")
@@ -128,8 +128,8 @@ func appReadinessConfigFromWire(config *wireReadinessConfig) *app.ReadinessConfi
 	return &app.ReadinessConfig{Match: config.Match, Timeout: config.Timeout}
 }
 
-func wireRequestFromProtocolOutput(op, name, cwd string, after *protocol.Cursor, tail int, stream protocol.Stream, match string, maxEntries, maxBytes int) wireRequest {
-	wire := wireRequest{Op: op, Name: name, Cwd: cwd, Tail: tail, Stream: string(stream), Match: match, MaxEntries: maxEntries, MaxBytes: maxBytes}
+func wireRequestFromProtocolOutput(op, name, cwd string, after *protocol.Cursor, sinceMS, sinceUnixNano int64, tail int, stream protocol.Stream, match string, maxEntries, maxBytes int) wireRequest {
+	wire := wireRequest{Op: op, Name: name, Cwd: cwd, SinceMS: sinceMS, SinceUnixNano: sinceUnixNano, Tail: tail, Stream: string(stream), Match: match, MaxEntries: maxEntries, MaxBytes: maxBytes}
 	if after != nil {
 		value := uint64(*after)
 		wire.After = &value

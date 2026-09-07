@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -561,4 +562,133 @@ func equalEntries(a, b []Entry) bool {
 		}
 	}
 	return true
+}
+
+func TestReadSince(t *testing.T) {
+	r, err := newRing(Limits{RetainedBytes: 4096, DefaultReadEntries: 16, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoff := time.Unix(10, 0)
+	entries := []struct {
+		stream Stream
+		at     time.Time
+		text   string
+	}{
+		{Stdout, cutoff.Add(-time.Second), "old\n"},
+		{Stdout, cutoff, "exact\n"},
+		{Stderr, cutoff.Add(time.Second), "stderr\n"},
+		{Stdout, cutoff.Add(2 * time.Second), "keep\n"},
+		{System, cutoff.Add(3 * time.Second), "system\n"},
+	}
+	for _, entry := range entries {
+		if _, err := r.append(entry.stream, entry.at, entry.text); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inclusive, err := r.read(ReadOptions{Since: cutoff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []Cursor{inclusive.Entries[0].Cursor, inclusive.Entries[1].Cursor, inclusive.Entries[2].Cursor, inclusive.Entries[3].Cursor}; !reflect.DeepEqual(got, []Cursor{1, 2, 3, 4}) {
+		t.Fatalf("since-inclusive cursors = %v, want [1 2 3 4]", got)
+	}
+	if inclusive.Next == nil || *inclusive.Next != 4 {
+		t.Fatalf("since next = %v, want 4", inclusive.Next)
+	}
+
+	after := Cursor(1)
+	filtered, err := r.read(ReadOptions{After: &after, Since: cutoff, Streams: StdoutMask, Match: regexp.MustCompile(`keep`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered.Entries) != 1 || filtered.Entries[0].Cursor != 3 {
+		t.Fatalf("after/since/stream/match entries = %#v, want cursor 3", filtered.Entries)
+	}
+	if filtered.Next == nil || *filtered.Next != 4 {
+		t.Fatalf("filtered next = %v, want 4", filtered.Next)
+	}
+
+	bounded, err := newRing(Limits{RetainedBytes: 4096, DefaultReadEntries: 16, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := bounded.append(Stdout, time.Unix(int64(i), 0), fmt.Sprintf("line-%d\n", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	window, err := bounded.read(ReadOptions{Since: time.Unix(0, 0), Tail: 4, MaxEntries: 2, MaxBytes: len("line-3\n") + len("line-4\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []Cursor{window.Entries[0].Cursor, window.Entries[1].Cursor}; !reflect.DeepEqual(got, []Cursor{3, 4}) {
+		t.Fatalf("since tail bounds cursors = %v, want [3 4]", got)
+	}
+	if !window.More || window.Next == nil || *window.Next != 4 {
+		t.Fatalf("since tail bounds result = %#v, want More and Next 4", window)
+	}
+
+	evicted, err := newRing(Limits{RetainedBytes: 2 * retainedEntryCharge(len("x\n")), DefaultReadEntries: 8, DefaultReadBytes: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := evicted.append(Stdout, time.Unix(int64(i), 0), "x\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staleAfter := Cursor(0)
+	truncated, err := evicted.read(ReadOptions{After: &staleAfter, Since: time.Unix(2, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(truncated.Entries) != 2 || truncated.Entries[0].Cursor != 2 || truncated.Entries[1].Cursor != 3 {
+		t.Fatalf("evicted since entries = %#v, want retained cursors 2 and 3", truncated.Entries)
+	}
+	if !truncated.Truncated || truncated.EvictedThrough == nil || *truncated.EvictedThrough != 1 || truncated.Next == nil || *truncated.Next != 3 {
+		t.Fatalf("evicted since result = %#v, want truncation through 1 and next 3", truncated)
+	}
+
+	store, err := NewStore(Limits{RetainedBytes: 4096, DefaultReadEntries: 16, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptionCutoff := time.Unix(10, 0)
+	if _, err := store.Append(Stdout, subscriptionCutoff.Add(-time.Second), "historical\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(Stdout, subscriptionCutoff.Add(time.Second), "retained\n"); err != nil {
+		t.Fatal(err)
+	}
+	sub := store.Subscribe(ReadOptions{Since: subscriptionCutoff})
+	defer sub.Close()
+	if _, err := store.Append(Stdout, subscriptionCutoff.Add(-2*time.Second), "live-old-timestamp\n"); err != nil {
+		t.Fatal(err)
+	}
+	store.NotifyExit(Exit{Code: 7, Time: subscriptionCutoff.Add(2 * time.Second)})
+	readContext, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	first, err := sub.Next(readContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Read == nil || len(first.Read.Entries) != 1 || first.Read.Entries[0].Text != "retained\n" {
+		t.Fatalf("since subscription initial replay = %#v, want retained entry only", first)
+	}
+	second, err := sub.Next(readContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Read == nil || len(second.Read.Entries) != 1 || second.Read.Entries[0].Text != "live-old-timestamp\n" {
+		t.Fatalf("since subscription live read = %#v, want post-subscription old-timestamp entry", second)
+	}
+	third, err := sub.Next(readContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Exit == nil || third.Exit.Code != 7 {
+		t.Fatalf("since subscription exit = %#v, want exit after filtered replay and live output", third)
+	}
 }
