@@ -990,9 +990,9 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 	case "get":
 		value = protocol.GetRequest{Op: protocol.OpGet, Name: req.Name, Cwd: req.Cwd}
 	case "output":
-		value = protocol.OutputRequest{Op: protocol.OpOutput, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+		value = protocol.OutputRequest{Op: protocol.OpOutput, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	case "follow":
-		value = protocol.FollowRequest{Op: protocol.OpFollow, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+		value = protocol.FollowRequest{Op: protocol.OpFollow, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	case "wait":
 		value = protocol.WaitRequest{Op: protocol.OpWait, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), Match: req.Match, TimeoutMS: req.TimeoutMS}
 	case "signal":
@@ -1086,7 +1086,7 @@ func setConnContextWithCancel(conn net.Conn, ctx context.Context) (func(), error
 func clearConnDeadline(conn net.Conn) { _ = conn.SetDeadline(time.Time{}) }
 
 func wireRequestFromProtocolOutputRequest(req protocol.OutputRequest) wireRequest {
-	wire := wireRequest{Op: string(protocol.OpOutput), Name: req.Name, Cwd: req.Cwd, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+	wire := wireRequest{Op: string(protocol.OpOutput), Name: req.Name, Cwd: req.Cwd, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	if req.After != nil {
 		value := uint64(*req.After)
 		wire.After = &value
@@ -1095,7 +1095,7 @@ func wireRequestFromProtocolOutputRequest(req protocol.OutputRequest) wireReques
 }
 
 func wireRequestFromProtocolFollowRequest(req protocol.FollowRequest) wireRequest {
-	wire := wireRequest{Op: string(protocol.OpFollow), Name: req.Name, Cwd: req.Cwd, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+	wire := wireRequest{Op: string(protocol.OpFollow), Name: req.Name, Cwd: req.Cwd, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	if req.After != nil {
 		value := uint64(*req.After)
 		wire.After = &value

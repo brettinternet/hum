@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -1144,3 +1145,143 @@ func (w *hum006ListLogsFirstWrite) String() string {
 }
 
 var _ io.Writer = (*hum006ListLogsFirstWrite)(nil)
+
+func TestLogsSince(t *testing.T) {
+	t.Run("aggregate output and follow requests share the cutoff", func(t *testing.T) {
+		cutoff := time.Now().Add(-time.Minute).UnixNano()
+		base := daemon.OutputRequest{Cwd: t.TempDir(), SinceUnixNano: cutoff}
+		outputRequests := make([]daemon.OutputRequest, 0, 2)
+		followRequests := make([]daemon.FollowRequest, 0, 2)
+		for _, name := range []string{"first", "second"} {
+			outputRequests = append(outputRequests, aggregateLogsRequest(base, name))
+			followRequests = append(followRequests, aggregateLogsFollowRequest(base, name))
+		}
+		if len(outputRequests) != 2 || len(followRequests) != 2 {
+			t.Fatalf("aggregate request counts = output %d follow %d, want two each", len(outputRequests), len(followRequests))
+		}
+		for i := range outputRequests {
+			if outputRequests[i].SinceUnixNano != cutoff || followRequests[i].SinceUnixNano != cutoff {
+				t.Fatalf("aggregate request %d = output %#v follow %#v, want cutoff %d", i, outputRequests[i], followRequests[i], cutoff)
+			}
+		}
+	})
+
+	root := NewRootCommand("test", "test", io.Discard, io.Discard)
+	var sinceNames []string
+	for _, command := range root.Commands {
+		if command.Name != "logs" {
+			continue
+		}
+		for _, flag := range cliCommandFlags(command) {
+			if names := flag.Names(); len(names) > 0 && names[0] == "since" {
+				sinceNames = names
+			}
+		}
+	}
+	if !reflect.DeepEqual(sinceNames, []string{"since"}) {
+		t.Fatalf("logs since flag names = %v, want long-only since", sinceNames)
+	}
+
+	maxDuration := time.Duration(maxSinceMilliseconds) * time.Millisecond
+	for _, test := range []struct {
+		name  string
+		value time.Duration
+		want  int64
+	}{
+		{name: "one nanosecond", value: time.Nanosecond, want: 1},
+		{name: "999 microseconds", value: 999 * time.Microsecond, want: 1},
+		{name: "1500 microseconds", value: 1500 * time.Microsecond, want: 2},
+		{name: "maximum whole millisecond", value: maxDuration, want: maxSinceMilliseconds},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := sinceDurationMilliseconds(test.value)
+			if err != nil || got != test.want {
+				t.Fatalf("since duration %s = %d, %v; want %d", test.value, got, err, test.want)
+			}
+		})
+	}
+	if got, err := sinceDurationMilliseconds(maxDuration + time.Nanosecond); err == nil || got != 0 {
+		t.Fatalf("ceiling overflow result = %d, %v; want an error", got, err)
+	}
+
+	runtimeDir := hum006ListLogsTempDir(t, "since-runtime")
+	hum006ListLogsStartDaemon(t, runtimeDir, 1<<16)
+	project := hum006ListLogsProject(t, "since-project")
+	script := `printf 'old-since\n'; sleep 2; printf 'new-since\n'; sleep 5`
+	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "single", "--detach", "--", "/bin/sh", "-c", script); err != nil {
+		t.Fatalf("start single: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+	}
+	hum006ListLogsWaitForText(t, project, "single", "new-since\n")
+
+	single, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "single", "--json", "--stream", "stdout", "--since", "1s")
+	if err != nil {
+		t.Fatalf("single since logs: %v (stderr=%q)", err, stderr)
+	}
+	objects := hum006ListLogsDecodeJSONLines(t, single)
+	if len(objects) != 1 {
+		t.Fatalf("single since JSON = %q, want one object", single)
+	}
+	entries := hum006ListLogsEntries(t, objects[0])
+	if got := hum006ListLogsEntryTexts(t, entries); !hum006ListLogsEqualStrings(got, []string{"new-since\n"}) {
+		t.Fatalf("single since entries = %#v, want only the newest entry", got)
+	}
+
+	followContext, cancelFollow := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	followOutput, followStderr, followErr := hum006ListLogsRunAt(t, project, followContext, "logs", "single", "--follow", "--json", "--since", "1s")
+	timedOut := followContext.Err() != nil
+	cancelFollow()
+	if !timedOut {
+		t.Fatalf("since follow terminated instead of waiting: stdout=%q stderr=%q err=%v", followOutput, followStderr, followErr)
+	}
+	if followErr != nil {
+		t.Fatalf("since follow: %v (stderr=%q)", followErr, followStderr)
+	}
+	followEvents := hum006ListLogsDecodeJSONLines(t, followOutput)
+	followTexts := hum006ListLogsAllEventTexts(t, followEvents)
+	if !hum006ListLogsContainsString(followTexts, "new-since\n") || hum006ListLogsContainsString(followTexts, "old-since\n") {
+		t.Fatalf("since follow initial replay = %#v, want only newest entry", followEvents)
+	}
+
+	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "aggregate", "--detach", "--", "/bin/sh", "-c", script); err != nil {
+		t.Fatalf("start aggregate: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+	}
+	hum006ListLogsWaitForText(t, project, "aggregate", "new-since\n")
+	aggregate, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "aggregate", "single", "--json", "--stream", "stdout", "--since", "5m")
+	if err != nil {
+		t.Fatalf("aggregate since logs: %v (stderr=%q)", err, stderr)
+	}
+	aggregateObjects := hum006ListLogsDecodeJSONLines(t, aggregate)
+	if len(aggregateObjects) != 2 {
+		t.Fatalf("aggregate since JSON = %q, want two named events", aggregate)
+	}
+	for _, object := range aggregateObjects {
+		if got := hum006ListLogsEntryTexts(t, hum006ListLogsEntries(t, object)); len(got) != 2 || got[0] != "old-since\n" || got[1] != "new-since\n" {
+			t.Fatalf("aggregate since object = %#v, want chronological old/new entries", object)
+		}
+	}
+
+	validationRuntime := hum006ListLogsTempDir(t, "since-validation-runtime")
+	t.Setenv("HUM_RUNTIME_DIR", validationRuntime)
+	validationProject := hum006ListLogsProject(t, "since-validation-project")
+	for _, since := range []string{"bad", "0s", "-1s", "999999999999999999999999999999999999h"} {
+		if _, _, err := hum006ListLogsRunAt(t, validationProject, context.Background(), "logs", "missing", "--since", since); err == nil || !strings.Contains(strings.ToLower(err.Error()), "since") {
+			t.Fatalf("since=%q validation error = %v, want pre-contact since error", since, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(validationRuntime, "hum.sock")); !os.IsNotExist(err) {
+		t.Fatalf("invalid since created daemon socket: %v", err)
+	}
+}
+
+func TestLogsSinceDocs(t *testing.T) {
+	design, err := os.ReadFile("../../docs/design.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(design)
+	for _, phrase := range []string{"--since DURATION", "since_ms", "inclusive request-time cutoff", "after-cursor, since, stream, match, tail, then entry and\nbyte bounds", "--since`, `--no-wait"} {
+		if !strings.Contains(text, phrase) {
+			t.Fatalf("docs/design.md missing since guidance %q", phrase)
+		}
+	}
+}

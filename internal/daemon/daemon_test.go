@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -1469,8 +1470,8 @@ func TestHelloVersion(t *testing.T) {
 		}
 	})
 
-	t.Run("v9 client rejects a v8 daemon before terminal-readiness reconciliation", func(t *testing.T) {
-		const oldDaemonVersion = 8
+	t.Run("v11 client rejects a v10 daemon before immutable since cutoffs", func(t *testing.T) {
+		const oldDaemonVersion = 10
 		server := testServer(t, Config{WireVersion: oldDaemonVersion})
 		client, err := Dial(context.Background(), server.Paths().Socket)
 		if client == nil {
@@ -2078,5 +2079,61 @@ func TestOutputReadExceedsLogLineLimit(t *testing.T) {
 	req.MaxBytes = defaultWireMaxLine * 4
 	if _, err := client.Output(context.Background(), req); err != nil {
 		t.Fatalf("bounded read with oversized limit: %v", err)
+	}
+}
+
+func TestSinceWireRequest(t *testing.T) {
+	cutoff := time.Now().Add(-time.Second).Truncate(time.Nanosecond)
+	outputRequest := wireRequestFromProtocolOutputRequest(protocol.OutputRequest{Op: protocol.OpOutput, Name: "output", Cwd: "/tmp", SinceUnixNano: cutoff.UnixNano()})
+	if outputRequest.SinceUnixNano != cutoff.UnixNano() {
+		t.Fatalf("output wire since_unix_nano = %d, want %d", outputRequest.SinceUnixNano, cutoff.UnixNano())
+	}
+	followRequest := wireRequestFromProtocolFollowRequest(protocol.FollowRequest{Op: protocol.OpFollow, Name: "follow", Cwd: "/tmp", SinceUnixNano: cutoff.UnixNano()})
+	if followRequest.SinceUnixNano != cutoff.UnixNano() {
+		t.Fatalf("follow wire since_unix_nano = %d, want %d", followRequest.SinceUnixNano, cutoff.UnixNano())
+	}
+	options, err := readOptionsFromWire(wireRequest{SinceUnixNano: cutoff.UnixNano()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.Since.Equal(cutoff) {
+		t.Fatalf("wire since cutoff = %v, want immutable cutoff %v", options.Since, cutoff)
+	}
+	relative, err := readOptionsFromWire(wireRequest{SinceMS: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relative.Since.IsZero() || time.Until(relative.Since) > 0 {
+		t.Fatalf("relative wire since cutoff = %v, want a past cutoff", relative.Since)
+	}
+	for _, since := range []int64{-1, maxSinceMilliseconds + 1} {
+		if _, err := readOptionsFromWire(wireRequest{SinceMS: since}); err == nil || !errors.Is(err, app.ErrInvalidRequest) {
+			t.Fatalf("since_ms=%d validation error = %v, want invalid request", since, err)
+		}
+	}
+	for _, test := range []struct {
+		name string
+		op   protocol.Operation
+	}{
+		{name: "output", op: protocol.OpOutput},
+		{name: "follow", op: protocol.OpFollow},
+	} {
+		for _, since := range []int64{-1, 1, maxSinceMilliseconds + 1} {
+			t.Run(fmt.Sprintf("%s mixed since_ms=%d", test.name, since), func(t *testing.T) {
+				var request protocol.Request
+				if test.op == protocol.OpOutput {
+					request = protocol.Request{Op: protocol.OpOutput, Output: &protocol.OutputRequest{Op: protocol.OpOutput, Name: "output", SinceMS: since, SinceUnixNano: cutoff.UnixNano()}}
+				} else {
+					request = protocol.Request{Op: protocol.OpFollow, Follow: &protocol.FollowRequest{Op: protocol.OpFollow, Name: "follow", SinceMS: since, SinceUnixNano: cutoff.UnixNano()}}
+				}
+				wire, err := wireRequestFromProtocol(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := readOptionsFromWire(wire); err == nil || !errors.Is(err, app.ErrInvalidRequest) {
+					t.Fatalf("mixed since request = %#v, error %v; want invalid request", wire, err)
+				}
+			})
+		}
 	}
 }

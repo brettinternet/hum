@@ -144,6 +144,15 @@ func (s *Store) Subscribe(opts ReadOptions) *Subscription {
 		exitIndex: len(s.exits),
 		firstRead: true,
 	}
+	if s.ring.next != 0 && !opts.Since.IsZero() {
+		sub.initialThrough = s.ring.next - 1
+		sub.hasInitialThrough = true
+	} else {
+		// Without a Since cutoff the historical behavior is one ordinary read;
+		// only a time-filtered subscription needs to split retained replay from
+		// later output.
+		sub.initialReplayDone = true
+	}
 	if len(s.exits) != 0 {
 		sub.replaySequence = s.exits[len(s.exits)-1].sequence
 		sub.canReplay = true
@@ -316,15 +325,20 @@ func (s *Store) discardSubscription(sub *Subscription) {
 // expected to be serialized by the consumer; all state is nevertheless read
 // and advanced under Store.mu, avoiding per-subscriber locks and queues.
 type Subscription struct {
-	store          *Store
-	options        ReadOptions
-	after          Cursor
-	hasAfter       bool
-	exitIndex      int
-	replaySequence uint64
-	canReplay      bool
-	firstRead      bool
-	closed         bool
+	store    *Store
+	options  ReadOptions
+	after    Cursor
+	hasAfter bool
+	// initialThrough bounds the retained replay present at Subscribe time;
+	// output appended after registration must not inherit its Since filter.
+	initialThrough    Cursor
+	hasInitialThrough bool
+	initialReplayDone bool
+	exitIndex         int
+	replaySequence    uint64
+	canReplay         bool
+	firstRead         bool
+	closed            bool
 }
 
 func (sub *Subscription) discardSubscription() {
@@ -443,11 +457,19 @@ func (sub *Subscription) readLocked() (ReadResult, bool, error) {
 	s := sub.store
 
 	for {
+		if !sub.initialReplayDone && (!sub.hasInitialThrough || sub.hasAfter && sub.after >= sub.initialThrough) {
+			sub.initialReplayDone = true
+		}
+		initialReplay := !sub.initialReplayDone
+
 		opts := sub.options
 		opts.After = nil
 		if sub.hasAfter {
 			after := sub.after
 			opts.After = &after
+		}
+		if !initialReplay {
+			opts.Since = time.Time{}
 		}
 		if !sub.firstRead {
 			opts.Tail = 0
@@ -456,7 +478,9 @@ func (sub *Subscription) readLocked() (ReadResult, bool, error) {
 
 		var result ReadResult
 		var err error
-		if sub.exitIndex < len(s.exits) {
+		if initialReplay {
+			result, err = s.readThroughLocked(opts, sub.initialThrough, true)
+		} else if sub.exitIndex < len(s.exits) {
 			record := s.exits[sub.exitIndex]
 			result, err = s.readThroughLocked(opts, record.through, record.hasThrough)
 		} else {
@@ -466,6 +490,9 @@ func (sub *Subscription) readLocked() (ReadResult, bool, error) {
 			return ReadResult{}, false, err
 		}
 		advanced := sub.advanceFromResult(result)
+		if initialReplay && sub.hasAfter && sub.after >= sub.initialThrough {
+			sub.initialReplayDone = true
+		}
 
 		if len(result.Entries) != 0 || result.Truncated || result.EvictedThrough != nil || result.More {
 			return result, true, nil

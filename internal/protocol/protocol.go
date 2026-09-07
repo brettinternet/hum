@@ -11,9 +11,10 @@ import (
 )
 
 // Version is the current private protocol version. The hello exchange carries
-// this value on every connection. Version 10 is required for explicit stopped
-// terminal snapshots and autonomous exit details.
-const Version = 10
+// this value on every connection. Version 10 added explicit stopped terminal
+// snapshots and autonomous exit details; version 11 adds immutable output
+// time-window cutoffs in output and follow requests.
+const Version = 11
 
 const (
 	RestartNever     = "never"
@@ -462,17 +463,21 @@ const DefaultReadEntries = 100
 
 // OutputRequest asks for one bounded retained-output read. A nil After with a
 // positive Tail selects a newest window; an explicit After without Tail keeps
-// forward paging from the oldest eligible retained entry.
+// forward paging from the oldest eligible retained entry. SinceMS is a
+// positive duration in milliseconds for direct callers; SinceUnixNano carries
+// the immutable cutoff captured by a top-level CLI or MCP request.
 type OutputRequest struct {
-	Op         Operation `json:"op"`
-	Name       string    `json:"name"`
-	Cwd        string    `json:"cwd"`
-	After      *Cursor   `json:"after,omitempty"`
-	Tail       int       `json:"tail,omitempty"`
-	Stream     Stream    `json:"stream,omitempty"`
-	Match      string    `json:"match,omitempty"`
-	MaxEntries int       `json:"max_entries,omitempty"`
-	MaxBytes   int       `json:"max_bytes,omitempty"`
+	Op            Operation `json:"op"`
+	Name          string    `json:"name"`
+	Cwd           string    `json:"cwd"`
+	After         *Cursor   `json:"after,omitempty"`
+	SinceMS       int64     `json:"since_ms,omitempty"`
+	SinceUnixNano int64     `json:"since_unix_nano,omitempty"`
+	Tail          int       `json:"tail,omitempty"`
+	Stream        Stream    `json:"stream,omitempty"`
+	Match         string    `json:"match,omitempty"`
+	MaxEntries    int       `json:"max_entries,omitempty"`
+	MaxBytes      int       `json:"max_bytes,omitempty"`
 }
 
 // NewOutputRequest builds a bounded output read request.
@@ -482,16 +487,18 @@ func NewOutputRequest(name, cwd string) OutputRequest {
 
 func marshalOutputRequest(op Operation, r OutputRequest) ([]byte, error) {
 	return json.Marshal(struct {
-		Op         Operation `json:"op"`
-		Name       string    `json:"name"`
-		Cwd        string    `json:"cwd"`
-		After      *Cursor   `json:"after,omitempty"`
-		Tail       int       `json:"tail,omitempty"`
-		Stream     Stream    `json:"stream,omitempty"`
-		Match      string    `json:"match,omitempty"`
-		MaxEntries int       `json:"max_entries,omitempty"`
-		MaxBytes   int       `json:"max_bytes,omitempty"`
-	}{Op: op, Name: r.Name, Cwd: r.Cwd, After: r.After, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
+		Op            Operation `json:"op"`
+		Name          string    `json:"name"`
+		Cwd           string    `json:"cwd"`
+		After         *Cursor   `json:"after,omitempty"`
+		SinceMS       int64     `json:"since_ms,omitempty"`
+		SinceUnixNano int64     `json:"since_unix_nano,omitempty"`
+		Tail          int       `json:"tail,omitempty"`
+		Stream        Stream    `json:"stream,omitempty"`
+		Match         string    `json:"match,omitempty"`
+		MaxEntries    int       `json:"max_entries,omitempty"`
+		MaxBytes      int       `json:"max_bytes,omitempty"`
+	}{Op: op, Name: r.Name, Cwd: r.Cwd, After: r.After, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
 }
 
 // MarshalJSON writes an output request with its stable operation.
@@ -501,15 +508,17 @@ func (r OutputRequest) MarshalJSON() ([]byte, error) {
 
 func unmarshalOutputRequest(data []byte, r *OutputRequest, want Operation) error {
 	var wire struct {
-		Op         Operation `json:"op"`
-		Name       string    `json:"name"`
-		Cwd        string    `json:"cwd"`
-		After      *Cursor   `json:"after"`
-		Tail       int       `json:"tail"`
-		Stream     Stream    `json:"stream"`
-		Match      string    `json:"match"`
-		MaxEntries int       `json:"max_entries"`
-		MaxBytes   int       `json:"max_bytes"`
+		Op            Operation `json:"op"`
+		Name          string    `json:"name"`
+		Cwd           string    `json:"cwd"`
+		After         *Cursor   `json:"after"`
+		SinceMS       int64     `json:"since_ms"`
+		SinceUnixNano int64     `json:"since_unix_nano"`
+		Tail          int       `json:"tail"`
+		Stream        Stream    `json:"stream"`
+		Match         string    `json:"match"`
+		MaxEntries    int       `json:"max_entries"`
+		MaxBytes      int       `json:"max_bytes"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -518,7 +527,7 @@ func unmarshalOutputRequest(data []byte, r *OutputRequest, want Operation) error
 		return &UnknownOperationError{Operation: wire.Op}
 	}
 	r.Op, r.Name, r.Cwd = want, wire.Name, wire.Cwd
-	r.After, r.Tail, r.Stream, r.Match = wire.After, wire.Tail, wire.Stream, wire.Match
+	r.After, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = wire.After, wire.SinceMS, wire.SinceUnixNano, wire.Tail, wire.Stream, wire.Match
 	r.MaxEntries, r.MaxBytes = wire.MaxEntries, wire.MaxBytes
 	return nil
 }
@@ -530,15 +539,17 @@ func (r *OutputRequest) UnmarshalJSON(data []byte) error {
 
 // FollowRequest asks for bounded output followed by independent stream events.
 type FollowRequest struct {
-	Op         Operation `json:"op"`
-	Name       string    `json:"name"`
-	Cwd        string    `json:"cwd"`
-	After      *Cursor   `json:"after,omitempty"`
-	Tail       int       `json:"tail,omitempty"`
-	Stream     Stream    `json:"stream,omitempty"`
-	Match      string    `json:"match,omitempty"`
-	MaxEntries int       `json:"max_entries,omitempty"`
-	MaxBytes   int       `json:"max_bytes,omitempty"`
+	Op            Operation `json:"op"`
+	Name          string    `json:"name"`
+	Cwd           string    `json:"cwd"`
+	After         *Cursor   `json:"after,omitempty"`
+	SinceMS       int64     `json:"since_ms,omitempty"`
+	SinceUnixNano int64     `json:"since_unix_nano,omitempty"`
+	Tail          int       `json:"tail,omitempty"`
+	Stream        Stream    `json:"stream,omitempty"`
+	Match         string    `json:"match,omitempty"`
+	MaxEntries    int       `json:"max_entries,omitempty"`
+	MaxBytes      int       `json:"max_bytes,omitempty"`
 }
 
 // NewFollowRequest builds an output-follow request.
@@ -548,7 +559,7 @@ func NewFollowRequest(name, cwd string) FollowRequest {
 
 // MarshalJSON writes a follow request with its stable operation.
 func (r FollowRequest) MarshalJSON() ([]byte, error) {
-	return marshalOutputRequest(OpFollow, OutputRequest{Name: r.Name, Cwd: r.Cwd, After: r.After, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
+	return marshalOutputRequest(OpFollow, OutputRequest{Name: r.Name, Cwd: r.Cwd, After: r.After, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
 }
 
 // UnmarshalJSON decodes a follow request.
@@ -558,7 +569,7 @@ func (r *FollowRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	r.Op, r.Name, r.Cwd = OpFollow, output.Name, output.Cwd
-	r.After, r.Tail, r.Stream, r.Match = output.After, output.Tail, output.Stream, output.Match
+	r.After, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = output.After, output.SinceMS, output.SinceUnixNano, output.Tail, output.Stream, output.Match
 	r.MaxEntries, r.MaxBytes = output.MaxEntries, output.MaxBytes
 	return nil
 }

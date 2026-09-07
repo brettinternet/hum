@@ -22,7 +22,7 @@ func TestFlagAliases(t *testing.T) {
 		"list":     {"all": {"a"}, "json": {"j"}},
 		"status":   {"json": {"j"}},
 		"attach":   {"tail": {"n"}},
-		"logs":     {"stream": {"s"}, "tail": {"n"}, "after-cursor": {"c"}, "limit-bytes": {"b"}, "match": {"m"}, "follow": {"f"}, "json": {"j"}},
+		"logs":     {"stream": {"s"}, "tail": {"n"}, "after-cursor": {"c"}, "since": nil, "limit-bytes": {"b"}, "match": {"m"}, "follow": {"f"}, "json": {"j"}},
 		"wait":     {"after-cursor": {"c"}, "match": {"m"}, "timeout": {"t"}, "json": {"j"}},
 		"input":    {"text": nil, "base64": nil, "json": nil},
 		"restart":  {"no-wait": nil, "timeout": {"t"}, "json": {"j"}},

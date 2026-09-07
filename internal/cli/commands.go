@@ -186,14 +186,15 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		{
 			Name:          "logs",
 			Usage:         "read retained process output",
-			UsageText:     "hum logs [NAME...] [--follow] [--json]",
+			UsageText:     "hum logs [NAME...] [--since DURATION] [--follow] [--json]",
 			ArgsUsage:     "[NAME...]",
 			ShellComplete: completeProcessNames,
-			Description:   "Read bounded retained output for one or more names in command-line order; no names uses lexical order with no ad-hoc sessions, duplicate names are rejected, and --after-cursor requires one explicit name. Aggregate filters and limits apply independently, human entries use an atomic [NAME] prefix, and JSON is named NDJSON; --follow can attach before the first launch and crosses exit, wait, and launch boundaries with one follower per name, isolated per-session errors, and cancellation on daemon loss or output failure; following is read-only: Ctrl+C cancels only the follower, closes all followers in an aggregate, and never signals the managed process. Child output is terminal-control-stripped per entry while system entries remain raw: raw ESC bytes do not match, a ^ anchor now matches colourised output, stored bytes, cursors, and limit accounting remain raw, control-only bounded child entries remain present with empty text, follow --match selects stripped text and selected entries are emitted raw, attached run output is also raw, no --raw flag exists, and split sequences and carriage-return redraw frames remain separate.\n\nExamples:\n  hum logs api\n  hum logs api --tail 50\n  hum logs api --follow",
+			Description:   "Read bounded retained output for one or more names in command-line order; no names uses lexical order with no ad-hoc sessions, duplicate names are rejected, and --after-cursor requires one explicit name; --since keeps entries at or after one request cutoff shared across selected names, computed from the positive duration, and composes after cursor, stream, match, tail, and bounds. Aggregate filters and limits apply independently, human entries use an atomic [NAME] prefix, and JSON is named NDJSON; --follow can attach before the first launch and crosses exit, wait, and launch boundaries with one follower per name, isolated per-session errors, and cancellation on daemon loss or output failure; following is read-only: Ctrl+C cancels only the follower, closes all followers in an aggregate, and never signals the managed process. Child output is terminal-control-stripped per entry while system entries remain raw: raw ESC bytes do not match, a ^ anchor now matches colourised output, stored bytes, cursors, and limit accounting remain raw, control-only bounded child entries remain present with empty text, follow --match selects stripped text and selected entries are emitted raw, attached run output is also raw, no --raw flag exists, and split sequences and carriage-return redraw frames remain separate.\n\nExamples:\n  hum logs api\n  hum logs api --since 5m\n  hum logs api --follow",
 			Flags: []urfavecli.Flag{
 				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "select stdout, stderr, or both"},
 				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "select final N entries; omit for the newest default window"},
 				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "read after this cursor; without it, use the newest default window"},
+				&urfavecli.StringFlag{Name: "since", HideDefault: true, Usage: "include entries from the request-time cutoff; omit for no time filter; positive duration, for example 5m"},
 				&urfavecli.IntFlag{Name: "limit-bytes", Aliases: []string{"b"}, HideDefault: true, Usage: "limit output bytes; omit for the default read limit"},
 				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "filter by regex; omit to include every entry"},
 				&urfavecli.BoolFlag{Name: "follow", Aliases: []string{"f"}, DefaultText: "false", Usage: "follow launches; default is a bounded read"},
@@ -1002,6 +1003,57 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	})
 }
 
+const maxSinceMilliseconds int64 = (1<<63 - 1) / int64(time.Millisecond)
+
+// logsSinceMilliseconds validates the CLI duration before any daemon contact.
+// The wire protocol carries milliseconds; ceiling the conversion keeps the
+// requested inclusive window from becoming narrower due to truncation.
+func logsSinceMilliseconds(cmd *urfavecli.Command) (int64, error) {
+	if !cmd.IsSet("since") {
+		return 0, nil
+	}
+	value, err := time.ParseDuration(cmd.String("since"))
+	if err != nil {
+		return 0, fmt.Errorf("since must be a valid duration: %w", err)
+	}
+	return sinceDurationMilliseconds(value)
+}
+
+func sinceDurationMilliseconds(value time.Duration) (int64, error) {
+	if value <= 0 {
+		return 0, errors.New("since must be positive")
+	}
+	milliseconds := int64(value / time.Millisecond)
+	if value%time.Millisecond != 0 {
+		if milliseconds >= maxSinceMilliseconds {
+			return 0, errors.New("since duration is too large")
+		}
+		milliseconds++
+	}
+	if milliseconds <= 0 || milliseconds > maxSinceMilliseconds {
+		return 0, errors.New("since duration is too large")
+	}
+	return milliseconds, nil
+}
+
+// logsSinceCutoff captures the one immutable cutoff shared by every daemon
+// request made for this top-level logs invocation, including aggregate reads
+// and followers.
+func logsSinceCutoff(cmd *urfavecli.Command) (time.Time, error) {
+	milliseconds, err := logsSinceMilliseconds(cmd)
+	if err != nil || milliseconds == 0 {
+		return time.Time{}, err
+	}
+	return time.Now().Add(-time.Duration(milliseconds) * time.Millisecond), nil
+}
+
+func sinceCutoffUnixNano(cutoff time.Time) int64 {
+	if cutoff.IsZero() {
+		return 0
+	}
+	return cutoff.UnixNano()
+}
+
 func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
 	args := cmd.Args().Slice()
 	if len(args) != 1 {
@@ -1018,6 +1070,10 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	limitBytes := cmd.Int("limit-bytes")
 	if limitBytes < 0 {
 		return errors.New("limit-bytes must not be negative")
+	}
+	sinceCutoff, err := logsSinceCutoff(cmd)
+	if err != nil {
+		return err
 	}
 	name := args[0]
 	ctx = nonNilContext(ctx)
@@ -1062,14 +1118,14 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	requestTail, maxEntries := logReadBounds(after, tail, cfg.ReadEntries, cmd.IsSet("tail"), cmd.Bool("follow"))
 	request := daemon.OutputRequest{
-		Name: name, Cwd: cwd, After: after, Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
+		Name: name, Cwd: cwd, After: after, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
 		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 	if cmd.Bool("follow") {
 		signals := notifyFollowSignals()
 		defer signal.Stop(signals)
 		follower, err := client.Follow(context.Background(), daemon.FollowRequest{
-			Name: request.Name, Cwd: request.Cwd, After: request.After, Tail: request.Tail, Stream: request.Stream,
+			Name: request.Name, Cwd: request.Cwd, After: request.After, SinceUnixNano: request.SinceUnixNano, Tail: request.Tail, Stream: request.Stream,
 			Match: request.Match, MaxEntries: request.MaxEntries, MaxBytes: request.MaxBytes,
 		})
 		if err != nil {
@@ -1135,6 +1191,10 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 	if limitBytes < 0 {
 		return errors.New("limit-bytes must not be negative")
 	}
+	sinceCutoff, err := logsSinceCutoff(cmd)
+	if err != nil {
+		return err
+	}
 
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
@@ -1187,7 +1247,7 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 	}
 	requestTail, maxEntries := logReadBounds(nil, tail, cfg.ReadEntries, cmd.IsSet("tail"), cmd.Bool("follow"))
 	request := daemon.OutputRequest{
-		Cwd: cwd, Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
+		Cwd: cwd, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
 		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 	var client *daemon.Client
@@ -1248,6 +1308,18 @@ func renderAggregateLogsUnavailable(writer, errWriter io.Writer, jsonOutput bool
 	return firstErr
 }
 
+func aggregateLogsRequest(request daemon.OutputRequest, name string) daemon.OutputRequest {
+	request.Name = name
+	return request
+}
+
+func aggregateLogsFollowRequest(request daemon.OutputRequest, name string) daemon.FollowRequest {
+	return daemon.FollowRequest{
+		Name: name, Cwd: request.Cwd, After: request.After, SinceUnixNano: request.SinceUnixNano,
+		Tail: request.Tail, Stream: request.Stream, Match: request.Match, MaxEntries: request.MaxEntries, MaxBytes: request.MaxBytes,
+	}
+}
+
 func aggregateLogsRead(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, request daemon.OutputRequest, names []string, manifest manifestState, writer, errWriter io.Writer) error {
 	renderer := newAggregateLogRenderer(writer, errWriter, cmd.Bool("json"))
 	var firstErr error
@@ -1255,8 +1327,7 @@ func aggregateLogsRead(ctx context.Context, cmd *urfavecli.Command, client *daem
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		request.Name = name
-		result, err := client.Output(ctx, request)
+		result, err := client.Output(ctx, aggregateLogsRequest(request, name))
 		if err != nil {
 			if aggregateLogFatalError(err) {
 				return err
@@ -1317,10 +1388,7 @@ func aggregateLogsFollow(ctx context.Context, cmd *urfavecli.Command, client *da
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		follower, err := client.Follow(ctx, daemon.FollowRequest{
-			Name: name, Cwd: request.Cwd, After: request.After, Tail: request.Tail, Stream: request.Stream,
-			Match: request.Match, MaxEntries: request.MaxEntries, MaxBytes: request.MaxBytes,
-		})
+		follower, err := client.Follow(ctx, aggregateLogsFollowRequest(request, name))
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()

@@ -37,7 +37,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":10}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":11}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -552,7 +552,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":10}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":11}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError
@@ -880,6 +880,36 @@ func TestTTYProtocol(t *testing.T) {
 	for _, op := range []Operation{OpInputAttach, OpInputRelease, OpInputWrite, OpInputResize} {
 		if !IsKnown(op) {
 			t.Fatalf("input operation %q is not known", op)
+		}
+	}
+}
+
+func TestSinceRequestRoundTrip(t *testing.T) {
+	for _, test := range []struct {
+		request Request
+		ms      int64
+		nano    int64
+	}{
+		{request: Request{Op: OpOutput, Output: &OutputRequest{Op: OpOutput, Name: "output", Cwd: "/tmp", SinceMS: 1234, SinceUnixNano: 987654321}}, ms: 1234, nano: 987654321},
+		{request: Request{Op: OpFollow, Follow: &FollowRequest{Op: OpFollow, Name: "follow", Cwd: "/tmp", SinceMS: 5678, SinceUnixNano: 123456789}}, ms: 5678, nano: 123456789},
+	} {
+		encoded, err := json.Marshal(test.request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded Request
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		var ms, nano int64
+		switch test.request.Op {
+		case OpOutput:
+			ms, nano = decoded.Output.SinceMS, decoded.Output.SinceUnixNano
+		case OpFollow:
+			ms, nano = decoded.Follow.SinceMS, decoded.Follow.SinceUnixNano
+		}
+		if ms != test.ms || nano != test.nano {
+			t.Fatalf("request %s JSON = %s, got since_ms=%d since_unix_nano=%d, want %d and %d", test.request.Op, encoded, ms, nano, test.ms, test.nano)
 		}
 	}
 }

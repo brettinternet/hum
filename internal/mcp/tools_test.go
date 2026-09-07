@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"hum/internal/daemon"
+	"hum/internal/output"
 	"hum/internal/protocol"
 )
 
@@ -55,6 +57,18 @@ type fakeResolver struct {
 
 func (f fakeResolver) Resolve(context.Context, string) (Resolution, error) {
 	return f.resolution, f.err
+}
+
+type blockingResolver struct {
+	resolution Resolution
+	entered    chan struct{}
+	release    chan struct{}
+}
+
+func (r blockingResolver) Resolve(context.Context, string) (Resolution, error) {
+	close(r.entered)
+	<-r.release
+	return r.resolution, nil
 }
 
 type fakeClient struct {
@@ -1541,4 +1555,216 @@ func TestRestartWaitsForReadiness(t *testing.T) {
 			t.Fatalf("explicit zero timeout contacted restart: %#v", client.restarts)
 		}
 	})
+}
+
+func TestLogsSince(t *testing.T) {
+	t.Run("captures before slow resolution", func(t *testing.T) {
+		root := t.TempDir()
+		client := &fakeClient{output: protocol.OutputResult{}}
+		resolver := blockingResolver{resolution: Resolution{Root: root}, entered: make(chan struct{}), release: make(chan struct{})}
+		server := NewServer(Options{Resolver: resolver, ClientFactory: func(context.Context, bool) (Client, error) { return client, nil }})
+		resultDone := make(chan error, 1)
+		go func() {
+			_, err := server.callTool(context.Background(), "logs", args(root, "name", "api", "since_ms", 1000))
+			resultDone <- err
+		}()
+		select {
+		case <-resolver.entered:
+		case <-time.After(time.Second):
+			t.Fatal("resolver did not block")
+		}
+		resolverEntered := time.Now()
+		time.Sleep(1100 * time.Millisecond)
+		close(resolver.release)
+		if err := <-resultDone; err != nil {
+			t.Fatal(err)
+		}
+		if len(client.outputs) != 1 {
+			t.Fatalf("slow-resolution logs requests = %#v, want one request", client.outputs)
+		}
+		cutoff := time.Unix(0, client.outputs[0].SinceUnixNano)
+		if !cutoff.Before(resolverEntered) {
+			t.Fatalf("MCP cutoff = %v, was captured after resolver entered at %v", cutoff, resolverEntered)
+		}
+	})
+	t.Run("live daemon boundary and composition", testMCPLogsSinceLive)
+
+	client := &fakeClient{output: protocol.OutputResult{Entries: []protocol.OutputEntry{{Cursor: 2, Text: "since\n"}}}}
+	server, root, _ := newTestServer(t, nil, client)
+	before := time.Now().Add(-1234*time.Millisecond - 20*time.Millisecond)
+	value, err := server.callTool(context.Background(), "logs", args(root, "name", "api", "after", 1, "since_ms", 1234, "tail", 2, "max_entries", 2, "max_bytes", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.outputs) != 1 {
+		t.Fatalf("MCP logs requests = %#v, want one request", client.outputs)
+	}
+	request := client.outputs[0]
+	if request.SinceUnixNano == 0 || request.After == nil || *request.After != 1 || request.Tail != 2 || request.MaxEntries != 2 || request.MaxBytes != 32 {
+		t.Fatalf("MCP logs request = %#v, want since/cursor/tail/entry/byte composition", request)
+	}
+	cutoff := time.Unix(0, request.SinceUnixNano)
+	if cutoff.Before(before) || cutoff.After(time.Now().Add(-1234*time.Millisecond+20*time.Millisecond)) {
+		t.Fatalf("MCP since cutoff = %v, want one request-time cutoff near 1234ms ago", cutoff)
+	}
+	result, ok := value.(protocol.OutputResult)
+	if !ok || len(result.Entries) != 1 || result.Entries[0].Text != "since\n" {
+		t.Fatalf("MCP since result = %#v, want bounded output result", value)
+	}
+	for _, since := range []int64{0, -1, maxSinceMilliseconds + 1} {
+		if _, err := server.callTool(context.Background(), "logs", args(root, "name", "api", "since_ms", since)); mapError(err).Code != "invalid_request" {
+			t.Fatalf("since_ms=%d error = %v, want invalid_request", since, err)
+		}
+	}
+	if len(client.outputs) != 1 {
+		t.Fatalf("invalid MCP since requests contacted daemon: %#v", client.outputs)
+	}
+	var sinceProperty map[string]any
+	for _, definition := range server.toolDefinitions() {
+		if definition.Name == "logs" {
+			sinceProperty = definition.InputSchema["properties"].(map[string]any)["since_ms"].(map[string]any)
+		}
+	}
+	if minimum, ok := sinceProperty["minimum"].(int); !ok || minimum != 1 {
+		t.Fatalf("MCP since schema minimum = %#v, want 1", sinceProperty["minimum"])
+	}
+}
+
+func testMCPLogsSinceLive(t *testing.T) {
+	runtimeDir, err := os.MkdirTemp("/tmp", "h-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+	daemonServer, err := daemon.NewServer(daemon.Config{RuntimeDir: runtimeDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- daemonServer.Serve(context.Background()) }()
+	readyContext, cancelReady := context.WithTimeout(context.Background(), time.Second)
+	if err := daemonServer.WaitReady(readyContext); err != nil {
+		cancelReady()
+		t.Fatal(err)
+	}
+	cancelReady()
+	t.Cleanup(func() {
+		_ = daemonServer.Shutdown(context.Background(), true)
+		select {
+		case err := <-serveDone:
+			if err != nil {
+				t.Errorf("live MCP daemon: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Errorf("live MCP daemon did not stop")
+		}
+	})
+
+	root := t.TempDir()
+	mcpServer := NewServer(Options{
+		Resolver: fakeResolver{resolution: Resolution{Root: root}},
+		ClientFactory: func(ctx context.Context, _ bool) (Client, error) {
+			client, err := daemon.Dial(ctx, daemonServer.SocketPath())
+			if err != nil {
+				return nil, err
+			}
+			return &liveMCPOutputClient{fakeClient: &fakeClient{}, client: client}, nil
+		},
+	})
+	client, err := daemon.Dial(context.Background(), daemonServer.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	start := protocol.NewStartRequest("api", []string{"/bin/sh", "-c", "printf 'old-mcp\\n'; sleep 2; printf 'new-mcp\\n'; sleep 2"}, root, nil)
+	start.Root, start.Source = root, "ad_hoc"
+	if _, err := client.Start(context.Background(), start); err != nil {
+		t.Fatal(err)
+	}
+
+	var latest protocol.OutputResult
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		value, err := mcpServer.callTool(context.Background(), "logs", args(root, "name", "api"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		latest = value.(protocol.OutputResult)
+		found := false
+		for _, entry := range latest.Entries {
+			if entry.Text == "new-mcp\n" {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var newCursor protocol.Cursor
+	foundNew := false
+	for _, entry := range latest.Entries {
+		if entry.Text == "new-mcp\n" {
+			newCursor, foundNew = entry.Cursor, true
+		}
+	}
+	if !foundNew {
+		t.Fatalf("live MCP logs = %#v, never observed new entry", latest)
+	}
+
+	value, err := mcpServer.callTool(context.Background(), "logs", args(root, "name", "api", "since_ms", 1000, "after", uint64(0), "tail", 1, "max_entries", 1, "max_bytes", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := value.(protocol.OutputResult)
+	if len(result.Entries) != 1 || result.Entries[0].Text != "new-mcp\n" {
+		t.Fatalf("live MCP since result = %#v, want only newest entry", result)
+	}
+	if result.Next == nil || *result.Next != newCursor {
+		t.Fatalf("live MCP since next = %v, want new cursor %d", result.Next, newCursor)
+	}
+
+	value, err = mcpServer.callTool(context.Background(), "logs", args(root, "name", "api", "since_ms", 1000, "after", uint64(newCursor), "tail", 1, "max_entries", 1, "max_bytes", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result = value.(protocol.OutputResult)
+	if len(result.Entries) != 0 || result.Next == nil || *result.Next != newCursor {
+		t.Fatalf("live MCP after/since result = %#v, want empty result at cursor boundary", result)
+	}
+}
+
+type liveMCPOutputClient struct {
+	*fakeClient
+	client *daemon.Client
+}
+
+func (c *liveMCPOutputClient) Close() error { return c.client.Close() }
+
+func (c *liveMCPOutputClient) Output(ctx context.Context, request protocol.OutputRequest) (protocol.OutputResult, error) {
+	result, err := c.client.Output(ctx, request)
+	if err != nil {
+		return protocol.OutputResult{}, err
+	}
+	entries := make([]protocol.OutputEntry, 0, len(result.Entries))
+	for _, entry := range result.Entries {
+		stream := protocol.StreamSystem
+		switch entry.Stream {
+		case output.Stdout:
+			stream = protocol.StreamStdout
+		case output.Stderr:
+			stream = protocol.StreamStderr
+		}
+		entries = append(entries, protocol.OutputEntry{Cursor: protocol.Cursor(entry.Cursor), Stream: stream, Time: entry.Time, Text: entry.Text})
+	}
+	return protocol.OutputResult{Entries: entries, Next: protocolCursor(result.Next), Oldest: protocolCursor(result.Oldest), Latest: protocolCursor(result.Latest), EvictedThrough: protocolCursor(result.EvictedThrough), Truncated: result.Truncated, More: result.More}, nil
+}
+
+func protocolCursor(cursor *output.Cursor) *protocol.Cursor {
+	if cursor == nil {
+		return nil
+	}
+	value := protocol.Cursor(*cursor)
+	return &value
 }

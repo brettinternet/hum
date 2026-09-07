@@ -73,6 +73,9 @@ type Limits struct {
 type ReadOptions struct {
 	// After is strict-exclusive. A nil pointer means before cursor zero.
 	After *Cursor
+	// Since is an inclusive timestamp cutoff. The zero value disables the
+	// timestamp filter.
+	Since time.Time
 	// Tail selects the final Tail matching entries in the requested range when
 	// positive. Zero disables tail selection.
 	Tail    int

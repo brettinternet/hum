@@ -341,6 +341,9 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 }
 
 func matchesRead(entry Entry, opts ReadOptions) bool {
+	if !opts.Since.IsZero() && entry.Time.Before(opts.Since) {
+		return false
+	}
 	if opts.Streams != 0 && opts.Streams&streamBit(entry.Stream) == 0 {
 		return false
 	}
