@@ -13,7 +13,8 @@ Use MCP as the primary integration. Use this skill only for shell-only fallback 
 - Use `hum start <name>` for one resolved process; it waits for readiness unless you opt out. `start NAME...` is explicit-only and never pulls in `after` prerequisites. For a running or recovery-capable manifest record, changed argv, canonical cwd, readiness matcher, TTY, or normalized restart policy returns `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance; CLI `up` exits 1 for drift and the drift cannot satisfy an `after` gate.
 - `after` lists must name unique same-manifest processes that declare `ready`; cycles, unknown names, duplicates, self-reference, malformed lists, and dependencies without readiness are manifest errors. `up --no-wait` is rejected before daemon contact when any `after` is declared.
 - Use `hum list` for discovery, and to inspect each process's source and readiness.
-- Read bounded output with `hum logs --tail 100 <name>` or `hum logs --after-cursor <cursor> --json <name>`.
+- Read bounded output with `hum logs --tail 100 <name>` or `hum logs --after-cursor <cursor> --json <name>`; use `hum logs --since 5m <name>` for a recent time window.
+- Use `hum signal <name> HUP` to deliver one observational signal to a running process group; it never sets stop intent or cancels automatic relaunch, including for TERM and KILL.
 - Use `hum wait <name>` for a bounded later condition, including before another client starts the name.
 - Never use unbounded `hum logs <name> --follow`; it is for interactive terminals.
 - For intermediate work, use `hum stop <name>`, run the work, then `hum start <name>`; the durable session keeps observers attached.

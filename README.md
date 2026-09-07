@@ -17,7 +17,7 @@ Install the latest release with [mise](https://mise.jdx.dev/):
 "github:brettinternet/hum" = "latest"
 ```
 
-To build from a checkout, run `mise install`, `task init`, and `task cli:build`, then add it to your shell with `export PATH="$PWD/bin:$PATH"`.
+To build from a checkout, see [development setup and checks](docs/development.md).
 
 ## Quickstart
 

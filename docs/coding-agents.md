@@ -27,9 +27,10 @@ rejected with `-32600`; notifications and responses consume no slots.
 `-32800`, while an unknown cancellation ID does nothing. Responses remain
 serialized through the Serve-owned closeable response transport. On stdin EOF or
 parent cancellation, request contexts are cancelled, handlers are given at most
-two seconds to finish, the response transport is closed to unblock writes, and
-the writer is joined before `hum mcp` returns; no handler or writer goroutines
-are left behind.
+one second to finish, the response transport is closed to unblock writes, and
+the writer is joined before `hum mcp` returns within two seconds; no handler or
+writer goroutines are left behind. A request abandoned that way returns the tool
+error code `cancelled` rather than `internal`.
 
 ## Register the MCP server manually
 
@@ -87,7 +88,9 @@ ownership conflict fails immediately; payloads are bounded at 1-32768 bytes.
 The one-shot operation is at-most-once and does not resend across a launch race;
 hum neither retains nor explicitly echoes submitted bytes. It has no
 arbitrary-command `run` or unbounded follow tool; agents use bounded
-`wait` and `logs`. For restart-with-work, use
+`wait` and `logs`. Bounded `logs` reads the newest default window; `tail`,
+`after`, and `since_ms` (CLI `--since DURATION`) narrow it to an exact tail, a
+cursor continuation, or a recent time window. For restart-with-work, use
 `stop`, run the intermediate command, then `start`: the durable session preserves
 terminal followers. `remove` is different from `stop`: it discards retained
 runtime state and output but never edits `hum.yaml`. The CLI form is

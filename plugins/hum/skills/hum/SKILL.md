@@ -13,7 +13,8 @@ Use the bundled hum MCP tools when available. Pass the absolute current project 
 - Use `start` for one explicitly named resolved process. It never pulls in `after` prerequisites. For a running or recovery-capable manifest record, changed argv, canonical cwd, readiness matcher, TTY, or normalized restart policy returns `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance; CLI `up` exits 1 for drift and drift cannot satisfy an `after` gate. The CLI equivalent is `hum start <name>`.
 - `after` must be a unique same-manifest name list whose dependencies declare `ready`; unknown names, duplicates, self-reference, malformed values, cycles, and dependencies without readiness fail manifest validation. `up --no-wait` is rejected before daemon contact when any `after` is declared.
 - Use `list` to discover processes and inspect source and readiness.
-- Read bounded output with `logs`. For CLI fallback, use `hum logs --tail 100 <name>` or continue from a cursor with `hum logs --after-cursor <cursor> --json <name>`.
+- Read bounded output with `logs`. For CLI fallback, use `hum logs --tail 100 <name>` or continue from a cursor with `hum logs --after-cursor <cursor> --json <name>`. Bound a recent time window with `since_ms`, or CLI `hum logs --since 5m <name>`.
+- Use `signal` (CLI `hum signal NAME HUP`) to deliver one observational signal to a running process group; it never sets stop intent or cancels automatic relaunch, including for TERM and KILL.
 - Use `wait` for a bounded later condition, including before another client starts the name.
 - For intermediate work, use `stop`, run the work, then `start`; the durable session keeps terminal observers attached.
 - After process-definition changes, use `restart`; only restart adopts changed definitions. `up` and `start` report active or recovery-capable definition drift instead of silently replacing them; CLI `up` exits 1 for drift, and only restart applies a changed definition.

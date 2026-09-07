@@ -27,7 +27,7 @@ hum serve [--daemon]
 hum [--project DIR|-C DIR] start <name>... [--no-wait] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] up [--no-wait] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] down [--json]
-hum run [--project DIR|-C DIR] <name> [--detach] [--json] [-- <command> [args...]]
+hum run [--project DIR|-C DIR] <name> [--detach] [--tty] [--json] [-- <command> [args...]]
 hum [--project DIR|-C DIR] list [--all] [--json]
 hum [--project DIR|-C DIR] status <name> [--json]
 hum [--project DIR|-C DIR] attach <name> [--tail N]
@@ -68,7 +68,7 @@ Combined short options are unsupported; MCP fields have no aliases.
 | `-m` | `--match` | `logs`, `wait` |
 | `-f` | `--follow` | `logs` |
 
-`--force`, `--since`, `--no-wait`, `--stop-processes`, `--runtime-dir`,
+`--force`, `--since`, `--no-wait`, `--tty`, `--stop-processes`, `--runtime-dir`,
 `--stop-grace`,
 `--output-bytes`, and `--completed-records` remain long-only. The `input`
 command intentionally adds no short aliases, including for `--json`.
@@ -543,9 +543,11 @@ Notifications and incoming responses consume no request slots. A
 that request receives code `-32800`, while an unknown cancellation ID is a
 no-op. Responses are serialized by the Serve-owned closeable response transport.
 On stdin EOF or parent cancellation, all request contexts are cancelled; Serve
-waits at most two seconds for handlers, closes the response transport to unblock
-writes, joins the writer, and returns without leaving handler or writer
-goroutines behind.
+waits at most one second for handlers, closes the response transport to unblock
+writes, joins the writer, and returns within two seconds without leaving handler
+or writer goroutines behind. A request abandoned that way reports the tool error
+code `cancelled`, which is distinct from `internal`; `internal` remains reserved
+for unexpected adapter failures.
 
 The tools share CLI definition, readiness, cursor, collision, and aggregate
 semantics. Bounded MCP `logs` without `after` selects the newest default entry
