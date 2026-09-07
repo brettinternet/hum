@@ -21,6 +21,7 @@ import (
 	"hum/internal/output"
 	"hum/internal/project"
 	"hum/internal/protocol"
+	sharedsignals "hum/internal/signals"
 	"hum/internal/skill"
 
 	urfavecli "github.com/urfave/cli/v3"
@@ -28,9 +29,10 @@ import (
 
 func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*urfavecli.Command {
 	runStopOnNthArg := 1
+	signalStopOnNthArg := 1
 	mcpCommand := mcpCLICommand(version, buildTime, writer)
 	mcpCommand.Usage = "serve MCP lifecycle tools over stdio"
-	mcpCommand.Description = "Run a stdio Model Context Protocol server for one-time coding-agent registration; every tool requires an absolute existing project_root; start and up differ: start targets only named sessions without pulling prerequisites, while up resolves manifest readiness dependencies; resolved records and ad_hoc sessions handed off by hum run remain available until daemon shutdown or replacement; requests with IDs run concurrently up to 64 in flight, a 65th request returns -32001 without starting, duplicate in-flight IDs return -32600, notifications/cancelled returns -32800, responses are serialized, and EOF or parent cancellation cancels handlers and joins the response writer. Bounded output uses terminal-control-stripped text with no raw opt-out and explicit definitions use deterministic argv-based environment activation. The eleven tools are start, up, down, list, status, logs, wait, input, restart, and stop, plus remove; run, serve, and shutdown are not MCP tools.\n\nExamples:\n  hum mcp"
+	mcpCommand.Description = "Run a stdio Model Context Protocol server for one-time coding-agent registration; every tool requires an absolute existing project_root; start and up differ: start targets only named sessions without pulling prerequisites, while up resolves manifest readiness dependencies; resolved records and ad_hoc sessions handed off by hum run remain available until daemon shutdown or replacement; requests with IDs run concurrently up to 64 in flight, a 65th request returns -32001 without starting, duplicate in-flight IDs return -32600, notifications/cancelled returns -32800, responses are serialized, and EOF or parent cancellation cancels handlers and joins the response writer. Bounded output uses terminal-control-stripped text with no raw opt-out and explicit definitions use deterministic argv-based environment activation. The twelve tools are start, up, down, list, status, logs, wait, input, restart, stop, remove, and signal; run, serve, and shutdown are not MCP tools.\n\nExamples:\n  hum mcp"
 	commands := []*urfavecli.Command{
 		{
 			Name:        "serve",
@@ -255,6 +257,22 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 				return restartCommand(ctx, cmd, version, buildTime, writer)
+			},
+		},
+		{
+			Name:          "signal",
+			Usage:         "signal a running process group",
+			UsageText:     "hum signal NAME SIGNAL [--json]",
+			ArgsUsage:     "NAME SIGNAL",
+			StopOnNthArg:  &signalStopOnNthArg,
+			ShellComplete: completeProcessNames,
+			Description:   "Send one observational signal to a running process group without changing stop intent or automatic relaunch policy; names are case-insensitive with an optional SIG prefix, and positive decimal values are accepted only for supported named signals. The result includes the canonical SIG-prefixed name and number.\n\nExamples:\n  hum signal api HUP\n  hum signal api 1 --json",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
+			},
+			OnUsageError: onUsageError,
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return signalCommand(ctx, cmd, version, buildTime, writer)
 			},
 		},
 		{
@@ -1667,6 +1685,124 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	default:
 		return fmt.Errorf("wait returned unknown outcome %q", result.Outcome)
 	}
+}
+
+func parseSignalArgs(cmd *urfavecli.Command) ([]string, error) {
+	if cmd == nil || cmd.Args() == nil {
+		return nil, errors.New("signal accepts exactly one process name and one signal")
+	}
+	var positional []string
+	args := cmd.Args().Slice()
+	separator := false
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if !separator && arg == "--" {
+			separator = true
+			continue
+		}
+		if !separator {
+			name, value, hasValue := strings.Cut(arg, "=")
+			switch name {
+			case "--json", "-j":
+				if name == "-j" && hasValue {
+					return nil, errors.New("-j does not take a value")
+				}
+				if err := cmd.Set("json", valueOrTrue(value, hasValue)); err != nil {
+					return nil, err
+				}
+				continue
+			case "--project", "-C":
+				if !hasValue {
+					index++
+					if index >= len(args) {
+						return nil, fmt.Errorf("%s requires a value", name)
+					}
+					value = args[index]
+				}
+				if err := cmd.Set("project", value); err != nil {
+					return nil, err
+				}
+				continue
+			case "--runtime-dir", "--stop-grace", "--output-bytes", "--completed-records":
+				if !hasValue {
+					index++
+					if index >= len(args) {
+						return nil, fmt.Errorf("%s requires a value", name)
+					}
+					value = args[index]
+				}
+				if err := cmd.Set(strings.TrimPrefix(name, "--"), value); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if strings.HasPrefix(arg, "--") || arg == "-C" {
+				return nil, fmt.Errorf("unknown signal option %q", arg)
+			}
+		}
+		positional = append(positional, arg)
+	}
+	return positional, nil
+}
+
+func valueOrTrue(value string, hasValue bool) string {
+	if hasValue {
+		return value
+	}
+	return "true"
+}
+
+func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	args, err := parseSignalArgs(cmd)
+	if err != nil {
+		return err
+	}
+	if len(args) != 2 {
+		return errors.New("signal accepts exactly one process name and one signal")
+	}
+	name, specification := args[0], args[1]
+	parsed, err := sharedsignals.Parse(specification)
+	if err != nil {
+		return protocol.NewWireError(protocol.ErrorInvalidSignal, err.Error(), nil)
+	}
+	ctx = nonNilContext(ctx)
+	selection, err := selectedProjectDirectory(cmd)
+	if err != nil {
+		return err
+	}
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	result, err := client.SignalResult(ctx, daemon.SignalRequest{Name: name, Cwd: selection.cwd, Signal: parsed.Name})
+	if err != nil {
+		if isWireCode(err, string(protocol.ErrorNotFound)) {
+			return protocol.NewWireError(protocol.ErrorNotFound, fmt.Sprintf("process %q was not found; run hum list --all or hum start %s for a resolved name", name, name), nil)
+		}
+		if isWireCode(err, string(protocol.ErrorNotRunning)) {
+			return protocol.NewWireError(protocol.ErrorNotRunning, fmt.Sprintf("process %q is not running; start it with hum start %s", name, name), nil)
+		}
+		return err
+	}
+	if result.Name == "" {
+		result.Name = name
+	}
+	if result.Signal.Name == "" {
+		result.Signal.Name, result.Signal.Number = parsed.Name, parsed.Number
+	}
+	if result.Status == "" {
+		result.Status = "sent"
+	}
+	if cmd.Bool("json") {
+		return encodeJSON(writer, result)
+	}
+	_, err = fmt.Fprintf(writer, "sent %s (%d) to %s\n", result.Signal.Name, result.Signal.Number, result.Name)
+	return err
 }
 
 func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {

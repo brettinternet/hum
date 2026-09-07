@@ -12,9 +12,10 @@ import (
 
 // Version is the current private protocol version. The hello exchange carries
 // this value on every connection. Version 10 added explicit stopped terminal
-// snapshots and autonomous exit details; version 11 adds immutable output
-// time-window cutoffs in output and follow requests.
-const Version = 11
+// snapshots and autonomous exit details; version 11 added immutable output
+// time-window cutoffs in output and follow requests; version 12 adds canonical
+// observational process-group signal requests and responses.
+const Version = 12
 
 const (
 	RestartNever     = "never"
@@ -582,8 +583,9 @@ type SignalRequest struct {
 	Signal string    `json:"signal"`
 }
 
-// NewSignalRequest builds a signal-forward request. Signal uses names such as
-// SIGINT, SIGTERM, and SIGKILL rather than platform-specific integer values.
+// NewSignalRequest builds a signal-forward request. Signal is normally a
+// canonical name such as SIGINT, SIGTERM, or SIGKILL; the daemon also accepts
+// supported positive decimal forms before canonicalizing the result.
 func NewSignalRequest(name, cwd, signal string) SignalRequest {
 	return SignalRequest{Op: OpSignal, Name: name, Cwd: cwd, Signal: signal}
 }
@@ -1178,15 +1180,45 @@ func (r *OutputResponse) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// SignalResponse reports a signal-forward operation.
-type SignalResponse struct {
-	Op    Operation  `json:"op"`
-	OK    bool       `json:"ok"`
-	Error *WireError `json:"error,omitempty"`
+// SignalInfo is the canonical signal name and number returned by a signal
+// operation.
+type SignalInfo struct {
+	Name   string `json:"name"`
+	Number int    `json:"number"`
 }
 
-// NewSignalResponse builds a successful signal response.
-func NewSignalResponse() SignalResponse { return SignalResponse{Op: OpSignal, OK: true} }
+// Signal is a concise alias for SignalInfo.
+type Signal = SignalInfo
+
+// SignalResult is the stable result shared by CLI and MCP adapters.
+type SignalResult struct {
+	Name   string     `json:"name"`
+	Signal SignalInfo `json:"signal"`
+	Status string     `json:"status"`
+}
+
+// SignalResponse reports a signal-forward operation and its canonical result.
+type SignalResponse struct {
+	Op     Operation   `json:"op"`
+	OK     bool        `json:"ok"`
+	Name   string      `json:"name,omitempty"`
+	Signal *SignalInfo `json:"signal,omitempty"`
+	Status string      `json:"status,omitempty"`
+	Error  *WireError  `json:"error,omitempty"`
+}
+
+// NewSignalResponse builds a successful signal response. The optional result
+// keeps the zero-argument constructor useful to protocol tests and older
+// in-process callers while new responses carry the canonical signal details.
+func NewSignalResponse(results ...SignalResult) SignalResponse {
+	response := SignalResponse{Op: OpSignal, OK: true}
+	if len(results) != 0 {
+		result := results[0]
+		response.Name, response.Status = result.Name, result.Status
+		response.Signal = &result.Signal
+	}
+	return response
+}
 
 // StopResponse reports a stop operation and its resulting process snapshot.
 type StopResponse struct {
@@ -1405,6 +1437,9 @@ type Response struct {
 	Processes []Process        `json:"processes,omitempty"`
 	Entries   []OutputEntry    `json:"entries,omitempty"`
 	Result    *OutputResult    `json:"result,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	Signal    *SignalInfo      `json:"signal,omitempty"`
+	Status    string           `json:"status,omitempty"`
 	Event     *StreamEvent     `json:"event,omitempty"`
 	Error     *WireError       `json:"error,omitempty"`
 }
@@ -1425,6 +1460,8 @@ const (
 	ErrorInvalidRequest ErrorCode = "invalid_request"
 	// ErrorNotFound reports a missing supervised process.
 	ErrorNotFound ErrorCode = "not_found"
+	// ErrorNotRunning reports a known process record that is not running.
+	ErrorNotRunning ErrorCode = "not_running"
 	// ErrorNameInUse reports a duplicate running process name.
 	ErrorNameInUse ErrorCode = "name_in_use"
 	// ErrorInvalidSignal reports a signal that cannot be forwarded.
@@ -1458,6 +1495,7 @@ const (
 	ErrorCodeVersionMismatch  = ErrorVersionMismatch
 	ErrorCodeInvalidRequest   = ErrorInvalidRequest
 	ErrorCodeNotFound         = ErrorNotFound
+	ErrorCodeNotRunning       = ErrorNotRunning
 	ErrorCodeNameInUse        = ErrorNameInUse
 	ErrorCodeInvalidSignal    = ErrorInvalidSignal
 	ErrorCodeSupervisorClosed = ErrorSupervisorClosed

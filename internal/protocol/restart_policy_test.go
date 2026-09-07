@@ -8,8 +8,8 @@ import (
 )
 
 func TestRestartPolicyProtocol(t *testing.T) {
-	if Version != 11 {
-		t.Fatalf("protocol version = %d, want immutable-since protocol version 11", Version)
+	if Version != 12 {
+		t.Fatalf("protocol version = %d, want observational-signal protocol version 12", Version)
 	}
 
 	start := NewStartRequest("api", []string{"server"}, "/project", nil)

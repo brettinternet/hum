@@ -174,7 +174,11 @@ func writeProtocolResponse(encoder *protocol.Encoder, response wireResponse) err
 	case "output":
 		return encoder.EncodeResponse(protocol.OutputResponse{Op: protocol.OpOutput, OK: response.OK, Entries: protocolEntriesFromWire(response.Entries), Next: protocolCursorFromUint64(response.Next), Oldest: protocolCursorFromUint64(response.Oldest), Latest: protocolCursorFromUint64(response.Latest), EvictedThrough: protocolCursorFromUint64(response.EvictedThrough), Truncated: response.Truncated, More: response.More})
 	case "signal":
-		return encoder.EncodeResponse(protocol.SignalResponse{Op: protocol.OpSignal, OK: response.OK})
+		var signal *protocol.SignalInfo
+		if response.Signal != nil {
+			signal = &protocol.SignalInfo{Name: response.Signal.Name, Number: response.Signal.Number}
+		}
+		return encoder.EncodeResponse(protocol.SignalResponse{Op: protocol.OpSignal, OK: response.OK, Name: response.Name, Signal: signal, Status: response.Status})
 	case "stop":
 		return encoder.EncodeResponse(protocol.StopResponse{Op: protocol.OpStop, OK: response.OK, Process: optionalProtocolProcess(response.Process)})
 	case "restart":
@@ -204,6 +208,21 @@ func wireErrorToProtocol(wire *wireError) *protocol.WireError {
 		details = append([]string(nil), wire.Processes...)
 	}
 	return protocol.NewWireError(protocol.ErrorCode(wire.Code), wire.Message, details)
+}
+
+func protocolSignalResultFromWire(response wireResponse, fallbackName string) (protocol.SignalResult, error) {
+	if response.Signal == nil {
+		return protocol.SignalResult{}, errors.New("daemon signal response omitted signal")
+	}
+	name := response.Name
+	if name == "" {
+		name = fallbackName
+	}
+	status := response.Status
+	if status == "" {
+		status = "sent"
+	}
+	return protocol.SignalResult{Name: name, Signal: protocol.SignalInfo{Name: response.Signal.Name, Number: response.Signal.Number}, Status: status}, nil
 }
 
 func protocolProcessFromWire(item wireProcess) protocol.Process {

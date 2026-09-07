@@ -35,6 +35,7 @@ hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|both] [--tai
            [--since DURATION] [--limit-bytes N] [--match REGEX] [--follow] [--json]
 hum [--project DIR|-C DIR] wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
+hum [--project DIR|-C DIR] signal <name> <signal> [--json]
 hum [--project DIR|-C DIR] restart <name>... [--no-wait] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] stop <name>... [--json]
 hum [--project DIR|-C DIR] remove <name>... [--json]
@@ -240,6 +241,16 @@ retains, or explicitly echoes bytes. The bounded prompt loop is observe with
 `logs` or `wait --match`, answer with `input`, then confirm with `wait --match`.
 A stopped initial state returns `session_not_running`; a non-TTY target returns `input_not_tty`; ownership,
 closed-session, and stale-cursor races return the existing input error codes.
+`signal` sends exactly one observational signal to the process group of an
+existing running record. Names are case-insensitive with an optional `SIG`
+prefix; positive decimal values are accepted only when they map to the current
+OS's supported named table (`HUP`, `INT`, `QUIT`, `TERM`, `KILL`, and `USR1`/
+`USR2` where available). The canonical result is one line in human mode or
+`{"name":"NAME","signal":{"name":"SIGHUP","number":1},"status":"sent"}`
+in JSON/MCP; invalid specifications return `invalid_signal`, while missing and
+stopped records return `not_found` and `not_running`. Signaling never sets stop
+intent or cancels automatic relaunch, including for TERM and KILL; only stop,
+down, and restart control lifecycle policy.
 `stop` preserves the durable session; `remove` stops its child, closes
 followers, and discards runtime launch state and output without editing
 `hum.yaml`. The reported follower count is read-only: `remove` never warns,
@@ -494,11 +505,15 @@ with sorted `changed_fields` and `hum restart NAME` guidance from `start` or
 ## MCP adapter
 
 `hum mcp` serves JSON-RPC over stdin/stdout. Every request requires an absolute,
-existing `project_root` chosen by the same root rule as the CLI. It exposes eleven
+existing `project_root` chosen by the same root rule as the CLI. It exposes twelve
 tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `input`, `restart`,
-`stop`, and `remove`. `input` accepts exactly one non-empty `text` or `base64`
+`stop`, `remove`, and `signal`. `input` accepts exactly one non-empty `text` or `base64`
 payload, uses the same bounded one-shot TTY semantics as the CLI, and returns
-`name`, decoded `bytes`, and `launch_cursor`. MCP `restart` accepts `no_wait`
+`name`, decoded `bytes`, and `launch_cursor`. MCP `signal` accepts the same
+case-insensitive named or supported positive decimal signal forms as the CLI and
+returns `{"name":"NAME","signal":{"name":"SIGHUP","number":1},"status":"sent"}`.
+It returns `invalid_signal`, `not_found`, or `not_running` without delivering a
+signal when validation or target lookup fails. MCP `restart` accepts `no_wait`
 and a positive per-name `timeout_ms`, and its text and structured content carry
 `name`, `outcome`, `readiness`, `pid`, `launch_cursor`, and an optional `message`
 with the same single-name semantics as the CLI.
@@ -537,7 +552,7 @@ returned. MCP `status` and `list` return the same `followers` integer as the CLI
 snapshot.
 
 MCP exposes no follow or other unbounded operation; agents use bounded `wait`,
-`logs`, and one-shot `input`. The adapter receives a protocol-shaped daemon client and constructs
+`logs`, one-shot `input`, and observational `signal`. The adapter receives a protocol-shaped daemon client and constructs
 no app services, supervisors, or output stores in-process. It has no `run`,
 `serve`, or `shutdown`, HTTP transport, authentication, remote access, or arbitrary-command
 tool.

@@ -102,6 +102,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 		"restart":  true,
 		"stop":     true,
 		"remove":   true,
+		"signal":   true,
 		"shutdown": true,
 	}
 	got := make(map[string]bool, len(root.Commands))

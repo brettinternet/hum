@@ -761,9 +761,21 @@ func (s *InputSession) Release() error {
 }
 func (s *InputSession) Close() error { return s.Release() }
 
+// Signal sends one observational signal and preserves the historical
+// error-only client surface for callers that do not need the canonical result.
 func (c *Client) Signal(ctx context.Context, req SignalRequest) error {
-	_, err := c.roundTrip(ctx, wireRequest{Op: "signal", Name: req.Name, Cwd: req.Cwd, Signal: req.Signal})
+	_, err := c.SignalResult(ctx, req)
 	return err
+}
+
+// SignalResult sends one observational signal and returns its canonical name,
+// number, and sent status.
+func (c *Client) SignalResult(ctx context.Context, req SignalRequest) (protocol.SignalResult, error) {
+	response, err := c.roundTrip(ctx, wireRequest{Op: "signal", Name: req.Name, Cwd: req.Cwd, Signal: req.Signal})
+	if err != nil {
+		return protocol.SignalResult{}, err
+	}
+	return protocolSignalResultFromWire(response, req.Name)
 }
 
 func (c *Client) Stop(ctx context.Context, req StopRequest) error {

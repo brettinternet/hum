@@ -88,6 +88,9 @@ type fakeClient struct {
 	inputErr        error
 	stops           []protocol.StopRequest
 	restarts        []protocol.RestartRequest
+	signals         []protocol.SignalRequest
+	signalResult    protocol.SignalResult
+	signalErr       error
 	waitHook        func(protocol.WaitRequest)
 	keepStarting    bool
 	waited          map[string]bool
@@ -194,6 +197,18 @@ func (f *fakeClient) Remove(_ context.Context, req protocol.RemoveRequest) error
 	f.stops = append(f.stops, protocol.StopRequest{Op: protocol.OpStop, Name: req.Name, Cwd: req.Cwd})
 	return f.stopErr[req.Name]
 }
+func (f *fakeClient) SignalResult(_ context.Context, req protocol.SignalRequest) (protocol.SignalResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.signals = append(f.signals, req)
+	if f.signalErr != nil {
+		return protocol.SignalResult{}, f.signalErr
+	}
+	if f.signalResult.Name == "" {
+		return protocol.SignalResult{Name: req.Name, Signal: protocol.SignalInfo{Name: req.Signal, Number: 1}, Status: "sent"}, nil
+	}
+	return f.signalResult, nil
+}
 func (f *fakeClient) Restart(_ context.Context, req protocol.RestartRequest) (protocol.Process, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -278,7 +293,7 @@ func TestToolSchemas(t *testing.T) {
 		}
 		assertSchemaPropertiesDescribed(t, d.Name, d.InputSchema)
 	}
-	want := []string{"start", "up", "down", "list", "status", "logs", "wait", "input", "restart", "stop", "remove"}
+	want := []string{"start", "up", "down", "list", "status", "logs", "wait", "input", "restart", "stop", "remove", "signal"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("tools=%v want %v", names, want)
 	}
@@ -1048,6 +1063,41 @@ func TestStatusListFollowers(t *testing.T) {
 	followers, ok := properties["followers"].(map[string]any)
 	if !ok || followers["type"] != "integer" {
 		t.Fatalf("followers schema = %#v, want integer", properties["followers"])
+	}
+}
+
+func TestSignalTool(t *testing.T) {
+	client := &fakeClient{processes: map[string]protocol.Process{"api": {Name: "api", State: protocol.StateRunning}}}
+	server, root, _ := newTestServer(t, nil, client)
+	value, err := server.callTool(context.Background(), "signal", args(root, "name", "api", "signal", "hup"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := value.(protocol.SignalResult)
+	if !ok || result.Name != "api" || result.Signal.Name != "SIGHUP" || result.Signal.Number != 1 || result.Status != "sent" {
+		t.Fatalf("signal result = %#v", value)
+	}
+	if len(client.signals) != 1 || client.signals[0].Signal != "SIGHUP" {
+		t.Fatalf("signal requests = %#v", client.signals)
+	}
+	for _, input := range []string{"", "0", "-1", "SIGUSR3"} {
+		before := len(client.signals)
+		_, err := server.callTool(context.Background(), "signal", args(root, "name", "api", "signal", input))
+		if mapError(err).Code != string(protocol.ErrorInvalidSignal) {
+			t.Fatalf("signal %q error = %v", input, err)
+		}
+		if len(client.signals) != before {
+			t.Fatalf("invalid signal %q was delivered", input)
+		}
+	}
+	stopped := client.processes["api"]
+	stopped.State = protocol.StateStopped
+	client.processes["api"] = stopped
+	if _, err := server.callTool(context.Background(), "signal", args(root, "name", "api", "signal", "HUP")); mapError(err).Code != string(protocol.ErrorNotRunning) {
+		t.Fatalf("stopped signal error = %v", err)
+	}
+	if _, err := server.callTool(context.Background(), "signal", args(root, "name", "missing", "signal", "HUP")); mapError(err).Code != string(protocol.ErrorNotFound) {
+		t.Fatalf("missing signal error = %v", err)
 	}
 }
 

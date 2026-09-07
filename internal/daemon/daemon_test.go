@@ -1470,8 +1470,8 @@ func TestHelloVersion(t *testing.T) {
 		}
 	})
 
-	t.Run("v11 client rejects a v10 daemon before immutable since cutoffs", func(t *testing.T) {
-		const oldDaemonVersion = 10
+	t.Run("v12 client rejects a v11 daemon before observational signals", func(t *testing.T) {
+		const oldDaemonVersion = 11
 		server := testServer(t, Config{WireVersion: oldDaemonVersion})
 		client, err := Dial(context.Background(), server.Paths().Socket)
 		if client == nil {
@@ -1544,6 +1544,30 @@ func TestHelloVersion(t *testing.T) {
 	})
 }
 
+func TestSignalCanonicalRoundTrip(t *testing.T) {
+	server := testServer(t, Config{})
+	root := t.TempDir()
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	process, err := client.Start(context.Background(), testStartRequest(root, "canonical", testShell(t), "-c", "trap '' HUP; while :; do sleep 1; done"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.SignalResult(context.Background(), protocol.NewSignalRequest("canonical", root, "1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Name != "canonical" || result.Signal.Name != "SIGHUP" || result.Signal.Number != 1 || result.Status != "sent" {
+		t.Fatalf("signal result = %#v", result)
+	}
+	if process.PID <= 0 {
+		t.Fatalf("started process = %#v", process)
+	}
+}
+
 func TestDaemonSignal(t *testing.T) {
 	t.Run("unsupported signal returns invalid_signal", func(t *testing.T) {
 		server := testServer(t, Config{})
@@ -1552,7 +1576,7 @@ func TestDaemonSignal(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer client.Close()
-		err = client.Signal(context.Background(), protocol.NewSignalRequest("missing", t.TempDir(), "SIGUSR1"))
+		err = client.Signal(context.Background(), protocol.NewSignalRequest("missing", t.TempDir(), "SIGUSR3"))
 		var wireErr *protocol.WireError
 		if !errors.As(err, &wireErr) || wireErr.Code != protocol.ErrorInvalidSignal {
 			t.Fatalf("unsupported signal error = %v, want invalid_signal", err)

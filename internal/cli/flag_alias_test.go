@@ -28,6 +28,7 @@ func TestFlagAliases(t *testing.T) {
 		"restart":  {"no-wait": nil, "timeout": {"t"}, "json": {"j"}},
 		"stop":     {"json": {"j"}},
 		"remove":   {"json": {"j"}},
+		"signal":   {"json": {"j"}},
 		"shutdown": {"stop-processes": nil, "json": {"j"}},
 		"mcp":      {},
 		"skill":    {},
