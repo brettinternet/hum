@@ -8,10 +8,28 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
+// bootIdentity reads a value that changes on every boot. Procfs start times
+// count clock ticks since boot, so without a boot-invariant component a
+// pre-reboot identity can match an unrelated post-boot process that happens to
+// hold the same PID and to have started in the same tick.
+var bootIdentity = sync.OnceValues(func() (string, error) {
+	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return "", fmt.Errorf("read boot id: %w", err)
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return "", errors.New("read boot id: value is empty")
+	}
+	return value, nil
+})
+
 // processStartIdentity reads Linux's monotonically increasing procfs start
-// time (the 22nd field in /proc/<pid>/stat). The command name is wrapped in
+// time (the 22nd field in /proc/<pid>/stat), qualified by the current boot so
+// the identity cannot match across a reboot. The command name is wrapped in
 // parentheses and may itself contain spaces or parentheses, so parsing starts
 // after the final closing parenthesis rather than using strings.Fields on the
 // whole file.
@@ -44,5 +62,9 @@ func processStartIdentity(pid int) (string, error) {
 		}
 		return "", fmt.Errorf("parse procfs start time for pid %d: %w", pid, err)
 	}
-	return "procfs:" + strconv.FormatUint(value, 10), nil
+	boot, err := bootIdentity()
+	if err != nil {
+		return "", err
+	}
+	return "procfs:" + boot + ":" + strconv.FormatUint(value, 10), nil
 }
