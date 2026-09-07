@@ -131,8 +131,13 @@ type Hello struct {
 // HelloRequest is the client-to-daemon hello shape.
 type HelloRequest = Hello
 
-// HelloResponse is the daemon's version-carrying hello response shape.
-type HelloResponse = Hello
+// HelloResponse is the daemon's version-carrying hello response shape. It may
+// include the daemon-lifetime startup reconciliation summary.
+type HelloResponse struct {
+	Op       Operation        `json:"op"`
+	Version  int              `json:"version"`
+	Warnings []StartupWarning `json:"warnings,omitempty"`
+}
 
 // NewHello returns a hello carrying the current protocol version.
 func NewHello() Hello {
@@ -958,16 +963,29 @@ func (p *Process) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// StartupWarning reports one group considered during daemon startup
+// reconciliation. Outcome is either reclaimed or unresolved.
+type StartupWarning struct {
+	Project string `json:"project"`
+	Name    string `json:"name"`
+	Outcome string `json:"outcome"`
+	Message string `json:"message"`
+}
+
+// ReconciliationWarning is the descriptive spelling used by daemon callers.
+type ReconciliationWarning = StartupWarning
+
 // ProcessResponse is a descriptive alias for Process.
 type ProcessResponse = Process
 
 // StartResponse reports the process created by a start request. It contains no
 // environment field by design.
 type StartResponse struct {
-	Op      Operation  `json:"op"`
-	OK      bool       `json:"ok"`
-	Process *Process   `json:"process,omitempty"`
-	Error   *WireError `json:"error,omitempty"`
+	Op       Operation        `json:"op"`
+	OK       bool             `json:"ok"`
+	Process  *Process         `json:"process,omitempty"`
+	Warnings []StartupWarning `json:"warnings,omitempty"`
+	Error    *WireError       `json:"error,omitempty"`
 }
 
 // NewStartResponse builds a successful start response.
@@ -977,10 +995,11 @@ func NewStartResponse(process Process) StartResponse {
 
 // ListResponse reports process snapshots.
 type ListResponse struct {
-	Op        Operation  `json:"op"`
-	OK        bool       `json:"ok"`
-	Processes []Process  `json:"processes,omitempty"`
-	Error     *WireError `json:"error,omitempty"`
+	Op        Operation        `json:"op"`
+	OK        bool             `json:"ok"`
+	Processes []Process        `json:"processes,omitempty"`
+	Warnings  []StartupWarning `json:"warnings,omitempty"`
+	Error     *WireError       `json:"error,omitempty"`
 }
 
 // NewListResponse builds a successful list response.
@@ -990,10 +1009,11 @@ func NewListResponse(processes []Process) ListResponse {
 
 // GetResponse reports one process snapshot.
 type GetResponse struct {
-	Op      Operation  `json:"op"`
-	OK      bool       `json:"ok"`
-	Process *Process   `json:"process,omitempty"`
-	Error   *WireError `json:"error,omitempty"`
+	Op       Operation        `json:"op"`
+	OK       bool             `json:"ok"`
+	Process  *Process         `json:"process,omitempty"`
+	Warnings []StartupWarning `json:"warnings,omitempty"`
+	Error    *WireError       `json:"error,omitempty"`
 }
 
 // NewGetResponse builds a successful get response.
@@ -1201,6 +1221,9 @@ const (
 	EventReady EventType = "ready"
 	// EventError is a terminal stream error.
 	EventError EventType = "error"
+	// EventWarning carries startup reconciliation warnings before CLI up
+	// results.
+	EventWarning EventType = "warning"
 
 	// EventRead and EventTruncated are descriptive aliases used by callers for
 	// output and eviction notifications.
@@ -1212,22 +1235,23 @@ const (
 // metadata remain cursor based; exit, readiness, and terminal errors each have
 // a dedicated field. The Op field is always encoded as event.
 type StreamEvent struct {
-	Op             Operation     `json:"op"`
-	Type           EventType     `json:"type"`
-	Name           string        `json:"name,omitempty"`
-	Entries        []OutputEntry `json:"entries,omitempty"`
-	Next           *Cursor       `json:"next,omitempty"`
-	Oldest         *Cursor       `json:"oldest,omitempty"`
-	Latest         *Cursor       `json:"latest,omitempty"`
-	EvictedThrough *Cursor       `json:"evicted_through,omitempty"`
-	Truncated      bool          `json:"truncated,omitempty"`
-	More           bool          `json:"more,omitempty"`
-	Cursor         *Cursor       `json:"cursor,omitempty"`
-	Ready          bool          `json:"ready,omitempty"`
-	Time           time.Time     `json:"time,omitempty"`
-	Exit           *Exit         `json:"exit,omitempty"`
-	Error          *WireError    `json:"error,omitempty"`
-	Result         *OutputResult `json:"-"`
+	Op             Operation        `json:"op"`
+	Type           EventType        `json:"type"`
+	Name           string           `json:"name,omitempty"`
+	Entries        []OutputEntry    `json:"entries,omitempty"`
+	Next           *Cursor          `json:"next,omitempty"`
+	Oldest         *Cursor          `json:"oldest,omitempty"`
+	Latest         *Cursor          `json:"latest,omitempty"`
+	EvictedThrough *Cursor          `json:"evicted_through,omitempty"`
+	Truncated      bool             `json:"truncated,omitempty"`
+	More           bool             `json:"more,omitempty"`
+	Cursor         *Cursor          `json:"cursor,omitempty"`
+	Ready          bool             `json:"ready,omitempty"`
+	Warnings       []StartupWarning `json:"warnings,omitempty"`
+	Time           time.Time        `json:"time,omitempty"`
+	Exit           *Exit            `json:"exit,omitempty"`
+	Error          *WireError       `json:"error,omitempty"`
+	Result         *OutputResult    `json:"-"`
 }
 
 const eventOperation = OpEvent
@@ -1286,43 +1310,45 @@ func (e StreamEvent) MarshalJSON() ([]byte, error) {
 		eventTime = &e.Time
 	}
 	return json.Marshal(struct {
-		Op             Operation     `json:"op"`
-		Type           EventType     `json:"type"`
-		Name           string        `json:"name,omitempty"`
-		Entries        []OutputEntry `json:"entries,omitempty"`
-		Next           *Cursor       `json:"next,omitempty"`
-		Oldest         *Cursor       `json:"oldest,omitempty"`
-		Latest         *Cursor       `json:"latest,omitempty"`
-		EvictedThrough *Cursor       `json:"evicted_through,omitempty"`
-		Truncated      bool          `json:"truncated,omitempty"`
-		More           bool          `json:"more,omitempty"`
-		Cursor         *Cursor       `json:"cursor,omitempty"`
-		Ready          bool          `json:"ready,omitempty"`
-		Time           *time.Time    `json:"time,omitempty"`
-		Exit           *Exit         `json:"exit,omitempty"`
-		Error          *WireError    `json:"error,omitempty"`
-	}{Op: eventOperation, Type: e.Type, Name: e.Name, Entries: result.Entries, Next: result.Next, Oldest: result.Oldest, Latest: result.Latest, EvictedThrough: result.EvictedThrough, Truncated: result.Truncated, More: result.More, Cursor: e.Cursor, Ready: e.Ready, Time: eventTime, Exit: e.Exit, Error: e.Error})
+		Op             Operation        `json:"op"`
+		Type           EventType        `json:"type"`
+		Name           string           `json:"name,omitempty"`
+		Entries        []OutputEntry    `json:"entries,omitempty"`
+		Next           *Cursor          `json:"next,omitempty"`
+		Oldest         *Cursor          `json:"oldest,omitempty"`
+		Latest         *Cursor          `json:"latest,omitempty"`
+		EvictedThrough *Cursor          `json:"evicted_through,omitempty"`
+		Truncated      bool             `json:"truncated,omitempty"`
+		More           bool             `json:"more,omitempty"`
+		Cursor         *Cursor          `json:"cursor,omitempty"`
+		Ready          bool             `json:"ready,omitempty"`
+		Warnings       []StartupWarning `json:"warnings,omitempty"`
+		Time           *time.Time       `json:"time,omitempty"`
+		Exit           *Exit            `json:"exit,omitempty"`
+		Error          *WireError       `json:"error,omitempty"`
+	}{Op: eventOperation, Type: e.Type, Name: e.Name, Entries: result.Entries, Next: result.Next, Oldest: result.Oldest, Latest: result.Latest, EvictedThrough: result.EvictedThrough, Truncated: result.Truncated, More: result.More, Cursor: e.Cursor, Ready: e.Ready, Warnings: e.Warnings, Time: eventTime, Exit: e.Exit, Error: e.Error})
 }
 
 // UnmarshalJSON decodes a streaming event and populates Result for output
 // events.
 func (e *StreamEvent) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op             Operation     `json:"op"`
-		Type           EventType     `json:"type"`
-		Name           string        `json:"name"`
-		Entries        []OutputEntry `json:"entries"`
-		Next           *Cursor       `json:"next"`
-		Oldest         *Cursor       `json:"oldest"`
-		Latest         *Cursor       `json:"latest"`
-		EvictedThrough *Cursor       `json:"evicted_through"`
-		Truncated      bool          `json:"truncated"`
-		More           bool          `json:"more"`
-		Cursor         *Cursor       `json:"cursor"`
-		Ready          bool          `json:"ready"`
-		Time           time.Time     `json:"time"`
-		Exit           *Exit         `json:"exit"`
-		Error          *WireError    `json:"error"`
+		Op             Operation        `json:"op"`
+		Type           EventType        `json:"type"`
+		Name           string           `json:"name"`
+		Entries        []OutputEntry    `json:"entries"`
+		Next           *Cursor          `json:"next"`
+		Oldest         *Cursor          `json:"oldest"`
+		Latest         *Cursor          `json:"latest"`
+		EvictedThrough *Cursor          `json:"evicted_through"`
+		Truncated      bool             `json:"truncated"`
+		More           bool             `json:"more"`
+		Cursor         *Cursor          `json:"cursor"`
+		Ready          bool             `json:"ready"`
+		Warnings       []StartupWarning `json:"warnings"`
+		Time           time.Time        `json:"time"`
+		Exit           *Exit            `json:"exit"`
+		Error          *WireError       `json:"error"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -1333,7 +1359,7 @@ func (e *StreamEvent) UnmarshalJSON(data []byte) error {
 	e.Op, e.Type, e.Name = eventOperation, wire.Type, wire.Name
 	e.Entries, e.Next, e.Oldest, e.Latest = wire.Entries, wire.Next, wire.Oldest, wire.Latest
 	e.EvictedThrough, e.Truncated, e.More = wire.EvictedThrough, wire.Truncated, wire.More
-	e.Cursor, e.Ready, e.Time, e.Exit, e.Error = wire.Cursor, wire.Ready, wire.Time, wire.Exit, wire.Error
+	e.Cursor, e.Ready, e.Warnings, e.Time, e.Exit, e.Error = wire.Cursor, wire.Ready, wire.Warnings, wire.Time, wire.Exit, wire.Error
 	e.Result = &OutputResult{Entries: e.Entries, Next: e.Next, Oldest: e.Oldest, Latest: e.Latest, EvictedThrough: e.EvictedThrough, Truncated: e.Truncated, More: e.More}
 	return nil
 }
@@ -1342,15 +1368,16 @@ func (e *StreamEvent) UnmarshalJSON(data []byte) error {
 // operations dynamically. Operation-specific response DTOs remain preferable
 // when the operation is known statically.
 type Response struct {
-	Op        Operation     `json:"op"`
-	OK        bool          `json:"ok"`
-	ID        string        `json:"id,omitempty"`
-	Process   *Process      `json:"process,omitempty"`
-	Processes []Process     `json:"processes,omitempty"`
-	Entries   []OutputEntry `json:"entries,omitempty"`
-	Result    *OutputResult `json:"result,omitempty"`
-	Event     *StreamEvent  `json:"event,omitempty"`
-	Error     *WireError    `json:"error,omitempty"`
+	Op        Operation        `json:"op"`
+	OK        bool             `json:"ok"`
+	Warnings  []StartupWarning `json:"warnings,omitempty"`
+	ID        string           `json:"id,omitempty"`
+	Process   *Process         `json:"process,omitempty"`
+	Processes []Process        `json:"processes,omitempty"`
+	Entries   []OutputEntry    `json:"entries,omitempty"`
+	Result    *OutputResult    `json:"result,omitempty"`
+	Event     *StreamEvent     `json:"event,omitempty"`
+	Error     *WireError       `json:"error,omitempty"`
 }
 
 // ErrorCode identifies a stable wire error class.
@@ -1391,6 +1418,9 @@ const (
 	ErrorInputStale ErrorCode = "input_stale"
 	// ErrorInputNotTTY reports a session that was not opted into a TTY.
 	ErrorInputNotTTY ErrorCode = "input_not_tty"
+	// ErrorUnresolved reports a project/name blocked by an unverifiable old
+	// process identity.
+	ErrorUnresolved ErrorCode = "unresolved_process"
 	// ErrorCodeMalformed through ErrorCodeActiveProcesses are aliases with an
 	// explicit type-oriented prefix.
 	ErrorCodeMalformed        = ErrorMalformed
@@ -1410,6 +1440,7 @@ const (
 	ErrorCodeInputClosed      = ErrorInputClosed
 	ErrorCodeInputStale       = ErrorInputStale
 	ErrorCodeInputNotTTY      = ErrorInputNotTTY
+	ErrorCodeUnresolved       = ErrorUnresolved
 )
 
 // WireError is the stable typed error representation sent in responses and

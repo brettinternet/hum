@@ -20,16 +20,18 @@ import (
 // Client is one request connection to a daemon. It owns no managed process;
 // closing it only closes this transport.
 type Client struct {
-	conn     net.Conn
-	decoder  *protocol.Decoder
-	encoder  *protocol.Encoder
-	maxLine  int
-	socket   string
-	mu       sync.Mutex
-	stateMu  sync.Mutex
-	closed   bool
-	helloOK  bool
-	helloErr error
+	conn       net.Conn
+	decoder    *protocol.Decoder
+	encoder    *protocol.Encoder
+	maxLine    int
+	socket     string
+	mu         sync.Mutex
+	stateMu    sync.Mutex
+	closed     bool
+	warningsMu sync.Mutex
+	warnings   []protocol.StartupWarning
+	helloOK    bool
+	helloErr   error
 }
 
 // StartRequest carries the exact argv, cwd, and environment for a launch.
@@ -186,6 +188,26 @@ func (c *Client) SocketPath() string {
 		return ""
 	}
 	return c.socket
+}
+
+// StartupWarnings returns the latest daemon-lifetime reconciliation summary
+// received on this client connection.
+func (c *Client) StartupWarnings() []protocol.StartupWarning {
+	if c == nil {
+		return nil
+	}
+	c.warningsMu.Lock()
+	defer c.warningsMu.Unlock()
+	return append([]protocol.StartupWarning(nil), c.warnings...)
+}
+
+func (c *Client) recordWarnings(response wireResponse) {
+	if c == nil || response.Warnings == nil {
+		return
+	}
+	c.warningsMu.Lock()
+	c.warnings = append([]protocol.StartupWarning(nil), response.Warnings...)
+	c.warningsMu.Unlock()
 }
 
 func (c *Client) Start(ctx context.Context, req StartRequest) (app.Process, error) {
@@ -801,6 +823,7 @@ func (c *Client) roundTripLocked(ctx context.Context, req wireRequest) (wireResp
 		return wireResponse{}, contextError(ctx, err)
 	}
 	response, err := readProtocolResponse(c.decoder)
+	c.recordWarnings(response)
 	if err != nil {
 		if response.Error != nil {
 			if response.Op == "" {
@@ -835,6 +858,7 @@ func (c *Client) readResponse(ctx context.Context) (wireResponse, error) {
 	}
 	defer cleanup()
 	response, err := readProtocolResponse(c.decoder)
+	c.recordWarnings(response)
 	if err != nil {
 		if response.Error == nil {
 			c.invalidate()

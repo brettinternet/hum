@@ -34,6 +34,62 @@ type lifecycleRuntime struct {
 	paths daemon.RuntimePaths
 }
 
+func TestDaemonCrashReclaimsOrphans(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := testutil.BuildHum(t)
+	fixture := testutil.BuildFixture(t)
+	runtime := lifecycleNewRuntime(t)
+	var daemonPID int
+	t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
+
+	marker := filepath.Join(t.TempDir(), "orphan")
+	first := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "orphan", "--detach", "--", fixture, "stream", marker)
+	if first.Code != 0 || first.Err != nil {
+		t.Fatalf("first launch: code=%d err=%v stdout=%q stderr=%q", first.Code, first.Err, first.Stdout, first.Stderr)
+	}
+	oldChildPID := lifecycleParseManagedPID(t, first.Stdout, "orphan")
+	testutil.WaitForFile(t, marker+".started", lifecycleTimeout)
+	daemonPID = lifecycleReadPID(t, runtime.paths.PID)
+	if err := syscall.Kill(daemonPID, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill daemon: %v", err)
+	}
+	testutil.WaitForProcessGone(t, daemonPID, lifecycleTimeout)
+	if !testutil.ProcessAlive(oldChildPID) {
+		t.Fatal("managed child did not survive daemon crash")
+	}
+
+	second := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "orphan", "--detach", "--", fixture, "stream", marker)
+	if second.Code != 0 || second.Err != nil {
+		t.Fatalf("second launch: code=%d err=%v stdout=%q stderr=%q", second.Code, second.Err, second.Stdout, second.Stderr)
+	}
+	newChildPID := lifecycleParseManagedPID(t, second.Stdout, "orphan")
+	if newChildPID == oldChildPID {
+		t.Fatalf("new child reused old PID %d", oldChildPID)
+	}
+	testutil.WaitForProcessGone(t, oldChildPID, lifecycleTimeout)
+	if !testutil.ProcessAlive(newChildPID) {
+		t.Fatalf("replacement child PID %d is not alive", newChildPID)
+	}
+	daemonPID = lifecycleReadPID(t, runtime.paths.PID)
+
+	data, err := os.ReadFile(runtime.paths.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state daemon.RuntimeState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Groups) != 1 || state.Groups[0].Name != "orphan" || state.Groups[0].LeaderPID != newChildPID {
+		t.Fatalf("runtime groups after recovery = %+v, want only replacement PID %d", state.Groups, newChildPID)
+	}
+
+	listed := testutil.Run(t, hum, runtime.cwd, runtime.env, "list")
+	if listed.Code != 0 || !strings.Contains(listed.Stdout, "orphan") || strings.Contains(listed.Stdout, "stopped") {
+		t.Fatalf("list after recovery: code=%d stdout=%q stderr=%q", listed.Code, listed.Stdout, listed.Stderr)
+	}
+}
+
 func TestForegroundServe(t *testing.T) {
 	lifecycleRequireUnix(t)
 	hum := testutil.BuildHum(t)

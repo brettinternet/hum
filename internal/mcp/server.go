@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"hum/internal/protocol"
 )
 
 const (
@@ -56,6 +58,39 @@ type callToolResult struct {
 	Content           []textContent `json:"content"`
 	StructuredContent any           `json:"structuredContent,omitempty"`
 	IsError           bool          `json:"isError,omitempty"`
+}
+
+type startupWarningCollector struct {
+	mu       sync.Mutex
+	warnings []protocol.StartupWarning
+}
+
+type startupWarningCollectorKey struct{}
+
+func withStartupWarningCollector(ctx context.Context, collector *startupWarningCollector) context.Context {
+	return context.WithValue(ctx, startupWarningCollectorKey{}, collector)
+}
+
+func recordStartupWarnings(ctx context.Context, warnings []protocol.StartupWarning) {
+	if len(warnings) == 0 {
+		return
+	}
+	collector, _ := ctx.Value(startupWarningCollectorKey{}).(*startupWarningCollector)
+	if collector == nil {
+		return
+	}
+	collector.mu.Lock()
+	collector.warnings = append([]protocol.StartupWarning(nil), warnings...)
+	collector.mu.Unlock()
+}
+
+func collectedStartupWarnings(collector *startupWarningCollector) []protocol.StartupWarning {
+	if collector == nil {
+		return nil
+	}
+	collector.mu.Lock()
+	defer collector.mu.Unlock()
+	return append([]protocol.StartupWarning(nil), collector.warnings...)
 }
 
 type requestState struct {
@@ -586,15 +621,40 @@ func rpcIDKey(raw json.RawMessage) string {
 	}
 }
 
-func structuredToolContent(name string, value any) any {
+func structuredToolContent(name string, value any, warningSets ...[]protocol.StartupWarning) any {
+	var warnings []protocol.StartupWarning
+	if len(warningSets) != 0 {
+		warnings = warningSets[0]
+	}
+	var structured any
 	switch name {
 	case "up", "down":
-		return map[string]any{"results": value}
+		structured = map[string]any{"results": value}
 	case "list":
-		return map[string]any{"processes": value}
+		structured = map[string]any{"processes": value}
 	default:
+		structured = value
+	}
+	if name == "down" {
+		return structured
+	}
+	return contentWithStartupWarnings(structured, warnings)
+}
+
+func contentWithStartupWarnings(value any, warnings []protocol.StartupWarning) any {
+	if len(warnings) == 0 {
 		return value
 	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var object map[string]any
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		return value
+	}
+	object["warnings"] = warnings
+	return object
 }
 
 func (s *Server) handleRequest(ctx context.Context, request rpcRequest) (any, *rpcError) {
@@ -621,17 +681,26 @@ func (s *Server) handleRequest(ctx context.Context, request rpcRequest) (any, *r
 		if len(params.Arguments) == 0 || string(params.Arguments) == "null" {
 			params.Arguments = json.RawMessage("{}")
 		}
-		value, err := s.callTool(ctx, params.Name, params.Arguments)
+		collector := &startupWarningCollector{}
+		value, err := s.callTool(withStartupWarningCollector(ctx, collector), params.Name, params.Arguments)
+		warnings := collectedStartupWarnings(collector)
 		if err != nil {
-			mapped := mapError(err)
+			mapped := any(mapError(err))
+			if params.Name == "list" || params.Name == "status" || params.Name == "up" {
+				mapped = contentWithStartupWarnings(mapped, warnings)
+			}
 			text, _ := json.Marshal(mapped)
 			return callToolResult{Content: []textContent{{Type: "text", Text: string(text)}}, StructuredContent: mapped, IsError: true}, nil
 		}
-		text, err := json.Marshal(value)
+		contentValue := value
+		if len(warnings) != 0 && (params.Name == "list" || params.Name == "status" || params.Name == "up") {
+			contentValue = structuredToolContent(params.Name, value, warnings)
+		}
+		text, err := json.Marshal(contentValue)
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: "failed to encode tool result"}
 		}
-		return callToolResult{Content: []textContent{{Type: "text", Text: string(text)}}, StructuredContent: structuredToolContent(params.Name, value)}, nil
+		return callToolResult{Content: []textContent{{Type: "text", Text: string(text)}}, StructuredContent: structuredToolContent(params.Name, value, warnings)}, nil
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found"}
 	}

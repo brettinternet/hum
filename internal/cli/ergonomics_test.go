@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"hum/internal/app"
+	"hum/internal/protocol"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -21,6 +22,41 @@ import (
 // expect an exit-coded error (urfavecli.Exit) must use this instead of
 // hum006ListLogsRunAt/RunHere: the default handler calls os.Exit and silently
 // kills the test binary before any assertion runs.
+func TestStartupReconciliationWarnings(t *testing.T) {
+	warnings := []protocol.StartupWarning{{Project: "/project", Name: "api", Outcome: "reclaimed", Message: "old group stopped"}}
+	var stderr bytes.Buffer
+	if err := writeStartupWarnings(&stderr, warnings); err != nil {
+		t.Fatal(err)
+	}
+	if got := stderr.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, "reclaimed /project/api") {
+		t.Fatalf("human warning = %q, want one concise line", got)
+	}
+
+	encoded, err := json.Marshal(listJSON{Warnings: warnings})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := object["warnings"]; !ok {
+		t.Fatalf("JSON list has no top-level warnings: %s", encoded)
+	}
+
+	event, err := json.Marshal(protocol.StreamEvent{Type: protocol.EventWarning, Warnings: warnings})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(event, []byte(`"type":"warning"`)) || !bytes.Contains(event, []byte(`"warnings"`)) {
+		t.Fatalf("NDJSON warning event = %s", event)
+	}
+	var clean bytes.Buffer
+	if err := writeStartupWarnings(&clean, nil); err != nil || clean.Len() != 0 {
+		t.Fatalf("clean startup warning output = %q, err=%v", clean.String(), err)
+	}
+}
+
 func ergonomicsRunAt(t *testing.T, cwd string, ctx context.Context, args ...string) (string, string, error) {
 	t.Helper()
 	oldwd := hum006ListLogsEnterDir(t, cwd)

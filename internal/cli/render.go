@@ -17,7 +17,8 @@ import (
 )
 
 type listJSON struct {
-	Processes []listProcessJSON `json:"processes"`
+	Processes []listProcessJSON         `json:"processes"`
+	Warnings  []protocol.StartupWarning `json:"warnings,omitempty"`
 }
 
 type listProcessJSON struct {
@@ -49,25 +50,26 @@ type listProcessJSON struct {
 // Keep this type separate from protocol.Process so status output does not
 // expose protocol-only fields.
 type statusJSON struct {
-	Name         string           `json:"name"`
-	Source       string           `json:"source,omitempty"`
-	ProjectRoot  string           `json:"project_root"`
-	TTY          bool             `json:"tty"`
-	PID          int              `json:"pid"`
-	PGID         int              `json:"pgid"`
-	Cwd          string           `json:"cwd"`
-	Argv         []string         `json:"argv"`
-	StartedAt    string           `json:"started_at"`
-	State        string           `json:"state"`
-	Readiness    string           `json:"readiness,omitempty"`
-	ReadyCursor  *protocol.Cursor `json:"ready_cursor,omitempty"`
-	ExitStatus   *int             `json:"exit_status"`
-	RestartCount int              `json:"restart_count"`
-	Followers    int              `json:"followers"`
-	Restart      string           `json:"restart"`
-	Relaunches   int              `json:"relaunches"`
-	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
-	NextCursor   protocol.Cursor  `json:"next_cursor"`
+	Name         string                    `json:"name"`
+	Source       string                    `json:"source,omitempty"`
+	ProjectRoot  string                    `json:"project_root"`
+	TTY          bool                      `json:"tty"`
+	PID          int                       `json:"pid"`
+	PGID         int                       `json:"pgid"`
+	Cwd          string                    `json:"cwd"`
+	Argv         []string                  `json:"argv"`
+	StartedAt    string                    `json:"started_at"`
+	State        string                    `json:"state"`
+	Readiness    string                    `json:"readiness,omitempty"`
+	ReadyCursor  *protocol.Cursor          `json:"ready_cursor,omitempty"`
+	ExitStatus   *int                      `json:"exit_status"`
+	RestartCount int                       `json:"restart_count"`
+	Followers    int                       `json:"followers"`
+	Restart      string                    `json:"restart"`
+	Relaunches   int                       `json:"relaunches"`
+	NextLaunchAt *time.Time                `json:"next_launch_at,omitempty"`
+	NextCursor   protocol.Cursor           `json:"next_cursor"`
+	Warnings     []protocol.StartupWarning `json:"warnings,omitempty"`
 }
 
 func statusJSONFor(process app.Process) statusJSON {
@@ -167,6 +169,18 @@ func encodeJSON(w io.Writer, value any) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetEscapeHTML(false)
 	return encoder.Encode(value)
+}
+
+func writeStartupWarnings(w io.Writer, warnings []protocol.StartupWarning) error {
+	if len(warnings) == 0 || w == nil {
+		return nil
+	}
+	parts := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		parts = append(parts, fmt.Sprintf("%s %s/%s: %s", warning.Outcome, warning.Project, warning.Name, warning.Message))
+	}
+	_, err := fmt.Fprintf(w, "hum warning: startup reconciliation: %s\n", strings.Join(parts, "; "))
+	return err
 }
 func processJSON(process app.Process) listProcessJSON {
 	result := listProcessJSON{

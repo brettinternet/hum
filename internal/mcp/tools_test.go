@@ -18,6 +18,36 @@ import (
 	"hum/internal/protocol"
 )
 
+func TestStartupReconciliationWarnings(t *testing.T) {
+	warnings := []protocol.StartupWarning{{Project: "/project", Name: "api", Outcome: "unresolved", Message: "identity mismatch"}}
+	for _, name := range []string{"up", "list", "status"} {
+		t.Run(name, func(t *testing.T) {
+			value := any([]protocol.Process{})
+			if name == "status" {
+				value = map[string]any{"name": "api"}
+			}
+			encoded, err := json.Marshal(structuredToolContent(name, value, warnings))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &object); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := object["warnings"]; !ok {
+				t.Fatalf("%s structured content has no top-level warnings: %s", name, encoded)
+			}
+		})
+	}
+	encoded, err := json.Marshal(structuredToolContent("list", []protocol.Process{}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"warnings"`)) {
+		t.Fatalf("clean startup emitted warnings: %s", encoded)
+	}
+}
+
 type fakeResolver struct {
 	resolution Resolution
 	err        error

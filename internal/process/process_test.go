@@ -52,6 +52,39 @@ func TestProcessHelper(t *testing.T) {
 	runProcessHelper()
 }
 
+func TestProcessStartIdentity(t *testing.T) {
+	first, err := ProcessStartIdentity(os.Getpid())
+	if err != nil {
+		t.Fatalf("current process identity: %v", err)
+	}
+	second, err := ProcessStartIdentity(os.Getpid())
+	if err != nil {
+		t.Fatalf("reread current process identity: %v", err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("process identity changed: first=%q second=%q", first, second)
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	childIdentity, err := ProcessStartIdentity(cmd.Process.Pid)
+	if err != nil {
+		t.Fatalf("child process identity: %v", err)
+	}
+	if childIdentity == "" || childIdentity == first {
+		t.Fatalf("child identity = %q, current identity = %q", childIdentity, first)
+	}
+	if _, err := ProcessStartIdentity(0); err == nil {
+		t.Fatal("invalid pid returned an identity")
+	}
+}
+
 func runProcessHelper() {
 	switch os.Getenv(helperMode) {
 	case "literal":

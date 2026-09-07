@@ -390,6 +390,17 @@ One daemon serves each private runtime directory at `hum.sock`. `serve --daemon`
 readiness handshake. Bounded reads and controls do not start an empty daemon.
 Foreground daemon exit and `shutdown --stop-processes` stop all managed groups.
 
+The mode-0600 `hum.state` file atomically records the daemon incarnation and
+each live group's project, name, leader PID, PGID, and OS process-start identity.
+A launch is not reported successful until that identity is durable. On startup,
+a dead daemon's groups are reclaimed with TERM, the configured grace period,
+and KILL only after PID, group leadership, and process-start identity all match.
+Dead groups are discarded; mismatched or unverifiable identities are never
+signaled and remain unresolved blockers for the same project and name. The
+startup reconciliation summary remains visible for the daemon lifetime through
+human warnings and JSON/MCP `warnings` arrays. Clean graceful shutdown removes
+`hum.state`; corrupt state fails closed with operator cleanup guidance.
+
 The launching client supplies cwd and its full environment. Manifest `cwd`
 changes only the child directory; discovered definitions use the project root.
 Resolved restarts use the current argv, cwd, readiness, and requesting client's
@@ -447,8 +458,8 @@ The foundation has no arbitrary or unbounded input API, queued input,
 remote transport, authentication, web UI, persistent
 process history, plugin system, OS service installation, or environment
 literals/files.
-The runtime directory contains only the socket, PID/startup state, and bounded
-daemon diagnostics.
+The runtime directory contains only the socket, PID/startup lock/readiness
+artifacts, durable live-group state, and bounded daemon diagnostics.
 
 ## Optional pseudo-terminals
 
