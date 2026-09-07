@@ -33,7 +33,7 @@ Enter
 Type "tmux -f /dev/null new-session -s hum-demo bash --noprofile --norc"
 Enter
 Sleep 1s
-Type "tmux set-option status off; clear"
+Type "tmux set-option status off; tmux set-option default-command 'bash --noprofile --norc'; clear"
 Enter
 Show
 
