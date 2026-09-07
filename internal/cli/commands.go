@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -225,11 +226,13 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		{
 			Name:          "restart",
 			Usage:         "restart named processes",
-			UsageText:     "hum restart NAME... [--json]",
+			UsageText:     "hum restart NAME... [--no-wait] [--timeout DURATION] [--json]",
 			ArgsUsage:     "NAME...",
 			ShellComplete: completeProcessNames,
-			Description:   "Apply a graceful stop and relaunch to named processes by name with their recorded launch details; restart does not restart the daemon and is not the daemon itself. Names are attempted in order, the first error stops the remaining restarts, and only successful attempts are reported with a new PID; restart: on-failure allows five bounded retries, so inspect retained logs before editing.\n\nExamples:\n  hum restart api\n  hum restart api web --json",
+			Description:   "Apply a graceful stop and relaunch to named processes by name with their recorded launch details; restart does not restart the daemon and is not the daemon itself; by default, wait for each replacement incarnation to become ready or running_unverified when no matcher exists. --timeout sets a positive per-name readiness limit measured from that name's launch; --no-wait returns after spawn; names are attempted in order, readiness failures are reported and later names continue, but the first error stops the remaining restarts for request or validation errors; only successful attempts are reported with a new PID. Exit codes: 0 success; exit 1 for request or validation error; exit 2 for readiness timeout; exit 3 for exited before readiness.\n\nExamples:\n  hum restart api\n  hum restart api web --timeout 10s --json",
 			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn; default waits for readiness"},
+				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "readiness limit; omit for the manifest timeout"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,
@@ -1640,12 +1643,184 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	return nil
 }
 
+// restartOutputResult is the response shared by the human and JSON restart
+// renderers. The historical identity fields remain present for callers that
+// use restart for launch inspection; the outcome/readiness fields describe the
+// replacement incarnation observed by this invocation.
+type restartOutputResult struct {
+	Name         string           `json:"name"`
+	Outcome      string           `json:"outcome"`
+	Readiness    string           `json:"readiness"`
+	PID          int              `json:"pid"`
+	LaunchCursor protocol.Cursor  `json:"launch_cursor"`
+	Message      string           `json:"message,omitempty"`
+	Source       string           `json:"source,omitempty"`
+	Argv         []string         `json:"argv"`
+	Restarts     int              `json:"restarts"`
+	Restart      string           `json:"restart"`
+	Relaunches   int              `json:"relaunches"`
+	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
+	ReadyCursor  *protocol.Cursor `json:"ready_cursor,omitempty"`
+}
+
+func restartOutputFromProcess(process app.Process, definition project.Definition, outcome, message string) restartOutputResult {
+	result := restartOutputResult{
+		Name:         process.Name,
+		Outcome:      outcome,
+		Readiness:    restartReadiness(process, definition),
+		PID:          process.PID,
+		LaunchCursor: protocol.Cursor(process.LaunchCursor),
+		Message:      message,
+		Source:       process.Source,
+		Argv:         append([]string(nil), process.Argv...),
+		Restarts:     process.RestartCount,
+		Restart:      string(effectiveProcessRestart(process)),
+		Relaunches:   process.Relaunches,
+		NextLaunchAt: process.NextLaunchAt,
+	}
+	if result.Name == "" {
+		result.Name = definition.Name
+	}
+	if result.Source == "" {
+		result.Source = definition.Source
+	}
+	if len(result.Argv) == 0 && len(definition.Argv) != 0 {
+		result.Argv = append([]string(nil), definition.Argv...)
+	}
+	if result.Argv == nil {
+		result.Argv = []string{}
+	}
+	if process.Readiness != nil && process.Readiness.Cursor != nil {
+		cursor := protocol.Cursor(*process.Readiness.Cursor)
+		result.ReadyCursor = &cursor
+	}
+	return result
+}
+
+func restartOutputFromManifest(result manifestLaunchResult, process app.Process, message string) restartOutputResult {
+	output := restartOutputResult{
+		Name:         result.Name,
+		Outcome:      result.Outcome,
+		Readiness:    result.Readiness,
+		Message:      message,
+		Source:       result.Source,
+		Argv:         append([]string(nil), result.Argv...),
+		Restarts:     process.RestartCount,
+		Restart:      result.Restart,
+		Relaunches:   result.Relaunches,
+		NextLaunchAt: result.NextLaunchAt,
+	}
+	if result.PID != nil {
+		output.PID = *result.PID
+	}
+	if result.LaunchCursor != nil {
+		output.LaunchCursor = protocol.Cursor(*result.LaunchCursor)
+	}
+	if output.Argv == nil {
+		output.Argv = []string{}
+	}
+	if result.ReadyCursor != nil {
+		cursor := protocol.Cursor(*result.ReadyCursor)
+		output.ReadyCursor = &cursor
+	}
+	return output
+}
+
+func restartReadiness(process app.Process, definition project.Definition) string {
+	if process.Readiness != nil {
+		return process.Readiness.State
+	}
+	if process.State != app.StateRunning {
+		return ""
+	}
+	if definition.Ready == nil {
+		return app.ReadinessRunningUnverified
+	}
+	return app.ReadinessStarting
+}
+
+func restartFailureMessage(outcome string, process app.Process) string {
+	switch outcome {
+	case "exited_before_ready":
+		return "process exited before readiness"
+	case "timed_out":
+		return "readiness timed out"
+	default:
+		if process.Exit != nil && process.Exit.Err != nil {
+			return process.Exit.Err.Error()
+		}
+		return ""
+	}
+}
+
+func renderRestartOutputHuman(writer io.Writer, result restartOutputResult) error {
+	if result.Outcome == "error" {
+		if result.Message == "" {
+			result.Message = "restart failed"
+		}
+		_, err := fmt.Fprintf(writer, "%s error: %s\n", result.Name, result.Message)
+		return err
+	}
+	legacy := legacyRestartResult{
+		Name: result.Name, PID: result.PID, Restarts: result.Restarts, LaunchCursor: result.LaunchCursor,
+	}
+	legacyOutput := restartResult{
+		Name: legacy.Name, Source: result.Source, Argv: append([]string(nil), result.Argv...), PID: legacy.PID,
+		Restarts: legacy.Restarts, LaunchCursor: legacy.LaunchCursor, Restart: result.Restart,
+		Relaunches: result.Relaunches, NextLaunchAt: result.NextLaunchAt, Readiness: result.Readiness,
+		ReadyCursor: result.ReadyCursor,
+	}
+	var base bytes.Buffer
+	if err := renderRestartHuman(&base, legacyOutput); err != nil {
+		return err
+	}
+	line := strings.TrimSuffix(base.String(), "\n")
+	line = strings.Replace(line, " restarted ", " "+result.Outcome+" ", 1)
+	if result.Source != "" && !strings.Contains(line, " source=") {
+		line += fmt.Sprintf(" source=%s argv=%s", result.Source, shellJoin(result.Argv))
+	}
+	if result.Readiness != "" && !strings.Contains(line, " readiness=") {
+		line += " readiness=" + result.Readiness
+	}
+	if result.ReadyCursor != nil && !strings.Contains(line, " ready_cursor=") {
+		line += fmt.Sprintf(" ready_cursor=%d", *result.ReadyCursor)
+	}
+	if result.Message != "" {
+		line += " message=" + result.Message
+	}
+	_, err := fmt.Fprintln(writer, line)
+	return err
+}
+
+func aggregateRestartExit(results []restartOutputResult) error {
+	for _, result := range results {
+		if result.Outcome == "error" {
+			return urfavecli.Exit("", 1)
+		}
+	}
+	for _, result := range results {
+		if result.Outcome == "exited_before_ready" {
+			return urfavecli.Exit("", 3)
+		}
+	}
+	for _, result := range results {
+		if result.Outcome == "timed_out" {
+			return urfavecli.Exit("", 2)
+		}
+	}
+	return nil
+}
+
 func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
 	names := cmd.Args().Slice()
 	if len(names) == 0 {
 		return errors.New("restart requires at least one process name")
 	}
 	ctx = nonNilContext(ctx)
+	timeoutOverride, err := manifestTimeoutOverride(cmd)
+	if err != nil {
+		return err
+	}
 	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
 		return err
@@ -1673,9 +1848,14 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		return err
 	}
 	defer client.Close()
+
+	results := make([]restartOutputResult, 0, len(names))
 	for _, name := range names {
 		request := daemon.RestartRequest{Name: name, Cwd: cwd}
 		definition, manifestLaunch := manifest.byName[name]
+		if !manifestLaunch {
+			definition = undefinedManifestDefinition(name)
+		}
 		if manifestLaunch {
 			request.Update = true
 			request.Root = manifest.root
@@ -1687,42 +1867,80 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 			request.TTY = definition.TTY
 			request.Restart = protocolRestartPolicy(definition)
 		}
-		process, err := client.Restart(ctx, request)
-		if err != nil {
-			return err
-		}
-		readiness, readyCursor := processReadinessFields(process)
-		result := restartResult{
-			Name:         process.Name,
-			Source:       process.Source,
-			Argv:         append([]string(nil), process.Argv...),
-			PID:          process.PID,
-			Restarts:     process.RestartCount,
-			LaunchCursor: protocol.Cursor(process.LaunchCursor),
-			Restart:      string(effectiveProcessRestart(process)),
-			Relaunches:   process.Relaunches,
-			NextLaunchAt: process.NextLaunchAt,
-			Readiness:    readiness,
-			ReadyCursor:  readyCursor,
-		}
-		if cmd.Bool("json") {
-			if manifestLaunch {
-				if err := encodeJSON(writer, result); err != nil {
-					return err
+
+		launchedAt := time.Now()
+		process, restartErr := client.Restart(ctx, request)
+		if restartErr != nil {
+			result := restartOutputResult{Name: name, Outcome: "error", Message: restartErr.Error(), Source: definition.Source, Argv: append([]string{}, definition.Argv...)}
+			results = append(results, result)
+			if cmd.Bool("json") {
+				if encodeErr := encodeJSON(writer, result); encodeErr != nil {
+					return encodeErr
 				}
-			} else if err := encodeJSON(writer, legacyRestartResult{
-				Name:         result.Name,
-				PID:          result.PID,
-				Restarts:     result.Restarts,
-				LaunchCursor: result.LaunchCursor,
-			}); err != nil {
-				return err
+			} else if writeErr := renderRestartOutputHuman(writer, result); writeErr != nil {
+				return writeErr
 			}
-		} else if err := renderRestartHuman(writer, result); err != nil {
-			return err
+			break
+		}
+		if process.Name == "" {
+			process.Name = name
+		}
+		if definition.Ready == nil && process.Readiness != nil && (process.Readiness.State == app.ReadinessStarting || process.Readiness.State == app.ReadinessReady) {
+			definition.Ready = &project.ReadyDefinition{Match: process.Readiness.Match}
+		}
+
+		var result restartOutputResult
+		if cmd.Bool("no-wait") || definition.Ready == nil {
+			outcome := "restarted"
+			if definition.Ready == nil {
+				outcome = app.ReadinessRunningUnverified
+			}
+			result = restartOutputFromProcess(process, definition, outcome, "")
+		} else {
+			timeout, timeoutErr := manifestTimeoutForResult(cmd, definition, timeoutOverride)
+			if timeoutErr != nil {
+				result = restartOutputFromProcess(process, definition, "error", timeoutErr.Error())
+				results = append(results, result)
+				if cmd.Bool("json") {
+					if encodeErr := encodeJSON(writer, result); encodeErr != nil {
+						return encodeErr
+					}
+				} else if writeErr := renderRestartOutputHuman(writer, result); writeErr != nil {
+					return writeErr
+				}
+				break
+			}
+			timeout = manifestRemainingTimeout(timeout, func() time.Time {
+				if process.Start.IsZero() {
+					return launchedAt
+				}
+				return process.Start
+			}())
+			waited, waitErr := cliReadinessResult(client, ctx, cwd, definition, process, "restarted", timeout)
+			if waitErr != nil {
+				result = restartOutputFromProcess(process, definition, "error", waitErr.Error())
+				results = append(results, result)
+				if cmd.Bool("json") {
+					if encodeErr := encodeJSON(writer, result); encodeErr != nil {
+						return encodeErr
+					}
+				} else if writeErr := renderRestartOutputHuman(writer, result); writeErr != nil {
+					return writeErr
+				}
+				break
+			}
+			result = restartOutputFromManifest(waited, process, restartFailureMessage(waited.Outcome, process))
+		}
+		results = append(results, result)
+		if cmd.Bool("json") {
+			if encodeErr := encodeJSON(writer, result); encodeErr != nil {
+				return encodeErr
+			}
+		} else if writeErr := renderRestartOutputHuman(writer, result); writeErr != nil {
+			return writeErr
 		}
 	}
-	return nil
+	return aggregateRestartExit(results)
 }
 
 func shutdownCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {

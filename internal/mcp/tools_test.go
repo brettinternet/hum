@@ -190,6 +190,15 @@ func (f *fakeClient) Restart(_ context.Context, req protocol.RestartRequest) (pr
 	}
 	p.State = "running"
 	p.RestartCount++
+	if req.Update {
+		p.Source, p.Root, p.Cwd = req.Source, req.Root, req.Cwd
+		p.Argv = append([]string(nil), req.Argv...)
+		p.Readiness = nil
+		if req.Ready != nil {
+			p.Readiness = &protocol.Readiness{State: protocol.ReadinessStarting, Match: req.Ready.Match}
+		}
+	}
+	f.processes[req.Name] = p
 	return p, nil
 }
 
@@ -1071,7 +1080,7 @@ func TestRemoveAdHocProcessTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.(protocol.Process).Source != "ad_hoc" || client.restarts[0].Update || len(client.restarts[0].Env) != 0 {
+	if result, ok := got.(restartResult); !ok || result.Name != "raw" || result.Outcome != "running_unverified" || result.Readiness != "running_unverified" || client.restarts[0].Update || len(client.restarts[0].Env) != 0 {
 		t.Fatalf("ad hoc restart=%#v result=%#v", client.restarts[0], got)
 	}
 	if _, err = s.callTool(context.Background(), "restart", args(root, "name", "api")); err != nil {
@@ -1354,4 +1363,146 @@ func TestInitializeNegotiatesProtocolVersion(t *testing.T) {
 			t.Errorf("params %s: response %s, want protocolVersion %s", params, out.String(), want)
 		}
 	}
+}
+
+func TestRestartWaitsForReadiness(t *testing.T) {
+	tests := []struct {
+		name          string
+		definition    *Definition
+		process       protocol.Process
+		waitResult    protocol.WaitResponse
+		readyBefore   bool
+		keepStarting  bool
+		noWait        bool
+		timeoutMS     int64
+		wantOutcome   string
+		wantReadiness string
+		wantMessage   string
+		wantWaits     int
+	}{
+		{
+			name:        "ready",
+			definition:  &Definition{Name: "api", Source: "hum.yaml", Cwd: "/work", Argv: []string{"api"}, Ready: &protocol.ReadinessConfig{Match: "ready"}},
+			process:     protocol.Process{Name: "api", Source: "old", State: "running", PID: 41, LaunchCursor: 7},
+			readyBefore: true,
+			wantOutcome: "restarted", wantReadiness: protocol.ReadinessReady,
+		},
+		{
+			name:        "running_unverified",
+			process:     protocol.Process{Name: "raw", Source: "ad_hoc", State: "running", PID: 42, LaunchCursor: 8, Argv: []string{"raw"}},
+			wantOutcome: protocol.ReadinessRunningUnverified, wantReadiness: protocol.ReadinessRunningUnverified,
+		},
+		{
+			name:         "retained empty matcher after declaration removal",
+			process:      protocol.Process{Name: "removed", Source: "manifest", State: "running", PID: 46, LaunchCursor: 12, Argv: []string{"removed"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting}},
+			waitResult:   protocol.WaitResponse{Op: protocol.OpWait, Outcome: protocol.WaitTimedOut},
+			keepStarting: true,
+			timeoutMS:    25,
+			wantOutcome:  "timed_out", wantReadiness: protocol.ReadinessStarting, wantMessage: "readiness timed out", wantWaits: 1,
+		},
+		{
+			name:        "exited_before_ready",
+			definition:  &Definition{Name: "api", Source: "hum.yaml", Cwd: "/work", Argv: []string{"api"}, Ready: &protocol.ReadinessConfig{Match: "ready"}},
+			process:     protocol.Process{Name: "api", Source: "old", State: "running", PID: 43, LaunchCursor: 9},
+			waitResult:  protocol.WaitResponse{Op: protocol.OpWait, Outcome: protocol.WaitExited, Exit: &protocol.Exit{Code: 7}},
+			wantOutcome: "exited_before_ready", wantMessage: "process exited before readiness", wantWaits: 1,
+		},
+		{
+			name:         "timed_out",
+			definition:   &Definition{Name: "api", Source: "hum.yaml", Cwd: "/work", Argv: []string{"api"}, Ready: &protocol.ReadinessConfig{Match: "ready"}},
+			process:      protocol.Process{Name: "api", Source: "old", State: "running", PID: 44, LaunchCursor: 10},
+			waitResult:   protocol.WaitResponse{Op: protocol.OpWait, Outcome: protocol.WaitTimedOut},
+			keepStarting: true,
+			timeoutMS:    25,
+			wantOutcome:  "timed_out", wantReadiness: protocol.ReadinessStarting, wantMessage: "readiness timed out", wantWaits: 1,
+		},
+		{
+			name:        "no_wait",
+			definition:  &Definition{Name: "api", Source: "hum.yaml", Cwd: "/work", Argv: []string{"api"}, Ready: &protocol.ReadinessConfig{Match: "ready"}},
+			process:     protocol.Process{Name: "api", Source: "old", State: "running", PID: 45, LaunchCursor: 11},
+			noWait:      true,
+			wantOutcome: "restarted", wantReadiness: protocol.ReadinessStarting,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var definitions []Definition
+			if test.definition != nil {
+				definitions = []Definition{*test.definition}
+			}
+			client := &fakeClient{
+				processes:       map[string]protocol.Process{},
+				waitResult:      test.waitResult,
+				keepStarting:    test.keepStarting,
+				readyBeforeWait: test.readyBefore,
+			}
+			client.processes[test.process.Name] = test.process
+			server, root, _ := newTestServer(t, definitions, client)
+			inputValues := []any{"name", test.process.Name}
+			if test.noWait {
+				inputValues = append(inputValues, "no_wait", true)
+			}
+			if test.timeoutMS != 0 {
+				inputValues = append(inputValues, "timeout_ms", test.timeoutMS)
+			}
+			got, err := server.callTool(context.Background(), "restart", args(root, inputValues...))
+			if err != nil {
+				t.Fatalf("restart: %v", err)
+			}
+			result, ok := got.(restartResult)
+			if !ok {
+				t.Fatalf("restart result type = %T, want restartResult", got)
+			}
+			if result.Name != test.process.Name || result.Outcome != test.wantOutcome || result.Readiness != test.wantReadiness || result.PID == 0 && test.wantOutcome != "exited_before_ready" || result.LaunchCursor != test.process.LaunchCursor || result.Message != test.wantMessage {
+				t.Fatalf("restart result = %#v, want outcome=%s readiness=%s message=%q", result, test.wantOutcome, test.wantReadiness, test.wantMessage)
+			}
+			if len(client.waits) != test.wantWaits {
+				t.Fatalf("wait calls = %d, want %d (%#v)", len(client.waits), test.wantWaits, client.waits)
+			}
+			if test.timeoutMS != 0 && len(client.waits) == 1 && (client.waits[0].TimeoutMS < 1 || client.waits[0].TimeoutMS > test.timeoutMS) {
+				t.Fatalf("wait timeout = %d, want positive value no greater than %d", client.waits[0].TimeoutMS, test.timeoutMS)
+			}
+
+			arguments := args(root, inputValues...)
+			value, rpcErr := server.handleRequest(context.Background(), rpcRequest{
+				JSONRPC: "2.0", ID: json.RawMessage(`"restart"`), Method: "tools/call",
+				Params: func() json.RawMessage {
+					encoded, _ := json.Marshal(callToolParams{Name: "restart", Arguments: arguments})
+					return encoded
+				}(),
+			})
+			if rpcErr != nil {
+				t.Fatalf("restart RPC: %#v", rpcErr)
+			}
+			call, ok := value.(callToolResult)
+			if !ok || call.IsError || len(call.Content) != 1 {
+				t.Fatalf("restart RPC result = %#v", value)
+			}
+			var textResult restartResult
+			if err := json.Unmarshal([]byte(call.Content[0].Text), &textResult); err != nil {
+				t.Fatalf("decode restart text = %q: %v", call.Content[0].Text, err)
+			}
+			structured, ok := call.StructuredContent.(restartResult)
+			if !ok {
+				t.Fatalf("structured restart type = %T, want restartResult", call.StructuredContent)
+			}
+			if !reflect.DeepEqual(textResult, structured) || structured.Name != test.process.Name || structured.Outcome != test.wantOutcome || structured.Readiness != test.wantReadiness {
+				t.Fatalf("text/structured restart mismatch: text=%#v structured=%#v", textResult, structured)
+			}
+		})
+	}
+
+	t.Run("rejects explicit zero timeout", func(t *testing.T) {
+		client := &fakeClient{processes: map[string]protocol.Process{"raw": {Name: "raw", Source: "ad_hoc", State: "running", PID: 47}}}
+		server, root, _ := newTestServer(t, nil, client)
+		_, err := server.callTool(context.Background(), "restart", args(root, "name", "raw", "timeout_ms", 0))
+		var toolErr *ToolError
+		if !errors.As(err, &toolErr) || toolErr.Code != "invalid_request" || !strings.Contains(toolErr.Message, "positive") {
+			t.Fatalf("explicit zero timeout error = %#v", err)
+		}
+		if len(client.restarts) != 0 {
+			t.Fatalf("explicit zero timeout contacted restart: %#v", client.restarts)
+		}
+	})
 }

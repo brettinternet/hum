@@ -34,7 +34,7 @@ hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|both] [--tai
            [--limit-bytes N] [--match REGEX] [--follow] [--json]
 hum [--project DIR|-C DIR] wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
-hum [--project DIR|-C DIR] restart <name>... [--json]
+hum [--project DIR|-C DIR] restart <name>... [--no-wait] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] stop <name>... [--json]
 hum [--project DIR|-C DIR] remove <name>... [--json]
 hum shutdown [--stop-processes] [--json]
@@ -57,7 +57,7 @@ Combined short options are unsupported; MCP fields have no aliases.
 | `-C` | `--project` | project-scoped commands |
 | `-j` | `--json` | all supporting commands |
 | `-d` | `--daemon`, `--detach` | `serve`, `run` |
-| `-t` | `--timeout` | `start`, `up`, `wait` |
+| `-t` | `--timeout` | `start`, `up`, `wait`, `restart` |
 | `-a` | `--all` | `list` |
 | `-s` | `--stream` | `logs` |
 | `-n` | `--tail` | `logs` |
@@ -151,7 +151,15 @@ resolved name cannot be occupied by a conflicting ad hoc run.
 `restart` uses the current resolved definition and client environment. If only
 a retained ad hoc record exists, it reuses its exact argv, cwd, and environment.
 Daemon replacement loses ad hoc definitions, so evicted records cannot be
-restarted.
+restarted. After each successful replacement, it uses the shared readiness
+classification path: a configured matcher must become ready, while a process
+without a matcher is reported as `running_unverified`. By default `restart`
+waits per name; `--no-wait` returns after spawn, and `--timeout` accepts a
+positive per-name duration measured from that name's launch. Readiness failures
+are reported and remaining names continue; request or validation errors stop
+subsequent names. Results preserve input order; exit precedence: 1 > 3 > 2 > 0
+for request/error, `exited_before_ready`, `timed_out`, and
+success. There is no whole-invocation timeout.
 
 `list` merges current definitions with all project runtime records. Without a
 daemon it reports resolved definitions as stopped. `status`, `logs`, `wait`,
@@ -438,7 +446,10 @@ existing `project_root` chosen by the same root rule as the CLI. It exposes elev
 tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `input`, `restart`,
 `stop`, and `remove`. `input` accepts exactly one non-empty `text` or `base64`
 payload, uses the same bounded one-shot TTY semantics as the CLI, and returns
-`name`, decoded `bytes`, and `launch_cursor`.
+`name`, decoded `bytes`, and `launch_cursor`. MCP `restart` accepts `no_wait`
+and a positive per-name `timeout_ms`, and its text and structured content carry
+`name`, `outcome`, `readiness`, `pid`, `launch_cursor`, and an optional `message`
+with the same single-name semantics as the CLI.
 
 Requests with IDs run concurrently up to 64 in-flight requests. The mutex-
 protected request registry rejects a 65th request with JSON-RPC code `-32001`
