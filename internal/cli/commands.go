@@ -2411,7 +2411,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	var results []manifestLaunchResult
 	var progress *manifestProgressRenderer
 	if ordered && !cmd.Bool("json") && !cmd.Bool("no-wait") && progressWriter != nil {
-		progress = newManifestProgressRenderer(progressWriter, len(names), manifest.selector)
+		progress = newManifestProgressRendererWithPolicy(progressWriter, len(names), colorPolicyForWriter(progressWriter), manifest.selector)
 	}
 	if ordered {
 		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, env, timeoutOverride, preserveRecovery, progress)
@@ -2459,8 +2459,14 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 			if err := encodeJSON(writer, manifestResultJSON(result)); err != nil {
 				return err
 			}
-		} else if err := renderManifestLaunchHuman(writer, result); err != nil {
-			return err
+		} else {
+			colors := colorPolicy{}
+			if ordered {
+				colors = colorPolicyForWriter(writer)
+			}
+			if err := renderManifestLaunchHumanWithPolicy(writer, result, colors); err != nil {
+				return err
+			}
 		}
 	}
 	return aggregateManifestExit(results)

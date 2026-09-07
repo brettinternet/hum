@@ -4,17 +4,215 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"text/tabwriter"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"hum/internal/app"
 	"hum/internal/output"
 	"hum/internal/project"
 	"hum/internal/protocol"
+
+	"golang.org/x/term"
 )
+
+// colorPolicy enables the small, fixed palette used by human lifecycle
+// renderers. It is intentionally computed at the output boundary so all
+// renderers apply the same TTY and environment rules.
+type colorPolicy struct {
+	enabled bool
+}
+
+type ansiStyle string
+
+const (
+	ansiReset            = "\x1b[0m"
+	ansiBold   ansiStyle = "\x1b[1m"
+	ansiGreen  ansiStyle = "\x1b[32m"
+	ansiYellow ansiStyle = "\x1b[33m"
+	ansiCyan   ansiStyle = "\x1b[36m"
+	ansiDim    ansiStyle = "\x1b[2m"
+	ansiRed    ansiStyle = "\x1b[31m"
+)
+
+// colorPolicyForWriter reports whether writer is stdout-like terminal output.
+// NewRootCommand wraps stdout in jsonOutputTracker, so unwrap that adapter
+// before checking its file descriptor. NO_COLOR is presence-based: even an
+// empty value disables styling.
+func colorPolicyForWriter(writer io.Writer) colorPolicy {
+	if _, present := os.LookupEnv("NO_COLOR"); present || os.Getenv("TERM") == "dumb" {
+		return colorPolicy{}
+	}
+	fdWriter, ok := writer.(interface{ Fd() uintptr })
+	if !ok {
+		if tracked, trackedOK := writer.(*jsonOutputTracker); trackedOK && tracked != nil {
+			return colorPolicyForWriter(tracked.writer)
+		}
+		return colorPolicy{}
+	}
+	return colorPolicy{enabled: term.IsTerminal(int(fdWriter.Fd()))}
+}
+
+func (p colorPolicy) apply(style ansiStyle, value string) string {
+	if !p.enabled || style == "" || value == "" {
+		return value
+	}
+	return string(style) + value + ansiReset
+}
+
+func processStateStyle(state app.State, exitCode int) ansiStyle {
+	switch state {
+	case app.StateRunning:
+		return ansiGreen
+	case app.StateStopped:
+		return ansiCyan
+	case app.StateExited:
+		if exitCode == 0 {
+			return ansiDim
+		}
+		return ansiRed
+	default:
+		return ""
+	}
+}
+
+func readinessStyle(readiness string) ansiStyle {
+	switch readiness {
+	case app.ReadinessReady, app.ReadinessRunningUnverified:
+		return ansiGreen
+	case app.ReadinessStarting:
+		return ansiYellow
+	default:
+		return ""
+	}
+}
+
+func manifestOutcomeStyle(outcome string) ansiStyle {
+	switch outcome {
+	case "started", "already_running", "running_unverified":
+		return ansiGreen
+	case "recovery_pending":
+		return ansiYellow
+	case "error", "exited_before_ready", "timed_out", "definition_drift", "recovery_exhausted", "skipped":
+		return ansiRed
+	default:
+		return ""
+	}
+}
+
+type listCell struct {
+	prefix string
+	text   string
+	style  ansiStyle
+}
+
+func (c listCell) plain() string {
+	return c.prefix + c.text
+}
+
+func (c listCell) render(policy colorPolicy) string {
+	return c.prefix + policy.apply(c.style, c.text)
+}
+
+type listRow []listCell
+
+func plainListCell(text string) listCell {
+	return listCell{text: text}
+}
+
+func styledListCell(text string, style ansiStyle) listCell {
+	return listCell{text: text, style: style}
+}
+
+func prefixedStyledListCell(prefix, text string, style ansiStyle) listCell {
+	return listCell{prefix: prefix, text: text, style: style}
+}
+
+type listTable struct {
+	header listRow
+	rows   []listRow
+}
+
+func buildListTable(processes []app.Process, all bool) listTable {
+	header := listRow{styledListCell("NAME", ansiBold), styledListCell("STATE", ansiBold), styledListCell("PID", ansiBold), styledListCell("SOURCE", ansiBold), styledListCell("ARGV", ansiBold)}
+	if all {
+		header = listRow{styledListCell("ROOT", ansiBold), styledListCell("NAME", ansiBold), styledListCell("STATE", ansiBold), styledListCell("PID", ansiBold), styledListCell("SOURCE", ansiBold), styledListCell("ARGV", ansiBold)}
+	}
+	table := listTable{header: header, rows: make([]listRow, 0, len(processes))}
+	for _, process := range processes {
+		readiness, readyCursor := processReadinessFields(process)
+		pid := ""
+		if process.PID != 0 {
+			pid = fmt.Sprintf("PID %d", process.PID)
+		}
+		state := styledListCell(string(process.State), processStateStyle(process.State, process.ExitCode))
+		row := listRow{
+			plainListCell(process.Name), state, plainListCell(pid),
+			plainListCell("source=" + process.Source), plainListCell("argv=" + shellJoin(process.Argv)),
+		}
+		if all {
+			row = listRow{
+				plainListCell(process.Root), plainListCell(process.Name), state, plainListCell(pid),
+				plainListCell("source=" + process.Source), plainListCell("argv=" + shellJoin(process.Argv)),
+			}
+		}
+		if process.Followers > 0 {
+			row = append(row, plainListCell(fmt.Sprintf("followers=%d", process.Followers)))
+		}
+		if process.TTY {
+			row = append(row, plainListCell("tty=true"))
+		}
+		if readiness != "" {
+			row = append(row, prefixedStyledListCell("readiness=", readiness, readinessStyle(readiness)))
+			if readyCursor != nil {
+				row = append(row, plainListCell(fmt.Sprintf("ready_cursor=%d", *readyCursor)))
+			}
+		}
+		if effectiveProcessRestart(process) == app.RestartOnFailure {
+			row = append(row, plainListCell("restart=on-failure"))
+		}
+		table.rows = append(table.rows, row)
+	}
+	return table
+}
+
+func writeListTable(w io.Writer, table listTable, policy colorPolicy) error {
+	rows := make([]listRow, 0, len(table.rows)+1)
+	rows = append(rows, table.header)
+	rows = append(rows, table.rows...)
+	widths := make([]int, len(table.header))
+	for _, row := range rows {
+		if len(row) > len(widths) {
+			widths = append(widths, make([]int, len(row)-len(widths))...)
+		}
+		for index, cell := range row {
+			if width := utf8.RuneCountInString(cell.plain()); width > widths[index] {
+				widths[index] = width
+			}
+		}
+	}
+	for _, row := range rows {
+		for index, cell := range row {
+			if _, err := io.WriteString(w, cell.render(policy)); err != nil {
+				return err
+			}
+			if index+1 < len(row) {
+				padding := widths[index] - utf8.RuneCountInString(cell.plain()) + 2
+				if _, err := io.WriteString(w, strings.Repeat(" ", padding)); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := io.WriteString(w, "\n"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 type listJSON struct {
 	Processes []listProcessJSON         `json:"processes"`
@@ -450,49 +648,39 @@ func writeCursorTrailer(w io.Writer, result output.ReadResult) error {
 }
 
 func renderListHuman(w io.Writer, processes []app.Process, all bool) error {
+	return renderListHumanWithPolicy(w, processes, all, colorPolicyForWriter(w))
+}
+
+func renderListHumanWithPolicy(w io.Writer, processes []app.Process, all bool, policy colorPolicy) error {
 	if len(processes) == 0 {
 		_, err := fmt.Fprintln(w, stopUnavailableMessage)
 		return err
 	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	header := "NAME\tSTATE\tPID\tSOURCE\tARGV\n"
-	if all {
-		header = "ROOT\tNAME\tSTATE\tPID\tSOURCE\tARGV\n"
+	table := buildListTable(processes, all)
+	if policy.enabled {
+		return writeListTable(w, table, policy)
 	}
-	if _, err := io.WriteString(tw, header); err != nil {
+
+	// Keep the existing tabwriter path byte-for-byte identical when styling is
+	// disabled. In particular, this preserves piped output and snapshots.
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := io.WriteString(tw, strings.Join(listRowText(table.header), "\t")+"\n"); err != nil {
 		return err
 	}
-	for _, process := range processes {
-		argv := shellJoin(process.Argv)
-		readiness, readyCursor := processReadinessFields(process)
-		pid := ""
-		if process.PID != 0 {
-			pid = fmt.Sprintf("PID %d", process.PID)
-		}
-		row := fmt.Sprintf("%s\t%s\t%s\tsource=%s\targv=%s", process.Name, process.State, pid, process.Source, argv)
-		if all {
-			row = fmt.Sprintf("%s\t%s\t%s\t%s\tsource=%s\targv=%s", process.Root, process.Name, process.State, pid, process.Source, argv)
-		}
-		if process.Followers > 0 {
-			row += fmt.Sprintf("\tfollowers=%d", process.Followers)
-		}
-		if process.TTY {
-			row += "\ttty=true"
-		}
-		if readiness != "" {
-			row += "\treadiness=" + readiness
-			if readyCursor != nil {
-				row += fmt.Sprintf("\tready_cursor=%d", *readyCursor)
-			}
-		}
-		if effectiveProcessRestart(process) == app.RestartOnFailure {
-			row += "\trestart=on-failure"
-		}
-		if _, err := fmt.Fprintln(tw, row); err != nil {
+	for _, row := range table.rows {
+		if _, err := fmt.Fprintln(tw, strings.Join(listRowText(row), "\t")); err != nil {
 			return err
 		}
 	}
 	return tw.Flush()
+}
+
+func listRowText(row listRow) []string {
+	values := make([]string, len(row))
+	for index, cell := range row {
+		values[index] = cell.plain()
+	}
+	return values
 }
 func shellJoin(argv []string) string {
 	parts := make([]string, 0, len(argv))
@@ -521,9 +709,14 @@ type manifestProgressRenderer struct {
 	done     chan struct{}
 	err      error
 	selector string
+	colors   colorPolicy
 }
 
 func newManifestProgressRenderer(writer io.Writer, declarationCount int, selectors ...string) *manifestProgressRenderer {
+	return newManifestProgressRendererWithPolicy(writer, declarationCount, colorPolicyForWriter(writer), selectors...)
+}
+
+func newManifestProgressRendererWithPolicy(writer io.Writer, declarationCount int, colors colorPolicy, selectors ...string) *manifestProgressRenderer {
 	selector := ""
 	if len(selectors) != 0 {
 		selector = selectors[0]
@@ -532,6 +725,7 @@ func newManifestProgressRenderer(writer io.Writer, declarationCount int, selecto
 		lines:    make(chan string, 2*declarationCount),
 		done:     make(chan struct{}),
 		selector: selector,
+		colors:   colors,
 	}
 	go func() {
 		defer close(r.done)
@@ -552,12 +746,20 @@ func newManifestProgressRenderer(writer io.Writer, declarationCount int, selecto
 
 func (r *manifestProgressRenderer) writeInitial(definition project.Definition, result manifestLaunchResult) {
 	result = manifestResultWithSelector(result, r.selector)
-	r.writeLine(manifestProgressInitialLine(definition, result))
+	if !r.colors.enabled {
+		r.writeLine(manifestProgressInitialLine(definition, result))
+		return
+	}
+	r.writeLine(manifestProgressInitialLineWithPolicy(definition, result, r.colors))
 }
 
 func (r *manifestProgressRenderer) writeTerminal(result manifestLaunchResult) {
 	result = manifestResultWithSelector(result, r.selector)
-	r.writeLine(manifestProgressTerminalLine(result))
+	if !r.colors.enabled {
+		r.writeLine(manifestProgressTerminalLine(result))
+		return
+	}
+	r.writeLine(manifestProgressTerminalLineWithPolicy(result, r.colors))
 }
 
 func (r *manifestProgressRenderer) writeLine(line string) {
@@ -573,56 +775,64 @@ func (r *manifestProgressRenderer) Close() error {
 }
 
 func manifestProgressInitialLine(definition project.Definition, result manifestLaunchResult) string {
+	return manifestProgressInitialLineWithPolicy(definition, result, colorPolicy{})
+}
+
+func manifestProgressInitialLineWithPolicy(definition project.Definition, result manifestLaunchResult, colors colorPolicy) string {
 	prefix := "hum up: " + manifestProgressText(result.Name) + ": "
 	switch result.Outcome {
 	case "skipped":
-		return prefix + manifestProgressSkippedText(result)
+		return prefix + manifestProgressSkippedTextWithPolicy(result, colors)
 	case "error":
-		return prefix + "error: " + manifestProgressText(result.Error)
+		return prefix + colors.apply(ansiRed, "error") + ": " + manifestProgressText(result.Error)
 	case "exited_before_ready":
-		return prefix + "exited before readiness; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return prefix + colors.apply(ansiRed, "exited before readiness") + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "timed_out":
-		return prefix + "readiness timed out; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return prefix + colors.apply(ansiRed, "readiness timed out") + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "started", "already_running":
-		action := manifestProgressAction(result)
+		action := colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressAction(result))
 		if manifestProgressWaitsForReadiness(definition, result) {
-			return prefix + action + "; waiting for readiness"
+			return prefix + action + "; " + colors.apply(ansiYellow, "waiting for readiness")
 		}
 		if result.Readiness == app.ReadinessReady {
-			return prefix + action + "; ready"
+			return prefix + action + "; " + colors.apply(ansiGreen, "ready")
 		}
-		return prefix + manifestProgressAction(result) + "; readiness unverified"
+		return prefix + action + "; readiness unverified"
 	case "running_unverified":
-		return prefix + "started; readiness unverified"
+		return prefix + colors.apply(ansiGreen, "started") + "; readiness unverified"
 	case "definition_drift":
-		return prefix + manifestProgressText(manifestProgressDriftDetail(result))
+		return prefix + manifestProgressDriftDetailWithPolicy(result, colors)
 	default:
-		return prefix + manifestProgressText(result.Outcome)
+		return prefix + colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressText(result.Outcome))
 	}
 }
 
 func manifestProgressTerminalLine(result manifestLaunchResult) string {
+	return manifestProgressTerminalLineWithPolicy(result, colorPolicy{})
+}
+
+func manifestProgressTerminalLineWithPolicy(result manifestLaunchResult, colors colorPolicy) string {
 	prefix := "hum up: " + manifestProgressText(result.Name) + ": "
 	switch result.Outcome {
 	case "skipped":
-		return prefix + manifestProgressSkippedText(result)
+		return prefix + manifestProgressSkippedTextWithPolicy(result, colors)
 	case "error":
-		return prefix + "error: " + manifestProgressText(result.Error)
+		return prefix + colors.apply(ansiRed, "error") + ": " + manifestProgressText(result.Error)
 	case "exited_before_ready":
-		return prefix + "exited before readiness; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return prefix + colors.apply(ansiRed, "exited before readiness") + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "timed_out":
-		return prefix + "readiness timed out; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return prefix + colors.apply(ansiRed, "readiness timed out") + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "started", "already_running":
 		if result.Readiness == app.ReadinessReady {
-			return prefix + "ready"
+			return prefix + colors.apply(ansiGreen, "ready")
 		}
-		return prefix + manifestProgressAction(result) + "; readiness unverified"
+		return prefix + colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressAction(result)) + "; readiness unverified"
 	case "running_unverified":
-		return prefix + "started; readiness unverified"
+		return prefix + colors.apply(ansiGreen, "started") + "; readiness unverified"
 	case "definition_drift":
-		return prefix + manifestProgressText(manifestProgressDriftDetail(result))
+		return prefix + manifestProgressDriftDetailWithPolicy(result, colors)
 	default:
-		return prefix + manifestProgressText(result.Outcome)
+		return prefix + colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressText(result.Outcome))
 	}
 }
 
@@ -634,6 +844,23 @@ func manifestProgressSkippedText(result manifestLaunchResult) string {
 	default:
 		return line + "; not launched"
 	}
+}
+
+func manifestProgressSkippedTextWithPolicy(result manifestLaunchResult, colors colorPolicy) string {
+	if !colors.enabled {
+		return manifestProgressSkippedText(result)
+	}
+	line := colors.apply(ansiRed, "skipped") + " (blocked by " + manifestProgressText(strings.Join(result.BlockedBy, ", ")) + ")"
+	switch result.ExistingState {
+	case "running", "stopped", "exited":
+		return line + "; existing process " + result.ExistingState
+	default:
+		return line + "; not launched"
+	}
+}
+
+func manifestProgressDriftDetailWithPolicy(result manifestLaunchResult, colors colorPolicy) string {
+	return colors.apply(ansiRed, "definition_drift") + " (" + manifestProgressText(strings.Join(result.ChangedFields, ", ")) + "); run " + manifestProgressText(result.Guidance)
 }
 
 func manifestProgressAction(result manifestLaunchResult) string {
@@ -658,6 +885,10 @@ func manifestProgressText(value string) string {
 }
 
 func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
+	return renderManifestLaunchHumanWithPolicy(w, result, colorPolicy{})
+}
+
+func renderManifestLaunchHumanWithPolicy(w io.Writer, result manifestLaunchResult, colors colorPolicy) error {
 	if result.Outcome == "error" && result.Source == "manifest" && len(result.Argv) == 0 {
 		// No definition (and no retained launch spec) resolved for this name:
 		// undefinedManifestDefinition leaves Source as the synthetic "manifest"
@@ -665,11 +896,11 @@ func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
 		// (source: argv) parenthetical, which would otherwise print an empty
 		// "(manifest: )". A genuinely declared manifest process always has a
 		// non-empty Argv and keeps the general result line below.
-		_, err := fmt.Fprintf(w, "error %s: %s\n", result.Name, result.Error)
+		_, err := fmt.Fprintf(w, "%s %s: %s\n", colors.apply(ansiRed, "error"), result.Name, result.Error)
 		return err
 	}
 	if result.Outcome == "skipped" {
-		line := fmt.Sprintf("%s: skipped (blocked by %s)", result.Name, strings.Join(result.BlockedBy, ", "))
+		line := fmt.Sprintf("%s: %s (blocked by %s)", result.Name, colors.apply(ansiRed, "skipped"), strings.Join(result.BlockedBy, ", "))
 		switch result.ExistingState {
 		case "running", "stopped", "exited":
 			line += "; existing process " + result.ExistingState
@@ -679,14 +910,14 @@ func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
 		_, err := fmt.Fprintln(w, line)
 		return err
 	}
-	line := fmt.Sprintf("%s %s", result.Outcome, result.Name)
+	line := colors.apply(manifestOutcomeStyle(result.Outcome), result.Outcome) + " " + result.Name
 	if result.Source != "" {
 		line += fmt.Sprintf(" (%s: %s)", result.Source, shellJoin(result.Argv))
 	} else if len(result.Argv) != 0 {
 		line += " argv=" + shellJoin(result.Argv)
 	}
 	if result.State != "" {
-		line += " state=" + result.State
+		line += " state=" + colors.apply(processStateStyle(app.State(result.State), valueOrZero(result.ExitCode)), result.State)
 	}
 	if result.PID != nil {
 		line += fmt.Sprintf(" pid=%d", *result.PID)
@@ -695,7 +926,7 @@ func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
 		line += fmt.Sprintf(" launch_cursor=%d", *result.LaunchCursor)
 	}
 	if result.Readiness != "" {
-		line += " readiness=" + result.Readiness
+		line += " readiness=" + colors.apply(readinessStyle(result.Readiness), result.Readiness)
 	}
 	if result.ReadinessConfigured {
 		line += " readiness_match=" + result.ReadinessMatch
@@ -720,6 +951,13 @@ func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
 	}
 	_, err := fmt.Fprintln(w, line)
 	return err
+}
+
+func valueOrZero(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func renderStopHuman(w io.Writer, result stopResult) error {
@@ -785,11 +1023,15 @@ func renderWaitHuman(w io.Writer, result app.WaitResult) error {
 }
 
 func renderStatusHuman(w io.Writer, process app.Process) error {
+	return renderStatusHumanWithPolicy(w, process, colorPolicyForWriter(w))
+}
+
+func renderStatusHumanWithPolicy(w io.Writer, process app.Process, colors colorPolicy) error {
 	status := statusJSONFor(process)
 	restartLabel := status.Restart
 	exhausted := status.Restart == string(app.RestartOnFailure) && status.Relaunches == 5 && status.NextLaunchAt == nil && status.ExitStatus != nil && *status.ExitStatus != 0
 	if exhausted {
-		restartLabel = "on-failure (gave up after 5 relaunch attempts)"
+		restartLabel = "on-failure (" + colors.apply(ansiRed, "gave up after 5 relaunch attempts") + ")"
 	}
 	if _, err := fmt.Fprintf(w,
 		"name: %s\nsource: %s\nproject_root: %s\ntty: %t\n",
@@ -804,7 +1046,8 @@ func renderStatusHuman(w io.Writer, process app.Process) error {
 	}
 	if _, err := fmt.Fprintf(w,
 		"pgid: %d\ncwd: %s\nargv: %s\nstarted_at: %s\nstate: %s\nrestart: %s\n",
-		status.PGID, status.Cwd, shellJoin(status.Argv), status.StartedAt, status.State, restartLabel,
+		status.PGID, status.Cwd, shellJoin(status.Argv), status.StartedAt,
+		colors.apply(processStateStyle(process.State, process.ExitCode), status.State), restartLabel,
 	); err != nil {
 		return err
 	}
@@ -819,7 +1062,7 @@ func renderStatusHuman(w io.Writer, process app.Process) error {
 		}
 	}
 	if status.Readiness != "" {
-		if _, err := fmt.Fprintf(w, "readiness: %s\n", status.Readiness); err != nil {
+		if _, err := fmt.Fprintf(w, "readiness: %s\n", colors.apply(readinessStyle(status.Readiness), status.Readiness)); err != nil {
 			return err
 		}
 		if status.ReadyCursor != nil {
