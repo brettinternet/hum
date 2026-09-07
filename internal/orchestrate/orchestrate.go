@@ -507,8 +507,9 @@ type ReadinessOperations struct {
 	IsNotFound func(error) bool
 }
 
-// WaitForReadiness waits on one process incarnation while preserving the
-// launch-scoped nil-after semantics used by both existing adapters.
+// WaitForReadiness waits on one process incarnation. Bounded subscription
+// polls close the refresh-to-subscribe race without changing nil-after cursor
+// semantics for first-launch output.
 func WaitForReadiness(ctx context.Context, root string, definition Definition, process Process, initialOutcome string, timeout time.Duration, ops ReadinessOperations) (Result, error) {
 	initialProcess := NormalizeProcess(process)
 	result := ResultForProcess(definition, initialProcess, initialOutcome)
@@ -599,18 +600,9 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 		return result, nil
 	}
 
-	remaining := time.Until(deadline)
-	if remaining < time.Millisecond {
-		return markTimedOut()
-	}
 	if ops.Wait == nil {
 		return result, errors.New("readiness wait operation is not configured")
 	}
-	waitResult, err := ops.Wait(ctx, WaitRequest{Name: process.Name, Cwd: lookupRoot, Match: recordedMatch, Timeout: remaining})
-	if err != nil {
-		return result, err
-	}
-
 	checkCurrent := func() (Result, bool, bool, error) {
 		current, getErr := getCurrent()
 		if getErr != nil {
@@ -642,53 +634,67 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 		return result, false, false, nil
 	}
 
-	switch waitResult.Outcome {
-	case WaitExited:
-		return markExited()
-	case WaitMatched:
-		// The readiness monitor and this client subscribe independently. Give
-		// the monitor a bounded opportunity to publish durable state, but never
-		// restart the original launch deadline after Wait returns.
-		for {
-			current, done, matchValid, getErr := checkCurrent()
+	for {
+		remaining := time.Until(deadline)
+		if remaining < time.Millisecond {
+			return markTimedOut()
+		}
+		waitTimeout := min(remaining, 100*time.Millisecond)
+		waitStarted := time.Now()
+		waitResult, err := ops.Wait(ctx, WaitRequest{Name: process.Name, Cwd: lookupRoot, Match: recordedMatch, Timeout: waitTimeout})
+		if err != nil {
+			return result, err
+		}
+
+		switch waitResult.Outcome {
+		case WaitExited:
+			return markExited()
+		case WaitMatched:
+			// The readiness monitor and this client subscribe independently. Give
+			// the monitor a bounded opportunity to publish durable state, but never
+			// restart the original launch deadline after Wait returns.
+			for {
+				current, done, matchValid, getErr := checkCurrent()
+				if getErr != nil {
+					return result, getErr
+				}
+				if done {
+					if current.Outcome == "exited_before_ready" && matchValid {
+						// Preserve the observed launch snapshot while recording the
+						// match that Wait saw before the process exited. This is the
+						// launch-gate result expected by both adapters.
+						matched := copyProcess(observed)
+						readiness := &Readiness{State: ReadinessReady, Cursor: uint64Pointer(waitResult.Cursor), Match: recordedMatch}
+						matched.Readiness = readiness
+						return ResultForProcess(definition, matched, initialOutcome), nil
+					}
+					return current, nil
+				}
+				if time.Until(deadline) < time.Millisecond {
+					return markTimedOut()
+				}
+				timer := time.NewTimer(time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return result, ctx.Err()
+				case <-timer.C:
+				}
+			}
+		case WaitTimedOut:
+			current, done, _, getErr := checkCurrent()
 			if getErr != nil {
 				return result, getErr
 			}
 			if done {
-				if current.Outcome == "exited_before_ready" && matchValid {
-					// Preserve the observed launch snapshot while recording the
-					// match that Wait saw before the process exited. This is the
-					// launch-gate result expected by both adapters.
-					matched := copyProcess(observed)
-					readiness := &Readiness{State: ReadinessReady, Cursor: uint64Pointer(waitResult.Cursor), Match: recordedMatch}
-					matched.Readiness = readiness
-					return ResultForProcess(definition, matched, initialOutcome), nil
-				}
 				return current, nil
 			}
-			remaining = time.Until(deadline)
-			if remaining < time.Millisecond {
+			if time.Until(deadline) < time.Millisecond || time.Since(waitStarted)+time.Millisecond < waitTimeout {
 				return markTimedOut()
 			}
-			timer := time.NewTimer(time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return result, ctx.Err()
-			case <-timer.C:
-			}
+		default:
+			return result, fmt.Errorf("unknown readiness wait outcome %q", waitResult.Outcome)
 		}
-	case WaitTimedOut:
-		current, done, _, getErr := checkCurrent()
-		if getErr != nil {
-			return result, getErr
-		}
-		if done {
-			return current, nil
-		}
-		return markTimedOut()
-	default:
-		return result, fmt.Errorf("unknown readiness wait outcome %q", waitResult.Outcome)
 	}
 }
 

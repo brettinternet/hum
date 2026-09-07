@@ -32,13 +32,20 @@ func TestOrchestrateUp(t *testing.T) {
 				definition := Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, Ready: &ReadinessConfig{Match: "ready"}}
 				var mu sync.Mutex
 				waits := 0
-				result, err := WaitForReadiness(context.Background(), root, definition, current, "started", time.Second, ReadinessOperations{
+				timeout := time.Second
+				if test.name == "timeout" {
+					timeout = 10 * time.Millisecond
+				}
+				result, err := WaitForReadiness(context.Background(), root, definition, current, "started", timeout, ReadinessOperations{
 					Get: func(context.Context, string, string) (Process, error) {
 						mu.Lock()
 						defer mu.Unlock()
 						return NormalizeProcess(current), nil
 					},
-					Wait: func(context.Context, WaitRequest) (WaitResult, error) {
+					Wait: func(_ context.Context, request WaitRequest) (WaitResult, error) {
+						if test.name == "timeout" {
+							time.Sleep(request.Timeout)
+						}
 						mu.Lock()
 						defer mu.Unlock()
 						waits++

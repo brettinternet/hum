@@ -3000,20 +3000,39 @@ func TestWaitProcessObserved(t *testing.T) {
 
 	t.Run("replacement record observed then removed", func(t *testing.T) {
 		root := makeProject(t, false)
-		s := testSupervisor(t, Options{})
-		if _, err := s.ensureSession(root, "replaced"); err != nil {
+		child := &timedChild{
+			pid:    9401,
+			done:   make(chan struct{}),
+			result: process.Result{ExitCode: -1, ExitedAt: time.Now()},
+		}
+		s := testSupervisor(t, Options{StartProcess: func(spec process.Spec) (Child, error) {
+			if spec.Started != nil {
+				if err := spec.Started(); err != nil {
+					return nil, err
+				}
+			}
+			return child, nil
+		}})
+		rec, err := s.ensureSession(root, "replaced")
+		if err != nil {
 			t.Fatal(err)
 		}
 		result := make(chan WaitResult, 1)
 		errCh := make(chan error, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		go func() {
 			got, err := s.Wait(ctx, root, "replaced", WaitOptions{})
 			result <- got
 			errCh <- err
 		}()
-		time.Sleep(10 * time.Millisecond)
+		deadline := time.Now().Add(time.Second)
+		for rec.store.SubscriberCount() == 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if rec.store.SubscriberCount() == 0 {
+			t.Fatal("wait did not subscribe to the original record")
+		}
 		if err := s.Remove(context.Background(), root, "replaced"); err != nil {
 			t.Fatal(err)
 		}
