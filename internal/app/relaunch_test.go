@@ -444,7 +444,9 @@ func TestRelaunchOnFailure(t *testing.T) {
 					t.Fatal(err)
 				}
 				harness.child(0).release()
-				process := waitForRelaunch(t, harness.s, harness.root, test.name, func(process Process) bool { return process.State == StateExited })
+				process := waitForRelaunch(t, harness.s, harness.root, test.name, func(process Process) bool {
+					return process.State == StateExited && (process.NextLaunchAt != nil) == test.want
+				})
 				if (process.NextLaunchAt != nil) != test.want || process.Relaunches != 0 {
 					t.Fatalf("snapshot = %#v, want pending=%t and zero relaunches", process, test.want)
 				}
@@ -578,7 +580,7 @@ func TestRelaunchOnFailure(t *testing.T) {
 		if err := harness.s.Stop(context.Background(), harness.root, "api"); err != nil {
 			t.Fatal(err)
 		}
-		stopped := waitForRelaunch(t, harness.s, harness.root, "api", func(process Process) bool { return process.State == StateExited })
+		stopped := waitForRelaunch(t, harness.s, harness.root, "api", func(process Process) bool { return process.State == StateStopped })
 		if stopped.NextLaunchAt != nil || stopped.Relaunches != 0 {
 			t.Fatalf("operator stop after timer claim = %#v", stopped)
 		}
@@ -631,7 +633,7 @@ func TestRelaunchOnFailure(t *testing.T) {
 					t.Fatalf("%s error = %v", control, err)
 				}
 				wantChildren := 2
-				wantState := StateExited
+				wantState := StateStopped
 				if control == "restart" {
 					wantChildren = 3
 					wantState = StateRunning

@@ -75,6 +75,117 @@ func TestList(t *testing.T) {
 	}
 }
 
+func TestListStatusTerminalStates(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  declared:\n    argv: [/bin/sh, -c, \\\"sleep 30\\\"]\n")
+
+	stopShutdownStartProcess(t, server, projectRoot, "stopped", []string{"/bin/sh", "-c", "sleep 30"})
+	if _, _, err := stopShutdownRun(t, "stop", "stopped"); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	for _, item := range []struct {
+		name string
+		argv []string
+	}{
+		{name: "zero", argv: []string{"/bin/sh", "-c", "exit 0"}},
+		{name: "failed", argv: []string{"/bin/sh", "-c", "exit 7"}},
+		{name: "signal", argv: []string{"/bin/sh", "-c", "kill -TERM $$"}},
+	} {
+		stopShutdownStartProcess(t, server, projectRoot, item.name, item.argv)
+		hum006ListLogsWaitForExit(t, runtimeDir, projectRoot, item.name)
+	}
+
+	listOutput, stderr, err := stopShutdownRun(t, "list", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("list --json: err=%v stderr=%q output=%q", err, stderr, listOutput)
+	}
+	var listed listJSON
+	if err := json.Unmarshal([]byte(listOutput), &listed); err != nil {
+		t.Fatalf("decode list --json: %v (%q)", err, listOutput)
+	}
+	byName := make(map[string]listProcessJSON, len(listed.Processes))
+	for _, process := range listed.Processes {
+		byName[process.Name] = process
+	}
+	for _, name := range []string{"stopped", "declared", "zero", "failed", "signal"} {
+		if _, ok := byName[name]; !ok {
+			t.Fatalf("list --json omitted %q: %#v", name, listed.Processes)
+		}
+	}
+	if byName["stopped"].State != string(app.StateStopped) || byName["stopped"].Exit != nil {
+		t.Fatalf("stopped list record = %#v, want stopped without exit details", byName["stopped"])
+	}
+	if byName["declared"].State != string(app.StateStopped) || byName["declared"].PID != 0 {
+		t.Fatalf("unlaunched manifest list record = %#v, want stopped", byName["declared"])
+	}
+	for _, test := range []struct {
+		name string
+		code int
+	}{
+		{name: "zero", code: 0}, {name: "failed", code: 7}, {name: "signal", code: -1},
+	} {
+		process := byName[test.name]
+		if process.State != string(app.StateExited) || process.Exit == nil || process.Exit.Code != test.code {
+			t.Fatalf("autonomous list record %q = %#v, want exited code %d", test.name, process, test.code)
+		}
+	}
+
+	human, stderr, err := stopShutdownRun(t, "list")
+	if err != nil || stderr != "" {
+		t.Fatalf("human list: err=%v stderr=%q output=%q", err, stderr, human)
+	}
+	for _, want := range []string{"stopped", "zero", "failed", "signal"} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("human list = %q, missing %q", human, want)
+		}
+	}
+	for _, want := range []string{"stopped", "exited"} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("human list = %q, missing state %q", human, want)
+		}
+	}
+
+	for _, test := range []struct {
+		name  string
+		state string
+		code  *int
+	}{
+		{name: "stopped", state: string(app.StateStopped)},
+		{name: "declared", state: string(app.StateStopped)},
+		{name: "zero", state: string(app.StateExited), code: intPointer(0)},
+		{name: "failed", state: string(app.StateExited), code: intPointer(7)},
+		{name: "signal", state: string(app.StateExited), code: intPointer(-1)},
+	} {
+		output, stderr, err := stopShutdownRun(t, "status", test.name, "--json")
+		if err != nil || stderr != "" {
+			t.Fatalf("status %s --json: err=%v stderr=%q output=%q", test.name, err, stderr, output)
+		}
+		status := statusDecodeJSON(t, output)
+		if status.State != test.state {
+			t.Fatalf("status %s state = %q, want %q", test.name, status.State, test.state)
+		}
+		if test.code == nil {
+			if status.ExitStatus != nil {
+				t.Fatalf("status %s exit status = %d, want null", test.name, *status.ExitStatus)
+			}
+		} else if status.ExitStatus == nil || *status.ExitStatus != *test.code {
+			t.Fatalf("status %s exit status = %v, want %d", test.name, status.ExitStatus, *test.code)
+		}
+	}
+	statusHuman, stderr, err := stopShutdownRun(t, "status", "stopped")
+	if err != nil || stderr != "" || !strings.Contains(statusHuman, "state: stopped") || strings.Contains(statusHuman, "exit_status:") {
+		t.Fatalf("stopped human status = %q, stderr=%q, err=%v", statusHuman, stderr, err)
+	}
+	statusHuman, stderr, err = stopShutdownRun(t, "status", "zero")
+	if err != nil || stderr != "" || !strings.Contains(statusHuman, "state: exited") || !strings.Contains(statusHuman, "exit_status: 0") {
+		t.Fatalf("zero human status = %q, stderr=%q, err=%v", statusHuman, stderr, err)
+	}
+}
+
+func intPointer(value int) *int { return &value }
+
 func TestLogsMultipleNames(t *testing.T) {
 	runtimeDir := hum006ListLogsTempDir(t, "aggregate-runtime")
 	hum006ListLogsStartDaemon(t, runtimeDir, 4096)

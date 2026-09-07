@@ -973,7 +973,7 @@ processes:
 		t.Fatalf("up with exited blocked record: %v (stdout=%s stderr=%s)", err, stdout, stderr)
 	}
 	results = manifestCLILaunchResults(t, stdout)
-	if results[0].Outcome != "skipped" || results[0].ExistingState != "exited" || results[0].LaunchCursor == nil || started.LaunchCursor == nil || *results[0].LaunchCursor != *started.LaunchCursor {
+	if results[0].Outcome != "skipped" || results[0].ExistingState != "stopped" || results[0].LaunchCursor == nil || started.LaunchCursor == nil || *results[0].LaunchCursor != *started.LaunchCursor {
 		t.Fatalf("exited blocked api = %+v, seeded %+v", results[0], started)
 	}
 	if results[2].Outcome != "skipped" || results[2].ExistingState != "" {
@@ -984,12 +984,12 @@ processes:
 	if humanRunErr == nil || manifestCLIExitCode(humanRunErr) != 3 {
 		t.Fatalf("human blocked up: %v (stdout=%s stderr=%s)", humanRunErr, human, humanErr)
 	}
-	for _, phrase := range []string{"api: skipped (blocked by db); existing process exited", "web: skipped (blocked by api); not launched"} {
+	for _, phrase := range []string{"api: skipped (blocked by db); existing process stopped", "web: skipped (blocked by api); not launched"} {
 		if !strings.Contains(human, phrase) {
 			t.Fatalf("human blocked output missing %q: %s", phrase, human)
 		}
 	}
-	for _, phrase := range []string{"hum up: db: started; waiting for readiness", "hum up: db: exited before readiness; inspect retained logs: hum logs db", "hum up: api: skipped (blocked by db); existing process exited", "hum up: web: skipped (blocked by api); not launched"} {
+	for _, phrase := range []string{"hum up: db: started; waiting for readiness", "hum up: db: exited before readiness; inspect retained logs: hum logs db", "hum up: api: skipped (blocked by db); existing process stopped", "hum up: web: skipped (blocked by api); not launched"} {
 		if !strings.Contains(humanErr, phrase) {
 			t.Fatalf("human progress missing %q: %s", phrase, humanErr)
 		}
@@ -1436,7 +1436,7 @@ processes:
 		t.Fatalf("exited blocked up exit = %v, want 3; stderr=%q", err, stderr)
 	}
 	for _, want := range []string{
-		"hum up: api: skipped (blocked by db, queue); existing process exited",
+		"hum up: api: skipped (blocked by db, queue); existing process stopped",
 		"hum up: web: skipped (blocked by api); not launched",
 	} {
 		if !strings.Contains(stderr, want) {

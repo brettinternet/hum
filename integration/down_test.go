@@ -191,8 +191,8 @@ func TestDownWorkflow(t *testing.T) {
 	}
 	testutil.WaitForProcessGone(t, adHocRun.PID, downWorkflowTimeout)
 	adHocStatus := downWorkflowStatusResult(t, hum, firstRoot, env, "ad-hoc")
-	if adHocStatus.Name != "ad-hoc" || adHocStatus.ProjectRoot != firstRoot || adHocStatus.State != "exited" {
-		t.Fatalf("ad-hoc status after down = %#v, want retained exited record in first project", adHocStatus)
+	if adHocStatus.Name != "ad-hoc" || adHocStatus.ProjectRoot != firstRoot || adHocStatus.State != "stopped" {
+		t.Fatalf("ad-hoc status after down = %#v, want retained stopped record in first project", adHocStatus)
 	}
 	if testutil.ProcessAlive(adHocStatus.PID) {
 		t.Fatalf("ad-hoc status after down reports live PID %d", adHocStatus.PID)

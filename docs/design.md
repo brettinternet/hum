@@ -346,8 +346,8 @@ direct only, so a cascade names its immediate skipped parent. The scheduler
 waits for all direct results before finalizing blockers, while output remains
 lexical after every node settles. Before finalizing a blocked node, CLI and MCP
 read its retained record without lifecycle mutation. A present record adds
-`existing_state: running|exited` and its process snapshot; human output says
-`existing process running`, `existing process exited`, or `not launched`. The
+`existing_state: running|stopped|exited` and its process snapshot; human output says
+`existing process running`, `existing process stopped`, `existing process exited`, or `not launched`. The
 result remains skipped and cannot satisfy a downstream gate. Skips do not change aggregate exit precedence:
 request error 1, exited before ready 3, timed out 2, success 0. An
 `on-failure` successor is not followed by the same `up`; rerun `up` after
