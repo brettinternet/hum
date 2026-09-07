@@ -384,7 +384,7 @@ func TestRelaunchOnFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 		stopped := waitForRelaunch(t, s, harness.root, "api", func(process Process) bool {
-			return process.State == StateStopped && process.NextLaunchAt == nil && process.Relaunches == 0
+			return process.State == StateExited && process.NextLaunchAt == nil && process.Relaunches == 0
 		})
 		harness.timers.wait(time.Second)
 		if stopped.Restart != RestartOnFailure || harness.timers.fire(time.Second) == false {
