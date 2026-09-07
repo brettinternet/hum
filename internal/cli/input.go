@@ -23,11 +23,6 @@ type inputResult struct {
 	LaunchCursor protocol.Cursor `json:"launch_cursor"`
 }
 
-type inputErrorResult struct {
-	Name  string `json:"name"`
-	Error string `json:"error"`
-}
-
 func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
 	args := cmd.Args().Slice()
 	name := ""
@@ -71,8 +66,8 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 		if client != nil {
 			_ = client.Close()
 		}
-		if daemonUnavailable(err) {
-			return inputCommandError(cmd, writer, name, protocol.NewWireError(protocol.ErrorCode("unavailable"), runUnavailableMessage, nil))
+		if daemonUnavailable(err) && !cmd.Bool("json") {
+			err = protocol.NewWireError(protocol.ErrorCode("unavailable"), runUnavailableMessage, nil)
 		}
 		return inputCommandError(cmd, writer, name, err)
 	}
@@ -208,12 +203,6 @@ func inputNotTTYError(name string, declaredTTY bool, selectors ...string) error 
 	return protocol.NewWireError(protocol.ErrorInputNotTTY, message, nil)
 }
 
-func inputCommandError(cmd *urfavecli.Command, writer io.Writer, name string, err error) error {
-	if err == nil || !cmd.Bool("json") {
-		return err
-	}
-	if encodeErr := encodeJSON(writer, inputErrorResult{Name: name, Error: err.Error()}); encodeErr != nil {
-		return encodeErr
-	}
+func inputCommandError(_ *urfavecli.Command, _ io.Writer, _ string, err error) error {
 	return err
 }

@@ -191,6 +191,8 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}
 	startProps := cloneProperties(waitProps)
 	startProps["name"] = nameResolved
+	restartProps := cloneProperties(waitProps)
+	restartProps["name"] = nameExisting
 	readiness := objectSchema(map[string]any{
 		"state":  stringProperty("starting, ready, or running_unverified; recovery records retain starting with their configured matcher"),
 		"cursor": map[string]any{"type": "integer", "minimum": 0},
@@ -222,6 +224,31 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}, "name", "source", "root", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
+	restart := objectSchema(map[string]any{
+		"name":           map[string]any{"type": "string", "description": "The restarted process name."},
+		"outcome":        map[string]any{"type": "string", "description": "restarted, running_unverified, exited_before_ready, timed_out, or error."},
+		"readiness":      map[string]any{"type": "string", "description": "The replacement readiness state observed by this request."},
+		"pid":            map[string]any{"type": "integer", "description": "The replacement process ID, or zero when no running process remains."},
+		"launch_cursor":  map[string]any{"type": "integer", "minimum": 0, "description": "The output cursor assigned to the replacement launch."},
+		"message":        map[string]any{"type": "string", "description": "Optional detail for a readiness or request failure."},
+		"source":         map[string]any{"type": "string"},
+		"root":           map[string]any{"type": "string"},
+		"tty":            map[string]any{"type": "boolean", "description": "Whether the replacement owns a pseudo-terminal."},
+		"pgid":           map[string]any{"type": "integer"},
+		"cwd":            map[string]any{"type": "string"},
+		"argv":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"start":          map[string]any{"type": "string"},
+		"next_cursor":    map[string]any{"type": "integer", "minimum": 0},
+		"state":          map[string]any{"type": "string"},
+		"exit":           exit,
+		"exit_code":      map[string]any{"type": "integer"},
+		"exited_at":      map[string]any{"type": "string"},
+		"restart_count":  map[string]any{"type": "integer", "minimum": 0},
+		"followers":      map[string]any{"type": "integer", "minimum": 0},
+		"restart":        map[string]any{"type": "string", "enum": []string{"never", "on-failure"}},
+		"relaunches":     map[string]any{"type": "integer", "minimum": 0, "maximum": 5},
+		"next_launch_at": map[string]any{"type": "string"},
+	}, "name", "outcome", "readiness", "pid", "launch_cursor")
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
 	output := objectSchema(map[string]any{"entries": map[string]any{"type": "array", "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}, "oldest": map[string]any{"type": "integer", "minimum": 0}, "latest": map[string]any{"type": "integer", "minimum": 0}, "evicted_through": map[string]any{"type": "integer", "minimum": 0}, "truncated": map[string]any{"type": "boolean"}, "more": map[string]any{"type": "boolean"}}, "entries")
@@ -257,7 +284,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "logs", Description: "Read a bounded cursor-based output window for an existing declared or ad_hoc runtime record. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to read from; omitting it selects the newest default window."}, "tail": map[string]any{"type": "integer", "minimum": 0, "description": "Return at most this many of the most recent entries; omitting it uses the newest default window."}, "max_entries": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of entries to return in this window."}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum total text bytes to return across this window's entries."}}, "project_root", "name"), OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Write one exact, bounded payload to an already-running TTY incarnation at its initial launch cursor with at-most-once behavior; never starts, waits, queues, retries, resends, retains, or explicitly echoes input and fails immediately on ownership conflict.", InputSchema: inputSchema, OutputSchema: inputResult},
-		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
+		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
 		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record while preserving its supervision session.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
 		{Name: "remove", Description: "Stop and discard one runtime supervision session, its retained launch specification, and output.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
 	}
@@ -582,7 +609,7 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	case "input":
 		return s.input(ctx, resolution, input)
 	case "restart":
-		return s.restart(ctx, resolution, input.Name)
+		return s.restart(ctx, resolution, input)
 	case "stop":
 		return s.stop(ctx, resolution, input.Name)
 	case "remove":
@@ -866,6 +893,14 @@ func durationToMCPTimeout(timeout time.Duration) int64 {
 	return int64(milliseconds)
 }
 
+func mcpRemainingTimeout(timeoutMS int64, launchedAt time.Time) int64 {
+	if timeoutMS <= 0 {
+		return timeoutMS
+	}
+	remaining := time.Duration(timeoutMS)*time.Millisecond - time.Since(launchedAt)
+	return durationToMCPTimeout(remaining)
+}
+
 func definitionsHaveAfter(definitions []Definition) bool {
 	shared := make([]orchestrate.Definition, 0, len(definitions))
 	for _, definition := range definitions {
@@ -1103,27 +1138,146 @@ func (s *Server) remove(ctx context.Context, resolution Resolution, name string)
 	return stopResult{Name: name, State: "removed"}, nil
 }
 
-func (s *Server) restart(ctx context.Context, resolution Resolution, name string) (any, error) {
+type restartResult struct {
+	Name         string           `json:"name"`
+	Outcome      string           `json:"outcome"`
+	Readiness    string           `json:"readiness"`
+	PID          int              `json:"pid"`
+	LaunchCursor protocol.Cursor  `json:"launch_cursor"`
+	Message      string           `json:"message,omitempty"`
+	Source       string           `json:"source,omitempty"`
+	Root         string           `json:"root"`
+	TTY          bool             `json:"tty"`
+	PGID         int              `json:"pgid"`
+	Cwd          string           `json:"cwd"`
+	Argv         []string         `json:"argv"`
+	Start        time.Time        `json:"start"`
+	NextCursor   *protocol.Cursor `json:"next_cursor,omitempty"`
+	State        string           `json:"state"`
+	Exit         *protocol.Exit   `json:"exit,omitempty"`
+	ExitCode     int              `json:"exit_code,omitempty"`
+	ExitedAt     time.Time        `json:"exited_at,omitempty"`
+	RestartCount int              `json:"restart_count,omitempty"`
+	Followers    int              `json:"followers"`
+	Restart      string           `json:"restart"`
+	Relaunches   int              `json:"relaunches"`
+	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
+}
+
+func restartResultForProcess(process protocol.Process, name, outcome, message string) restartResult {
+	process = normalizeProcess(process)
+	result := restartResult{
+		Name:         process.Name,
+		Outcome:      outcome,
+		Readiness:    protocol.ReadinessRunningUnverified,
+		PID:          process.PID,
+		LaunchCursor: process.LaunchCursor,
+		Message:      message,
+		Source:       process.Source,
+		Root:         process.Root,
+		TTY:          process.TTY,
+		PGID:         process.PGID,
+		Cwd:          process.Cwd,
+		Argv:         append([]string(nil), process.Argv...),
+		Start:        process.Start,
+		NextCursor:   process.NextCursor,
+		State:        process.State,
+		Exit:         process.Exit,
+		ExitCode:     process.ExitCode,
+		ExitedAt:     process.ExitedAt,
+		RestartCount: process.RestartCount,
+		Followers:    process.Followers,
+		Restart:      process.Restart,
+		Relaunches:   process.Relaunches,
+		NextLaunchAt: process.NextLaunchAt,
+	}
+	if result.Argv == nil {
+		result.Argv = []string{}
+	}
+	if result.Name == "" {
+		result.Name = name
+	}
+	if process.Readiness != nil {
+		result.Readiness = process.Readiness.State
+	}
+	if process.State != "running" && process.Readiness == nil {
+		result.Readiness = ""
+	}
+	return result
+}
+
+func (s *Server) restart(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
+	if _, set := input.fields["timeout_ms"]; set && input.TimeoutMS <= 0 {
+		return nil, &ToolError{Code: "invalid_request", Message: "timeout_ms must be positive"}
+	}
+	if input.TimeoutMS > int64((1<<63-1)/int64(time.Millisecond)) {
+		return nil, &ToolError{Code: "invalid_request", Message: "timeout_ms is too large"}
+	}
 	client, err := s.client(ctx, false)
 	if err != nil {
 		return nil, mapError(err)
 	}
 	defer client.Close()
+
+	name := input.Name
+	definition, declared := findDefinition(resolution, name)
+	if !declared {
+		if process, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: resolution.Root}); getErr != nil {
+			return nil, mapError(getErr)
+		} else {
+			definition = Definition{Name: name, Source: process.Source, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...)}
+		}
+	}
+	timeout, err := readinessTimeout(input.TimeoutMS, definition)
+	if err != nil {
+		return nil, err
+	}
+
 	request := protocol.RestartRequest{Op: protocol.OpRestart, Name: name, Cwd: resolution.Root}
-	if definition, ok := findDefinition(resolution, name); ok {
+	if declared {
 		request.Root, request.Cwd, request.Update = resolution.Root, definition.Cwd, true
 		request.Argv, request.Env, request.Source, request.Ready, request.TTY = append([]string(nil), definition.Argv...), s.environment(), definition.Source, definition.Ready, definition.TTY
 		request.Restart = effectiveRestart(definition.Restart)
-	} else {
-		if _, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: resolution.Root}); err != nil {
-			return nil, mapError(err)
-		}
 	}
+	launchedAt := time.Now()
 	process, err := client.Restart(ctx, request)
 	if err != nil {
 		return nil, mapError(err)
 	}
-	return normalizeProcess(process), nil
+	if process.Name == "" {
+		process.Name = name
+	}
+	if definition.Ready == nil && process.Readiness != nil && (process.Readiness.State == protocol.ReadinessStarting || process.Readiness.State == protocol.ReadinessReady) {
+		definition.Ready = &protocol.ReadinessConfig{Match: process.Readiness.Match}
+	}
+	if definition.Ready != nil && process.Readiness == nil && process.State == "running" {
+		process.Readiness = &protocol.Readiness{State: protocol.ReadinessStarting, Match: definition.Ready.Match}
+	}
+
+	outcome := "restarted"
+	if definition.Ready == nil {
+		outcome = protocol.ReadinessRunningUnverified
+	}
+	if input.NoWait || definition.Ready == nil {
+		return restartResultForProcess(process, name, outcome, ""), nil
+	}
+	if !process.Start.IsZero() {
+		launchedAt = process.Start
+	}
+	timeout = mcpRemainingTimeout(timeout, launchedAt)
+
+	process, outcome, err = s.mcpWaitForReadiness(ctx, client, resolution, definition, process, outcome, timeout)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	message := ""
+	switch outcome {
+	case "exited_before_ready":
+		message = "process exited before readiness"
+	case "timed_out":
+		message = "readiness timed out"
+	}
+	return restartResultForProcess(process, name, outcome, message), nil
 }
 
 func (s *Server) stop(ctx context.Context, resolution Resolution, name string) (any, error) {

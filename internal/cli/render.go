@@ -171,6 +171,20 @@ func encodeJSON(w io.Writer, value any) error {
 	return encoder.Encode(value)
 }
 
+type jsonErrorEnvelope struct {
+	Error *protocol.WireError `json:"error"`
+}
+
+func writeJSONError(w io.Writer, wire *protocol.WireError) error {
+	return encodeJSON(w, jsonErrorEnvelope{Error: wire})
+}
+
+func writeJSONErrorEvent(w io.Writer, name string, wire *protocol.WireError) error {
+	return encodeJSON(w, protocol.StreamEvent{
+		Op: protocol.OpEvent, Type: protocol.EventError, Name: name, Error: wire,
+	})
+}
+
 func writeStartupWarnings(w io.Writer, warnings []protocol.StartupWarning) error {
 	if len(warnings) == 0 || w == nil {
 		return nil

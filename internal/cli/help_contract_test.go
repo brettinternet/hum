@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -119,11 +120,36 @@ func TestHelpContract(t *testing.T) {
 	}
 }
 
+func TestRestartReadinessDocs(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+	if err := root.Run(context.Background(), []string{"hum", "restart", "--help"}); err != nil {
+		t.Fatalf("restart help: %v", err)
+	}
+	help := strings.ToLower(output.String())
+	for _, phrase := range []string{"--timeout", "positive", "per-name", "--no-wait", "readiness failures", "later names continue", "request or validation errors", "exit codes: 0 success", "exit 1", "exit 2", "exit 3"} {
+		if !strings.Contains(help, phrase) {
+			t.Errorf("restart help missing %q: %q", phrase, output.String())
+		}
+	}
+	design, err := os.ReadFile("../../docs/design.md")
+	if err != nil {
+		t.Fatalf("read design docs: %v", err)
+	}
+	docs := strings.ToLower(string(design))
+	for _, phrase := range []string{"hum [--project dir|-c dir] restart <name>... [--no-wait] [--timeout duration] [--json]", "positive per-name duration", "readiness failures", "remaining names continue", "request or validation errors stop", "exit precedence: 1 > 3 > 2 > 0"} {
+		if !strings.Contains(docs, phrase) {
+			t.Errorf("design docs missing %q", phrase)
+		}
+	}
+}
+
 func TestHelpExitCodes(t *testing.T) {
 	exitContracts := map[string]string{
-		"start": "Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.",
-		"up":    "Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running.",
-		"wait":  "Exit codes: 0 for a match or unfiltered exit; exit 1 for a request or usage error; exit 2 for timeout; exit 3 when process exit precedes --match.",
+		"start":   "Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.",
+		"up":      "Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running.",
+		"wait":    "Exit codes: 0 for a match or unfiltered exit; exit 1 for a request or usage error; exit 2 for timeout; exit 3 when process exit precedes --match.",
+		"restart": "Exit codes: 0 success; exit 1 for request or validation error; exit 2 for readiness timeout; exit 3 for exited before readiness.",
 	}
 	paths := visibleHelpPaths(NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{}))
 	for _, path := range paths {
