@@ -2856,6 +2856,117 @@ func TestWaitPreLaunchWithoutLaunchTimesOut(t *testing.T) {
 	}
 }
 
+func TestWaitProcessObserved(t *testing.T) {
+	t.Run("no record", func(t *testing.T) {
+		root := makeProject(t, false)
+		s := testSupervisor(t, Options{})
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		got, err := s.Wait(ctx, root, "never-launched", WaitOptions{})
+		if err != nil || got.Outcome != WaitTimedOut || got.ProcessObserved {
+			t.Fatalf("never-launched timeout = %#v err=%v, want timed_out process_observed=false", got, err)
+		}
+	})
+
+	t.Run("initial record", func(t *testing.T) {
+		root := makeProject(t, false)
+		s := testSupervisor(t, Options{})
+		if _, err := startShell(s, root, "initial", "sleep 1"); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		got, err := s.Wait(ctx, root, "initial", WaitOptions{})
+		if err != nil || got.Outcome != WaitTimedOut || !got.ProcessObserved {
+			t.Fatalf("initial timeout = %#v err=%v, want timed_out process_observed=true", got, err)
+		}
+	})
+
+	t.Run("record launched during wait", func(t *testing.T) {
+		root := makeProject(t, false)
+		s := testSupervisor(t, Options{})
+		result := make(chan WaitResult, 1)
+		errCh := make(chan error, 1)
+		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+		defer cancel()
+		go func() {
+			got, err := s.Wait(ctx, root, "during-wait", WaitOptions{})
+			result <- got
+			errCh <- err
+		}()
+		time.Sleep(10 * time.Millisecond)
+		if _, err := startShell(s, root, "during-wait", "sleep 1"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := <-result, <-errCh
+		if err != nil || got.Outcome != WaitTimedOut || !got.ProcessObserved {
+			t.Fatalf("during-wait timeout = %#v err=%v, want timed_out process_observed=true", got, err)
+		}
+	})
+
+	t.Run("record observed then removed", func(t *testing.T) {
+		root := makeProject(t, false)
+		s := testSupervisor(t, Options{})
+		rec, err := s.ensureSession(root, "removed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The runtime incarnation marker is intentionally sticky after removal;
+		// this models a record observed by the wait before its store is discarded.
+		s.mu.Lock()
+		rec.incarnation = 1
+		s.mu.Unlock()
+		result := make(chan WaitResult, 1)
+		errCh := make(chan error, 1)
+		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+		defer cancel()
+		go func() {
+			got, err := s.Wait(ctx, root, "removed", WaitOptions{})
+			result <- got
+			errCh <- err
+		}()
+		time.Sleep(10 * time.Millisecond)
+		if err := s.Remove(context.Background(), root, "removed"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := <-result, <-errCh
+		if err != nil || got.Outcome != WaitTimedOut || !got.ProcessObserved {
+			t.Fatalf("removed timeout = %#v err=%v, want timed_out process_observed=true", got, err)
+		}
+	})
+
+	t.Run("replacement record observed then removed", func(t *testing.T) {
+		root := makeProject(t, false)
+		s := testSupervisor(t, Options{})
+		if _, err := s.ensureSession(root, "replaced"); err != nil {
+			t.Fatal(err)
+		}
+		result := make(chan WaitResult, 1)
+		errCh := make(chan error, 1)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		defer cancel()
+		go func() {
+			got, err := s.Wait(ctx, root, "replaced", WaitOptions{})
+			result <- got
+			errCh <- err
+		}()
+		time.Sleep(10 * time.Millisecond)
+		if err := s.Remove(context.Background(), root, "replaced"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := startShell(s, root, "replaced", "sleep 1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Remove(context.Background(), root, "replaced"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := <-result, <-errCh
+		if err != nil || got.Outcome != WaitTimedOut || !got.ProcessObserved {
+			t.Fatalf("replacement timeout = %#v err=%v, want timed_out process_observed=true", got, err)
+		}
+	})
+}
+
 func TestWaitPreLaunchStartsAtNextIncarnation(t *testing.T) {
 	root := makeProject(t, false)
 	s := testSupervisor(t, Options{})

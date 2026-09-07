@@ -14,8 +14,9 @@ import (
 // this value on every connection. Version 10 added explicit stopped terminal
 // snapshots and autonomous exit details; version 11 added immutable output
 // time-window cutoffs in output and follow requests; version 12 adds canonical
-// observational process-group signal requests and responses.
-const Version = 12
+// observational process-group signal requests and responses; version 13 adds
+// process observation to wait timeout responses.
+const Version = 13
 
 const (
 	RestartNever     = "never"
@@ -1054,13 +1055,17 @@ func NewGetResponse(process Process) GetResponse {
 
 // WaitResponse reports the terminal condition for a wait request. Cursor is
 // always serialized so callers can resume from the consumed output watermark.
+// ProcessObserved is serialized on timeout results, including an explicit
+// false, and is omitted for successful match/exit results.
 type WaitResponse struct {
-	Op      Operation   `json:"op"`
-	OK      bool        `json:"ok"`
-	Outcome WaitOutcome `json:"outcome,omitempty"`
-	Cursor  Cursor      `json:"cursor"`
-	Exit    *Exit       `json:"exit,omitempty"`
-	Error   *WireError  `json:"error,omitempty"`
+	Op              Operation   `json:"op"`
+	OK              bool        `json:"ok"`
+	Outcome         WaitOutcome `json:"outcome,omitempty"`
+	Cursor          Cursor      `json:"cursor"`
+	Exit            *Exit       `json:"exit,omitempty"`
+	ProcessObserved bool        `json:"process_observed,omitempty"`
+	Message         string      `json:"message,omitempty"`
+	Error           *WireError  `json:"error,omitempty"`
 }
 
 // NewWaitResponse builds a successful wait response.
@@ -1075,26 +1080,34 @@ func (r WaitResponse) MarshalJSON() ([]byte, error) {
 	if r.OK {
 		outcome = &r.Outcome
 	}
+	var processObserved *bool
+	if r.Outcome == WaitTimedOut {
+		processObserved = &r.ProcessObserved
+	}
 	return json.Marshal(struct {
-		Op      Operation    `json:"op"`
-		OK      bool         `json:"ok"`
-		Outcome *WaitOutcome `json:"outcome,omitempty"`
-		Cursor  Cursor       `json:"cursor"`
-		Exit    *Exit        `json:"exit,omitempty"`
-		Error   *WireError   `json:"error,omitempty"`
-	}{Op: OpWait, OK: r.OK, Outcome: outcome, Cursor: r.Cursor, Exit: r.Exit, Error: r.Error})
+		Op              Operation    `json:"op"`
+		OK              bool         `json:"ok"`
+		Outcome         *WaitOutcome `json:"outcome,omitempty"`
+		Cursor          Cursor       `json:"cursor"`
+		Exit            *Exit        `json:"exit,omitempty"`
+		ProcessObserved *bool        `json:"process_observed,omitempty"`
+		Message         string       `json:"message,omitempty"`
+		Error           *WireError   `json:"error,omitempty"`
+	}{Op: OpWait, OK: r.OK, Outcome: outcome, Cursor: r.Cursor, Exit: r.Exit, ProcessObserved: processObserved, Message: r.Message, Error: r.Error})
 }
 
 // UnmarshalJSON decodes a wait response and validates its operation when
 // present.
 func (r *WaitResponse) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op      Operation   `json:"op"`
-		OK      bool        `json:"ok"`
-		Outcome WaitOutcome `json:"outcome"`
-		Cursor  Cursor      `json:"cursor"`
-		Exit    *Exit       `json:"exit"`
-		Error   *WireError  `json:"error"`
+		Op              Operation   `json:"op"`
+		OK              bool        `json:"ok"`
+		Outcome         WaitOutcome `json:"outcome"`
+		Cursor          Cursor      `json:"cursor"`
+		Exit            *Exit       `json:"exit"`
+		ProcessObserved bool        `json:"process_observed"`
+		Message         string      `json:"message"`
+		Error           *WireError  `json:"error"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -1103,7 +1116,7 @@ func (r *WaitResponse) UnmarshalJSON(data []byte) error {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
 	r.Op, r.OK, r.Outcome, r.Cursor = OpWait, wire.OK, wire.Outcome, wire.Cursor
-	r.Exit, r.Error = wire.Exit, wire.Error
+	r.Exit, r.ProcessObserved, r.Message, r.Error = wire.Exit, wire.ProcessObserved, wire.Message, wire.Error
 	return nil
 }
 

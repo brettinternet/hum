@@ -1115,28 +1115,30 @@ type wireReadinessConfig struct {
 }
 
 type wireResponse struct {
-	Op             string                    `json:"op,omitempty"`
-	Name           string                    `json:"name,omitempty"`
-	OK             bool                      `json:"ok,omitempty"`
-	Version        int                       `json:"version,omitempty"`
-	Process        *wireProcess              `json:"process,omitempty"`
-	Processes      []wireProcess             `json:"processes,omitempty"`
-	Entries        []wireEntry               `json:"entries,omitempty"`
-	Next           *uint64                   `json:"next,omitempty"`
-	Oldest         *uint64                   `json:"oldest,omitempty"`
-	Latest         *uint64                   `json:"latest,omitempty"`
-	EvictedThrough *uint64                   `json:"evicted_through,omitempty"`
-	Truncated      bool                      `json:"truncated,omitempty"`
-	More           bool                      `json:"more,omitempty"`
-	Signal         *wireSignal               `json:"signal,omitempty"`
-	Status         string                    `json:"status,omitempty"`
-	Type           string                    `json:"type,omitempty"`
-	Outcome        string                    `json:"outcome,omitempty"`
-	Cursor         *uint64                   `json:"cursor,omitempty"`
-	Ready          bool                      `json:"ready,omitempty"`
-	Warnings       []protocol.StartupWarning `json:"warnings,omitempty"`
-	Exit           *wireExit                 `json:"exit,omitempty"`
-	Error          *wireError                `json:"error,omitempty"`
+	Op              string                    `json:"op,omitempty"`
+	Name            string                    `json:"name,omitempty"`
+	OK              bool                      `json:"ok,omitempty"`
+	Version         int                       `json:"version,omitempty"`
+	Process         *wireProcess              `json:"process,omitempty"`
+	Processes       []wireProcess             `json:"processes,omitempty"`
+	Entries         []wireEntry               `json:"entries,omitempty"`
+	Next            *uint64                   `json:"next,omitempty"`
+	Oldest          *uint64                   `json:"oldest,omitempty"`
+	Latest          *uint64                   `json:"latest,omitempty"`
+	EvictedThrough  *uint64                   `json:"evicted_through,omitempty"`
+	Truncated       bool                      `json:"truncated,omitempty"`
+	More            bool                      `json:"more,omitempty"`
+	Signal          *wireSignal               `json:"signal,omitempty"`
+	Status          string                    `json:"status,omitempty"`
+	Type            string                    `json:"type,omitempty"`
+	Outcome         string                    `json:"outcome,omitempty"`
+	Cursor          *uint64                   `json:"cursor,omitempty"`
+	ProcessObserved *bool                     `json:"process_observed,omitempty"`
+	Message         string                    `json:"message,omitempty"`
+	Ready           bool                      `json:"ready,omitempty"`
+	Warnings        []protocol.StartupWarning `json:"warnings,omitempty"`
+	Exit            *wireExit                 `json:"exit,omitempty"`
+	Error           *wireError                `json:"error,omitempty"`
 }
 
 type wireSignal struct {

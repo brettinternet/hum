@@ -213,7 +213,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum wait NAME [--match REGEX] [--timeout DURATION] [--json]",
 			ArgsUsage:     "NAME",
 			ShellComplete: completeProcessNames,
-			Description:   "Without --match, wait returns when one process incarnation exits; with --match, it returns when output matches or that incarnation exits. Without --after-cursor, a stopped or never-launched session waits for its next launch; it starts a daemon when needed and waits 30s by default unless --timeout is set. Exit codes: 0 for a match or unfiltered exit; exit 1 for a request or usage error; exit 2 for timeout; exit 3 when process exit precedes --match.\n\nExamples:\n  hum wait api\n  hum wait api --match ready\n  hum wait api --timeout 10s",
+			Description:   "Without --match, wait returns when one process incarnation exits; with --match, it returns when output matches or that incarnation exits. Without --after-cursor, a stopped or never-launched session waits for its next launch; it starts a daemon when needed and waits 30s by default unless --timeout is set; timeout results include process_observed from the same daemon wait request without an extra round trip; false adds no-process guidance while true means a runtime record existed initially or appeared during the wait. Exit codes: 0 for a match or unfiltered exit; exit 1 for a request or usage error; exit 2 for timeout; exit 3 when process exit precedes --match.\n\nExamples:\n  hum wait api\n  hum wait api --match ready\n  hum wait api --timeout 10s",
 			Flags: []urfavecli.Flag{
 				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "search after this cursor; omit to evaluate from the current or next launch cursor"},
 				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "wait for matching non-empty regular expression; omit to wait only for exit"},
@@ -1668,7 +1668,7 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		if err := encodeJSON(writer, waitJSONFor(result)); err != nil {
 			return err
 		}
-	} else if err := renderWaitHuman(writer, result); err != nil {
+	} else if err := renderWaitHuman(writer, name, result); err != nil {
 		return err
 	}
 

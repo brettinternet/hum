@@ -346,12 +346,16 @@ func protocolWaitResponseFromWire(response wireResponse) protocol.WaitResponse {
 	if response.Exit != nil {
 		exit = &protocol.Exit{Code: response.Exit.Code, Time: response.Exit.Time, Error: response.Exit.Error}
 	}
-	return protocol.WaitResponse{Op: protocol.OpWait, OK: response.OK, Outcome: protocol.WaitOutcome(response.Outcome), Cursor: cursor, Exit: exit, Error: wireErrorToProtocol(response.Error)}
+	processObserved := response.ProcessObserved != nil && *response.ProcessObserved
+	return protocol.WaitResponse{Op: protocol.OpWait, OK: response.OK, Outcome: protocol.WaitOutcome(response.Outcome), Cursor: cursor, Exit: exit, ProcessObserved: processObserved, Message: response.Message, Error: wireErrorToProtocol(response.Error)}
 }
 
 func wireResponseFromWait(result app.WaitResult) wireResponse {
 	cursor := uint64(result.Cursor)
 	response := wireResponse{Op: string(protocol.OpWait), OK: true, Outcome: string(result.Outcome), Cursor: &cursor}
+	if result.Outcome == app.WaitTimedOut {
+		response.ProcessObserved = &result.ProcessObserved
+	}
 	if result.Exit != nil {
 		response.Exit = &wireExit{Code: result.Exit.ExitCode, Error: errorString(result.Exit.Err), Time: result.Exit.ExitedAt}
 	}

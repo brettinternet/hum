@@ -345,10 +345,11 @@ type shutdownResult struct {
 
 func waitJSONFor(result app.WaitResult) protocol.WaitResponse {
 	response := protocol.WaitResponse{
-		Op:      protocol.OpWait,
-		OK:      true,
-		Outcome: protocol.WaitOutcome(result.Outcome),
-		Cursor:  protocol.Cursor(result.Cursor),
+		Op:              protocol.OpWait,
+		OK:              true,
+		Outcome:         protocol.WaitOutcome(result.Outcome),
+		Cursor:          protocol.Cursor(result.Cursor),
+		ProcessObserved: result.ProcessObserved,
 	}
 	if result.Exit != nil {
 		exit := protocol.Exit{
@@ -1011,9 +1012,14 @@ func renderRestartHuman(w io.Writer, result restartResult) error {
 	return err
 }
 
-func renderWaitHuman(w io.Writer, result app.WaitResult) error {
+func renderWaitHuman(w io.Writer, name string, result app.WaitResult) error {
 	if _, err := fmt.Fprintf(w, "outcome: %s\ncursor: %d\n", result.Outcome, result.Cursor); err != nil {
 		return err
+	}
+	if result.Outcome == app.WaitTimedOut && !result.ProcessObserved {
+		if _, err := fmt.Fprintf(w, "no process named %q was observed during the wait; check the name or start it first.\n", name); err != nil {
+			return err
+		}
 	}
 	if result.Exit == nil {
 		return nil

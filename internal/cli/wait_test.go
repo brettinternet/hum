@@ -193,6 +193,53 @@ func TestWaitCLIOutputsAndExitCodes(t *testing.T) {
 	}
 }
 
+func TestWaitTimeoutExplainsNeverObserved(t *testing.T) {
+	guidance := `no process named "api" was observed during the wait; check the name or start it first.`
+	for _, test := range []struct {
+		name   string
+		json   bool
+		observ bool
+	}{
+		{name: "human false"},
+		{name: "json false", json: true},
+		{name: "json true", json: true, observ: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := protocol.WaitResponse{Op: protocol.OpWait, OK: true, Outcome: protocol.WaitTimedOut, Cursor: 9, ProcessObserved: test.observ}
+			runtimeDir, _ := waitCLIStubDaemon(t, response)
+			t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+			args := []string{"wait", "api", "--timeout", "1s"}
+			if test.json {
+				args = append(args, "--json")
+			}
+			stdout, stderr, err := waitCLIRun(t, args...)
+			if got := waitCLIExitCode(err); got != 2 {
+				t.Fatalf("wait exit code = %d (err=%v), want 2; stdout=%q stderr=%q", got, err, stdout, stderr)
+			}
+			if stderr != "" {
+				t.Fatalf("wait stderr = %q, want empty", stderr)
+			}
+			if !test.json {
+				want := "outcome: timed_out\ncursor: 9\n" + guidance + "\n"
+				if stdout != want {
+					t.Fatalf("wait human output = %q, want %q", stdout, want)
+				}
+				return
+			}
+			var got protocol.WaitResponse
+			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+				t.Fatalf("decode wait JSON %q: %v", stdout, err)
+			}
+			if got.ProcessObserved != test.observ {
+				t.Fatalf("JSON process_observed = %v, want %v", got.ProcessObserved, test.observ)
+			}
+			if !strings.Contains(stdout, `"process_observed":`) {
+				t.Fatalf("wait JSON omitted process_observed: %q", stdout)
+			}
+		})
+	}
+}
+
 func TestWaitCLIValidation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -345,6 +392,28 @@ func TestWaitCLIPreLaunchSessionTimesOut(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "timed_out") || stderr != "" {
 		t.Fatalf("pre-launch wait output = stdout %q stderr %q", stdout, stderr)
+	}
+}
+
+func TestWaitObservedDocs(t *testing.T) {
+	design, err := os.ReadFile("../../docs/design.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"process_observed", "without an extra", "no process named"} {
+		if !strings.Contains(strings.ToLower(string(design)), want) {
+			t.Errorf("docs/design.md missing %q", want)
+		}
+	}
+	var help strings.Builder
+	command := NewRootCommand("test", "test", &help, &strings.Builder{})
+	if err := command.Run(context.Background(), []string{"hum", "wait", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"process_observed", "without an extra round trip", "no-process guidance"} {
+		if !strings.Contains(strings.ToLower(help.String()), want) {
+			t.Errorf("wait help missing %q: %q", want, help.String())
+		}
 	}
 }
 

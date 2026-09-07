@@ -669,6 +669,61 @@ func TestUpReportsRemovedManifestSessionsWithoutDefinitions(t *testing.T) {
 	}
 }
 
+func TestWaitTimeoutExplainsNeverObserved(t *testing.T) {
+	guidance := `no process named "api" was observed during the wait; check the name or start it first.`
+	for _, test := range []struct {
+		name   string
+		observ bool
+	}{
+		{name: "false", observ: false},
+		{name: "true", observ: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &fakeClient{waitResult: protocol.WaitResponse{Op: protocol.OpWait, OK: true, Outcome: protocol.WaitTimedOut, Cursor: 3, ProcessObserved: test.observ}}
+			server, root, _ := newTestServer(t, nil, client)
+			params, err := json.Marshal(callToolParams{Name: "wait", Arguments: args(root, "name", "api", "timeout_ms", 20)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"wait"`), Method: "tools/call", Params: params})
+			if rpcErr != nil {
+				t.Fatalf("wait RPC: %#v", rpcErr)
+			}
+			result, ok := value.(callToolResult)
+			if !ok || result.IsError || len(result.Content) != 1 {
+				t.Fatalf("wait RPC result = %#v", value)
+			}
+			structured, ok := result.StructuredContent.(protocol.WaitResponse)
+			if !ok {
+				t.Fatalf("wait structured content = %T, want protocol.WaitResponse", result.StructuredContent)
+			}
+			if structured.ProcessObserved != test.observ {
+				t.Fatalf("structured process_observed = %v, want %v", structured.ProcessObserved, test.observ)
+			}
+			if test.observ {
+				if structured.Message != "" {
+					t.Fatalf("observed timeout message = %q, want empty", structured.Message)
+				}
+			} else if structured.Message != guidance {
+				t.Fatalf("unobserved timeout message = %q, want %q", structured.Message, guidance)
+			}
+			if !strings.Contains(result.Content[0].Text, `"process_observed":`) {
+				t.Fatalf("wait text omitted process_observed: %q", result.Content[0].Text)
+			}
+			var text protocol.WaitResponse
+			if err := json.Unmarshal([]byte(result.Content[0].Text), &text); err != nil {
+				t.Fatalf("decode wait text = %q: %v", result.Content[0].Text, err)
+			}
+			if !test.observ && text.Message != guidance {
+				t.Fatalf("wait text guidance = %q, want %q", text.Message, guidance)
+			}
+			if len(client.waits) != 1 || len(client.gets) != 0 {
+				t.Fatalf("wait round trips = waits=%d gets=%d, want one wait and no get", len(client.waits), len(client.gets))
+			}
+		})
+	}
+}
+
 func TestToolValidation(t *testing.T) {
 	client := &fakeClient{}
 	s, root, _ := newTestServer(t, []Definition{{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp"}}, client)

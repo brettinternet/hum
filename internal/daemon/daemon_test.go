@@ -1470,8 +1470,8 @@ func TestHelloVersion(t *testing.T) {
 		}
 	})
 
-	t.Run("v12 client rejects a v11 daemon before observational signals", func(t *testing.T) {
-		const oldDaemonVersion = 11
+	t.Run("v13 client rejects a v12 daemon before wait observation", func(t *testing.T) {
+		const oldDaemonVersion = 12
 		server := testServer(t, Config{WireVersion: oldDaemonVersion})
 		client, err := Dial(context.Background(), server.Paths().Socket)
 		if client == nil {
@@ -1719,6 +1719,29 @@ func TestWaitRequestConversion(t *testing.T) {
 	}
 	if decoded.Wait == nil || decoded.Wait.After == nil || *decoded.Wait.After != 0 || decoded.Wait.TimeoutMS != 1234 || decoded.Wait.Match != "ready" {
 		t.Fatalf("decoded wait request = %#v", decoded.Wait)
+	}
+}
+
+func TestWaitProcessObserved(t *testing.T) {
+	for _, observed := range []bool{false, true} {
+		t.Run(strconv.FormatBool(observed), func(t *testing.T) {
+			response := wireResponseFromWait(app.WaitResult{Outcome: app.WaitTimedOut, ProcessObserved: observed})
+			var sink strings.Builder
+			if err := writeProtocolResponse(protocol.NewEncoder(&sink), response); err != nil {
+				t.Fatal(err)
+			}
+			wantField := `"process_observed":` + strconv.FormatBool(observed)
+			if !strings.Contains(sink.String(), wantField) {
+				t.Fatalf("daemon timeout response = %s, want %s", sink.String(), wantField)
+			}
+			var decoded protocol.WaitResponse
+			if err := json.Unmarshal([]byte(sink.String()), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.ProcessObserved != observed {
+				t.Fatalf("decoded process_observed = %v, want %v", decoded.ProcessObserved, observed)
+			}
+		})
 	}
 }
 
