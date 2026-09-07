@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -126,6 +127,15 @@ func cliServeRunFixture(args []string) int {
 			return 2
 		}
 		return cliServeRunFixtureTail(args[1])
+	case "flood":
+		if len(args) < 3 {
+			return 2
+		}
+		count, err := strconv.Atoi(args[2])
+		if err != nil || count <= 0 {
+			return 2
+		}
+		return cliServeRunFixtureFlood(args[1], count)
 	case "tty":
 		if len(args) < 2 {
 			return 2
@@ -153,6 +163,38 @@ func cliServeRunFixtureInspect() int {
 	fmt.Fprint(os.Stdout, "stdout:raw with spaces \r\nstdout:partial")
 	fmt.Fprint(os.Stderr, "stderr:raw with spaces \r\nstderr:partial")
 	return 23
+}
+
+// cliServeRunFixtureFlood emits a bounded burst faster than a client can
+// format it, which is what makes a follower's local buffer fill.
+func cliServeRunFixtureFlood(marker string, count int) int {
+	signals := make(chan os.Signal, 4)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	if err := os.WriteFile(marker+".started", []byte("started"), 0600); err != nil {
+		return 2
+	}
+	for {
+		if _, err := os.Stat(marker + ".release"); err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	writer := bufio.NewWriterSize(os.Stdout, 32*1024)
+	for index := 0; index < count; index++ {
+		if _, err := fmt.Fprintf(writer, "flood:%05d\n", index); err != nil {
+			return 2
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		return 2
+	}
+	for {
+		if <-signals == syscall.SIGTERM {
+			_ = os.WriteFile(marker+".terminated", []byte("terminated"), 0600)
+			return 0
+		}
+	}
 }
 
 func cliServeRunFixtureStream(marker string) int {
@@ -489,6 +531,15 @@ func TestServeDaemon(t *testing.T) {
 	}
 	if recoveredPID := cliServeRunPID(recoveredStderr); recoveredPID <= 0 || recoveredPID == 999999 {
 		t.Fatalf("recovered detached serve stderr = %q", recoveredStderr)
+	}
+	if _, _, err := cliServeRunInvokeForTest("shutdown", "--stop-processes"); err != nil {
+		t.Fatalf("shutdown recovered daemon: %v", err)
+	}
+	if err := cliServeRunWaitForCondition(func() bool {
+		_, socketErr := os.Stat(paths.Socket)
+		return errors.Is(socketErr, os.ErrNotExist)
+	}); err != nil {
+		t.Fatalf("wait for recovered daemon shutdown: %v", err)
 	}
 
 	badRuntime := filepath.Join(t.TempDir(), "not-a-directory")
@@ -1158,6 +1209,65 @@ func TestAttachNeverStartsSession(t *testing.T) {
 	}
 	if afterAttach.State != afterStop.State || afterAttach.LaunchCursor != afterStop.LaunchCursor || afterAttach.PID != afterStop.PID {
 		t.Fatalf("stopped record changed after attach: before=%+v after-stop=%+v after-attach=%+v", before, afterStop, afterAttach)
+	}
+}
+
+func TestAttachStreamsBurstWithoutAborting(t *testing.T) {
+	runtimeDir := cliServeRunRuntimeDir(t)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	cliServeRunStartDaemon(t, runtimeDir)
+	const floodLines = 12000
+	marker := filepath.Join(t.TempDir(), "attach-flood")
+	if _, _, err := cliServeRunInvokeForTest(cliServeRunWithFixtureArgs([]string{"run", "attach-flood", "--detach"}, "flood", marker, strconv.Itoa(floodLines))...); err != nil {
+		t.Fatalf("start flood fixture: %v", err)
+	}
+	if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+		t.Fatal(err)
+	}
+	projectRoot := mustWorkingDirectory(t)
+	client, err := daemon.Dial(context.Background(), daemon.NewRuntimePaths(runtimeDir).Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	attached := cliServeRunStartClient(t, "attach", "attach-flood", "--tail", "0")
+	if err := cliServeRunWaitForCondition(func() bool {
+		process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: "attach-flood", Cwd: projectRoot})
+		return getErr == nil && process.Followers == 1
+	}); err != nil {
+		t.Fatalf("flood attach readiness: %v", err)
+	}
+	// A burst that outpaces the local writer is backpressure, not a failure:
+	// attach must stream every line instead of aborting once its buffer fills.
+	if err := os.WriteFile(marker+".release", []byte("release"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cliServeRunWaitForCondition(func() bool {
+		return strings.Contains(attached.stdout(), fmt.Sprintf("flood:%05d\n", floodLines-1))
+	}); err != nil {
+		t.Fatalf("flood attach did not stream the whole burst: %v; exited=%v lines=%d stderr=%q", err, attached.exited(), strings.Count(attached.stdout(), "flood:"), attached.stderr())
+	}
+	if attached.exited() {
+		t.Fatalf("flood attach exited during the burst: stderr=%q", attached.stderr())
+	}
+	if got := attached.stderr(); got != "" {
+		t.Fatalf("flood attach stderr = %q, want no diagnostic", got)
+	}
+	if got := strings.Count(attached.stdout(), "flood:"); got != floodLines {
+		t.Fatalf("flood attach streamed %d of %d lines", got, floodLines)
+	}
+	if err := attached.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := attached.wait(5 * time.Second); err != nil {
+		t.Fatalf("detach flood attach: %v; stderr=%q", err, attached.stderr())
+	}
+	if err := cliServeRunStop(t, "attach-flood"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cliServeRunWaitForFile(marker + ".terminated"); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -128,7 +128,7 @@ func completionNamePosition(command *urfavecli.Command) bool {
 	switch command.Name {
 	case "logs", "start", "restart", "stop", "remove":
 		return true
-	case "run", "status", "wait", "input":
+	case "run", "status", "wait", "input", "attach", "signal":
 		return len(values) == 0
 	default:
 		return false

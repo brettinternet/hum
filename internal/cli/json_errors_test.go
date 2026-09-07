@@ -49,6 +49,11 @@ func TestJSONErrorsBeforeOutput(t *testing.T) {
 			code: string(jsonErrorManifestInvalid),
 		},
 		{
+			name: "since out of range usage",
+			args: []string{"logs", "api", "--since", "9223372036854775807ns", "--project", "PROJECT", "--json"},
+			code: string(jsonErrorUsage),
+		},
+		{
 			name: "input wire invalid request",
 			args: []string{"input", "api", "--base64", "eA", "--json"},
 			code: string(protocol.ErrorInvalidRequest),

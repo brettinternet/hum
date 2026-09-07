@@ -87,6 +87,43 @@ func TestSignalCommandErrors(t *testing.T) {
 	}
 }
 
+// TestSignalWithoutDaemon pins the no-daemon diagnostic to the same guidance
+// the other project-scoped commands emit instead of the socket path.
+func TestSignalWithoutDaemon(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	t.Setenv("HUM_RUNTIME_DIR", t.TempDir())
+	writeManifestCLITestFile(t, projectRoot, `version: 1
+processes:
+  api:
+    argv: [echo, api]
+`)
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{name: "api", want: "Nothing is running in this project. Start it with hum start api."},
+		{name: "adhoc", want: "Nothing is running."},
+	} {
+		_, stderr, err := stopShutdownRun(t, "signal", test.name, "HUP")
+		if err == nil {
+			t.Fatalf("signal %s without a daemon unexpectedly succeeded", test.name)
+		}
+		if !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("signal %s without a daemon = %q, want %q", test.name, err.Error(), test.want)
+		}
+		if strings.Contains(err.Error(), "dial unix") || strings.Contains(stderr, "dial unix") {
+			t.Fatalf("signal %s leaked the socket path: err=%q stderr=%q", test.name, err.Error(), stderr)
+		}
+	}
+	output, stderr, err := stopShutdownRun(t, "signal", "api", "HUP", "--json")
+	if err == nil || stderr != "" {
+		t.Fatalf("JSON signal without a daemon: err=%v stderr=%q output=%q", err, stderr, output)
+	}
+	if got := decodeJSONErrorObject(t, output); got.Code != string(jsonErrorDaemonUnavailable) {
+		t.Fatalf("JSON signal without a daemon code = %q, want %q", got.Code, jsonErrorDaemonUnavailable)
+	}
+}
+
 func stopShutdownRunAndStop(t *testing.T, name string) error {
 	t.Helper()
 	_, _, err := stopShutdownRun(t, "stop", name)

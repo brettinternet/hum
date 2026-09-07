@@ -948,7 +948,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return err
 	}
 	defer follower.Close()
-	live, liveFailure, cancelLive := bufferFollower(follower, 16)
+	live, cancelLive := bufferFollower(follower, 16)
 	defer cancelLive()
 
 	expectedReplay := 0
@@ -988,11 +988,6 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 			return errors.New("attach retained-output replay made no progress")
 		}
 		pageAfter = &next
-		select {
-		case liveErr := <-liveFailure:
-			return liveErr
-		default:
-		}
 	}
 	if len(replay) != expectedReplay {
 		return errors.New("attach retained output changed during replay; reconnect to continue")
@@ -1005,7 +1000,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 
 	signals := notifyFollowSignals()
 	defer signal.Stop(signals)
-	return bufferedFollowLoop(ctx, follower, signals, live, liveFailure, func(event output.Event) error {
+	return bufferedFollowLoop(ctx, follower, signals, live, func(event output.Event) error {
 		if event.Read == nil {
 			return nil
 		}
@@ -1032,24 +1027,27 @@ func logsSinceMilliseconds(cmd *urfavecli.Command) (int64, error) {
 	}
 	value, err := time.ParseDuration(cmd.String("since"))
 	if err != nil {
-		return 0, fmt.Errorf("since must be a valid duration: %w", err)
+		return 0, newCLIUsageError(fmt.Errorf("since must be a valid duration: %w", err))
 	}
 	return sinceDurationMilliseconds(value)
 }
 
+// sinceDurationMilliseconds rejects flag input before any daemon contact, so
+// every diagnostic it returns is classified as usage rather than an
+// unexpected local failure.
 func sinceDurationMilliseconds(value time.Duration) (int64, error) {
 	if value <= 0 {
-		return 0, errors.New("since must be positive")
+		return 0, newCLIUsageError(newUserFacingError("since must be positive"))
 	}
 	milliseconds := int64(value / time.Millisecond)
 	if value%time.Millisecond != 0 {
 		if milliseconds >= maxSinceMilliseconds {
-			return 0, errors.New("since duration is too large")
+			return 0, newCLIUsageError(newUserFacingError("since duration is too large"))
 		}
 		milliseconds++
 	}
 	if milliseconds <= 0 || milliseconds > maxSinceMilliseconds {
-		return 0, errors.New("since duration is too large")
+		return 0, newCLIUsageError(newUserFacingError("since duration is too large"))
 	}
 	return milliseconds, nil
 }
@@ -1752,6 +1750,19 @@ func valueOrTrue(value string, hasValue bool) string {
 	return "true"
 }
 
+// signalUnavailableMessage keeps the no-daemon diagnostic consistent with the
+// other project-scoped commands rather than surfacing the socket path. The
+// manifest is read only on this path, so a malformed manifest cannot block
+// signalling a process that is actually running.
+func signalUnavailableMessage(selection projectSelection, name string) error {
+	if manifest, err := loadManifestOrEmpty(selection.cwd); err == nil {
+		if definition, ok := manifest.byName[name]; ok {
+			return manifestUnavailableMessage(definition, selection.selector)
+		}
+	}
+	return newUserFacingError(logsUnavailableMessageFor(selection.selector))
+}
+
 func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
 	args, err := parseSignalArgs(cmd)
 	if err != nil {
@@ -1776,6 +1787,9 @@ func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	client, err := daemonClient(ctx, cfg)
 	if err != nil {
+		if daemonUnavailable(err) {
+			return signalUnavailableMessage(selection, name)
+		}
 		return err
 	}
 	defer client.Close()
@@ -2842,10 +2856,13 @@ type followerResult struct {
 	err   error
 }
 
-func bufferFollower(follower *daemon.Follower, capacity int) (<-chan followerResult, <-chan error, context.CancelFunc) {
+// bufferFollower buffers live events while the caller pages retained output.
+// A full buffer is backpressure, not an error: the daemon blocks its write
+// until the caller drains, and genuine loss still arrives as an eviction or a
+// truncated read on the stream itself.
+func bufferFollower(follower *daemon.Follower, capacity int) (<-chan followerResult, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	results := make(chan followerResult, capacity)
-	failures := make(chan error, 1)
 	go func() {
 		for {
 			event, err := follower.Next(ctx)
@@ -2857,23 +2874,18 @@ func bufferFollower(follower *daemon.Follower, capacity int) (<-chan followerRes
 				if err != nil {
 					return
 				}
-			default:
-				failures <- errors.New("attach live output exceeded its replay buffer; reconnect to continue")
-				cancel()
-				_ = follower.Close()
+			case <-ctx.Done():
 				return
 			}
 		}
 	}()
-	return results, failures, cancel
+	return results, cancel
 }
 
-func bufferedFollowLoop(parent context.Context, follower *daemon.Follower, signals <-chan os.Signal, results <-chan followerResult, failures <-chan error, onEvent func(output.Event) error) error {
+func bufferedFollowLoop(parent context.Context, follower *daemon.Follower, signals <-chan os.Signal, results <-chan followerResult, onEvent func(output.Event) error) error {
 	parent = nonNilContext(parent)
 	for {
 		select {
-		case err := <-failures:
-			return err
 		case result := <-results:
 			if parent.Err() != nil {
 				return nil
