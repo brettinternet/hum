@@ -448,7 +448,13 @@ const (
 	Both   = StreamBoth
 )
 
-// OutputRequest asks for one bounded retained-output read.
+// DefaultReadEntries is the default bounded output window selected by clients
+// when no cursor or explicit tail is supplied.
+const DefaultReadEntries = 100
+
+// OutputRequest asks for one bounded retained-output read. A nil After with a
+// positive Tail selects a newest window; an explicit After without Tail keeps
+// forward paging from the oldest eligible retained entry.
 type OutputRequest struct {
 	Op         Operation `json:"op"`
 	Name       string    `json:"name"`
@@ -872,7 +878,9 @@ type OutputEntry struct {
 
 // OutputResult is the bounded output payload shared by output responses and
 // output stream events. Cursor metadata is explicit so a lagging follower can
-// recover after eviction without unbounded server-side buffering.
+// recover after eviction without unbounded server-side buffering. Next is the
+// last source cursor consumed by a logs read; Process.NextCursor, by contrast,
+// is the next cursor that will be assigned to process output.
 type OutputResult struct {
 	Entries        []OutputEntry `json:"entries"`
 	Next           *Cursor       `json:"next,omitempty"`
@@ -913,7 +921,9 @@ const (
 )
 
 // Process is the response-safe process snapshot. It deliberately has no Env
-// field; the environment supplied by StartRequest is never echoed.
+// field; the environment supplied by StartRequest is never echoed. NextCursor
+// is the next output cursor to be assigned, unlike OutputResult.Next, which is
+// the last source cursor consumed by a logs read.
 type Process struct {
 	Name         string     `json:"name"`
 	Source       string     `json:"source,omitempty"`

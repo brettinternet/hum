@@ -276,9 +276,11 @@ func (r *ring) readBounded(opts ReadOptions, result ReadResult, start, maxEntrie
 }
 
 // readTail walks backwards from the newest retained entry until the final
-// Tail matches are known, evaluating the filter once per entry, then returns
-// those matches in chronological order. Every source entry in range counts as
-// consumed, so Next is the newest retained cursor even when nothing matched.
+// Tail matches are known, evaluating the filter once per entry. Bounds are
+// applied while walking backwards so entry- and byte-clipped tails retain the
+// newest matches, then the selected entries are returned chronologically. The
+// newest source cursor is consumed by this scan, so Next remains the newest
+// retained cursor even when older matches are clipped or nothing matched.
 func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, maxBytes int) (ReadResult, error) {
 	tail := opts.Tail
 	if tail > r.count-start {
@@ -289,6 +291,9 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 	}
 	next := r.entries[(r.head+r.count-1)%len(r.entries)].Cursor
 
+	// selected is newest-first. Keeping that order until bounds are applied is
+	// what makes a clipped tail keep its newest entries rather than its oldest
+	// prefix.
 	selected := make([]int, 0, tail)
 	for offset := r.count - 1; offset >= start && len(selected) < tail; offset-- {
 		if matchesRead(r.entries[(r.head+offset)%len(r.entries)], opts) {
@@ -299,23 +304,16 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 		result.Next = &next
 		return result, nil
 	}
-	for i, j := 0, len(selected)-1; i < j; i, j = i+1, j-1 {
-		selected[i], selected[j] = selected[j], selected[i]
-	}
 
 	// Valid entries are nonempty, so MaxBytes also bounds the tail result's
 	// entry capacity.
 	tailResultCapacity := minInt(minInt(maxEntries, maxBytes), len(selected))
 	var tailResult []Entry
 	usedBytes := 0
-	var blocked Cursor
-	blockedSet := false
 	for _, offset := range selected {
 		entry := r.entries[(r.head+offset)%len(r.entries)]
 		if len(tailResult) >= maxEntries {
 			result.More = true
-			blocked = entry.Cursor
-			blockedSet = true
 			break
 		}
 		if len(entry.Text) > maxBytes && len(tailResult) == 0 {
@@ -323,8 +321,6 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 		}
 		if len(entry.Text) > maxBytes-usedBytes {
 			result.More = true
-			blocked = entry.Cursor
-			blockedSet = true
 			break
 		}
 		if tailResult == nil {
@@ -333,21 +329,15 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 		tailResult = append(tailResult, entry)
 		usedBytes += len(entry.Text)
 	}
-	result.Entries = tailResult
-	if blockedSet {
-		// The blocked matching entry and everything after it remains unread.
-		// Cursors are contiguous while retained, so its predecessor is the
-		// greatest source cursor safely consumed by this bounded result.
-		if blocked > 0 {
-			previous := blocked - 1
-			result.Next = &previous
-		} else if opts.After != nil {
-			boundary := *opts.After
-			result.Next = &boundary
-		}
-	} else {
-		result.Next = &next
+	for i, j := 0, len(tailResult)-1; i < j; i, j = i+1, j-1 {
+		tailResult[i], tailResult[j] = tailResult[j], tailResult[i]
 	}
+	result.Entries = tailResult
+	// Tail selection scans from the newest source entry. Even when an older
+	// matching entry is blocked by the result bound, Next must remain the
+	// highest consumed source cursor so subscriptions do not replay entries
+	// already delivered in this newest-first scan.
+	result.Next = &next
 	return result, nil
 }
 

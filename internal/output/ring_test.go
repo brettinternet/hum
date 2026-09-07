@@ -2,6 +2,8 @@ package output
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
 	"regexp"
 	"testing"
 	"time"
@@ -130,8 +132,8 @@ func TestTailResultCapacityHonorsByteLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Entries) != 1 || result.Entries[0].Cursor != 0 {
-		t.Fatalf("tail byte-bounded entries = %#v, want only cursor 0", result.Entries)
+	if len(result.Entries) != 1 || result.Entries[0].Cursor != 7 {
+		t.Fatalf("tail byte-bounded entries = %#v, want only newest cursor 7", result.Entries)
 	}
 	if !result.More {
 		t.Fatalf("tail byte-bounded result = %#v, want More", result)
@@ -347,6 +349,85 @@ func TestCursorTruncation(t *testing.T) {
 	var largeErr *EntryTooLargeError
 	if !errors.As(err, &largeErr) {
 		t.Fatalf("small byte cap error = %v, want EntryTooLargeError", err)
+	}
+}
+
+func TestTailKeepsNewestBoundedWindow(t *testing.T) {
+	r, err := newRing(Limits{RetainedBytes: 1024, DefaultReadEntries: 4, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 8; i++ {
+		if _, err := r.append(Stdout, time.Unix(int64(i), 0), fmt.Sprintf("line-%d\n", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entryBounded, err := r.read(ReadOptions{Tail: 6, MaxEntries: 2, MaxBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []Cursor{entryBounded.Entries[0].Cursor, entryBounded.Entries[1].Cursor}; !reflect.DeepEqual(got, []Cursor{6, 7}) {
+		t.Fatalf("entry-bounded tail cursors = %v, want newest [6 7]", got)
+	}
+	if !entryBounded.More || entryBounded.Next == nil || *entryBounded.Next != 7 {
+		t.Fatalf("entry-bounded tail = %#v, want More and highest consumed cursor 7", entryBounded)
+	}
+
+	byteBounded, err := r.read(ReadOptions{Tail: 8, MaxEntries: 8, MaxBytes: len("line-7\n") * 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []Cursor{byteBounded.Entries[0].Cursor, byteBounded.Entries[1].Cursor}; !reflect.DeepEqual(got, []Cursor{6, 7}) {
+		t.Fatalf("byte-bounded tail cursors = %v, want newest [6 7] chronologically", got)
+	}
+	if !byteBounded.More || byteBounded.Next == nil || *byteBounded.Next != 7 {
+		t.Fatalf("byte-bounded tail = %#v, want More and highest consumed cursor 7", byteBounded)
+	}
+
+	filtered, err := r.read(ReadOptions{Tail: 4, Streams: StdoutMask, Match: regexp.MustCompile(`line-[02468]`), MaxEntries: 2, MaxBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []Cursor{filtered.Entries[0].Cursor, filtered.Entries[1].Cursor}; !reflect.DeepEqual(got, []Cursor{4, 6}) {
+		t.Fatalf("filtered tail cursors = %v, want newest matching [4 6] chronologically", got)
+	}
+	if !filtered.More {
+		t.Fatalf("filtered tail = %#v, want More=true", filtered)
+	}
+
+	truncatedRing, err := newRing(Limits{RetainedBytes: 4, DefaultReadEntries: 4, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		if _, err := truncatedRing.append(Stdout, time.Time{}, "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	truncated, err := truncatedRing.read(ReadOptions{Tail: 2, MaxEntries: 1, MaxBytes: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(truncated.Entries) != 1 || truncated.Entries[0].Cursor != 5 || !truncated.More || !truncated.Truncated || truncated.EvictedThrough == nil || *truncated.EvictedThrough != 1 {
+		t.Fatalf("truncated tail = %#v, want newest cursor, More, and eviction metadata", truncated)
+	}
+
+	after := Cursor(1)
+	forward, err := r.read(ReadOptions{After: &after, MaxEntries: 2, MaxBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []Cursor{forward.Entries[0].Cursor, forward.Entries[1].Cursor}; !reflect.DeepEqual(got, []Cursor{2, 3}) || !forward.More {
+		t.Fatalf("explicit after read = %#v, want oldest eligible forward page [2 3] with More", forward)
+	}
+
+	tailedForward, err := r.read(ReadOptions{After: &after, Tail: 2, MaxEntries: 2, MaxBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []Cursor{tailedForward.Entries[0].Cursor, tailedForward.Entries[1].Cursor}; !reflect.DeepEqual(got, []Cursor{6, 7}) || tailedForward.More {
+		t.Fatalf("explicit after with tail read = %#v, want newest eligible tail [6 7] without More", tailedForward)
 	}
 }
 

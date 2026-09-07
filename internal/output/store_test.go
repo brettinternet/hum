@@ -631,6 +631,50 @@ func TestStoreReadFilters(t *testing.T) {
 	}
 }
 
+func TestTailSubscriptionContinuationUsesHighestConsumedCursor(t *testing.T) {
+	store, err := NewStore(Limits{RetainedBytes: 1024, DefaultReadEntries: 100, DefaultReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"line-0\n", "line-1\n", "line-2\n", "line-3\n", "line-4\n", "line-5\n"} {
+		if _, err := store.Append(Stdout, time.Time{}, text); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sub := store.Subscribe(ReadOptions{Tail: 4, MaxEntries: 2, MaxBytes: 1024})
+	defer sub.Close()
+	first, err := sub.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Read == nil || len(first.Read.Entries) != 2 || first.Read.Entries[0].Cursor != 4 || first.Read.Entries[1].Cursor != 5 {
+		t.Fatalf("tail subscription first read = %#v, want newest cursors 4 and 5", first)
+	}
+	if first.Read.Next == nil || *first.Read.Next != 5 {
+		t.Fatalf("tail subscription first next = %v, want highest consumed cursor 5", first.Read.Next)
+	}
+	if got := sub.Cursor(); got != 5 {
+		t.Fatalf("tail subscription cursor = %d, want 5", got)
+	}
+
+	after := *first.Read.Next
+	continuedRead, err := store.Read(ReadOptions{After: &after, MaxEntries: 2, MaxBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(continuedRead.Entries) != 0 || continuedRead.Next == nil || *continuedRead.Next != 5 {
+		t.Fatalf("tail read continuation = %#v, want no replay after cursor 5", continuedRead)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	second, err := sub.Next(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) || second.Read != nil {
+		t.Fatalf("tail subscription continuation = event %#v, err %v; want timeout without replay", second, err)
+	}
+}
+
 func TestMultipleFollowers(t *testing.T) {
 	store, err := NewStore(Limits{RetainedBytes: 1024, DefaultReadEntries: 100, DefaultReadBytes: 1024})
 	if err != nil {

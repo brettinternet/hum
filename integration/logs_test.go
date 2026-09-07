@@ -113,11 +113,11 @@ func TestLogFollowers(t *testing.T) {
 		t.Fatalf("byte-limited response = %q, decoded %d lines; want one response", limited.Stdout, len(limitedLines))
 	}
 	limitedEvent := limitedLines[0].Event
-	if len(limitedEvent.Entries) != 1 || limitedEvent.Entries[0].Text != "stdout:0000\n" {
-		t.Fatalf("byte-limited entries = %#v, want first complete stdout line", limitedEvent.Entries)
+	if len(limitedEvent.Entries) != 1 || limitedEvent.Entries[0].Text != "stdout:0003\n" {
+		t.Fatalf("byte-limited entries = %#v, want newest complete stdout line", limitedEvent.Entries)
 	}
-	if limitedEvent.Next == nil || *limitedEvent.Next < limitedEvent.Entries[0].Cursor {
-		t.Fatalf("byte-limited next = %v, entry cursor = %d; want a cursor at or after the consumed entry", limitedEvent.Next, limitedEvent.Entries[0].Cursor)
+	if limitedEvent.Next == nil || limitedEvent.Latest == nil || *limitedEvent.Next != *limitedEvent.Latest {
+		t.Fatalf("byte-limited next = %v, latest = %v; want highest consumed source cursor", limitedEvent.Next, limitedEvent.Latest)
 	}
 	if !limitedEvent.More {
 		t.Fatalf("byte-limited response = %#v, want more=true", limitedEvent)
@@ -132,11 +132,11 @@ func TestLogFollowers(t *testing.T) {
 		t.Fatalf("cursor continuation response = %q, decoded %d lines; want one response", continued.Stdout, len(continuedLines))
 	}
 	continuedEvent := continuedLines[0].Event
-	if len(continuedEvent.Entries) != 1 || continuedEvent.Entries[0].Text != "stdout:0001\n" {
-		t.Fatalf("cursor continuation entries = %#v, want next stdout line", continuedEvent.Entries)
+	if len(continuedEvent.Entries) != 0 {
+		t.Fatalf("cursor continuation entries = %#v, want no replay after newest window", continuedEvent.Entries)
 	}
-	if continuedEvent.Next == nil || *continuedEvent.Next <= *limitedEvent.Next {
-		t.Fatalf("cursor continuation next = %v after %v, want a strictly newer cursor", continuedEvent.Next, *limitedEvent.Next)
+	if continuedEvent.Next == nil || *continuedEvent.Next != *limitedEvent.Next {
+		t.Fatalf("cursor continuation next = %v after %v, want unchanged highest consumed cursor", continuedEvent.Next, *limitedEvent.Next)
 	}
 
 	logsitReleaseGate(t, filterGate)

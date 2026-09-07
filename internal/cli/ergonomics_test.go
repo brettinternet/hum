@@ -207,8 +207,8 @@ func TestLogsAndWaitFlagsHideDefault(t *testing.T) {
 		t.Fatalf("logs help still advertises a misleading default: %s", logsHelp)
 	}
 	for _, want := range []string{
-		"omit to include every retained entry",
-		"omit to read from the oldest retained entry",
+		"omit for the newest default window",
+		"without it, use the newest default window",
 		"omit for the default read limit",
 	} {
 		if !strings.Contains(logsHelp, want) {

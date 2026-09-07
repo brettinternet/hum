@@ -175,8 +175,8 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Description:   "Read bounded retained output for one or more names in command-line order; no names uses lexical order with no ad-hoc sessions, duplicate names are rejected, and --after-cursor requires one explicit name. Aggregate filters and limits apply independently, human entries use an atomic [NAME] prefix, and JSON is named NDJSON; --follow can attach before the first launch and crosses exit, wait, and launch boundaries with one follower per name, isolated per-session errors, and cancellation on daemon loss or output failure; following is read-only: Ctrl+C cancels only the follower, closes all followers in an aggregate, and never signals the managed process. Child output is terminal-control-stripped per entry while system entries remain raw: raw ESC bytes do not match, a ^ anchor now matches colourised output, stored bytes, cursors, and limit accounting remain raw, control-only bounded child entries remain present with empty text, follow --match selects stripped text and selected entries are emitted raw, attached run output is also raw, no --raw flag exists, and split sequences and carriage-return redraw frames remain separate.\n\nExamples:\n  hum logs api\n  hum logs api --tail 50\n  hum logs api --follow",
 			Flags: []urfavecli.Flag{
 				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "select stdout, stderr, or both"},
-				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "select final N entries; omit to include every retained entry"},
-				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "read after this cursor; omit to read from the oldest retained entry"},
+				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "select final N entries; omit for the newest default window"},
+				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "read after this cursor; without it, use the newest default window"},
 				&urfavecli.IntFlag{Name: "limit-bytes", Aliases: []string{"b"}, HideDefault: true, Usage: "limit output bytes; omit for the default read limit"},
 				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "filter by regex; omit to include every entry"},
 				&urfavecli.BoolFlag{Name: "follow", Aliases: []string{"f"}, DefaultText: "false", Usage: "follow launches; default is a bounded read"},
@@ -767,6 +767,24 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	return renderStatusHuman(writer, process)
 }
 
+// logReadBounds keeps bounded reads newest-first by selecting the configured
+// default entry window as a tail when no cursor or explicit tail was supplied.
+// Follow requests retain their existing initial-read bounds and delivery.
+func logReadBounds(after *protocol.Cursor, tail, defaultEntries int, tailSet, follow bool) (int, int) {
+	if follow {
+		return tail, defaultEntries
+	}
+	if after == nil && !tailSet && tail == 0 {
+		tail = defaultEntries
+	}
+	if tail > 0 {
+		// A tail is already an entry bound. Leave MaxEntries unset so the ring
+		// can honor a requested tail larger than its ordinary default cap.
+		return tail, 0
+	}
+	return tail, defaultEntries
+}
+
 func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
 	args := cmd.Args().Slice()
 	if len(args) != 1 {
@@ -825,9 +843,10 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		cursor := protocol.Cursor(cmd.Uint64("after-cursor"))
 		after = &cursor
 	}
+	requestTail, maxEntries := logReadBounds(after, tail, cfg.ReadEntries, cmd.IsSet("tail"), cmd.Bool("follow"))
 	request := daemon.OutputRequest{
-		Name: name, Cwd: cwd, After: after, Tail: tail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
-		MaxEntries: cfg.ReadEntries, MaxBytes: maxBytes,
+		Name: name, Cwd: cwd, After: after, Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
+		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 	if cmd.Bool("follow") {
 		signals := notifyFollowSignals()
@@ -949,9 +968,10 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 	if limitBytes != 0 {
 		maxBytes = limitBytes
 	}
+	requestTail, maxEntries := logReadBounds(nil, tail, cfg.ReadEntries, cmd.IsSet("tail"), cmd.Bool("follow"))
 	request := daemon.OutputRequest{
-		Cwd: cwd, Tail: tail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
-		MaxEntries: cfg.ReadEntries, MaxBytes: maxBytes,
+		Cwd: cwd, Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
+		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 	var client *daemon.Client
 	if cmd.Bool("follow") {
