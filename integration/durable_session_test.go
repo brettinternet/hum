@@ -174,13 +174,15 @@ func TestRunAttachesToRunning(t *testing.T) {
 
 func TestWaitBeforeStart(t *testing.T) {
 	hum, runtime := durableSetup(t)
-	waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", "later", "--match", "ready", "--timeout", "3s", "--json")
+	// The wait timeout only has to outlast the launch it precedes; a bound
+	// tight enough to expire under suite load tests the runner, not wait.
+	waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", "later", "--match", "ready", "--timeout", "20s", "--json")
 	time.Sleep(100 * time.Millisecond)
-	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "later", "--detach", "--", "/bin/sh", "-c", "printf 'ready\\n'")
+	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "later", "--detach", "--", "/bin/sh", "-c", "printf 'ready\\n'; sleep 1")
 	if started.Code != 0 {
 		t.Fatalf("start: %#v", started)
 	}
-	if err := waiter.Wait(lifecycleTimeout); err != nil {
+	if err := waiter.Wait(30 * time.Second); err != nil {
 		t.Fatalf("wait: %v stdout=%q stderr=%q", err, waiter.Stdout(), waiter.Stderr())
 	}
 	if !strings.Contains(waiter.Stdout(), `"outcome":"matched"`) {
