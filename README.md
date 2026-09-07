@@ -6,12 +6,42 @@ Agent-oriented process supervisor with retained bounded logs, independent follow
 
 `hum` keeps local project processes running between commands, with bounded logs and lifecycle controls. Let your agents see your stdout.
 
-```sh
-hum run clock -- ./clock.sh
-hum logs clock --follow
+[![Demo of hum supervising a process, retaining its logs, and stopping it](docs/demo.gif)](docs/demo.tape)
+
+## Install
+
+Install the latest release with [mise](https://mise.jdx.dev/):
+
+```toml
+[tools]
+"github:brettinternet/hum" = "latest"
 ```
 
-[![Demo of hum supervising a process, retaining its logs, and stopping it](docs/demo.gif)](docs/demo.tape)
+To build from a checkout, run `mise install`, `task init`, and `task cli:build`, then add it to your shell with `export PATH="$PWD/bin:$PATH"`.
+
+## Quickstart
+
+In a fresh directory, create a portable clock process and try the full lifecycle:
+
+```sh
+mkdir hum-quickstart && cd hum-quickstart
+git init -q
+cat > hum.yaml <<'YAML'
+version: 1
+processes:
+  clock:
+    argv: [sh, -c, "while :; do date; sleep 1; done"]
+YAML
+hum run hello --detach -- sh -c 'printf "hello from hum\\n"'
+hum up
+hum logs --follow
+```
+
+After the first clock line, press Ctrl+C to stop following logs, then stop the project process:
+
+```sh
+hum down
+```
 
 ## Start processes
 
@@ -51,7 +81,7 @@ processes:
 ```sh
 hum up
 hum status web
-hum logs web --tail 50
+hum logs --follow
 hum start web
 hum stop web
 hum down
@@ -113,24 +143,6 @@ hum logs web --stream stdout --match Listening
 ```
 
 Without names, logs selects the current project declarations once, in lexical order. Ad-hoc sessions are excluded. Named output is prefixed with `[NAME]`; JSON uses named NDJSON events. Limits and filters apply independently to each process. Ctrl+C closes log followers without stopping processes.
-
-## Install and build
-
-Install the latest release with [mise](https://mise.jdx.dev/):
-
-```toml
-[tools]
-"github:brettinternet/hum" = "latest"
-```
-
-Build from a checkout:
-
-```sh
-mise install
-task init
-task cli:build
-./bin/hum --help
-```
 
 ## Shell completion
 
