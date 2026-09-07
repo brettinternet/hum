@@ -17,6 +17,7 @@ const (
 	InitOutcomeGenerated InitOutcome = "generated"
 	InitOutcomeTemplate  InitOutcome = "template"
 	InitOutcomeExists    InitOutcome = "exists"
+	InitOutcomeReplaced  InitOutcome = "replaced"
 )
 
 // InitResult describes the manifest produced or encountered by InitManifest.
@@ -29,12 +30,19 @@ type InitResult struct {
 // ErrManifestExists reports that the project already has a hum.yaml manifest.
 var ErrManifestExists = errors.New("hum.yaml already exists")
 
-// initWrite and initLink keep post-create failure and publication-race tests deterministic.
+// initWrite, initSync, initClose, initLink, and initRename keep
+// post-create failure and publication tests deterministic.
 var (
+	initRender = func(candidates []Definition, outcome InitOutcome, reason string) ([]byte, error) {
+		return renderInitManifest(candidates, outcome, reason), nil
+	}
 	initWrite = func(file *os.File, contents []byte) (int, error) {
 		return file.Write(contents)
 	}
-	initLink = os.Link
+	initSync   = func(file *os.File) error { return file.Sync() }
+	initClose  = func(file *os.File) error { return file.Close() }
+	initLink   = os.Link
+	initRename = os.Rename
 )
 
 // ManifestExistsError identifies the manifest that prevented initialization.
@@ -53,25 +61,33 @@ func (e *ManifestExistsError) Unwrap() error { return ErrManifestExists }
 
 // InitManifest resolves the nearest project root and creates hum.yaml from
 // conventional development discovery. Existing manifests are never read or
-// changed, and no discovered command is launched.
-func InitManifest(start string) (InitResult, error) {
+// changed unless force is true, and no discovered command is launched.
+// The optional force argument preserves the original no-force call shape for
+// project callers while allowing hum init --force to publish replacements.
+func InitManifest(start string, force ...bool) (InitResult, error) {
 	root, err := DiscoverProjectRoot(start)
 	if err != nil {
 		return InitResult{}, fmt.Errorf("hum init: discover project root: %w", err)
 	}
 	path := filepath.Join(root, "hum.yaml")
+	forceReplace := len(force) != 0 && force[0]
 
-	if _, err := os.Lstat(path); err == nil {
+	existing, err := initForceDestination(path, forceReplace)
+	if err != nil {
+		return InitResult{}, err
+	}
+	if existing && !forceReplace {
 		return InitResult{Path: path, Outcome: InitOutcomeExists}, &ManifestExistsError{Path: path}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return InitResult{}, fmt.Errorf("hum init: inspect %s: %w", path, err)
 	}
 
 	candidates, outcome, reason, err := initCandidates(root)
 	if err != nil {
 		return InitResult{}, err
 	}
-	contents := renderInitManifest(candidates, outcome, reason)
+	contents, err := initRender(candidates, outcome, reason)
+	if err != nil {
+		return InitResult{}, fmt.Errorf("hum init: render %s: %w", path, err)
+	}
 
 	file, err := os.CreateTemp(root, ".hum.yaml.tmp-*")
 	if err != nil {
@@ -79,11 +95,14 @@ func InitManifest(start string) (InitResult, error) {
 	}
 	tempPath := file.Name()
 	closed := false
+	published := false
 	defer func() {
 		if !closed {
 			_ = file.Close()
 		}
-		_ = os.Remove(tempPath)
+		if !published {
+			_ = os.Remove(tempPath)
+		}
 	}()
 
 	written, err := initWrite(file, contents)
@@ -93,15 +112,27 @@ func InitManifest(start string) (InitResult, error) {
 	if written != len(contents) {
 		return InitResult{}, fmt.Errorf("hum init: write %s: %w", path, io.ErrShortWrite)
 	}
-	if err := file.Sync(); err != nil {
+	if err := initSync(file); err != nil {
 		return InitResult{}, fmt.Errorf("hum init: sync %s: %w", path, err)
 	}
-	if err := file.Close(); err != nil {
+	if err := initClose(file); err != nil {
 		return InitResult{}, fmt.Errorf("hum init: close %s: %w", path, err)
 	}
 	closed = true
 
-	if err := initLink(tempPath, path); err != nil {
+	if forceReplace {
+		finalExisting, err := initForceDestination(path, true)
+		if err != nil {
+			return InitResult{}, err
+		}
+		if err := initRename(tempPath, path); err != nil {
+			return InitResult{}, fmt.Errorf("hum init: publish %s: %w", path, err)
+		}
+		published = true
+		if existing || finalExisting {
+			outcome = InitOutcomeReplaced
+		}
+	} else if err := initLink(tempPath, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return InitResult{Path: path, Outcome: InitOutcomeExists}, &ManifestExistsError{Path: path}
 		}
@@ -113,6 +144,26 @@ func InitManifest(start string) (InitResult, error) {
 		Outcome:    outcome,
 		Candidates: cloneDefinitions(candidates),
 	}, nil
+}
+
+func initForceDestination(path string, force bool) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("hum init: inspect %s: %w", path, err)
+	}
+	if !force {
+		return true, nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("hum init: refusing to replace %s: target is a symlink", path)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("hum init: refusing to replace %s: target is not a regular file", path)
+	}
+	return true, nil
 }
 
 func initCandidates(root string) ([]Definition, InitOutcome, string, error) {

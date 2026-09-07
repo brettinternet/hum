@@ -22,7 +22,7 @@ stable outcome fields cannot diverge.
 ## CLI
 
 ```text
-hum [--project DIR|-C DIR] init [--json]
+hum [--project DIR|-C DIR] init [--force] [--json]
 hum serve [--daemon]
 hum [--project DIR|-C DIR] start <name>... [--no-wait] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] up [--no-wait] [--timeout DURATION] [--json]
@@ -66,7 +66,7 @@ Combined short options are unsupported; MCP fields have no aliases.
 | `-m` | `--match` | `logs`, `wait` |
 | `-f` | `--follow` | `logs` |
 
-`--no-wait`, `--stop-processes`, `--runtime-dir`, `--stop-grace`,
+`--force`, `--no-wait`, `--stop-processes`, `--runtime-dir`, `--stop-grace`,
 `--output-bytes`, and `--completed-records` remain long-only. The `input`
 command intentionally adds no short aliases, including for `--json`.
 
@@ -135,9 +135,14 @@ NAME`, which directs operators to retained diagnostics without copying them into
 `init` resolves the project and zero-config candidates without launching or
 starting the daemon. It exclusively creates `hum.yaml`: one discovered
 candidate produces a definition; none or several produce a commented, valid
-template. Existing paths and resolution or write errors exit 1. Output includes
-the path, `generated` or `template` outcome, and `hum up` as the next command;
-JSON also includes candidates.
+template. `--force` resolves and renders the complete replacement before
+creating a mode-0600 temporary file in the project directory, syncing and
+closing it before atomically renaming it over an existing regular `hum.yaml`;
+symlinks and other non-regular targets are refused. Without `--force`, existing
+paths and their refusal remain unchanged. Discovery, rendering, write, sync,
+close, and rename errors exit 1 without changing the original manifest. Output
+includes the path, `generated`, `template`, or `replaced` outcome, and `hum up`
+as the next command; JSON also includes candidates.
 
 `start` idempotently ensures a named session is running. It relaunches retained
 stopped records; retained ad hoc records reuse their exact argv, cwd, and

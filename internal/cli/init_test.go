@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -201,6 +203,171 @@ func TestInitNoOverwriteHuman(t *testing.T) {
 		t.Fatalf("existing hum.yaml changed from %q to %q", contents, got)
 	}
 	assertRuntimeDirEmpty(t, runtimeDir)
+}
+
+func TestInitForce(t *testing.T) {
+	t.Run("human replacement", func(t *testing.T) {
+		root := stopShutdownTestProject(t)
+		runtimeDir := initTestRuntime(t)
+		path := filepath.Join(root, "hum.yaml")
+		if err := os.WriteFile(path, []byte("old manifest\n"), 0o640); err != nil {
+			t.Fatalf("write existing hum.yaml: %v", err)
+		}
+		writeDiscoveredBin(t, root)
+
+		stdout, stderr, err := stopShutdownRun(t, "init", "--force")
+		if err != nil {
+			t.Fatalf("hum init --force: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+		}
+		initAssertOutput(t, stdout, path, string(project.InitOutcomeReplaced))
+		if stderr != "" {
+			t.Fatalf("force human stderr = %q, want empty", stderr)
+		}
+		initAssertManifest(t, root)
+		initAssertMode(t, path)
+		assertRuntimeDirEmpty(t, runtimeDir)
+	})
+
+	t.Run("JSON replacement", func(t *testing.T) {
+		root := stopShutdownTestProject(t)
+		runtimeDir := initTestRuntime(t)
+		path := filepath.Join(root, "hum.yaml")
+		if err := os.WriteFile(path, []byte("old manifest\n"), 0o640); err != nil {
+			t.Fatalf("write existing hum.yaml: %v", err)
+		}
+		writeDiscoveredBin(t, root)
+
+		stdout, stderr, err := stopShutdownRun(t, "init", "--force", "--json")
+		if err != nil {
+			t.Fatalf("hum init --force --json: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+		}
+		var result initJSON
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("decode force init JSON: %v (stdout=%q)", err, stdout)
+		}
+		if result.Path != path || result.Outcome != project.InitOutcomeReplaced {
+			t.Fatalf("force init JSON = %#v, want path %q and outcome %q", result, path, project.InitOutcomeReplaced)
+		}
+		if stderr != "" {
+			t.Fatalf("force JSON stderr = %q, want empty", stderr)
+		}
+		initAssertManifest(t, root)
+		initAssertMode(t, path)
+		assertRuntimeDirEmpty(t, runtimeDir)
+	})
+
+	t.Run("no-force refusal remains unchanged", func(t *testing.T) {
+		root := stopShutdownTestProject(t)
+		runtimeDir := initTestRuntime(t)
+		path := filepath.Join(root, "hum.yaml")
+		contents := []byte("version: 1\nprocesses: {}\n")
+		if err := os.WriteFile(path, contents, 0o600); err != nil {
+			t.Fatalf("write existing hum.yaml: %v", err)
+		}
+
+		stdout, stderr, err := stopShutdownRun(t, "init")
+		if err == nil || initCLIExitCode(err) != 1 {
+			t.Fatalf("hum init existing manifest: err=%v code=%d stdout=%q stderr=%q, want exit 1", err, initCLIExitCode(err), stdout, stderr)
+		}
+		if stdout != "" || stderr != "" {
+			t.Fatalf("no-force output: stdout=%q stderr=%q, want empty", stdout, stderr)
+		}
+		wantMessage := fmt.Sprintf("hum.yaml already exists at %s; edit it, or remove it before running hum init again", path)
+		if err.Error() != wantMessage {
+			t.Fatalf("no-force error = %q, want %q", err.Error(), wantMessage)
+		}
+		got, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !reflect.DeepEqual(got, contents) {
+			t.Fatalf("no-force manifest = %q, want %q", got, contents)
+		}
+		assertRuntimeDirEmpty(t, runtimeDir)
+	})
+
+	t.Run("no-force JSON refusal remains unchanged", func(t *testing.T) {
+		root := stopShutdownTestProject(t)
+		runtimeDir := initTestRuntime(t)
+		path := filepath.Join(root, "hum.yaml")
+		contents := []byte("version: 1\nprocesses: {}\n")
+		if err := os.WriteFile(path, contents, 0o600); err != nil {
+			t.Fatalf("write existing hum.yaml: %v", err)
+		}
+
+		stdout, stderr, err := stopShutdownRun(t, "init", "--json")
+		if err == nil || initCLIExitCode(err) != 1 {
+			t.Fatalf("hum init --json existing manifest: err=%v code=%d stdout=%q stderr=%q, want exit 1", err, initCLIExitCode(err), stdout, stderr)
+		}
+		var result initJSON
+		if decodeErr := json.Unmarshal([]byte(stdout), &result); decodeErr != nil {
+			t.Fatalf("decode no-force init JSON: %v (stdout=%q)", decodeErr, stdout)
+		}
+		if result.Path != path || result.Outcome != project.InitOutcomeExists || len(result.Candidates) != 0 {
+			t.Fatalf("no-force init JSON = %#v, want existing result", result)
+		}
+		if err.Error() != "" || stderr != "" {
+			t.Fatalf("no-force JSON error/output: err=%q stderr=%q, want empty error and stderr", err.Error(), stderr)
+		}
+		got, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !reflect.DeepEqual(got, contents) {
+			t.Fatalf("no-force JSON manifest = %q, want %q", got, contents)
+		}
+		assertRuntimeDirEmpty(t, runtimeDir)
+	})
+
+	t.Run("help", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		root := NewRootCommand("test", "test", &stdout, &stderr)
+		if err := root.Run(context.Background(), []string{"hum", "init", "--help"}); err != nil {
+			t.Fatalf("init help: %v", err)
+		}
+		if !strings.Contains(stdout.String(), "hum init [--force] [--json]") || !strings.Contains(stdout.String(), "--force") {
+			t.Fatalf("init help missing force option: %q", stdout.String())
+		}
+	})
+
+	t.Run("non-regular targets", func(t *testing.T) {
+		t.Run("symlink", func(t *testing.T) {
+			root := stopShutdownTestProject(t)
+			initTestRuntime(t)
+			path := filepath.Join(root, "hum.yaml")
+			if err := os.WriteFile(filepath.Join(root, "original"), []byte("original\n"), 0o600); err != nil {
+				t.Fatalf("write symlink target: %v", err)
+			}
+			if err := os.Symlink("original", path); err != nil {
+				t.Fatalf("create hum.yaml symlink: %v", err)
+			}
+
+			stdout, stderr, err := stopShutdownRun(t, "init", "--force")
+			if err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Fatalf("symlink force error = %v (stdout=%q stderr=%q), want actionable symlink refusal", err, stdout, stderr)
+			}
+			if stdout != "" || stderr != "" {
+				t.Fatalf("symlink force output: stdout=%q stderr=%q, want empty", stdout, stderr)
+			}
+		})
+
+		t.Run("directory", func(t *testing.T) {
+			root := stopShutdownTestProject(t)
+			initTestRuntime(t)
+			path := filepath.Join(root, "hum.yaml")
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatalf("create hum.yaml directory: %v", err)
+			}
+
+			stdout, stderr, err := stopShutdownRun(t, "init", "--force")
+			if err == nil || !strings.Contains(err.Error(), "regular file") {
+				t.Fatalf("directory force error = %v (stdout=%q stderr=%q), want actionable regular-file refusal", err, stdout, stderr)
+			}
+			if stdout != "" || stderr != "" {
+				t.Fatalf("directory force output: stdout=%q stderr=%q, want empty", stdout, stderr)
+			}
+		})
+	})
 }
 
 func TestInitDiscoveryFailure(t *testing.T) {
