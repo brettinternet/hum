@@ -97,13 +97,15 @@ func TestSignalExitObservation(t *testing.T) {
 	var daemonPID int
 	t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
 
-	waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", "signal-observed", "--timeout", "5s", "--json")
+	// The bound only has to outlast the launch this wait precedes; five
+	// seconds expires under full-suite load while the child is still starting.
+	waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", "signal-observed", "--timeout", "20s", "--json")
 	time.Sleep(100 * time.Millisecond)
 	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "signal-observed", "--detach", "--json", "--", "/bin/sh", "-c", "kill -TERM $$")
 	if started.Code != 0 || started.Err != nil || started.Stderr != "" {
 		t.Fatalf("signal launch: code=%d err=%v stdout=%q stderr=%q", started.Code, started.Err, started.Stdout, started.Stderr)
 	}
-	if err := waiter.Wait(lifecycleTimeout); err != nil {
+	if err := waiter.Wait(30 * time.Second); err != nil {
 		t.Fatalf("signal wait: %v stdout=%q stderr=%q", err, waiter.Stdout(), waiter.Stderr())
 	}
 	if !strings.Contains(waiter.Stdout(), `"outcome":"exited"`) || !strings.Contains(waiter.Stdout(), `"exit":{"code":-1`) || !strings.Contains(waiter.Stdout(), `"signal":{"name":"SIGTERM","number":15}`) {
