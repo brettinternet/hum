@@ -1,10 +1,11 @@
 ---
 id: HUM-053
 title: Explain a wait timeout on a name that was never launched
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@brett'
 created_date: '2026-09-06 16:59'
-updated_date: '2026-09-06 17:41'
+updated_date: '2026-09-07 09:08'
 labels:
   - cli
   - mcp
@@ -49,28 +50,52 @@ Non-goals: preflight rejection, extra get requests, changing timeouts/exit codes
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/app ./internal/daemon -run '^TestWaitProcessObserved$' -count=1 -v` exits 0 and prints PASS for no record, an initial record, a record launched during the wait, and a record observed then removed before timeout.
-- [ ] #2 `go test ./internal/protocol -run '^TestWaitProcessObservedRoundTrip$' -count=1 -v` exits 0 and prints PASS for explicit true and false timeout values and unchanged successful result encoding.
-- [ ] #3 `go test ./internal/cli -run '^TestWaitTimeoutExplainsNeverObserved$' -count=1 -v` exits 0 and prints PASS for exact actionable human text, JSON process_observed false/true, empty stderr in JSON mode, and unchanged exit code 2.
-- [ ] #4 `go test ./internal/mcp -run '^TestWaitTimeoutExplainsNeverObserved$' -count=1 -v` exits 0 and prints PASS for the same boolean definition and guidance in structured content/text.
-- [ ] #5 `go test ./internal/cli -run '^TestWaitObservedDocs$' -count=1 -v` exits 0 and prints PASS for docs/design.md and CLI help naming process_observed and the no-extra-round-trip behavior.
-- [ ] #6 `task ci` exits 0.
+- [x] #1 `go test ./internal/app ./internal/daemon -run '^TestWaitProcessObserved$' -count=1 -v` exits 0 and prints PASS for no record, an initial record, a record launched during the wait, and a record observed then removed before timeout.
+- [x] #2 `go test ./internal/protocol -run '^TestWaitProcessObservedRoundTrip$' -count=1 -v` exits 0 and prints PASS for explicit true and false timeout values and unchanged successful result encoding.
+- [x] #3 `go test ./internal/cli -run '^TestWaitTimeoutExplainsNeverObserved$' -count=1 -v` exits 0 and prints PASS for exact actionable human text, JSON process_observed false/true, empty stderr in JSON mode, and unchanged exit code 2.
+- [x] #4 `go test ./internal/mcp -run '^TestWaitTimeoutExplainsNeverObserved$' -count=1 -v` exits 0 and prints PASS for the same boolean definition and guidance in structured content/text.
+- [x] #5 `go test ./internal/cli -run '^TestWaitObservedDocs$' -count=1 -v` exits 0 and prints PASS for docs/design.md and CLI help naming process_observed and the no-extra-round-trip behavior.
+- [x] #6 `task ci` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Track whether a matching runtime record exists at any point in daemon wait.
-2. Propagate process_observed through protocol, CLI, and MCP timeout results.
-3. Cover never-observed, initially observed, later observed/removed, guidance, docs, and final gates.
+1. Track a keyed monotonic runtime-observation generation across record replacement and use it within one daemon wait request.
+2. Propagate explicit timeout process_observed values through daemon wire protocol, protocol v13, CLI JSON/human rendering, and MCP structured content/text.
+3. Cover never-observed, initially observed, launched during wait, observed/removed, replacement-record churn, compatibility, guidance, and docs.
+4. Run focused acceptance commands, independent verification, and task ci before and after merge.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed by @brett for implementation in worktree hum-053-wait-observed.
+
+Implementation commit: 84d1c36; merged to main as b2350a7.
+Review: adversarial review found and implementation fixed protocol-version compatibility and record-replacement observation gaps.
+AC#1: `go test ./internal/app ./internal/daemon -run '^TestWaitProcessObserved$' -count=1 -v` passed, including no record, initial record, launch during wait, removal, and replacement-record churn.
+AC#2: `go test ./internal/protocol -run '^TestWaitProcessObservedRoundTrip$' -count=1 -v` passed for explicit true/false timeout values and unchanged match/exit encoding.
+AC#3: `go test ./internal/cli -run '^TestWaitTimeoutExplainsNeverObserved$' -count=1 -v` passed for actionable human text, JSON booleans, empty JSON stderr, and exit code 2.
+AC#4: `go test ./internal/mcp -run '^TestWaitTimeoutExplainsNeverObserved$' -count=1 -v` passed for structured content and guidance text.
+AC#5: `go test ./internal/cli -run '^TestWaitObservedDocs$' -count=1 -v` passed for design docs and CLI/MCP help.
+AC#6: `task ci` passed on 84d1c36 and again on merged main b2350a7.
+Independent verifier: PASS for AC#1-AC#6; protocol v13 rejects a v12 daemon before wait rendering.
+Modified-file deviation: internal/protocol/restart_policy_test.go updates the existing protocol-version invariant from 12 to required version 13; the verifier confirmed this is strictly required. No tests were deleted, skipped, or weakened, and no protected gate files changed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented daemon-authoritative wait observation across runtime record replacement, explicit protocol v13 timeout encoding, CLI/MCP guidance, and documentation. Focused AC tests, independent verification, and task ci passed before and after merge. Delivered in 84d1c36 and merged as b2350a7.
+<!-- SECTION:FINAL_SUMMARY:END -->
