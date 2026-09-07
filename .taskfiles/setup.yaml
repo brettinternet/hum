@@ -19,8 +19,9 @@ tasks:
         msg: Mise is not installed
 
   lefthook:
-    desc: Install Lefthook
+    desc: Synchronize Lefthook hooks
     cmds:
+      - mise exec lefthook -- lefthook uninstall
       - mise exec lefthook -- lefthook install
     preconditions:
       - test -f lefthook.yaml
