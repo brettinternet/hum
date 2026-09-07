@@ -157,7 +157,8 @@ func TestOneShotInputWrite(t *testing.T) {
 	if result.Bytes != len("hello\n") || result.LaunchCursor != protocol.Cursor(started.LaunchCursor) {
 		t.Fatalf("one-shot result = %+v, start = %+v", result, started)
 	}
-	wait, err := client.Wait(ctx, WaitRequest{Name: "prompt", Cwd: root, TimeoutMS: 4000})
+	after := protocol.Cursor(started.LaunchCursor)
+	wait, err := client.Wait(ctx, WaitRequest{Name: "prompt", Cwd: root, After: &after, TimeoutMS: 4000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +532,8 @@ func TestTTYInputTransport(t *testing.T) {
 	if err := session.Write(ctx, []byte("abc\n")); err != nil {
 		t.Fatalf("input write: %v", err)
 	}
-	wait, err := client.Wait(ctx, WaitRequest{Name: "cat", Cwd: root, TimeoutMS: 4000})
+	after := protocol.Cursor(started.LaunchCursor)
+	wait, err := client.Wait(ctx, WaitRequest{Name: "cat", Cwd: root, After: &after, TimeoutMS: 4000})
 	if err != nil {
 		t.Fatal(err)
 	}
