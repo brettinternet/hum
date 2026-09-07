@@ -26,7 +26,7 @@ func main() {
 	defer stop()
 
 	if err := run(ctx, os.Args); err != nil {
-		if err.Error() != "" {
+		if err.Error() != "" && !appcli.JSONErrorHandled(err) {
 			fmt.Fprintln(errorWriter, err)
 		}
 		os.Exit(exitCode(err))
@@ -42,5 +42,7 @@ func exitCode(err error) int {
 }
 
 func run(ctx context.Context, args []string) error {
-	return appcli.NewRootCommand(buildVersion, buildTime, outputWriter, errorWriter).Run(ctx, args)
+	root := appcli.NewRootCommand(buildVersion, buildTime, outputWriter, errorWriter)
+	appcli.SetInvocationArgs(root, args)
+	return root.Run(ctx, args)
 }

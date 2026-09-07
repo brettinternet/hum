@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +20,346 @@ import (
 
 var configureFrameworkFlagsOnce sync.Once
 
+const jsonErrorStateMetadataKey = "hum.json_error_state"
+
+type jsonOutputTracker struct {
+	writer         io.Writer
+	mu             sync.Mutex
+	bytesWritten   int
+	terminalErrors bool
+}
+
+func newJSONOutputTracker(writer io.Writer) *jsonOutputTracker {
+	if writer == nil {
+		writer = io.Discard
+	}
+	return &jsonOutputTracker{writer: writer}
+}
+
+func (w *jsonOutputTracker) Write(data []byte) (int, error) {
+	n, err := w.writer.Write(data)
+	if n > 0 {
+		w.mu.Lock()
+		w.bytesWritten += n
+		if !w.terminalErrors && containsJSONTerminalError(data[:n]) {
+			w.terminalErrors = true
+		}
+		w.mu.Unlock()
+	}
+	return n, err
+}
+
+// Close preserves the interruptibility contract required by the MCP stdio
+// transport without taking ownership of ordinary in-memory test writers.
+func (w *jsonOutputTracker) Close() error {
+	closer, ok := w.writer.(io.Closer)
+	if !ok {
+		return nil
+	}
+	return closer.Close()
+}
+
+func (w *jsonOutputTracker) hasOutput() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.bytesWritten != 0
+}
+
+func (w *jsonOutputTracker) hasTerminalError() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.terminalErrors
+}
+
+func containsJSONTerminalError(data []byte) bool {
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var value struct {
+			Type  string          `json:"type"`
+			Error json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(line, &value); err == nil && value.Type == "error" && len(value.Error) != 0 && string(value.Error) != "null" {
+			return true
+		}
+	}
+	return false
+}
+
+type jsonErrorState struct {
+	root   *urfavecli.Command
+	output *jsonOutputTracker
+
+	mu             sync.Mutex
+	invocationArgs []string
+	command        *urfavecli.Command
+	json           bool
+	stream         bool
+	streamName     string
+	handled        bool
+}
+
+// SetInvocationArgs supplies the raw invocation to the error boundary. The
+// urfave parser intentionally discards tokens after a positional payload, so
+// the raw form is needed to distinguish a real --json flag from payload text.
+// The binary calls this before Run; direct command users still get a parser
+// state fallback when they invoke NewRootCommand(...).Run directly.
+func SetInvocationArgs(root *urfavecli.Command, args []string) {
+	if root == nil || root.Metadata == nil {
+		return
+	}
+	state, ok := root.Metadata[jsonErrorStateMetadataKey].(*jsonErrorState)
+	if !ok || state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.invocationArgs = append([]string(nil), args...)
+	state.mu.Unlock()
+}
+
+func installJSONErrorBoundary(root *urfavecli.Command, state *jsonErrorState) {
+	if root == nil || state == nil {
+		return
+	}
+	var visit func(*urfavecli.Command)
+	visit = func(command *urfavecli.Command) {
+		if command == nil {
+			return
+		}
+		if action := command.Action; action != nil {
+			command.Action = func(ctx context.Context, cmd *urfavecli.Command) error {
+				err := action(ctx, cmd)
+				return state.handle(cmd, err)
+			}
+		}
+		if usage := command.OnUsageError; usage != nil {
+			command.OnUsageError = func(ctx context.Context, cmd *urfavecli.Command, err error, isSubcommand bool) error {
+				usageErr := usage(ctx, cmd, err, isSubcommand)
+				return state.handle(cmd, usageErr)
+			}
+		}
+		if before := command.Before; before != nil {
+			command.Before = func(ctx context.Context, cmd *urfavecli.Command) (context.Context, error) {
+				beforeCtx, err := before(ctx, cmd)
+				return beforeCtx, state.handle(cmd, err)
+			}
+		}
+		if after := command.After; after != nil {
+			command.After = func(ctx context.Context, cmd *urfavecli.Command) error {
+				return state.handle(cmd, after(ctx, cmd))
+			}
+		}
+		for _, child := range command.Commands {
+			visit(child)
+		}
+	}
+	visit(root)
+}
+
+func (s *jsonErrorState) handle(cmd *urfavecli.Command, err error) error {
+	if err == nil || JSONErrorHandled(err) {
+		return err
+	}
+	// start/up and wait use an empty ExitCoder after they have emitted their
+	// response records. Those records already carry the outcome and changing
+	// them into a second error object would alter the established JSON shape.
+	var exitErr urfavecli.ExitCoder
+	if errors.As(err, &exitErr) && err.Error() == "" {
+		return err
+	}
+	if cmd != nil {
+		s.noteCommand(cmd)
+	}
+
+	s.mu.Lock()
+	jsonMode := s.json
+	stream := s.stream
+	streamName := s.streamName
+	if s.handled {
+		s.mu.Unlock()
+		return &jsonHandledError{cause: err}
+	}
+	if jsonMode {
+		s.handled = true
+	}
+	s.mu.Unlock()
+	if !jsonMode {
+		return err
+	}
+
+	wire := classifyJSONError(err, isCLIUsageError(err))
+	if !s.output.hasOutput() {
+		_ = writeJSONError(s.output, wire)
+	} else if stream && !s.output.hasTerminalError() {
+		_ = writeJSONErrorEvent(s.output, streamName, wire)
+	}
+	return &jsonHandledError{cause: err}
+}
+
+func (s *jsonErrorState) noteCommand(cmd *urfavecli.Command) {
+	if cmd == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.command = cmd
+	s.json = commandJSONRequested(cmd, s.root, s.invocationArgs) && (cmd.Name != "run" || cmd.Bool("detach"))
+	s.stream = s.json && (cmd.Name == "start" || cmd.Name == "up" || cmd.Name == "logs" && cmd.Bool("follow"))
+	s.streamName = ""
+	if cmd.Name == "logs" && cmd.Args() != nil {
+		args := cmd.Args().Slice()
+		if len(args) != 0 {
+			s.streamName = args[0]
+		}
+	}
+}
+
+func isCLIUsageError(err error) bool {
+	var usageErr cliUsageError
+	return errors.As(err, &usageErr)
+}
+
+func commandSupportsJSON(command *urfavecli.Command) (bool, bool) {
+	if command == nil {
+		return false, false
+	}
+	supports, alias := false, false
+	for _, flag := range cliCommandFlags(command) {
+		if flag == nil {
+			continue
+		}
+		for _, name := range flag.Names() {
+			switch name {
+			case "json":
+				supports = true
+			case "j":
+				alias = true
+			}
+		}
+	}
+	return supports, alias
+}
+
+func commandJSONRequested(command, root *urfavecli.Command, args []string) bool {
+	supports, alias := commandSupportsJSON(command)
+	if !supports {
+		return false
+	}
+	if len(args) == 0 {
+		return command.Bool("json")
+	}
+	if command.Name == "run" {
+		return rawRunJSONRequested(args, root, command, alias)
+	}
+	return rawJSONRequested(args, root, command, alias)
+}
+
+func flagTakesValue(flag urfavecli.Flag) bool {
+	docFlag, ok := flag.(interface{ TakesValue() bool })
+	return ok && docFlag.TakesValue()
+}
+
+func invocationFlagValues(root, command *urfavecli.Command) map[string]bool {
+	values := make(map[string]bool)
+	add := func(flags []urfavecli.Flag) {
+		for _, flag := range flags {
+			if flag == nil {
+				continue
+			}
+			takesValue := flagTakesValue(flag)
+			for _, name := range flag.Names() {
+				values[name] = takesValue
+			}
+		}
+	}
+	if root != nil {
+		add(root.Flags)
+	}
+	if command != nil {
+		add(command.Flags)
+	}
+	return values
+}
+
+func rawJSONRequested(args []string, root, command *urfavecli.Command, alias bool) bool {
+	values := invocationFlagValues(root, command)
+	for index := 0; index < len(args); index++ {
+		token := args[index]
+		if token == "--" {
+			return false
+		}
+		if token == "--json" || alias && token == "-j" {
+			return true
+		}
+		if !strings.HasPrefix(token, "-") || token == "-" {
+			continue
+		}
+		name, _, hasValue := strings.Cut(strings.TrimLeft(token, "-"), "=")
+		if !hasValue && values[name] && index+1 < len(args) {
+			index++
+		}
+	}
+	return false
+}
+
+func rawRunJSONRequested(args []string, root, command *urfavecli.Command, alias bool) bool {
+	values := invocationFlagValues(root, command)
+	runIndex := -1
+	for index := 1; index < len(args); index++ {
+		token := args[index]
+		if token == "run" {
+			runIndex = index
+			break
+		}
+		if strings.HasPrefix(token, "-") && token != "-" {
+			name, _, hasValue := strings.Cut(strings.TrimLeft(token, "-"), "=")
+			if !hasValue && values[name] && index+1 < len(args) {
+				index++
+			}
+		}
+	}
+	if runIndex < 0 {
+		return command.Bool("json")
+	}
+	requested := false
+	seenName := false
+	for index := runIndex + 1; index < len(args); index++ {
+		token := args[index]
+		if token == "--" {
+			return requested
+		}
+		if token == "--json" || alias && token == "-j" {
+			requested = true
+			continue
+		}
+		if !seenName {
+			if !strings.HasPrefix(token, "-") || token == "-" {
+				seenName = true
+			}
+			if strings.HasPrefix(token, "-") && token != "-" {
+				name, _, hasValue := strings.Cut(strings.TrimLeft(token, "-"), "=")
+				if !hasValue && values[name] && index+1 < len(args) {
+					index++
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(token, "-") && token != "-" {
+			name, _, hasValue := strings.Cut(strings.TrimLeft(token, "-"), "=")
+			if !hasValue && values[name] && index+1 < len(args) {
+				index++
+			}
+			continue
+		}
+		// Once the first non-flag argument after NAME appears, run treats the
+		// remainder as a raw command payload unless a separator was used.
+		return requested
+	}
+	return requested
+}
+
 // NewRootCommand builds the hum command with the supplied build metadata
 // and output writers.
 func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urfavecli.Command {
@@ -29,6 +371,8 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 			}
 		}
 	})
+	outputTracker := newJSONOutputTracker(writer)
+	state := &jsonErrorState{output: outputTracker}
 	root := &urfavecli.Command{
 		Name:      "hum",
 		Usage:     "A local development process supervisor",
@@ -42,8 +386,10 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		ShellComplete:                   completeProcessNames,
 		EnableShellCompletion:           true,
 		ConfigureShellCompletionCommand: configureCompletionCommand,
-		Writer:                          writer,
+		Writer:                          outputTracker,
 		ErrWriter:                       errWriter,
+		Metadata:                        map[string]any{jsonErrorStateMetadataKey: state},
+		ExitErrHandler:                  func(context.Context, *urfavecli.Command, error) {},
 		Flags: []urfavecli.Flag{
 			&urfavecli.StringFlag{Name: "project", Aliases: []string{"C"}, Usage: "project directory; omit for the current directory; ad-hoc run uses it as cwd, manifest cwd stays project-relative"},
 			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon [$HUM_RUNTIME_DIR, then $XDG_RUNTIME_DIR/hum]", DefaultText: "$TMPDIR/hum-UID"},
@@ -51,7 +397,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained output bytes per process, at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
 			&urfavecli.StringFlag{Name: "completed-records", Usage: "completed process records to retain [$HUM_COMPLETED_RECORDS]", DefaultText: strconv.Itoa(config.DefaultCompletedRecords)},
 		},
-		Commands:     newCLICommands(version, buildTime, writer, errWriter),
+		Commands:     newCLICommands(version, buildTime, outputTracker, errWriter),
 		OnUsageError: onUsageError,
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 			if err := ctx.Err(); err != nil {
@@ -63,6 +409,8 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 			return urfavecli.ShowRootCommandHelp(cmd)
 		},
 	}
+	state.root = root
+	installJSONErrorBoundary(root, state)
 	if err := validateCLICommandTree(root); err != nil {
 		panic(err)
 	}
@@ -140,7 +488,7 @@ func projectGuidanceError(err error, selector string) error {
 // the full command path, instead of urfave/cli's default double-printed
 // "Incorrect Usage" message plus a full help dump.
 func onUsageError(_ context.Context, cmd *urfavecli.Command, err error, _ bool) error {
-	return newUserFacingError(fmt.Sprintf("%s: %s", cmd.FullName(), err.Error()))
+	return newCLIUsageError(newUserFacingError(fmt.Sprintf("%s: %s", cmd.FullName(), err.Error())))
 }
 
 func validateCLICommandTree(root *urfavecli.Command) error {
@@ -219,7 +567,7 @@ func unknownCommandError(root *urfavecli.Command, name string) error {
 	if suggestion := suggestCommandName(root.Commands, name); suggestion != "" {
 		message += fmt.Sprintf(" Did you mean %q?", suggestion)
 	}
-	return newUserFacingError(message + " Run hum --help to list commands.")
+	return newCLIUsageError(newUserFacingError(message + " Run hum --help to list commands."))
 }
 
 // suggestCommandName returns the closest command name to the typed name, or

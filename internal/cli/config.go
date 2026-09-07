@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"hum/internal/config"
 	"hum/internal/daemon"
 	"hum/internal/output"
+	"hum/internal/project"
+	"hum/internal/protocol"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -39,6 +42,153 @@ func (e wrappedUserFacingError) Unwrap() error { return e.cause }
 
 func wrapUserFacingError(cause error, message string) error {
 	return wrappedUserFacingError{cause: cause, message: message}
+}
+
+// cliUsageError preserves the existing human-readable usage text while giving
+// the JSON error boundary a stable classification. urfave/cli invokes
+// OnUsageError before an action, so this marker also covers parse failures.
+type cliUsageError struct{ cause error }
+
+func (e cliUsageError) Error() string {
+	if e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e cliUsageError) Unwrap() error { return e.cause }
+
+func newCLIUsageError(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return cliUsageError{cause: cause}
+}
+
+// jsonHandledError carries the original error and exit code after the root
+// boundary has emitted its JSON representation. Keeping the cause in the
+// chain preserves errors.As/errors.Is for callers and tests.
+type jsonHandledError struct{ cause error }
+
+func (e *jsonHandledError) Error() string {
+	if e == nil || e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e *jsonHandledError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *jsonHandledError) ExitCode() int {
+	if e == nil || e.cause == nil {
+		return 1
+	}
+	var exitErr urfavecli.ExitCoder
+	if errors.As(e.cause, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return 1
+}
+
+func (*jsonHandledError) JSONErrorHandled() bool { return true }
+
+// JSONErrorHandled reports whether err has already been rendered on stdout by
+// the structured-error boundary. The main package uses this to suppress its
+// legacy stderr diagnostic without importing the boundary implementation.
+func JSONErrorHandled(err error) bool {
+	if err == nil {
+		return false
+	}
+	var handled interface{ JSONErrorHandled() bool }
+	return errors.As(err, &handled) && handled.JSONErrorHandled()
+}
+
+const (
+	jsonErrorUsage             protocol.ErrorCode = "usage"
+	jsonErrorDaemonUnavailable protocol.ErrorCode = "daemon_unavailable"
+	jsonErrorManifestInvalid   protocol.ErrorCode = "manifest_invalid"
+	jsonErrorInternal          protocol.ErrorCode = "internal"
+)
+
+// classifyJSONError maps local CLI failures to the deliberately small public
+// error vocabulary. A daemon-provided WireError is checked first so its
+// protocol code is never replaced by a CLI classification.
+func classifyJSONError(err error, usage bool) *protocol.WireError {
+	if err == nil {
+		return protocol.NewWireError(jsonErrorInternal, "command failed", nil)
+	}
+	var wire *daemon.WireError
+	if errors.As(err, &wire) && wire != nil {
+		copy := *wire
+		if copy.Message == "" {
+			copy.Message = err.Error()
+		}
+		return &copy
+	}
+	var active *daemon.ActiveProcessesError
+	if errors.As(err, &active) {
+		return protocol.NewWireError(protocol.ErrorActiveProcesses, err.Error(), nil)
+	}
+	if errors.Is(err, project.ErrConfiguration) || errors.Is(err, project.ErrAmbiguous) || errors.Is(err, project.ErrIntrospection) {
+		return protocol.NewWireError(jsonErrorManifestInvalid, err.Error(), nil)
+	}
+	if usage || likelyCLIUsageError(err) {
+		return protocol.NewWireError(jsonErrorUsage, err.Error(), nil)
+	}
+	if daemonUnavailable(err) || errors.Is(err, io.EOF) || likelyDaemonUnavailableMessage(err) {
+		return protocol.NewWireError(jsonErrorDaemonUnavailable, err.Error(), nil)
+	}
+	message := err.Error()
+	if message == "" {
+		message = "command failed"
+	}
+	return protocol.NewWireError(jsonErrorInternal, message, nil)
+}
+
+// likelyCLIUsageError covers action-level validation that runs after flag
+// parsing. Parse failures carry cliUsageError; this conservative fallback
+// keeps existing command implementations unchanged while classifying their
+// user-input diagnostics consistently.
+func likelyDaemonUnavailableMessage(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"no hum daemon is running",
+		"nothing is running",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func likelyCLIUsageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var usageErr cliUsageError
+	if errors.As(err, &usageErr) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		" requires ", " accepts ", " must ", " only supported ", " does not accept ",
+		"unknown option", "duplicate", "regular expression", "valid duration", "negative",
+		"--project requires", "--project directory", "--project path", "--tty requires", "before the command",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // cliConfig resolves the command-edge values once. The config package remains
