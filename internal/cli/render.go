@@ -172,6 +172,9 @@ func buildListTable(processes []app.Process, all bool) listTable {
 				row = append(row, plainListCell(fmt.Sprintf("ready_cursor=%d", *readyCursor)))
 			}
 		}
+		if process.Exit != nil && process.Exit.Signal != nil {
+			row = append(row, plainListCell("exit: "+signalHumanText(process.Exit.Signal.Name, process.Exit.Signal.Number)))
+		}
 		if effectiveProcessRestart(process) == app.RestartOnFailure {
 			row = append(row, plainListCell("restart=on-failure"))
 		}
@@ -261,6 +264,7 @@ type statusJSON struct {
 	Readiness    string                    `json:"readiness,omitempty"`
 	ReadyCursor  *protocol.Cursor          `json:"ready_cursor,omitempty"`
 	ExitStatus   *int                      `json:"exit_status"`
+	Signal       *protocol.SignalInfo      `json:"signal,omitempty"`
 	RestartCount int                       `json:"restart_count"`
 	Followers    int                       `json:"followers"`
 	Restart      string                    `json:"restart"`
@@ -296,6 +300,10 @@ func statusJSONFor(process app.Process) statusJSON {
 	if process.State == app.StateExited {
 		exitStatus := process.ExitCode
 		result.ExitStatus = &exitStatus
+		if process.Exit != nil && process.Exit.Signal != nil {
+			signal := protocol.SignalInfo{Name: process.Exit.Signal.Name, Number: process.Exit.Signal.Number}
+			result.Signal = &signal
+		}
 	}
 	return result
 }
@@ -358,6 +366,9 @@ func waitJSONFor(result app.WaitResult) protocol.WaitResponse {
 		}
 		if result.Exit.Err != nil {
 			exit.Error = result.Exit.Err.Error()
+		}
+		if result.Exit.Signal != nil {
+			exit.Signal = &protocol.SignalInfo{Name: result.Exit.Signal.Name, Number: result.Exit.Signal.Number}
 		}
 		response.Exit = &exit
 	}
@@ -429,6 +440,9 @@ func processJSON(process app.Process) listProcessJSON {
 		if process.Exit.Err != nil {
 			exit.Error = process.Exit.Err.Error()
 		}
+		if process.Exit.Signal != nil {
+			exit.Signal = &protocol.SignalInfo{Name: process.Exit.Signal.Name, Number: process.Exit.Signal.Number}
+		}
 		result.Exit = &exit
 	}
 	return result
@@ -479,6 +493,9 @@ func streamName(stream output.Stream) string {
 func eventJSON(name string, event output.Event) protocol.StreamEvent {
 	if event.Exit != nil {
 		exit := protocol.Exit{Code: event.Exit.Code, Time: event.Exit.Time}
+		if event.Exit.SignalName != "" {
+			exit.Signal = &protocol.SignalInfo{Name: event.Exit.SignalName, Number: event.Exit.SignalNumber}
+		}
 		return protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventExit, Name: name, Exit: &exit, Time: event.Exit.Time}
 	}
 	if event.Read == nil {
@@ -787,7 +804,11 @@ func manifestProgressInitialLineWithPolicy(definition project.Definition, result
 	case "error":
 		return prefix + colors.apply(ansiRed, "error") + ": " + manifestProgressText(result.Error)
 	case "exited_before_ready":
-		return prefix + colors.apply(ansiRed, "exited before readiness") + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		line := prefix + colors.apply(ansiRed, "exited before readiness")
+		if result.Signal != nil {
+			line += "; exit: " + signalHumanText(result.Signal.Name, result.Signal.Number)
+		}
+		return line + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "timed_out":
 		return prefix + colors.apply(ansiRed, "readiness timed out") + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "started", "already_running":
@@ -820,7 +841,11 @@ func manifestProgressTerminalLineWithPolicy(result manifestLaunchResult, colors 
 	case "error":
 		return prefix + colors.apply(ansiRed, "error") + ": " + manifestProgressText(result.Error)
 	case "exited_before_ready":
-		return prefix + colors.apply(ansiRed, "exited before readiness") + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		line := prefix + colors.apply(ansiRed, "exited before readiness")
+		if result.Signal != nil {
+			line += "; exit: " + signalHumanText(result.Signal.Name, result.Signal.Number)
+		}
+		return line + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "timed_out":
 		return prefix + colors.apply(ansiRed, "readiness timed out") + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "started", "already_running":
@@ -950,6 +975,9 @@ func renderManifestLaunchHumanWithPolicy(w io.Writer, result manifestLaunchResul
 	if result.Error != "" {
 		line += " error=" + result.Error
 	}
+	if result.Signal != nil {
+		line += " exit: " + signalHumanText(result.Signal.Name, result.Signal.Number)
+	}
 	_, err := fmt.Fprintln(w, line)
 	return err
 }
@@ -959,6 +987,10 @@ func valueOrZero(value *int) int {
 		return 0
 	}
 	return *value
+}
+
+func signalHumanText(name string, number int) string {
+	return fmt.Sprintf("signal %s (%d)", name, number)
 }
 
 func renderStopHuman(w io.Writer, result stopResult) error {
@@ -1024,6 +1056,10 @@ func renderWaitHuman(w io.Writer, name string, result app.WaitResult) error {
 	if result.Exit == nil {
 		return nil
 	}
+	if result.Exit.Signal != nil {
+		_, err := fmt.Fprintf(w, "exit: %s\n", signalHumanText(result.Exit.Signal.Name, result.Exit.Signal.Number))
+		return err
+	}
 	_, err := fmt.Fprintf(w, "exit_code: %d\n", result.Exit.ExitCode)
 	return err
 }
@@ -1079,6 +1115,11 @@ func renderStatusHumanWithPolicy(w io.Writer, process app.Process, colors colorP
 	}
 	if status.ExitStatus != nil {
 		if _, err := fmt.Fprintf(w, "exit_status: %d\n", *status.ExitStatus); err != nil {
+			return err
+		}
+	}
+	if status.Signal != nil {
+		if _, err := fmt.Fprintf(w, "exit: %s\n", signalHumanText(status.Signal.Name, status.Signal.Number)); err != nil {
 			return err
 		}
 	}

@@ -758,6 +758,69 @@ func TestStatusSignaledSnapshotIncludesTerminalResult(t *testing.T) {
 	}
 }
 
+func TestSignalExitReportsSignal(t *testing.T) {
+	root := makeProject(t, false)
+	for _, test := range []struct {
+		name   string
+		signal *process.SignalInfo
+	}{
+		{name: "term", signal: &process.SignalInfo{Name: "SIGTERM", Number: int(syscall.SIGTERM)}},
+		{name: "kill", signal: &process.SignalInfo{Name: "SIGKILL", Number: int(syscall.SIGKILL)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			exitAt := time.Unix(30, int64(len(test.name)))
+			child := &timedChild{pid: 4200, done: make(chan struct{}), result: process.Result{ExitCode: -1, Signal: test.signal, ExitedAt: exitAt}}
+			s := testSupervisor(t, Options{StartProcess: func(process.Spec) (Child, error) { return child, nil }})
+			if _, err := s.Start(StartRequest{Name: test.name, Cwd: root, Argv: []string{"/bin/test", test.name}}); err != nil {
+				t.Fatal(err)
+			}
+			done := recordDone(t, s, root, test.name)
+			child.release()
+			waitSubscriptionSignal(t, done, test.name+" process")
+			got, err := s.Get(root, test.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != StateExited || got.Exit == nil || got.Exit.ExitCode != -1 || got.Exit.Signal == nil ||
+				got.Exit.Signal.Name != test.signal.Name || got.Exit.Signal.Number != test.signal.Number || got.ExitCode != -1 {
+				t.Fatalf("signal snapshot = %#v, want exited -1 with %#v", got, test.signal)
+			}
+		})
+	}
+
+	numericChild := &timedChild{pid: 4300, done: make(chan struct{}), result: process.Result{ExitCode: 17, ExitedAt: time.Unix(31, 0)}}
+	s := testSupervisor(t, Options{StartProcess: func(process.Spec) (Child, error) { return numericChild, nil }})
+	if _, err := s.Start(StartRequest{Name: "numeric", Cwd: root, Argv: []string{"/bin/test", "numeric"}}); err != nil {
+		t.Fatal(err)
+	}
+	done := recordDone(t, s, root, "numeric")
+	numericChild.release()
+	waitSubscriptionSignal(t, done, "numeric process")
+	got, err := s.Get(root, "numeric")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Exit == nil || got.Exit.ExitCode != 17 || got.Exit.Signal != nil {
+		t.Fatalf("numeric snapshot = %#v, want code 17 without signal", got)
+	}
+
+	stoppedChild := &timedChild{pid: 4400, done: make(chan struct{}), result: process.Result{ExitCode: -1, Signal: &process.SignalInfo{Name: "SIGTERM", Number: int(syscall.SIGTERM)}, ExitedAt: time.Unix(32, 0)}}
+	stoppedSupervisor := testSupervisor(t, Options{StartProcess: func(process.Spec) (Child, error) { return stoppedChild, nil }})
+	if _, err := stoppedSupervisor.Start(StartRequest{Name: "stopped", Cwd: root, Argv: []string{"/bin/test", "stopped"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stoppedSupervisor.Stop(context.Background(), root, "stopped"); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := stoppedSupervisor.Get(root, "stopped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.State != StateStopped || stopped.Exit != nil || stopped.ExitCode != 0 {
+		t.Fatalf("operator-stopped snapshot = %#v, want stopped without exit details", stopped)
+	}
+}
+
 func TestStatusInvalidNameErrorIsTyped(t *testing.T) {
 	root := makeProject(t, false)
 	s := testSupervisor(t, Options{})

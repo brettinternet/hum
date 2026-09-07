@@ -63,12 +63,19 @@ type Readiness struct {
 	Match  string
 }
 
+// SignalInfo identifies the canonical signal that terminated a process.
+type SignalInfo struct {
+	Name   string
+	Number int
+}
+
 // Exit is the response-safe terminal process status used by the common
 // snapshot model.
 type Exit struct {
-	Code  int
-	Time  time.Time
-	Error string
+	Code   int
+	Time   time.Time
+	Error  string
+	Signal *SignalInfo
 }
 
 // Process is the common process snapshot exchanged by adapters and the
@@ -286,6 +293,10 @@ func NormalizeProcess(process Process) Process {
 	}
 	if process.Exit != nil {
 		exit := *process.Exit
+		if exit.Signal != nil {
+			signal := *exit.Signal
+			exit.Signal = &signal
+		}
 		process.Exit = &exit
 	}
 	if process.NextLaunchAt != nil {

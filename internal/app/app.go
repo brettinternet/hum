@@ -1735,10 +1735,7 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 			// A follower may have consumed and suppressed the original exit
 			// while the restart was in progress. Re-publish it only after the
 			// continuation state is cleared so the follower can terminate.
-			restartStore.NotifyExit(output.Exit{
-				Code: result.ExitCode,
-				Time: result.ExitedAt,
-			})
+			restartStore.NotifyExit(outputExitForResult(result))
 		}
 		s.launches.Done()
 	}()
@@ -1994,7 +1991,7 @@ func (s *Supervisor) reconcile(rec *record) {
 		tracker.close()
 	}
 	if republish && store != nil {
-		store.NotifyExit(output.Exit{Code: result.ExitCode, Time: result.ExitedAt})
+		store.NotifyExit(outputExitForResult(result))
 	}
 	var persistErr error
 	if s.persistExit != nil {
@@ -2022,6 +2019,15 @@ func (s *Supervisor) reconcile(rec *record) {
 		s.evictLocked()
 	}
 	s.mu.Unlock()
+}
+
+func outputExitForResult(result process.Result) output.Exit {
+	exit := output.Exit{Code: result.ExitCode, Time: result.ExitedAt}
+	if result.Signal != nil {
+		exit.SignalName = result.Signal.Name
+		exit.SignalNumber = result.Signal.Number
+	}
+	return exit
 }
 
 func (s *Supervisor) insertCompletedLocked(rec *record) {
@@ -2892,6 +2898,9 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 			continue
 		}
 		exitResult := process.Result{ExitCode: event.Exit.Code, ExitedAt: event.Exit.Time}
+		if event.Exit.SignalName != "" {
+			exitResult.Signal = &process.SignalInfo{Name: event.Exit.SignalName, Number: event.Exit.SignalNumber}
+		}
 		s.mu.RLock()
 		if rec.terminal {
 			exitResult = rec.result
@@ -3289,6 +3298,10 @@ func (r *record) snapshotLocked() Process {
 		// operator-stopped record deliberately exposes only its stopped state,
 		// so clients cannot present the intentional stop as an autonomous exit.
 		result := r.result
+		if result.Signal != nil {
+			signal := *result.Signal
+			result.Signal = &signal
+		}
 		model.Exit = &result
 		model.ExitCode = result.ExitCode
 		model.ExitedAt = result.ExitedAt

@@ -90,6 +90,73 @@ func TestDaemonCrashReclaimsOrphans(t *testing.T) {
 	}
 }
 
+func TestSignalExitObservation(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := testutil.BuildHum(t)
+	runtime := lifecycleNewRuntime(t)
+	var daemonPID int
+	t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
+
+	waiter := testutil.Start(t, hum, runtime.cwd, runtime.env, "wait", "signal-observed", "--timeout", "5s", "--json")
+	time.Sleep(100 * time.Millisecond)
+	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "signal-observed", "--detach", "--json", "--", "/bin/sh", "-c", "kill -TERM $$")
+	if started.Code != 0 || started.Err != nil || started.Stderr != "" {
+		t.Fatalf("signal launch: code=%d err=%v stdout=%q stderr=%q", started.Code, started.Err, started.Stdout, started.Stderr)
+	}
+	if err := waiter.Wait(lifecycleTimeout); err != nil {
+		t.Fatalf("signal wait: %v stdout=%q stderr=%q", err, waiter.Stdout(), waiter.Stderr())
+	}
+	if !strings.Contains(waiter.Stdout(), `"outcome":"exited"`) || !strings.Contains(waiter.Stdout(), `"exit":{"code":-1`) || !strings.Contains(waiter.Stdout(), `"signal":{"name":"SIGTERM","number":15}`) {
+		t.Fatalf("signal wait result = %q, want SIGTERM", waiter.Stdout())
+	}
+	deadline := time.Now().Add(lifecycleTimeout)
+	var observed struct {
+		State      string               `json:"state"`
+		ExitStatus *int                 `json:"exit_status"`
+		Signal     *protocol.SignalInfo `json:"signal"`
+	}
+	for time.Now().Before(deadline) {
+		status := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "signal-observed", "--json")
+		if status.Code == 0 {
+			if err := json.Unmarshal([]byte(strings.TrimSpace(status.Stdout)), &observed); err == nil && observed.State == "exited" {
+				break
+			}
+		}
+		time.Sleep(lifecyclePollInterval)
+	}
+	if observed.State != "exited" || observed.ExitStatus == nil || *observed.ExitStatus != -1 || observed.Signal == nil ||
+		observed.Signal.Name != "SIGTERM" || observed.Signal.Number != int(syscall.SIGTERM) {
+		t.Fatalf("observed status = %#v, want SIGTERM exit status -1", observed)
+	}
+
+	listed := testutil.Run(t, hum, runtime.cwd, runtime.env, "list", "--json")
+	if listed.Code != 0 || listed.Err != nil {
+		t.Fatalf("signal list: code=%d err=%v stdout=%q stderr=%q", listed.Code, listed.Err, listed.Stdout, listed.Stderr)
+	}
+	var listSnapshot struct {
+		Processes []protocol.Process `json:"processes"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(listed.Stdout)), &listSnapshot); err != nil {
+		t.Fatalf("decode signal list: %v; stdout=%q", err, listed.Stdout)
+	}
+	var listedSignal *protocol.Process
+	for i := range listSnapshot.Processes {
+		process := &listSnapshot.Processes[i]
+		if process.Name == "signal-observed" {
+			listedSignal = process
+			break
+		}
+	}
+	if listedSignal == nil || listedSignal.Exit == nil || listedSignal.Exit.Signal == nil || listedSignal.Exit.Signal.Name != "SIGTERM" || listedSignal.Exit.Signal.Number != int(syscall.SIGTERM) {
+		t.Fatalf("listed signal process = %#v, want SIGTERM", listedSignal)
+	}
+
+	human := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "signal-observed")
+	if human.Code != 0 || human.Err != nil || !strings.Contains(human.Stdout, "exit: signal SIGTERM (15)") || !strings.Contains(human.Stdout, "exit_status: -1") {
+		t.Fatalf("signal human status: code=%d err=%v stdout=%q stderr=%q", human.Code, human.Err, human.Stdout, human.Stderr)
+	}
+}
+
 func TestForegroundServe(t *testing.T) {
 	lifecycleRequireUnix(t)
 	hum := testutil.BuildHum(t)

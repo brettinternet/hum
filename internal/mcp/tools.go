@@ -232,10 +232,15 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"time":   map[string]any{"type": "string"},
 		"match":  map[string]any{"type": "string"},
 	}, "state")
+	signalInfo := objectSchema(map[string]any{
+		"name":   map[string]any{"type": "string", "description": "Canonical SIG-prefixed signal name."},
+		"number": map[string]any{"type": "integer", "minimum": 1, "description": "Signal number on the current Unix OS."},
+	}, "name", "number")
 	exit := objectSchema(map[string]any{
-		"code":  map[string]any{"type": "integer"},
-		"time":  map[string]any{"type": "string"},
-		"error": map[string]any{"type": "string"},
+		"code":   map[string]any{"type": "integer"},
+		"time":   map[string]any{"type": "string"},
+		"error":  map[string]any{"type": "string"},
+		"signal": signalInfo,
 	}, "code", "time")
 	startupWarning := objectSchema(map[string]any{"project": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "project", "name", "outcome", "message")
 	startupWarningsSchema := map[string]any{"type": "array", "items": startupWarning}
@@ -285,7 +290,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
 	output := objectSchema(map[string]any{"entries": map[string]any{"type": "array", "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}, "oldest": map[string]any{"type": "integer", "minimum": 0}, "latest": map[string]any{"type": "integer", "minimum": 0}, "evicted_through": map[string]any{"type": "integer", "minimum": 0}, "truncated": map[string]any{"type": "boolean"}, "more": map[string]any{"type": "boolean"}}, "entries")
-	wait := objectSchema(map[string]any{"op": map[string]any{"type": "string"}, "ok": map[string]any{"type": "boolean"}, "outcome": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "integer", "minimum": 0}, "process_observed": map[string]any{"type": "boolean", "description": "On timeout, true when a matching runtime record existed initially or at any point during this wait request; false means no process record was observed."}, "message": map[string]any{"type": "string", "description": "Actionable guidance when a timeout observed no process record."}}, "op", "ok", "cursor")
+	wait := objectSchema(map[string]any{"op": map[string]any{"type": "string"}, "ok": map[string]any{"type": "boolean"}, "outcome": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "integer", "minimum": 0}, "exit": exit, "process_observed": map[string]any{"type": "boolean", "description": "On timeout, true when a matching runtime record existed initially or at any point during this wait request; false means no process record was observed."}, "message": map[string]any{"type": "string", "description": "Actionable guidance when a timeout observed no process record."}}, "op", "ok", "cursor")
 	inputText := map[string]any{"type": "string", "minLength": 1, "description": "Exact UTF-8 text bytes; no newline is appended."}
 	inputBase64 := map[string]any{
 		"type": "string", "minLength": 1, "maxLength": 43692,
@@ -304,10 +309,6 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"bytes":         map[string]any{"type": "integer", "minimum": 1},
 		"launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 	}, "name", "bytes", "launch_cursor")
-	signalInfo := objectSchema(map[string]any{
-		"name":   map[string]any{"type": "string", "description": "Canonical SIG-prefixed signal name."},
-		"number": map[string]any{"type": "integer", "minimum": 1, "description": "Signal number on the current Unix OS."},
-	}, "name", "number")
 	signalResult := objectSchema(map[string]any{
 		"name":   map[string]any{"type": "string"},
 		"signal": signalInfo,
@@ -512,6 +513,9 @@ func orchestrateProcess(process protocol.Process) orchestrate.Process {
 	}
 	if process.Exit != nil {
 		shared.Exit = &orchestrate.Exit{Code: process.Exit.Code, Time: process.Exit.Time, Error: process.Exit.Error}
+		if process.Exit.Signal != nil {
+			shared.Exit.Signal = &orchestrate.SignalInfo{Name: process.Exit.Signal.Name, Number: process.Exit.Signal.Number}
+		}
 	}
 	if process.Readiness != nil {
 		readiness := &orchestrate.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
@@ -540,6 +544,9 @@ func protocolProcess(process orchestrate.Process) protocol.Process {
 	}
 	if process.Exit != nil {
 		result.Exit = &protocol.Exit{Code: process.Exit.Code, Time: process.Exit.Time, Error: process.Exit.Error}
+		if process.Exit.Signal != nil {
+			result.Exit.Signal = &protocol.SignalInfo{Name: process.Exit.Signal.Name, Number: process.Exit.Signal.Number}
+		}
 	}
 	if process.Readiness != nil {
 		readiness := &protocol.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
@@ -731,6 +738,9 @@ func (s *Server) mcpWaitForReadiness(ctx context.Context, client Client, resolut
 			result := orchestrate.WaitResult{Outcome: string(waited.Outcome), Cursor: uint64(waited.Cursor)}
 			if waited.Exit != nil {
 				result.Exit = &orchestrate.Exit{Code: waited.Exit.Code, Time: waited.Exit.Time, Error: waited.Exit.Error}
+				if waited.Exit.Signal != nil {
+					result.Exit.Signal = &orchestrate.SignalInfo{Name: waited.Exit.Signal.Name, Number: waited.Exit.Signal.Number}
+				}
 			}
 			return result, err
 		},

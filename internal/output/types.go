@@ -102,8 +102,10 @@ type ReadResult struct {
 
 // Exit describes the terminal transition delivered to followers.
 type Exit struct {
-	Code int
-	Time time.Time
+	Code         int
+	Time         time.Time
+	SignalName   string
+	SignalNumber int
 }
 
 // Event is one follower notification. Exactly one of Read or Exit is normally

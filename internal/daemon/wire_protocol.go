@@ -245,7 +245,7 @@ func protocolProcessFromWire(item wireProcess) protocol.Process {
 		if exitCode == 0 && item.Exit.ExitCode != 0 {
 			exitCode = item.Exit.ExitCode
 		}
-		result.Exit = &protocol.Exit{Code: exitCode, Time: item.Exit.Time, Error: item.Exit.Error}
+		result.Exit = &protocol.Exit{Code: exitCode, Time: item.Exit.Time, Error: item.Exit.Error, Signal: protocolSignalFromWire(item.Exit.Signal)}
 	}
 	return result
 }
@@ -317,6 +317,13 @@ func streamName(stream output.Stream) string {
 	}
 }
 
+func protocolSignalFromWire(value *wireSignal) *protocol.SignalInfo {
+	if value == nil {
+		return nil
+	}
+	return &protocol.SignalInfo{Name: value.Name, Number: value.Number}
+}
+
 func protocolCursorFromUint64(value *uint64) *protocol.Cursor {
 	if value == nil {
 		return nil
@@ -328,7 +335,7 @@ func protocolCursorFromUint64(value *uint64) *protocol.Cursor {
 func protocolStreamEventFromWire(response wireResponse) protocol.StreamEvent {
 	event := protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventType(response.Type), Name: response.Name, Entries: protocolEntriesFromWire(response.Entries), Next: protocolCursorFromUint64(response.Next), Oldest: protocolCursorFromUint64(response.Oldest), Latest: protocolCursorFromUint64(response.Latest), EvictedThrough: protocolCursorFromUint64(response.EvictedThrough), Truncated: response.Truncated, More: response.More, Cursor: protocolCursorFromUint64(response.Cursor), Ready: response.Ready}
 	if response.Exit != nil {
-		event.Exit = &protocol.Exit{Code: response.Exit.Code, Time: response.Exit.Time, Error: response.Exit.Error}
+		event.Exit = &protocol.Exit{Code: response.Exit.Code, Time: response.Exit.Time, Error: response.Exit.Error, Signal: protocolSignalFromWire(response.Exit.Signal)}
 		event.Time = response.Exit.Time
 	}
 	if response.Error != nil {
@@ -344,7 +351,7 @@ func protocolWaitResponseFromWire(response wireResponse) protocol.WaitResponse {
 	}
 	var exit *protocol.Exit
 	if response.Exit != nil {
-		exit = &protocol.Exit{Code: response.Exit.Code, Time: response.Exit.Time, Error: response.Exit.Error}
+		exit = &protocol.Exit{Code: response.Exit.Code, Time: response.Exit.Time, Error: response.Exit.Error, Signal: protocolSignalFromWire(response.Exit.Signal)}
 	}
 	processObserved := response.ProcessObserved != nil && *response.ProcessObserved
 	return protocol.WaitResponse{Op: protocol.OpWait, OK: response.OK, Outcome: protocol.WaitOutcome(response.Outcome), Cursor: cursor, Exit: exit, ProcessObserved: processObserved, Message: response.Message, Error: wireErrorToProtocol(response.Error)}
@@ -358,6 +365,9 @@ func wireResponseFromWait(result app.WaitResult) wireResponse {
 	}
 	if result.Exit != nil {
 		response.Exit = &wireExit{Code: result.Exit.ExitCode, Error: errorString(result.Exit.Err), Time: result.Exit.ExitedAt}
+		if result.Exit.Signal != nil {
+			response.Exit.Signal = &wireSignal{Name: result.Exit.Signal.Name, Number: result.Exit.Signal.Number}
+		}
 	}
 	return response
 }
@@ -378,7 +388,11 @@ func protocolStreamEventFromOutput(name string, event output.Event) protocol.Str
 		return protocolStreamEventFromWire(wire)
 	}
 	if event.Exit != nil {
-		return protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventExit, Name: name, Exit: &protocol.Exit{Code: event.Exit.Code, Time: event.Exit.Time}, Time: event.Exit.Time}
+		exit := &protocol.Exit{Code: event.Exit.Code, Time: event.Exit.Time}
+		if event.Exit.SignalName != "" {
+			exit.Signal = &protocol.SignalInfo{Name: event.Exit.SignalName, Number: event.Exit.SignalNumber}
+		}
+		return protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventExit, Name: name, Exit: exit, Time: event.Exit.Time}
 	}
 	return protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventOutput, Name: name}
 }

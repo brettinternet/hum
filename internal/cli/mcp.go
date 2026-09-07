@@ -189,7 +189,11 @@ func mcpExit(result *process.Result) *protocol.Exit {
 	if result.Err != nil {
 		message = result.Err.Error()
 	}
-	return &protocol.Exit{Code: result.ExitCode, Time: result.ExitedAt, Error: message}
+	exit := &protocol.Exit{Code: result.ExitCode, Time: result.ExitedAt, Error: message}
+	if result.Signal != nil {
+		exit.Signal = &protocol.SignalInfo{Name: result.Signal.Name, Number: result.Signal.Number}
+	}
+	return exit
 }
 
 func mcpOutput(result output.ReadResult) protocol.OutputResult {

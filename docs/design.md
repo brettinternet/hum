@@ -228,6 +228,15 @@ serializes writes, reports per-session errors with their names without stopping 
 sessions, and cancels the whole aggregate on daemon loss or output failure. Ctrl+C
 closes all aggregate followers and never signals managed processes. A single explicit
 name preserves the existing human and JSON output unchanged.
+Terminal snapshots retain an autonomous child's exit status. A child terminated by
+an OS signal is represented with `exit_status: -1` and an optional `signal` object
+containing its canonical name and number, for example
+`{"name":"SIGTERM","number":15}`; the same object is carried by CLI `list`,
+`status`, `up`, and `wait` JSON and human output, and by MCP text and structured
+content. Non-signal exits omit `signal`. Operator-stopped snapshots remain
+`stopped` without autonomous exit details, so an operator stop is distinct from a
+signal-terminated child.
+
 `hum attach <name>` is the human-facing explicit terminal connection to an existing
 running session. It never starts or restarts a process or daemon. It reuses the
 attached-session stream and, for a TTY target, the existing exclusive input lease;

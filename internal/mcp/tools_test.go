@@ -259,6 +259,69 @@ func args(root string, values ...any) json.RawMessage {
 	return b
 }
 
+func TestSignalExitSnapshots(t *testing.T) {
+	exitAt := time.Unix(172, 0).UTC()
+	signal := &protocol.SignalInfo{Name: "SIGTERM", Number: 15}
+	exited := protocol.Process{
+		Name: "signal", Source: "manifest", Root: "/project", Cwd: "/project", Argv: []string{"sleep", "30"},
+		State: protocol.StateExited, Exit: &protocol.Exit{Code: -1, Time: exitAt, Signal: signal}, ExitCode: -1, ExitedAt: exitAt,
+		Restart: protocol.RestartOnFailure, Relaunches: 5,
+	}
+	call := func(t *testing.T, server *Server, name, root string) callToolResult {
+		t.Helper()
+		params, err := json.Marshal(callToolParams{Name: name, Arguments: args(root, "name", "signal")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"signal-exit"`), Method: "tools/call", Params: params})
+		if rpcErr != nil {
+			t.Fatalf("%s RPC: %#v", name, rpcErr)
+		}
+		result, ok := value.(callToolResult)
+		if !ok || result.IsError || len(result.Content) != 1 {
+			t.Fatalf("%s result = %#v", name, value)
+		}
+		return result
+	}
+	assertSignal := func(t *testing.T, name string, result callToolResult) {
+		t.Helper()
+		structured, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, content := range []string{result.Content[0].Text, string(structured)} {
+			if !strings.Contains(content, `"signal":{"name":"SIGTERM","number":15}`) {
+				t.Fatalf("%s MCP content = %s, want signal", name, content)
+			}
+		}
+	}
+
+	listClient := &fakeClient{processes: map[string]protocol.Process{"signal": exited}}
+	listServer, root, _ := newTestServer(t, nil, listClient)
+	assertSignal(t, "list", call(t, listServer, "list", root))
+
+	statusClient := &fakeClient{processes: map[string]protocol.Process{"signal": exited}}
+	statusServer, statusRoot, _ := newTestServer(t, nil, statusClient)
+	assertSignal(t, "status", call(t, statusServer, "status", statusRoot))
+
+	upClient := &fakeClient{processes: map[string]protocol.Process{"signal": exited}}
+	upServer, upRoot, _ := newTestServer(t, nil, upClient)
+	exited.Root, exited.Cwd = upRoot, upRoot
+	upClient.processes["signal"] = exited
+	assertSignal(t, "up", call(t, upServer, "up", upRoot))
+
+	waitClient := &fakeClient{processes: map[string]protocol.Process{"signal": exited}, waitResult: protocol.NewWaitResponse(protocol.WaitExited, 8, &protocol.Exit{Code: -1, Time: exitAt, Signal: signal})}
+	waitServer, waitRoot, _ := newTestServer(t, nil, waitClient)
+	assertSignal(t, "wait", call(t, waitServer, "wait", waitRoot))
+
+	stoppedClient := &fakeClient{processes: map[string]protocol.Process{"signal": {Name: "signal", State: protocol.StateStopped}}}
+	stoppedServer, stoppedRoot, _ := newTestServer(t, nil, stoppedClient)
+	stoppedResult := call(t, stoppedServer, "status", stoppedRoot)
+	if strings.Contains(stoppedResult.Content[0].Text, `"signal":`) {
+		t.Fatalf("operator-stopped MCP content = %s, must omit signal", stoppedResult.Content[0].Text)
+	}
+}
+
 func TestNoInProcessSupervisor(t *testing.T) {
 	cmd := exec.Command("go", "list", "-deps", ".")
 	out, err := cmd.Output()

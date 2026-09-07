@@ -32,6 +32,61 @@ func TestProcessFollowerCountRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSignalExitRoundTrip(t *testing.T) {
+	at := time.Date(2026, time.September, 6, 17, 0, 0, 0, time.UTC)
+	signal := &SignalInfo{Name: "SIGTERM", Number: 15}
+	process := Process{
+		Name: "signal", Root: "/work/project", Cwd: "/work/project", Argv: []string{"sleep", "30"},
+		State: StateExited, Exit: &Exit{Code: -1, Time: at, Signal: signal}, ExitCode: -1, ExitedAt: at,
+	}
+	encoded, err := json.Marshal(process)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"signal":{"name":"SIGTERM","number":15}`) {
+		t.Fatalf("signal process JSON = %s, want terminating signal", encoded)
+	}
+	var decoded Process
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Exit == nil || !reflect.DeepEqual(decoded.Exit.Signal, signal) || decoded.Exit.Code != -1 || decoded.ExitCode != -1 {
+		t.Fatalf("decoded signal process = %#v, want signal exit", decoded)
+	}
+
+	responses := []any{
+		NewStartResponse(process),
+		NewListResponse([]Process{process}),
+		NewGetResponse(process),
+		NewWaitResponse(WaitExited, 9, &Exit{Code: -1, Time: at, Signal: signal}),
+	}
+	for _, response := range responses {
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			t.Fatalf("marshal %T: %v", response, err)
+		}
+		if !strings.Contains(string(encoded), `"name":"SIGTERM","number":15`) {
+			t.Fatalf("%T JSON = %s, want signal object", response, encoded)
+		}
+	}
+
+	numeric := Process{State: StateExited, Exit: &Exit{Code: 17, Time: at}, ExitCode: 17, ExitedAt: at}
+	numericJSON, err := json.Marshal(numeric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(numericJSON), `"signal"`) {
+		t.Fatalf("numeric process JSON = %s, signal must be omitted", numericJSON)
+	}
+	waitJSON, err := json.Marshal(NewWaitResponse(WaitExited, 10, &Exit{Code: 17, Time: at}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(waitJSON), `"signal"`) {
+		t.Fatalf("numeric wait JSON = %s, signal must be omitted", waitJSON)
+	}
+}
+
 func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	hello, err := json.Marshal(NewHello())
 	if err != nil {

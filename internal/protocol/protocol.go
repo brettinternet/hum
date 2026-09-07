@@ -15,7 +15,8 @@ import (
 // snapshots and autonomous exit details; version 11 added immutable output
 // time-window cutoffs in output and follow requests; version 12 adds canonical
 // observational process-group signal requests and responses; version 13 adds
-// process observation to wait timeout responses.
+// process observation to wait timeout responses and optional terminating-signal
+// details on exit snapshots.
 const Version = 13
 
 const (
@@ -919,11 +920,13 @@ type Output = OutputResult
 // ReadResult is a descriptive alias for OutputResult.
 type ReadResult = OutputResult
 
-// Exit describes a supervised process's terminal status.
+// Exit describes a supervised process's terminal status. Signal is present
+// only when the process was terminated by a signal; numeric exits omit it.
 type Exit struct {
-	Code  int       `json:"code"`
-	Time  time.Time `json:"time"`
-	Error string    `json:"error,omitempty"`
+	Code   int         `json:"code"`
+	Time   time.Time   `json:"time"`
+	Error  string      `json:"error,omitempty"`
+	Signal *SignalInfo `json:"signal,omitempty"`
 }
 
 // Readiness describes process readiness state and, when ready, the matching

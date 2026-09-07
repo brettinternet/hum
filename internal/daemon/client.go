@@ -304,6 +304,9 @@ func (c *Client) wait(ctx context.Context, req WaitRequest) (app.WaitResult, err
 	result := app.WaitResult{Outcome: outcome, Cursor: output.Cursor(*response.Cursor), ProcessObserved: processObserved}
 	if response.Exit != nil {
 		result.Exit = &processResult{ExitCode: response.Exit.Code, Err: errorFromString(response.Exit.Error), ExitedAt: response.Exit.Time}
+		if response.Exit.Signal != nil {
+			result.Exit.Signal = &process.SignalInfo{Name: response.Exit.Signal.Name, Number: response.Exit.Signal.Number}
+		}
 	}
 	return result, nil
 }
@@ -362,7 +365,12 @@ func (f *Follower) Next(ctx context.Context) (output.Event, error) {
 		return output.Event{}, fmt.Errorf("unexpected follower response %q", response.Op)
 	}
 	if response.Type == "exit" && response.Exit != nil {
-		return output.Event{Exit: &output.Exit{Code: response.Exit.Code, Time: response.Exit.Time}}, nil
+		exit := &output.Exit{Code: response.Exit.Code, Time: response.Exit.Time}
+		if response.Exit.Signal != nil {
+			exit.SignalName = response.Exit.Signal.Name
+			exit.SignalNumber = response.Exit.Signal.Number
+		}
+		return output.Event{Exit: exit}, nil
 	}
 	return output.Event{Read: &output.ReadResult{
 		Entries: entriesFromWire(response.Entries), Next: cursorFromUint64(response.Next),
@@ -1186,6 +1194,9 @@ func appProcessFromWire(item wireProcess) app.Process {
 			exitCode = item.Exit.ExitCode
 		}
 		result.Exit = &processResult{ExitCode: exitCode, Err: errorFromString(item.Exit.Error), ExitedAt: item.Exit.Time}
+		if item.Exit.Signal != nil {
+			result.Exit.Signal = &process.SignalInfo{Name: item.Exit.Signal.Name, Number: item.Exit.Signal.Number}
+		}
 	}
 	return result
 }

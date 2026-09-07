@@ -1363,6 +1363,19 @@ processes:
 	}
 }
 
+func TestSignalExitDocs(t *testing.T) {
+	contents, err := os.ReadFile("../../docs/design.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := strings.ToLower(string(contents))
+	for _, phrase := range []string{"exit_status: -1", "signal", `{"name":"sigterm","number":15}`, "non-signal exits omit", "operator-stopped", "list", "status", "up", "wait", "mcp"} {
+		if !strings.Contains(docs, phrase) {
+			t.Errorf("signal exit docs missing %q", phrase)
+		}
+	}
+}
+
 func TestUpProgressDocs(t *testing.T) {
 	design, err := os.ReadFile("../../docs/design.md")
 	if err != nil {

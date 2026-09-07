@@ -56,14 +56,26 @@ type TTYSize struct {
 	Rows    uint16
 }
 
+// SignalInfo identifies the signal that terminated a child. Name is the
+// canonical SIG-prefixed name and Number is the host Unix signal number.
+type SignalInfo struct {
+	Name   string
+	Number int
+}
+
+// Signal is a concise alias for SignalInfo.
+type Signal = SignalInfo
+
 // Result is the immutable terminal status of a child.
 //
 // ExitCode is the process exit status. A process terminated by a signal has an
-// exit code of -1, as reported by os.ProcessState.ExitCode. Err contains
-// unexpected wait failures and output capture failures; an ordinary non-zero
-// process exit is represented by ExitCode and does not populate Err.
+// exit code of -1, as reported by os.ProcessState.ExitCode, and carries Signal.
+// Err contains unexpected wait failures and output capture failures; an
+// ordinary non-zero process exit is represented by ExitCode and does not
+// populate Err.
 type Result struct {
 	ExitCode int
+	Signal   *SignalInfo
 	Err      error
 	ExitedAt time.Time
 }
@@ -522,15 +534,7 @@ func (c *Child) run(cmd *exec.Cmd, stdoutReader, stderrReader *os.File) {
 	}()
 
 	waitErr := cmd.Wait()
-	exitCode := -1
-	if cmd.ProcessState != nil {
-		exitCode = cmd.ProcessState.ExitCode()
-	} else {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) && exitErr.ProcessState != nil {
-			exitCode = exitErr.ProcessState.ExitCode()
-		}
-	}
+	exitCode, exitSignal := waitStatus(cmd, waitErr)
 	// Publish the leader's wait status before waiting for redirected
 	// descendants. Tests and callers that need to coordinate a group signal can
 	// distinguish a reaped leader from a still-running process group.
@@ -561,6 +565,7 @@ func (c *Child) run(cmd *exec.Cmd, stdoutReader, stderrReader *os.File) {
 	stderrErr := <-stderrDone
 	result := Result{
 		ExitCode: exitCode,
+		Signal:   exitSignal,
 		Err:      errors.Join(normalizeWaitError(waitErr), stdoutErr, stderrErr),
 		ExitedAt: at,
 	}
@@ -568,7 +573,7 @@ func (c *Child) run(cmd *exec.Cmd, stdoutReader, stderrReader *os.File) {
 	// capture waits for EOF or cancellation and closes both LineWriters before
 	// this point, so NotifyExit's watermark includes every retained output
 	// record.
-	c.output.NotifyExit(output.Exit{Code: exitCode, Time: at})
+	c.output.NotifyExit(outputExit(exitCode, at, exitSignal))
 
 	c.mu.Lock()
 	c.res = result
@@ -594,15 +599,7 @@ func (c *Child) runTTY(cmd *exec.Cmd, master *os.File) {
 	}()
 
 	waitErr := cmd.Wait()
-	exitCode := -1
-	if cmd.ProcessState != nil {
-		exitCode = cmd.ProcessState.ExitCode()
-	} else {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) && exitErr.ProcessState != nil {
-			exitCode = exitErr.ProcessState.ExitCode()
-		}
-	}
+	exitCode, exitSignal := waitStatus(cmd, waitErr)
 	close(c.leaderDone)
 	<-c.groupGone
 	c.mu.Lock()
@@ -630,12 +627,126 @@ func (c *Child) runTTY(cmd *exec.Cmd, master *os.File) {
 	c.mu.Lock()
 	c.ttyMaster = nil
 	c.mu.Unlock()
-	result := Result{ExitCode: exitCode, Err: errors.Join(normalizeWaitError(waitErr), stdoutErr), ExitedAt: at}
-	c.output.NotifyExit(output.Exit{Code: exitCode, Time: at})
+	result := Result{ExitCode: exitCode, Signal: exitSignal, Err: errors.Join(normalizeWaitError(waitErr), stdoutErr), ExitedAt: at}
+	c.output.NotifyExit(outputExit(exitCode, at, exitSignal))
 	c.mu.Lock()
 	c.res = result
 	c.mu.Unlock()
 	close(c.done)
+}
+
+func outputExit(code int, at time.Time, signal *SignalInfo) output.Exit {
+	exit := output.Exit{Code: code, Time: at}
+	if signal != nil {
+		exit.SignalName = signal.Name
+		exit.SignalNumber = signal.Number
+	}
+	return exit
+}
+
+func waitStatus(cmd *exec.Cmd, waitErr error) (int, *SignalInfo) {
+	if cmd == nil {
+		return -1, nil
+	}
+	state := cmd.ProcessState
+	if state == nil {
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			state = exitErr.ProcessState
+		}
+	}
+	if state == nil {
+		return -1, nil
+	}
+	return state.ExitCode(), signalInfo(state)
+}
+
+func signalInfo(state *os.ProcessState) *SignalInfo {
+	if state == nil {
+		return nil
+	}
+	var waitState syscall.WaitStatus
+	switch value := state.Sys().(type) {
+	case syscall.WaitStatus:
+		waitState = value
+	case *syscall.WaitStatus:
+		if value == nil {
+			return nil
+		}
+		waitState = *value
+	default:
+		return nil
+	}
+	if !waitState.Signaled() {
+		return nil
+	}
+	number := int(waitState.Signal())
+	return &SignalInfo{Name: canonicalSignalName(waitState.Signal()), Number: number}
+}
+
+func canonicalSignalName(signal syscall.Signal) string {
+	switch signal {
+	case syscall.SIGHUP:
+		return "SIGHUP"
+	case syscall.SIGINT:
+		return "SIGINT"
+	case syscall.SIGQUIT:
+		return "SIGQUIT"
+	case syscall.SIGILL:
+		return "SIGILL"
+	case syscall.SIGTRAP:
+		return "SIGTRAP"
+	case syscall.SIGABRT:
+		return "SIGABRT"
+	case syscall.SIGBUS:
+		return "SIGBUS"
+	case syscall.SIGFPE:
+		return "SIGFPE"
+	case syscall.SIGKILL:
+		return "SIGKILL"
+	case syscall.SIGUSR1:
+		return "SIGUSR1"
+	case syscall.SIGSEGV:
+		return "SIGSEGV"
+	case syscall.SIGUSR2:
+		return "SIGUSR2"
+	case syscall.SIGPIPE:
+		return "SIGPIPE"
+	case syscall.SIGALRM:
+		return "SIGALRM"
+	case syscall.SIGTERM:
+		return "SIGTERM"
+	case syscall.SIGCHLD:
+		return "SIGCHLD"
+	case syscall.SIGCONT:
+		return "SIGCONT"
+	case syscall.SIGSTOP:
+		return "SIGSTOP"
+	case syscall.SIGTSTP:
+		return "SIGTSTP"
+	case syscall.SIGTTIN:
+		return "SIGTTIN"
+	case syscall.SIGTTOU:
+		return "SIGTTOU"
+	case syscall.SIGURG:
+		return "SIGURG"
+	case syscall.SIGXCPU:
+		return "SIGXCPU"
+	case syscall.SIGXFSZ:
+		return "SIGXFSZ"
+	case syscall.SIGVTALRM:
+		return "SIGVTALRM"
+	case syscall.SIGPROF:
+		return "SIGPROF"
+	case syscall.SIGWINCH:
+		return "SIGWINCH"
+	case syscall.SIGIO:
+		return "SIGIO"
+	case syscall.SIGSYS:
+		return "SIGSYS"
+	default:
+		return fmt.Sprintf("SIG%d", signal)
+	}
 }
 
 func (c *Child) observeGroupExit() {

@@ -20,8 +20,117 @@ import (
 	"hum/internal/app"
 	"hum/internal/daemon"
 	"hum/internal/output"
+	processpkg "hum/internal/process"
 	"hum/internal/protocol"
 )
+
+func TestSignalExitRendering(t *testing.T) {
+	exitAt := time.Unix(171, 0).UTC()
+	signal := &processpkg.SignalInfo{Name: "SIGTERM", Number: 15}
+	process := app.Process{
+		Name: "signal", Source: "ad_hoc", Root: "/project", Cwd: "/project", Argv: []string{"sleep", "30"},
+		State: app.StateExited, Exit: &processpkg.Result{ExitCode: -1, Signal: signal, ExitedAt: exitAt}, ExitCode: -1, ExitedAt: exitAt,
+	}
+
+	list := processJSON(process)
+	listJSONBytes, err := json.Marshal(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(listJSONBytes), `"signal":{"name":"SIGTERM","number":15}`) {
+		t.Fatalf("list JSON = %s, want signal", listJSONBytes)
+	}
+	status := statusJSONFor(process)
+	statusJSONBytes, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ExitStatus == nil || *status.ExitStatus != -1 || !strings.Contains(string(statusJSONBytes), `"signal":{"name":"SIGTERM","number":15}`) {
+		t.Fatalf("status JSON = %s, want exit_status -1 and signal", statusJSONBytes)
+	}
+	up := manifestLaunchResult{
+		Name: "signal", Outcome: "exited_before_ready", Source: "manifest", Argv: []string{"sleep", "30"},
+		State: string(app.StateExited), ExitCode: intPointer(-1), Signal: &protocol.SignalInfo{Name: "SIGTERM", Number: 15},
+	}
+	upJSON, err := json.Marshal(up)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(upJSON), `"signal":{"name":"SIGTERM","number":15}`) {
+		t.Fatalf("up JSON = %s, want signal", upJSON)
+	}
+	wait := app.WaitResult{Outcome: app.WaitExited, Cursor: 7, Exit: process.Exit}
+	waitJSONBytes, err := json.Marshal(waitJSONFor(wait))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(waitJSONBytes), `"signal":{"name":"SIGTERM","number":15}`) {
+		t.Fatalf("wait JSON = %s, want signal", waitJSONBytes)
+	}
+	followJSONBytes, err := json.Marshal(eventJSON("signal", output.Event{Exit: &output.Exit{
+		Code: -1, Time: exitAt, SignalName: "SIGTERM", SignalNumber: 15,
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(followJSONBytes), `"signal":{"name":"SIGTERM","number":15}`) {
+		t.Fatalf("follow JSON = %s, want signal", followJSONBytes)
+	}
+
+	var human bytes.Buffer
+	if err := renderListHuman(&human, []app.Process{process}, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(human.String(), "exit: signal SIGTERM (15)") {
+		t.Fatalf("list human = %q, want signal rendering", human.String())
+	}
+	human.Reset()
+	if err := renderStatusHuman(&human, process); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(human.String(), "exit: signal SIGTERM (15)") || !strings.Contains(human.String(), "exit_status: -1") {
+		t.Fatalf("status human = %q, want signal and -1", human.String())
+	}
+	human.Reset()
+	if err := renderManifestLaunchHuman(&human, up); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(human.String(), "exit: signal SIGTERM (15)") {
+		t.Fatalf("up human = %q, want signal rendering", human.String())
+	}
+	human.Reset()
+	if err := renderWaitHuman(&human, "signal", wait); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(human.String(), "exit: signal SIGTERM (15)") {
+		t.Fatalf("wait human = %q, want signal rendering", human.String())
+	}
+
+	stopped := app.Process{Name: "stopped", State: app.StateStopped, Argv: []string{"sleep", "30"}}
+	stoppedJSON, err := json.Marshal(statusJSONFor(stopped))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stoppedJSON), `"signal"`) {
+		t.Fatalf("stopped status JSON = %s, must omit signal", stoppedJSON)
+	}
+	human.Reset()
+	if err := renderStatusHuman(&human, stopped); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(human.String(), "signal") || !strings.Contains(human.String(), "state: stopped") {
+		t.Fatalf("stopped status human = %q, must remain distinct", human.String())
+	}
+
+	numeric := app.Process{State: app.StateExited, Exit: &processpkg.Result{ExitCode: 17, ExitedAt: exitAt}, ExitCode: 17}
+	numericJSON, err := json.Marshal(processJSON(numeric))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(numericJSON), `"signal"`) {
+		t.Fatalf("numeric list JSON = %s, signal must be omitted", numericJSON)
+	}
+}
 
 func TestList(t *testing.T) {
 	runtimeDir := hum006ListLogsTempDir(t, "runtime")

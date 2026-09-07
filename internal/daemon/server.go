@@ -1186,10 +1186,11 @@ type wireReadiness struct {
 }
 
 type wireProcessExit struct {
-	Code     int       `json:"code,omitempty"`
-	ExitCode int       `json:"exit_code,omitempty"`
-	Error    string    `json:"error,omitempty"`
-	Time     time.Time `json:"time,omitempty"`
+	Code     int         `json:"code,omitempty"`
+	ExitCode int         `json:"exit_code,omitempty"`
+	Error    string      `json:"error,omitempty"`
+	Time     time.Time   `json:"time,omitempty"`
+	Signal   *wireSignal `json:"signal,omitempty"`
 }
 
 type wireReadResult struct {
@@ -1209,9 +1210,10 @@ type wireEntry struct {
 }
 
 type wireExit struct {
-	Code  int       `json:"code"`
-	Error string    `json:"error,omitempty"`
-	Time  time.Time `json:"time"`
+	Code   int         `json:"code"`
+	Error  string      `json:"error,omitempty"`
+	Time   time.Time   `json:"time"`
+	Signal *wireSignal `json:"signal,omitempty"`
 }
 
 func protocolWireError(err error) *wireError {
@@ -1302,6 +1304,9 @@ func wireProcessFromApp(item app.Process) wireProcess {
 	}
 	if item.Exit != nil {
 		result.Exit = &wireProcessExit{Code: item.Exit.ExitCode, Error: errorString(item.Exit.Err), Time: item.Exit.ExitedAt}
+		if item.Exit.Signal != nil {
+			result.Exit.Signal = &wireSignal{Name: item.Exit.Signal.Name, Number: item.Exit.Signal.Number}
+		}
 	}
 	return result
 }

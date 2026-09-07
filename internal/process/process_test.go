@@ -130,6 +130,10 @@ func runProcessHelper() {
 		signal.Stop(signals)
 	case "exit":
 		os.Exit(17)
+	case "signal-exit":
+		for {
+			time.Sleep(time.Hour)
+		}
 	case "group-parent":
 		runGroupParent()
 	case "group-child":
@@ -936,6 +940,44 @@ func TestExitCodeProcessGroupAndRepeatSafeWait(t *testing.T) {
 	case <-child.Done():
 	default:
 		t.Fatal("Done remained open after Wait")
+	}
+}
+
+func TestSignalExitReportsSignal(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		sig  syscall.Signal
+		want string
+		num  int
+	}{
+		{name: "term", sig: syscall.SIGTERM, want: "SIGTERM", num: int(syscall.SIGTERM)},
+		{name: "kill", sig: syscall.SIGKILL, want: "SIGKILL", num: int(syscall.SIGKILL)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			child, err := Start(helperSpec(newStore(t), "signal-exit"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := child.Signal(test.sig); err != nil {
+				t.Fatalf("signal child: %v", err)
+			}
+			result := child.Wait()
+			if result.Err != nil || result.ExitCode != -1 {
+				t.Fatalf("signal result = %+v, want exit code -1 without error", result)
+			}
+			if result.Signal == nil || result.Signal.Name != test.want || result.Signal.Number != test.num {
+				t.Fatalf("signal result = %+v, want %s (%d)", result.Signal, test.want, test.num)
+			}
+		})
+	}
+
+	numeric, err := Start(helperSpec(newStore(t), "exit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := numeric.Wait()
+	if result.ExitCode != 17 || result.Signal != nil {
+		t.Fatalf("numeric result = %+v, want exit code 17 without signal", result)
 	}
 }
 

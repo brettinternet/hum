@@ -149,27 +149,28 @@ func mergeManifestProcesses(manifest manifestState, running []app.Process) []app
 // Error is deliberately a string so every result remains easy to consume as
 // one NDJSON object without exposing daemon internals.
 type manifestLaunchResult struct {
-	Name                string     `json:"name"`
-	ProjectSelector     string     `json:"-"`
-	Outcome             string     `json:"outcome"`
-	Source              string     `json:"source"`
-	Argv                []string   `json:"argv"`
-	State               string     `json:"state,omitempty"`
-	PID                 *int       `json:"pid,omitempty"`
-	LaunchCursor        *uint64    `json:"launch_cursor,omitempty"`
-	Readiness           string     `json:"readiness,omitempty"`
-	ReadinessMatch      string     `json:"readiness_match,omitempty"`
-	ReadinessConfigured bool       `json:"-"`
-	ReadyCursor         *uint64    `json:"ready_cursor,omitempty"`
-	BlockedBy           []string   `json:"blocked_by,omitempty"`
-	ExistingState       string     `json:"existing_state,omitempty"`
-	ChangedFields       []string   `json:"changed_fields,omitempty"`
-	Guidance            string     `json:"guidance,omitempty"`
-	Restart             string     `json:"restart"`
-	Relaunches          int        `json:"relaunches"`
-	NextLaunchAt        *time.Time `json:"next_launch_at,omitempty"`
-	Error               string     `json:"error,omitempty"`
-	ExitCode            *int       `json:"exit_code,omitempty"`
+	Name                string               `json:"name"`
+	ProjectSelector     string               `json:"-"`
+	Outcome             string               `json:"outcome"`
+	Source              string               `json:"source"`
+	Argv                []string             `json:"argv"`
+	State               string               `json:"state,omitempty"`
+	PID                 *int                 `json:"pid,omitempty"`
+	LaunchCursor        *uint64              `json:"launch_cursor,omitempty"`
+	Readiness           string               `json:"readiness,omitempty"`
+	ReadinessMatch      string               `json:"readiness_match,omitempty"`
+	ReadinessConfigured bool                 `json:"-"`
+	ReadyCursor         *uint64              `json:"ready_cursor,omitempty"`
+	BlockedBy           []string             `json:"blocked_by,omitempty"`
+	ExistingState       string               `json:"existing_state,omitempty"`
+	ChangedFields       []string             `json:"changed_fields,omitempty"`
+	Guidance            string               `json:"guidance,omitempty"`
+	Restart             string               `json:"restart"`
+	Relaunches          int                  `json:"relaunches"`
+	NextLaunchAt        *time.Time           `json:"next_launch_at,omitempty"`
+	Error               string               `json:"error,omitempty"`
+	ExitCode            *int                 `json:"exit_code,omitempty"`
+	Signal              *protocol.SignalInfo `json:"signal,omitempty"`
 }
 
 // MarshalJSON keeps a configured empty readiness matcher visible. The matcher
@@ -238,6 +239,10 @@ func manifestLaunchResultFor(definition project.Definition, process app.Process,
 	if process.State == app.StateExited {
 		exitCode := process.ExitCode
 		result.ExitCode = &exitCode
+		if process.Exit != nil && process.Exit.Signal != nil {
+			signal := protocol.SignalInfo{Name: process.Exit.Signal.Name, Number: process.Exit.Signal.Number}
+			result.Signal = &signal
+		}
 	}
 	cursor := uint64(process.LaunchCursor)
 	result.LaunchCursor = &cursor
@@ -298,6 +303,9 @@ func cliOrchestrateProcess(process app.Process) orchestrate.Process {
 		if process.Exit.Err != nil {
 			shared.Exit.Error = process.Exit.Err.Error()
 		}
+		if process.Exit.Signal != nil {
+			shared.Exit.Signal = &orchestrate.SignalInfo{Name: process.Exit.Signal.Name, Number: process.Exit.Signal.Number}
+		}
 	}
 	if process.Readiness != nil {
 		readiness := &orchestrate.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
@@ -327,6 +335,9 @@ func cliAppProcess(process orchestrate.Process) app.Process {
 		exit := &processpkg.Result{ExitCode: process.Exit.Code, ExitedAt: process.Exit.Time}
 		if process.Exit.Error != "" {
 			exit.Err = errors.New(process.Exit.Error)
+		}
+		if process.Exit.Signal != nil {
+			exit.Signal = &processpkg.SignalInfo{Name: process.Exit.Signal.Name, Number: process.Exit.Signal.Number}
 		}
 		result.Exit = exit
 	}
@@ -397,6 +408,9 @@ func cliSharedLaunchResult(definition project.Definition, result manifestLaunchR
 			if result.ExitCode != nil {
 				snapshot.ExitCode = *result.ExitCode
 			}
+			if result.Signal != nil {
+				snapshot.Exit = &processpkg.Result{ExitCode: snapshot.ExitCode, Signal: &processpkg.SignalInfo{Name: result.Signal.Name, Number: result.Signal.Number}}
+			}
 			snapshot.Relaunches = result.Relaunches
 			snapshot.NextLaunchAt = result.NextLaunchAt
 		}
@@ -442,6 +456,9 @@ func cliReadinessResult(client *daemon.Client, ctx context.Context, cwd string, 
 				result.Exit = &orchestrate.Exit{Code: waited.Exit.ExitCode, Time: waited.Exit.ExitedAt}
 				if waited.Exit.Err != nil {
 					result.Exit.Error = waited.Exit.Err.Error()
+				}
+				if waited.Exit.Signal != nil {
+					result.Exit.Signal = &orchestrate.SignalInfo{Name: waited.Exit.Signal.Name, Number: waited.Exit.Signal.Number}
 				}
 			}
 			return result, err
