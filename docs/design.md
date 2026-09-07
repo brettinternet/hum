@@ -2,10 +2,12 @@
 
 ## Scope
 
-hum is a local process supervisor for humans and coding agents. A private
-Unix-socket daemon owns named process groups and bounded output independently of
-clients. CLI and MCP clients resolve project definitions and send exact argv to
-that daemon; they never create another supervisor or reconstruct shell text.
+hum is a local process supervisor for humans and coding agents.
+
+- A private Unix-socket daemon owns named process groups and bounded output independently of
+  clients.
+- CLI and MCP clients resolve project definitions and send exact argv to that daemon; they never
+  create another supervisor or reconstruct shell text.
 
 Process names are scoped to the nearest Git root, or the caller's working
 directory when no Git marker exists. macOS and Linux are supported; Windows is
@@ -13,11 +15,13 @@ not.
 
 ## Shared orchestration
 
-`internal/orchestrate` owns the manifest `up` DAG scheduler, per-node readiness
-wait, and the shared `definition_drift`, `removed_definition`, recovery, and
-skipped classifications. CLI and MCP only adapt their daemon snapshots and
-render the resulting common model, so launch ordering, readiness gates, and
-stable outcome fields cannot diverge.
+`internal/orchestrate` owns scheduling, readiness, recovery, drift, removal, and skip classification. CLI and MCP adapt daemon snapshots and render the same model.
+
+```text
+CLI ─┐                       ┌─> launch order
+     ├─> internal/orchestrate ├─> readiness
+MCP ─┘                       └─> stable outcomes
+```
 
 ## CLI
 
@@ -47,7 +51,11 @@ hum completion bash|zsh|fish
 
 Short aliases are command-local except the global help and version aliases. Project-scoped commands also accept the persistent `-C DIR` alias for `--project DIR`; the selector may appear before or after the subcommand, and `run` accepts it after the process name before `--`.
 
-`completion bash`, `completion zsh`, and `completion fish` print installable shell scripts. Completion is opt-in, uses the assembled command and flag tree, and never starts a daemon; NAME positions query only the merged declaration/runtime names for the selected project. Manifest or daemon errors return no candidates and no diagnostic.
+`completion bash`, `completion zsh`, and `completion fish` print installable shell scripts.
+
+- Completion is opt-in, uses the assembled command and flag tree, and never starts a daemon;
+  NAME positions query only the merged declaration/runtime names for the selected project.
+- Manifest or daemon errors return no candidates and no diagnostic.
 
 Long options remain canonical in documentation, scripts, output, and errors.
 Combined short options are unsupported; MCP fields have no aliases.
@@ -73,33 +81,51 @@ Combined short options are unsupported; MCP fields have no aliases.
 `--output-bytes`, and `--completed-records` remain long-only. The `input`
 command intentionally adds no short aliases, including for `--json`.
 
-`--project DIR` resolves DIR relative to the invocation directory, requires an existing directory, cleans it to an absolute path, and applies the nearest-Git-root-or-directory-fallback rule. The resolved project root scopes names and manifests. An ad-hoc `run` keeps the selected DIR as the child cwd; a manifest definition keeps its declared root-relative `cwd`. `init` writes at the resolved root, and `list --all` uses the selected project while merging unlaunched declarations. Guidance and stable next-command fields preserve a canonical shell-safe absolute `--project` selector, including paths with spaces. `serve`, `shutdown`, `mcp`, and `skill` reject an explicit project selector because their scope is daemon-global, request-scoped, or static. Existing `-d` remains `serve --daemon` and `run --detach`.
+`--project DIR` resolves DIR relative to the invocation directory, requires an existing
+directory, cleans it to an absolute path, and applies the nearest-Git-root-or-directory-fallback
+rule.
 
-Human-readable output is the default. When stdout is a terminal, `TERM` is
-not `dumb`, and `NO_COLOR` is absent, `list`, `status`, and `up` use a fixed
-minimal palette: running and ready are green, starting is yellow,
-operator-stopped is cyan, an autonomous successful exit is dim, and failed
-exits, errors, timed-out and definition-drift results, exhausted recovery, and
-dependency-skipped results are red; list headers are bold. Any presence of
-`NO_COLOR`, including an empty value, disables styling, as does `TERM=dumb`.
-Piped output and JSON never contain ANSI styling. Only renderer-owned lifecycle
-labels are styled; names, paths, messages, and child output remain unchanged.
+- The resolved project root scopes names and manifests.
+- An ad-hoc `run` keeps the selected DIR as the child cwd; a manifest definition keeps its
+  declared root-relative `cwd`.
+- `init` writes at the resolved root, and `list --all` uses the selected project while merging
+  unlaunched declarations.
+- Guidance and stable next-command fields preserve a canonical shell-safe absolute `--project`
+  selector, including paths with spaces.
+- `serve`, `shutdown`, `mcp`, and `skill` reject an explicit project selector because their
+  scope is daemon-global, request-scoped, or static.
+- Existing `-d` remains `serve --daemon` and `run --detach`.
 
-JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus identity, readiness,
-cursors, and errors when applicable. Human `status` always prints `followers`;
-human `list` adds `followers=N` only to followed records, leaving ordinary
-unfollowed list output unchanged. JSON-capable commands classify failures as
-`usage`, `daemon_unavailable`, `manifest_invalid`, or `internal` and emit one
-newline-terminated `{"error":{"code":"...","message":"..."}}` object on
-stdout when no JSON has been written. Daemon wire failures retain their wire
-code. JSON failures never add a hum diagnostic to stderr, and exit codes remain
-unchanged. The `start`/`up` NDJSON streams and `logs --follow` append one final
-typed `error` event after earlier events when a later failure occurs; they do
-not buffer the stream. This contract applies only when standalone `--json` or
-the documented `-j` appears before the payload separator. Attached
-`run --json` is the exception: it remains raw child output, including child
-stderr, and payload text that merely resembles `--json` is not a JSON mode
-request.
+Human-readable output is the default.
+
+- When stdout is a terminal, `TERM` is not `dumb`, and `NO_COLOR` is absent, `list`, `status`,
+  and `up` use a fixed minimal palette.
+- States use these colors: running and ready are green; starting is yellow; operator-stopped is cyan;
+  an autonomous successful exit is dim.
+- Colors for failed
+exits, errors, timeouts, definition drift, exhausted recovery, and dependency-skipped results are red.
+- list headers are bold.
+- Any presence of `NO_COLOR`, including an empty value, disables styling, as does `TERM=dumb`.
+- Piped output and JSON never contain ANSI styling.
+- Only renderer-owned lifecycle labels are styled; names, paths, messages, and child output
+  remain unchanged.
+
+JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus
+identity, readiness, cursors, and errors when applicable.
+
+- Human `status` always prints `followers`; human `list` adds `followers=N` only to followed
+  records, leaving ordinary unfollowed list output unchanged.
+- JSON-capable commands classify failures as `usage`, `daemon_unavailable`, `manifest_invalid`,
+  or `internal` and emit one newline-terminated `{"error":{"code":"...","message":"..."}}`
+  object on stdout when no JSON has been written.
+- Daemon wire failures retain their wire code.
+- JSON failures never add a hum diagnostic to stderr, and exit codes remain unchanged.
+- The `start`/`up` NDJSON streams and `logs --follow` append one final typed `error` event after
+  earlier events when a later failure occurs; they do not buffer the stream.
+- This contract applies only when standalone `--json` or the documented `-j` appears before the
+  payload separator.
+- Attached `run --json` is the exception: it remains raw child output, including child stderr,
+  and payload text that merely resembles `--json` is not a JSON mode request.
 
 | JSON error code | Meaning |
 | --- | --- |
@@ -108,197 +134,232 @@ request.
 | `manifest_invalid` | manifest or project discovery configuration is invalid |
 | `internal` | an unexpected local CLI failure |
 
-`start` and `up` emit one NDJSON launch result per name. `up` uses
-lexical declaration order, attempts every entry, and applies this exit-code
-precedence: request error or `definition_drift` (1), early exit (3), timeout
-(2), success (0). `definition_drift` includes sorted `changed_fields` for
-argv, canonical cwd, readiness matcher, TTY, or normalized restart changes and
-never satisfies an `after` gate; CLI `up` exits 1 for drift. A removed
-manifest-sourced running or recovery-capable record is emitted as
-`removed_definition` with stop/remove guidance such as `hum stop NAME` or
-`hum remove NAME`. Removed records require an explicit stop or remove; the
-warning does not alter aggregate exit status.
-Attached `run --json` still streams raw child output; `logs --json --follow`
-emits bounded NDJSON events. `logs` accepts optional, repeatable names in selection
-order. With no names, it resolves the current declaration set once in lexical order,
-without adding ad-hoc sessions; duplicate names are rejected. Bounded logs without
-`--after-cursor` select the newest configured entry window, equivalent to the default
-`--tail`; an explicit `--after-cursor` without `--tail` keeps forward paging from
-the oldest eligible retained entry. `--after-cursor` is rejected before daemon startup for an aggregate
-invocation. `--since DURATION` requires a positive, valid duration and captures one
-inclusive request-time cutoff shared by every selected aggregate name; entries are
-evaluated in this order: after-cursor, since, stream, match, tail, then entry and
-byte bounds. It composes with follow: the cutoff filters the initial retained replay
-and later entries naturally pass. Invalid,
-zero, negative, or overflowing durations are rejected before daemon startup or contact.
-Aggregate filters, tail, and entry or byte limits apply independently per selected
-name, bounded output is returned in selection order, human entries are atomic
-`[NAME]`-prefixed writes, and aggregate JSON uses named NDJSON event objects.
+`start` and `up` emit one NDJSON launch result per name.
 
-This human-only `hum up` progress is enabled only in default human mode while
-readiness waiting is enabled. It writes newline-terminated startup transitions to stderr;
-the unchanged final per-declaration summaries remain on stdout. Progress follows
-temporal transition completion rather than lexical declaration order, is serialized
-as complete lines, and is bounded to a maximum of two lines per declaration: one
-launch, observation, error, or dependency-blocked line and, only for a declaration
-that entered `starting`, one ready, early-exit, or timeout line. It never streams
-child output. `up --json` emits no progress and keeps stderr empty on success;
-`up --no-wait`, `start`, and MCP `up` also keep their existing output and timing.
-Timeout and early-exit progress names include `inspect retained logs: hum logs
-NAME`, which directs operators to retained diagnostics without copying them into
-`up`.
+- `up` uses lexical declaration order, attempts every entry, and applies this exit-code
+  precedence: request error or `definition_drift` (1), early exit (3), timeout (2), success (0).
+- `definition_drift` includes sorted `changed_fields` for argv, canonical cwd, readiness
+  matcher, TTY, or normalized restart changes and never satisfies an `after` dependency; CLI `up`
+  exits 1 for drift.
+- A removed manifest-sourced running or recovery-capable record is emitted as
+  `removed_definition` with stop/remove guidance such as `hum stop NAME` or `hum remove NAME`.
+- Removed records require an explicit stop or remove; the warning does not alter aggregate exit
+  status.
+- Attached `run --json` still streams raw child output; `logs --json --follow` emits bounded
+  NDJSON events.
+- `logs` accepts optional, repeatable names in selection order.
+- With no names, it resolves the current declaration set once in lexical order, without adding
+  ad-hoc sessions; duplicate names are rejected.
+- Bounded logs without `--after-cursor` select the newest configured entry window, equivalent to
+  the default `--tail`; an explicit `--after-cursor` without `--tail` keeps forward paging from
+  the oldest eligible retained entry.
+- `--after-cursor` is rejected before daemon startup for an aggregate invocation.
+- `--since DURATION` requires a positive, valid duration and captures one inclusive request-time cutoff.
+- The cutoff is shared by every selected name.
+- Filters run in this order: after-cursor, since, stream, match, tail, then entry and
+byte bounds.
+- It composes with follow: the cutoff filters the initial retained replay and later entries
+  naturally pass.
+- Invalid, zero, negative, or overflowing durations are rejected before daemon startup or
+  contact.
+- Aggregate filters, tail, and entry or byte limits apply independently per selected name,
+  bounded output is returned in selection order, human entries are atomic `[NAME]`-prefixed
+  writes, and aggregate JSON uses named NDJSON event objects.
+
+This human-only `hum up` progress is enabled only in default human mode while readiness waiting
+is enabled.
+
+- It writes newline-terminated startup transitions to stderr; the unchanged final
+  per-declaration summaries remain on stdout.
+- Progress follows temporal transition completion rather than lexical declaration order, is
+  serialized as complete lines, and is bounded to a maximum of two lines per declaration: one
+  launch, observation, error, or dependency-blocked line and, only for a declaration that
+  entered `starting`, one ready, early-exit, or timeout line.
+- It never streams child output.
+- `up --json` emits no progress and keeps stderr empty on success; `up --no-wait`, `start`, and
+  MCP `up` also keep their existing output and timing.
+- Timeout and early-exit progress names include `inspect retained logs: hum logs NAME`, which
+  directs operators to retained diagnostics without copying them into `up`.
 
 ### Command semantics
 
-`init` resolves the project and zero-config candidates without launching or
-starting the daemon. It exclusively creates `hum.yaml`: one discovered
-candidate produces a definition; none or several produce a commented, valid
-template. `--force` resolves and renders the complete replacement before
-creating a mode-0600 temporary file in the project directory, syncing and
-closing it before atomically renaming it over an existing regular `hum.yaml`;
-symlinks and other non-regular targets are refused. Without `--force`, existing
-paths and their refusal remain unchanged. Discovery, rendering, write, sync,
-close, and rename errors exit 1 without changing the original manifest. Output
-includes the path, `generated`, `template`, or `replaced` outcome, and `hum up`
-as the next command; JSON also includes candidates.
+`init` resolves the project and zero-config candidates without launching or starting the daemon.
 
-`start` idempotently ensures a named session is running. It relaunches retained
-stopped records; retained ad hoc records reuse their exact argv, cwd, and
-environment, while resolved records use the current definition and client
-environment. Concurrent starts create at most one child. `up` does the same only
-for current resolved definitions. It launches every zero-dependency root
-concurrently, waits for each direct `after` prerequisite to settle, and launches
-a dependent only when all direct prerequisites were observed as `started` or
-`already_running` with readiness `ready`. A running-ready prerequisite is
-satisfied without relaunch. Each process timeout starts at its own launch or
-first running observation, so independent roots overlap and the critical path
-controls total wait time. During bounded recovery, CLI and MCP `up` preserve the
-exited record and report `recovery_pending` or `recovery_exhausted` without
-sending a start request or waiting for an automatic successor. A pending or
-exhausted declaration makes CLI `hum up` exit 3 because it is not running;
-targeted `hum start NAME` or `hum restart NAME` cancels recovery and launches
-immediately. Successful children remain running after other failures. CLI `start` and `up` use exit 0 for success, 1 for request errors or definition drift, 2 for readiness timeouts, and 3 for an early exit; `up` also uses 3 when recovery leaves a declaration not running. `wait` uses 0 for a match or an unfiltered exit, 1 for a request or usage error, 2 for timeout, and 3 when `--match` sees process exit first.
-`--no-wait` returns after spawn only for dependency-free manifests; when any
-`after` is declared it is rejected before daemon creation/contact. `start
-NAME...` remains explicitly named and concurrent but never adds or waits for
-transitive prerequisites. `down` remains concurrent rather than reverse
-ordered.
+- It exclusively creates `hum.yaml`: one discovered candidate produces a definition; none or
+  several produce a commented, valid template.
+- `--force` resolves and renders the complete replacement before creating a mode-0600 temporary
+  file in the project directory, syncing and closing it before atomically renaming it over an
+  existing regular `hum.yaml`; symlinks and other non-regular targets are refused.
+- Without `--force`, existing paths and their refusal remain unchanged.
+- Discovery, rendering, write, sync, close, and rename errors exit 1 without changing the
+  original manifest.
+- Output includes the path, `generated`, `template`, or `replaced` outcome, and `hum up` as the
+  next command; JSON also includes candidates.
 
-`run <name>` uses an existing resolved definition or attaches to an existing
-running or stopped session. `run <name> -- <command>...` creates an ad hoc
-session or replaces a stopped session's retained ad hoc launch spec; it keeps
-existing conflict rules while running. A missing zero-config candidate permits
-the ad hoc form; malformed, ambiguous, and introspection failures do not. A
-resolved name cannot be occupied by a conflicting ad hoc run.
+`start` idempotently ensures a named session is running.
 
-`restart` uses the current resolved definition and client environment. If only
-a retained ad hoc record exists, it reuses its exact argv, cwd, and environment.
-Daemon replacement loses ad hoc definitions, so evicted records cannot be
-restarted. After each successful replacement, it uses the shared readiness
-classification path: a configured matcher must become ready, while a process
-without a matcher is reported as `running_unverified`. By default `restart`
-waits per name; `--no-wait` returns after spawn, and `--timeout` accepts a
-positive per-name duration measured from that name's launch. Readiness failures
-are reported and remaining names continue; request or validation errors stop
-subsequent names. Results preserve input order; exit precedence: 1 > 3 > 2 > 0
-for request/error, `exited_before_ready`, `timed_out`, and
-success. There is no whole-invocation timeout.
+- It relaunches retained stopped records; retained ad hoc records reuse their exact argv, cwd,
+  and environment, while resolved records use the current definition and client environment.
+- Concurrent starts create at most one child.
+- `up` does the same only for current resolved definitions.
+- It launches every zero-dependency root concurrently, waits for each direct `after`
+  prerequisite to settle, and launches a dependent only when all direct prerequisites were
+  observed as `started` or `already_running` with readiness `ready`.
+- A running-ready prerequisite is satisfied without relaunch.
+- Each process timeout starts at its own launch or first running observation, so independent
+  roots overlap and the critical path controls total wait time.
+- During bounded recovery, CLI and MCP `up` preserve the exited record and report
+  `recovery_pending` or `recovery_exhausted` without sending a start request or waiting for an
+  automatic successor.
+- A pending or exhausted declaration makes CLI `hum up` exit 3 because it is not running;
+  targeted `hum start NAME` or `hum restart NAME` cancels recovery and launches immediately.
+- Successful children remain running after other failures.
+- CLI `start` and `up` use exit 0 for success, 1 for request errors or definition drift, 2 for
+  readiness timeouts, and 3 for an early exit; `up` also uses 3 when recovery leaves a
+  declaration not running.
+- `wait` uses 0 for a match or an unfiltered exit, 1 for a request or usage error, 2 for
+  timeout, and 3 when `--match` sees process exit first.
+- `--no-wait` returns after spawn only for dependency-free manifests; when any `after` is
+  declared it is rejected before daemon creation/contact.
+- `start NAME...` remains explicitly named and concurrent but never adds or waits for transitive
+  prerequisites.
+- `down` remains concurrent rather than reverse ordered.
 
-`wait` timeout results include `process_observed` in CLI JSON and MCP structured
-content. The daemon records it during that single wait request without an extra
-`get` round trip: it is `true` when a matching runtime record existed initially
-or appeared and later stopped or was removed, and `false` only when no record
-was observed. Human CLI output for `false` adds `no process named "NAME" was
-observed during the wait; check the name or start it first.`; undeclared names
-remain eligible for future launch waiting.
+`run <name>` uses an existing resolved definition or attaches to an existing running or stopped
+session.
 
-`list` merges current definitions with all project runtime records. Without a
-daemon it reports resolved definitions as stopped. `status`, `logs`, `wait`,
-`restart`, `stop`, and `remove` operate on resolved and ad hoc records in the
-project. The recommended interactive workflow is `hum up` followed by
-`hum logs --follow`. Bounded `logs` without `--after-cursor` shows the newest default
-entry window; use an explicit cursor without `--tail` to page forward from the oldest
-eligible retained entry. `logs` with multiple names follows the explicit selection order; its no-name
-form uses the same lexical declarations as `up`, does not include ad-hoc records, and
-does not change membership when declarations or runtime records change. Each aggregate
-name receives its own filters and bounded limits. Human output prefixes
-each entry with `[NAME]`; JSON bounded output and follow output retain the named
-NDJSON event shape. An aggregate follow owns one follower per selected session,
-serializes writes, reports per-session errors with their names without stopping other
-sessions, and cancels the whole aggregate on daemon loss or output failure. Ctrl+C
-closes all aggregate followers and never signals managed processes. A single explicit
-name preserves the existing human and JSON output unchanged.
-Terminal snapshots retain an autonomous child's exit status. A child terminated by
-an OS signal is represented with `exit_status: -1` and an optional `signal` object
-containing its canonical name and number, for example
-`{"name":"SIGTERM","number":15}`; the same object is carried by CLI `list`,
-`status`, `up`, and `wait` JSON and human output, and by MCP text and structured
-content. Non-signal exits omit `signal`. Operator-stopped snapshots remain
-`stopped` without autonomous exit details, so an operator stop is distinct from a
-signal-terminated child.
+- `run <name> -- <command>...` creates an ad hoc session or replaces a stopped session's
+  retained ad hoc launch spec; it keeps existing conflict rules while running.
+- A missing zero-config candidate permits the ad hoc form; malformed, ambiguous, and
+  introspection failures do not.
+- A resolved name cannot be occupied by a conflicting ad hoc run.
 
-`hum attach <name>` is the human-facing explicit terminal connection to an existing
-running session. It never starts or restarts a process or daemon. It reuses the
-attached-session stream and, for a TTY target, the existing exclusive input lease;
-raw input and terminal resize events go to the sole owner, while a non-TTY target
-follows output without input. `--tail N` replays the final N retained entries in
-source order before live output; `--tail 0` suppresses retained replay. Missing or
-stopped names return actionable guidance and leave the retained record unchanged.
-`run` remains the start-or-attach command (`hum run NAME`), while `logs --follow`
-remains a read-only log follower that may wait for a future launch. Copy-pasteable
-examples are `hum attach console` and `hum attach console --tail 50`.
-`input` is the bounded request/response surface for an existing TTY record: `--text` sends exact non-empty text bytes without a newline, while
-`--base64` accepts only standard padded base64 without whitespace and decodes to
-at most 32 KiB. It attaches only to the initial running state, writes exactly
-once at that launch cursor, and releases the exclusive lease before returning.
-The client behavior is at-most-once: a launch race or lost acknowledgement is
-reported without resending to a successor. It never starts a daemon or process,
-waits for a launch, queues, retries,
-retains, or explicitly echoes bytes. The bounded prompt loop is observe with
-`logs` or `wait --match`, answer with `input`, then confirm with `wait --match`.
-A stopped initial state returns `session_not_running`; a non-TTY target returns `input_not_tty`; ownership,
-closed-session, and stale-cursor races return the existing input error codes.
-`signal` sends exactly one observational signal to the process group of an
-existing running record. Names are case-insensitive with an optional `SIG`
-prefix; positive decimal values are accepted only when they map to the current
-OS's supported named table (`HUP`, `INT`, `QUIT`, `TERM`, `KILL`, and `USR1`/
-`USR2` where available). The canonical result is one line in human mode or
-`{"name":"NAME","signal":{"name":"SIGHUP","number":1},"status":"sent"}`
-in JSON/MCP; invalid specifications return `invalid_signal`, while missing and
-stopped records return `not_found` and `not_running`. Signaling never sets stop
-intent or cancels automatic relaunch, including for TERM and KILL; only stop,
-down, and restart control lifecycle policy.
-`stop` preserves the durable session; `remove` stops its child, closes
-followers, and discards runtime launch state and output without editing
-`hum.yaml`. The reported follower count is read-only: `remove` never warns,
-prompts, refuses, or otherwise gates behavior based on it.
+`restart` uses the current resolved definition and client environment.
 
-`down` is the project-scoped inverse of `up`. It concurrently stops every
-running project record, includes declared-but-absent names as `not_running`, and
-returns one name-sorted `stopped`, `not_running`, or `error` result per name.
-It never starts or shuts down the daemon, affects other projects, or deletes
-records. With no daemon or names it succeeds with
-`Nothing is running in this project.` Any stop error exits 1.
+- If only a retained ad hoc record exists, it reuses its exact argv, cwd, and environment.
+- Daemon replacement loses ad hoc definitions, so evicted records cannot be restarted.
+- After each successful replacement, it uses the shared readiness classification path: a
+  configured matcher must become ready, while a process without a matcher is reported as
+  `running_unverified`.
+- By default `restart` waits per name; `--no-wait` returns after spawn, and `--timeout` accepts
+  a positive per-name duration measured from that name's launch.
+- Readiness failures are reported; remaining names continue.
+- Request or validation errors stop subsequent names.
+- Results preserve input order; exit precedence: 1 > 3 > 2 > 0 for request/error,
+  `exited_before_ready`, `timed_out`, and success.
+- There is no whole-invocation timeout.
+
+`wait` timeout results include `process_observed` in CLI JSON and MCP structured content.
+
+- The daemon records it during that single wait request without an extra `get` round trip: it is
+  `true` when a matching runtime record existed initially or appeared and later stopped or was
+  removed, and `false` only when no record was observed.
+- Human CLI output for `false` adds `no process named "NAME" was observed during the wait; check
+  the name or start it first.`; undeclared names remain eligible for future launch waiting.
+
+`list` merges current definitions with all project runtime records.
+
+- Without a daemon it reports resolved definitions as stopped.
+- `status`, `logs`, `wait`, `restart`, `stop`, and `remove` operate on resolved and ad hoc
+  records in the project.
+- The recommended interactive workflow is `hum up` followed by `hum logs --follow`.
+- Bounded `logs` without `--after-cursor` shows the newest default entry window; use an explicit
+  cursor without `--tail` to page forward from the oldest eligible retained entry.
+- `logs` with multiple names follows the explicit selection order; its no-name form uses the
+  same lexical declarations as `up`, does not include ad-hoc records, and does not change
+  membership when declarations or runtime records change.
+- Each aggregate name receives its own filters and bounded limits.
+- Human output prefixes each entry with `[NAME]`; JSON bounded output and follow output retain
+  the named NDJSON event shape.
+- An aggregate follow owns one follower per selected session, serializes writes, reports
+  per-session errors with their names without stopping other sessions, and cancels the whole
+  aggregate on daemon loss or output failure.
+- Ctrl+C closes all aggregate followers and never signals managed processes.
+- A single explicit name preserves the existing human and JSON output unchanged.
+- Terminal snapshots retain an autonomous child's exit status.
+- A child terminated by an OS signal is represented with `exit_status: -1` and an optional
+  `signal` object containing its canonical name and number, for example
+  `{"name":"SIGTERM","number":15}`; the same object is carried by CLI `list`, `status`, `up`,
+  and `wait` JSON and human output, and by MCP text and structured content.
+- Non-signal exits omit `signal`.
+- Operator-stopped snapshots remain `stopped` without autonomous exit details, so an operator
+  stop is distinct from a signal-terminated child.
+
+`hum attach <name>` is the human-facing explicit terminal connection to an existing running
+session.
+
+- It never starts or restarts a process or daemon.
+- It reuses the attached-session stream and, for a TTY target, the existing exclusive input
+  lease; raw input and terminal resize events go to the sole owner, while a non-TTY target
+  follows output without input.
+- `--tail N` replays the final N retained entries in source order before live output; `--tail 0`
+  suppresses retained replay.
+- Missing or stopped names return actionable guidance and leave the retained record unchanged.
+- `run` remains the start-or-attach command (`hum run NAME`), while `logs --follow` remains a
+  read-only log follower that may wait for a future launch.
+- Copy-pasteable examples are `hum attach console` and `hum attach console --tail 50`.
+- `input` is the bounded request/response surface for an existing TTY record: `--text` sends
+  exact non-empty text bytes without a newline, while `--base64` accepts only standard padded
+  base64 without whitespace and decodes to at most 32 KiB.
+- It attaches only to the initial running state, writes exactly once at that launch cursor, and
+  releases the exclusive lease before returning.
+- The client behavior is at-most-once: a launch race or lost acknowledgement is reported without
+  resending to a successor.
+- It never starts a daemon or process, waits for a launch, queues, retries, retains, or
+  explicitly echoes bytes.
+- The bounded prompt loop is observe with `logs` or `wait --match`, answer with `input`, then
+  confirm with `wait --match`.
+- A stopped initial state returns `session_not_running`; a non-TTY target returns
+  `input_not_tty`; ownership, closed-session, and stale-cursor races return the existing input
+  error codes.
+- `signal` sends exactly one observational signal to the process group of an existing running
+  record.
+- Names are case-insensitive with an optional `SIG` prefix; positive decimal values are accepted
+  only when they map to the current OS's supported named table (`HUP`, `INT`, `QUIT`, `TERM`,
+  `KILL`, and `USR1`/ `USR2` where available).
+- The canonical result is one line in human mode or
+  `{"name":"NAME","signal":{"name":"SIGHUP","number":1},"status":"sent"}` in JSON/MCP; invalid
+  specifications return `invalid_signal`, while missing and stopped records return `not_found`
+  and `not_running`.
+- Signaling never sets stop intent or cancels automatic relaunch, including for TERM and KILL;
+  only stop, down, and restart control lifecycle policy.
+- `stop` preserves the durable session; `remove` stops its child, closes followers, and discards
+  runtime launch state and output without editing `hum.yaml`.
+- The reported follower count is read-only: `remove` never warns, prompts, refuses, or otherwise
+  changes behavior based on it.
+
+`down` is the project-scoped inverse of `up`.
+
+- It concurrently stops every running project record, includes declared-but-absent names as
+  `not_running`, and returns one name-sorted `stopped`, `not_running`, or `error` result per
+  name.
+- It never starts or shuts down the daemon, affects other projects, or deletes records.
+- With no daemon or names it succeeds with `Nothing is running in this project.` Any stop error
+  exits 1.
 
 `shutdown` controls daemon lifetime across projects. It refuses while any
 process is active unless `--stop-processes` is given.
 
-`completion` prints a script for bash, zsh, or fish and does not edit shell
-startup files. Its NAME callbacks merge manifest declarations with retained runtime records from the selected project, deduplicate and sort the names, and
-silently return no candidates when manifest or daemon resolution fails. A
-missing daemon still permits declaration completion.
+`completion` prints a script for bash, zsh, or fish and does not edit shell startup files.
+
+- Its NAME callbacks merge manifest declarations with retained runtime records from the selected
+  project, deduplicate and sort the names, and silently return no candidates when manifest or
+  daemon resolution fails.
+- A missing daemon still permits declaration completion.
 
 ## Definitions and resolution
 
 ### Manifest
 
-The nearest Git project root may contain one authoritative `hum.yaml`. A valid
-empty manifest resolves to no definitions; an invalid manifest is an error.
-`hum up` on an empty manifest does not create a daemon when none exists: it
-may inspect an existing daemon for removed manifest-sourced recovery sessions.
-With no such records, human output is exactly `No processes are declared in
-hum.yaml.` and `--json` emits no NDJSON records. Discovery occurs only when the
-file is absent. Alternate filenames are ignored.
+The nearest Git project root may contain one authoritative `hum.yaml`.
+
+- A valid empty manifest resolves to no definitions; an invalid manifest is an error.
+- `hum up` on an empty manifest does not create a daemon when none exists: it may inspect an
+  existing daemon for removed manifest-sourced recovery sessions.
+- With no such records, human output is exactly `No processes are declared in hum.yaml.` and
+  `--json` emits no NDJSON records.
+- Discovery occurs only when the file is absent.
+- Alternate filenames are ignored.
 
 ```yaml
 version: 1
@@ -323,22 +384,26 @@ processes:
     restart: on-failure
 ```
 
-Each entry requires a safe name and a non-empty string argv. Optional `cwd` is
-root-relative and must exist and remain beneath the root after lexical and
-symlink resolution. `ready.match` is a regular expression; `ready.timeout` is a
-positive duration defaulting to 30 seconds. Optional `after` is a list of
-same-manifest process names. Names must be unique, cannot self-reference, and
-must point to definitions that declare `ready`; absent `after` is empty.
+Each entry requires a safe name and a non-empty string argv.
 
-Parsing is strict and single-document. Unknown or duplicate keys, YAML aliases
-or merges, unsupported versions, invalid names, regexes or durations, unsafe
-cwd, empty/non-string argv, shell text, malformed `after` values, unknown or
-unready dependencies, duplicate/self references, and cycles of any length are
-errors with file, process, and indexed-field context such as
-`process "web".after[1]`. Definitions are name-sorted and carry
-`source: manifest`; discovered definitions always have no dependencies.
+- Optional `cwd` is root-relative and must exist and remain beneath the root after lexical and
+  symlink resolution.
+- `ready.match` is a regular expression; `ready.timeout` is a positive duration defaulting to 30
+  seconds.
+- Optional `after` is a list of same-manifest process names.
+- Names must be unique, cannot self-reference, and must point to definitions that declare
+  `ready`; absent `after` is empty.
 
-The manifest defines processes and their client-side launch gates only: no
+Parsing is strict and single-document.
+
+- Unknown or duplicate keys, YAML aliases or merges, unsupported versions, invalid names,
+  regexes or durations, unsafe cwd, empty/non-string argv, shell text, malformed `after` values,
+  unknown or unready dependencies, duplicate/self references, and cycles of any length are
+  errors with file, process, and indexed-field context such as `process "web".after[1]`.
+- Definitions are name-sorted and carry `source: manifest`; discovered definitions always have
+  no dependencies.
+
+The manifest defines processes and their client-side launch dependencies only: no
 runtime settings, ports, HTTP checks, or environment values/files. Projects
 needing environment activation must commit a runner and put it in argv; CLI and
 MCP do not activate mise, nvm, direnv, or shell hooks.
@@ -362,26 +427,31 @@ to `dev`, rooted at the project, with no inferred readiness:
 | Mix | introspection confirms `phx.server` | `mix phx.server` |
 
 Command-backed sources are skipped when their executable is unavailable.
-No candidates produce a typed `NoCandidateError`; several produce an
-`AmbiguityError` listing all sources. Malformed configuration and failed or
-malformed required introspection produce typed `ConfigurationError` and
-`IntrospectionError`. All wrap their sentinel and work with `errors.As`.
 
-For package.json, `packageManager` selects bun, pnpm, yarn, or npm (ignoring an
-optional version suffix) and rejects other or non-string values. Otherwise the
-runner comes from exactly one lockfile family: Bun (`bun.lock`, `bun.lockb`),
-pnpm (`pnpm-lock.yaml`), Yarn (`yarn.lock`), or npm (`package-lock.json`,
-`npm-shrinkwrap.json`). Multiple files in one family are allowed; conflicting
-families are errors. With no lockfile, npm is used.
+- No candidates produce a typed `NoCandidateError`; several produce an `AmbiguityError` listing
+  all sources.
+- Malformed configuration and failed or malformed required introspection produce typed
+  `ConfigurationError` and `IntrospectionError`.
+- All wrap their sentinel and work with `errors.As`.
+
+For package.json, `packageManager` selects bun, pnpm, yarn, or npm (ignoring an optional version
+suffix) and rejects other or non-string values.
+
+- Otherwise the runner comes from exactly one lockfile family: Bun (`bun.lock`, `bun.lockb`),
+  pnpm (`pnpm-lock.yaml`), Yarn (`yarn.lock`), or npm (`package-lock.json`,
+  `npm-shrinkwrap.json`).
+- Multiple files in one family are allowed; conflicting families are errors.
+- With no lockfile, npm is used.
 
 Discovery does not scan nested packages or infer language/framework commands
 (except confirmed `mix phx.server`), Docker Compose, multiple processes, ports,
 readiness, or launch ordering. It never tries commands to see what succeeds.
 
-Strict definition commands (`up`, `start`, and argv-free `run`) resolve before
-daemon startup. Ad hoc `run` alone treats `NoCandidate` as no definition.
-Control commands also treat it as no definition and may access existing runtime
-records. Every other resolution error propagates before daemon control.
+Strict definition commands (`up`, `start`, and argv-free `run`) resolve before daemon startup.
+
+- Ad hoc `run` alone treats `NoCandidate` as no definition.
+- Control commands also treat it as no definition and may access existing runtime records.
+- Every other resolution error propagates before daemon control.
 
 ## Readiness and output
 
@@ -390,221 +460,252 @@ has a Unix process group and stdin at `/dev/null`. `stop` and `down` send SIGTER
 wait a bounded grace period, then send SIGKILL. Client and follower disconnects
 do not stop children.
 
-A launch records its readiness expression, launch cursor, and first matching
-cursor even if nobody is waiting. Configured processes move from `starting` to
-`ready`; the retained state survives output eviction. Relaunch resets readiness
-at a new launch cursor, so old output cannot satisfy it. Definitions without
-`ready`, including all discovered definitions, report `running_unverified` and
-are never reported ready. A CLI timeout overrides the manifest timeout.
+A launch records its readiness expression, launch cursor, and first matching cursor even if
+nobody is waiting.
 
-For ordered `up`, a prerequisite result satisfies its gate only when this
-invocation observes `started` or `already_running` with readiness `ready`.
-Request errors, exits before readiness, timeouts, and prior skips block a
-dependent; the dependent is returned as `outcome: skipped` with `blocked_by`
-containing every direct unsatisfied prerequisite sorted by name. Blockers are
-direct only, so a cascade names its immediate skipped parent. The scheduler
-waits for all direct results before finalizing blockers, while output remains
-lexical after every node settles. Before finalizing a blocked node, CLI and MCP
-read its retained record without lifecycle mutation. A present record adds
-`existing_state: running|stopped|exited` and its process snapshot; human output says
-`existing process running`, `existing process stopped`, `existing process exited`, or `not launched`. The
-result remains skipped and cannot satisfy a downstream gate. Skips do not change aggregate exit precedence:
-request error 1, exited before ready 3, timed out 2, success 0. An
-`on-failure` successor is not followed by the same `up`; rerun `up` after
-recovery.
+- Configured processes move from `starting` to `ready`; the retained state survives output
+  eviction.
+- Relaunch resets readiness at a new launch cursor, so old output cannot satisfy it.
+- Definitions without `ready`, including all discovered definitions, report `running_unverified`
+  and are never reported ready.
+- A CLI timeout overrides the manifest timeout.
 
-When the human CLI progress renderer reports a launch or observation error, it
-uses `hum up: NAME: error: MESSAGE`; dependency-blocked lines retain the direct
-sorted blocker list and distinguish an existing running or exited record from
-`not launched`. This progress is observational only and does not change the
-scheduler, aggregate exit precedence, readiness timeout, or successful child
-lifetime.
+For ordered `up`, a prerequisite result satisfies its dependency only when this invocation observes
+`started` or `already_running` with readiness `ready`.
 
-Each durable named session has one cursor sequence across stdout, stderr, and
-incarnations. Entries contain stream, timestamp, raw stored text, stripped on
-bounded read and match as terminal-control-stripped text, and cursor. Logs output
-keeps the existing `next` field: it is the last source cursor consumed by that read
-and can be passed to `--after-cursor`/`after` for forward paging. Process snapshots
-keep the existing `next_cursor` field: it is the next cursor that will be assigned;
-these fields are intentionally different and neither MCP field is renamed.
-`StripTerminalControl` is the single
-byte-wise definition of stripped text: it removes recognized terminal control
-sequences and CR immediately before LF from child stdout/stderr per entry.
-System entries remain raw, as do all stored bytes. Bounded `logs`, MCP `logs`,
-`wait --match`, readiness matches, and ring predicates use stripped child text.
-Patterns containing raw ESC bytes no longer match stripped child text; a `^`
-anchor now matches colourised output whose raw first byte is ESC. `logs --follow --match` selects with stripped text but emits selected raw
-entries. Control-only bounded child entries remain present with empty text. Read
-byte limits (`MaxBytes`, `--limit-bytes`) count text bytes only, while retention
-(`--output-bytes`) charges each entry `len(text)+128` bytes for conservative
-metadata, string/slice storage, and allocator slack. The charged size controls
-retention rejection, eviction, capacity, and accounting, so short entries also
-bound retained cardinality; it is not an exact RSS cap. There is no `--raw` flag
-or other raw opt-out. Stripping is not terminal emulation or redraw collapsing:
-a sequence split across entries can leave its tail visible, and carriage-return
-redraw frames remain separate.
-Byte-bounded retention reports eviction explicitly; a live pre-launch or stopped
-follower reserves its
-session from completed-record eviction. Aggregate `logs --follow` creates one
-follower per selected name and keeps per-session filters, tails, and limits
-independent. Attached `run` and `logs --follow` may
-start before the first launch, return retained output, print exit/wait/launch
-boundaries, and remain open across stop/start and down/up until Ctrl+C, removal,
-or transport loss; their rendering remains raw. Status, list, and their MCP
-equivalents report how many of these live followers the daemon currently holds
-open, including pre-launch and stopped-session followers; the count is not
-persisted and is zero when no session exists. Ctrl+C detaches only the observer.
-`wait` without an explicit cursor waits for the next incarnation when stopped or
-unlaunched and remains bounded (30 seconds by default). Ordinary exited and
-ad hoc records omit readiness; terminal recovery records retain their configured
-readiness matcher for drift classification.
+- Request errors, exits before readiness, timeouts, and prior skips block a dependent; the
+  dependent is returned as `outcome: skipped` with `blocked_by` containing every direct
+  unsatisfied prerequisite sorted by name.
+- Blockers are direct only, so a cascade names its immediate skipped parent.
+- The scheduler waits for all direct results before finalizing blockers, while output remains
+  lexical after every node settles.
+- Before finalizing a blocked node, CLI and MCP read its retained record without lifecycle
+  mutation.
+- A present record adds `existing_state: running|stopped|exited` and its process snapshot; human
+  output says `existing process running`, `existing process stopped`, `existing process exited`,
+  or `not launched`.
+- The result remains skipped and cannot satisfy a downstream dependency.
+- Skips do not change aggregate exit precedence: request error 1, exited before ready 3, timed
+  out 2, success 0.
+- An `on-failure` successor is not followed by the same `up`; rerun `up` after recovery.
+
+Human `hum up` progress uses these rules:
+
+- Launch or observation errors use `hum up: NAME: error: MESSAGE`.
+- Blocked lines show the sorted direct blockers.
+- Blocked lines distinguish an existing running or exited record from `not launched`.
+- Progress never changes scheduling, exit precedence, readiness timeouts, or child lifetime.
+
+Each durable named session has one cursor sequence across stdout, stderr, and incarnations.
+
+- Entries contain stream, timestamp, raw stored text, stripped on bounded read and match as
+  terminal-control-stripped text, and cursor.
+- Logs output keeps the existing `next` field: it is the last source cursor consumed by that
+  read and can be passed to `--after-cursor`/`after` for forward paging.
+- Process snapshots keep the existing `next_cursor` field. It is the next cursor that will be assigned.
+- `next` and `next_cursor` are intentionally different. Neither MCP field is renamed.
+- `StripTerminalControl` is the single byte-wise definition of stripped text: it removes
+  recognized terminal control sequences and CR immediately before LF from child stdout/stderr
+  per entry.
+- System entries remain raw, as do all stored bytes.
+- Bounded `logs`, MCP `logs`, `wait --match`, readiness matches, and ring predicates use
+  stripped child text.
+- Patterns containing raw ESC bytes no longer match stripped child text; a `^` anchor now
+  matches colourised output whose raw first byte is ESC.
+- `logs --follow --match` selects with stripped text but emits selected raw entries.
+- Control-only bounded child entries remain present with empty text.
+- Read byte limits (`MaxBytes`, `--limit-bytes`) count text bytes only, while retention
+  (`--output-bytes`) charges each entry `len(text)+128` bytes for conservative metadata,
+  string/slice storage, and allocator slack.
+- The charged size controls retention rejection, eviction, capacity, and accounting, so short
+  entries also bound retained cardinality; it is not an exact RSS cap.
+- There is no `--raw` flag or other raw opt-out.
+- Stripping is not terminal emulation or redraw collapsing: a sequence split across entries can
+  leave its tail visible, and carriage-return redraw frames remain separate.
+- Byte-bounded retention reports eviction explicitly; a live pre-launch or stopped follower
+  reserves its session from completed-record eviction.
+- Aggregate `logs --follow` creates one follower per selected name and keeps per-session
+  filters, tails, and limits independent.
+- Attached `run` and `logs --follow` may start before the first launch, return retained output,
+  print exit/wait/launch boundaries, and remain open across stop/start and down/up until Ctrl+C,
+  removal, or transport loss; their rendering remains raw.
+- Status, list, and their MCP equivalents report how many of these live followers the daemon
+  currently holds open, including pre-launch and stopped-session followers; the count is not
+  persisted and is zero when no session exists.
+- Ctrl+C detaches only the observer.
+- `wait` without an explicit cursor waits for the next incarnation when stopped or unlaunched
+  and remains bounded (30 seconds by default).
+- Ordinary exited and ad hoc records omit readiness; terminal recovery records retain their
+  configured readiness matcher for drift classification.
 
 ### Crash relaunch policy
 
-A manifest entry may set `restart` to `never` (the default) or `on-failure`;
-validation rejects every other value and non-string YAML scalar with file and
-entry context. Discovery and ad-hoc sessions are always `never`, and `hum init`
-comments an inert `restart: on-failure` example. `on-failure` schedules one
-second, two seconds, four seconds, eight seconds, and sixteen seconds of
-backoff, for at most five automatic attempts. Non-zero or signal exits trigger
-the loop unless an explicit operator control owns the exit; exit zero, stop,
-down, restart, remove, and shutdown cancel and reset it. A spawn failure consumes
-an attempt and appends a bounded `relaunch failed: ...` system entry. An
-automatic child alive for 30 seconds resets the counter. The generation token
-and supervisor lock linearize exit, timer claim, and operator intent, so stale
-timers never launch and a manual start/restart wins without two children.
+A manifest entry may set `restart` to `never` (the default) or `on-failure`; validation rejects
+every other value and non-string YAML scalar with file and entry context.
 
-Automatic attempts reuse the last effective argv, cwd, environment, readiness,
-and TTY and do not reread the manifest. For a running, pending-recovery, or
-exhausted manifest record, `start` and `up` report `definition_drift` rather
-than silently adopting changed argv, canonical cwd, readiness matcher, TTY, or
-normalized restart policy; only explicit `restart` applies a changed
-definition. Readiness and client timeout do not trigger relaunch.
-`restart`, `relaunches`, and optional whole-second `next_launch_at` appear in
-process, CLI JSON, and MCP snapshots. During backoff, CLI and MCP `up` preserve
-that state and report `recovery_pending` without consuming an attempt; after the
-budget is exhausted they report `recovery_exhausted` without reviving the loop.
-Pending and exhausted records resist completed-record eviction. Followers stay attached through
-the exit/wait boundary, backoff, and exhaustion; bounded logs retain child
-failures and the `relaunching` and `gave up` system boundaries. Recovery snapshots retain the
-response-safe readiness matcher without exposing environment so drift can be
-classified after exit.
-Agents should read the failing incarnation's retained output before editing
-again.
+- Discovery and ad-hoc sessions are always `never`, and `hum init` comments an inert `restart:
+  on-failure` example.
+- `on-failure` schedules one second, two seconds, four seconds, eight seconds, and sixteen
+  seconds of backoff, for at most five automatic attempts.
+- Non-zero or signal exits trigger the loop unless an explicit operator control owns the exit;
+  exit zero, stop, down, restart, remove, and shutdown cancel and reset it.
+- A spawn failure consumes an attempt and appends a bounded `relaunch failed: ...` system entry.
+- An automatic child alive for 30 seconds resets the counter.
+- The generation token and supervisor lock linearize exit, timer claim, and operator intent, so
+  stale timers never launch and a manual start/restart wins without two children.
+
+Automatic attempts reuse the last effective argv, cwd, environment, readiness, and TTY and do
+not reread the manifest.
+
+- For a running, pending-recovery, or exhausted manifest record, `start` and `up` report
+  `definition_drift` rather than silently adopting changed argv, canonical cwd, readiness
+  matcher, TTY, or normalized restart policy; only explicit `restart` applies a changed
+  definition.
+- Readiness and client timeout do not trigger relaunch.
+- `restart`, `relaunches`, and optional whole-second `next_launch_at` appear in process, CLI
+  JSON, and MCP snapshots.
+- During backoff, CLI and MCP `up` preserve that state and report `recovery_pending` without
+  consuming an attempt; after the budget is exhausted they report `recovery_exhausted` without
+  reviving the loop.
+- Pending and exhausted records resist completed-record eviction.
+- Followers stay attached through the exit/wait boundary, backoff, and exhaustion; bounded logs
+  retain child failures and the `relaunching` and `gave up` system boundaries.
+- Recovery snapshots retain the response-safe readiness matcher without exposing environment so
+  drift can be classified after exit.
+- Agents should read the failing incarnation's retained output before editing again.
 
 ## Daemon and environments
 
-One daemon serves each private runtime directory at `hum.sock`. `serve --daemon`,
-`run`, `start`, `up`, CLI `logs --follow`, and CLI `wait` use a startup lock and
-readiness handshake. Bounded reads and controls do not start an empty daemon.
-Foreground daemon exit and `shutdown --stop-processes` stop all managed groups.
+One daemon serves each private runtime directory at `hum.sock`.
 
-The mode-0600 `hum.state` file atomically records the daemon incarnation and
-each live group's project, name, leader PID, PGID, and OS process-start identity.
-A launch is not reported successful until that identity is durable. On startup,
-a dead daemon's groups are reclaimed with TERM, the configured grace period,
-and KILL only after PID, group leadership, and process-start identity all match.
-Dead groups are discarded; mismatched or unverifiable identities are never
-signaled and remain unresolved blockers for the same project and name. The
-startup reconciliation summary remains visible for the daemon lifetime through
-human warnings and JSON/MCP `warnings` arrays. Clean graceful shutdown removes
-`hum.state`; corrupt state fails closed with operator cleanup guidance.
+- `serve --daemon`, `run`, `start`, `up`, CLI `logs --follow`, and CLI `wait` use a startup lock
+  and readiness handshake.
+- Bounded reads and controls do not start an empty daemon.
+- Foreground daemon exit and `shutdown --stop-processes` stop all managed groups.
 
-The launching client supplies cwd and its full environment. Manifest `cwd`
-changes only the child directory; discovered definitions use the project root.
-Resolved restarts use the current argv, cwd, readiness, and requesting client's
-environment, so definition edits take effect through explicit `restart`. A
-running or recovery-capable manifest record with changed argv, canonical cwd,
-readiness matcher, TTY, or normalized restart policy returns `definition_drift`
-with sorted `changed_fields` and `hum restart NAME` guidance from `start` or
-`up`; CLI exits 1 for this result and it is not silently replaced.
+The mode-0600 `hum.state` file atomically records the daemon incarnation and each live group's
+project, name, leader PID, PGID, and OS process-start identity.
+
+- A launch is not reported successful until that identity is durable.
+- On startup, a dead daemon's groups are reclaimed with TERM, the configured grace period, and
+  KILL only after PID, group leadership, and process-start identity all match.
+- Dead groups are discarded; mismatched or unverifiable identities are never signaled and remain
+  unresolved blockers for the same project and name.
+- The startup reconciliation summary remains visible for the daemon lifetime through human
+  warnings and JSON/MCP `warnings` arrays.
+- Clean graceful shutdown removes `hum.state`; corrupt state fails closed with operator cleanup
+  guidance.
+
+The launching client supplies cwd and its full environment.
+
+- Manifest `cwd` changes only the child directory; discovered definitions use the project root.
+- Resolved restarts use the current argv, cwd, readiness, and requesting client's environment,
+  so definition edits take effect through explicit `restart`.
+- A running or recovery-capable manifest record with changed argv, canonical cwd, readiness
+  matcher, TTY, or normalized restart policy returns `definition_drift` with sorted
+  `changed_fields` and `hum restart NAME` guidance from `start` or `up`; CLI exits 1 for this
+  result and it is not silently replaced.
 
 ## MCP adapter
 
-`hum mcp` serves JSON-RPC over stdin/stdout. Every request requires an absolute,
-existing `project_root` chosen by the same root rule as the CLI. It exposes twelve
-tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `input`, `restart`,
-`stop`, `remove`, and `signal`. `input` accepts exactly one non-empty `text` or `base64`
-payload, uses the same bounded one-shot TTY semantics as the CLI, and returns
-`name`, decoded `bytes`, and `launch_cursor`. MCP `signal` accepts the same
-case-insensitive named or supported positive decimal signal forms as the CLI and
-returns `{"name":"NAME","signal":{"name":"SIGHUP","number":1},"status":"sent"}`.
-It returns `invalid_signal`, `not_found`, or `not_running` without delivering a
-signal when validation or target lookup fails. MCP `restart` accepts `no_wait`
-and a positive per-name `timeout_ms`, and its text and structured content carry
-`name`, `outcome`, `readiness`, `pid`, `launch_cursor`, and an optional `message`
-with the same single-name semantics as the CLI.
+`hum mcp` serves JSON-RPC over stdin/stdout.
 
-Requests with IDs run concurrently up to 64 in-flight requests. The mutex-
-protected request registry rejects a 65th request with JSON-RPC code `-32001`
-without starting it, and rejects a duplicate in-flight ID with `-32600`.
-Notifications and incoming responses consume no request slots. A
-`notifications/cancelled` notification cancels only its matching in-flight ID;
-that request receives code `-32800`, while an unknown cancellation ID is a
-no-op. Responses are serialized by the Serve-owned closeable response transport.
-On stdin EOF or parent cancellation, all request contexts are cancelled; Serve
-waits at most one second for handlers, closes the response transport to unblock
-writes, joins the writer, and returns within two seconds without leaving handler
-or writer goroutines behind. A request abandoned that way reports the tool error
-code `cancelled`, which is distinct from `internal`; `internal` remains reserved
-for unexpected adapter failures.
+- Every request requires an absolute, existing `project_root` chosen by the same root rule as
+  the CLI.
+- It exposes twelve tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `input`,
+  `restart`, `stop`, `remove`, and `signal`.
+- `input` accepts exactly one non-empty `text` or `base64` payload, uses the same bounded
+  one-shot TTY semantics as the CLI, and returns `name`, decoded `bytes`, and `launch_cursor`.
+- MCP `signal` accepts the same case-insensitive named or supported positive decimal signal
+  forms as the CLI and returns
+  `{"name":"NAME","signal":{"name":"SIGHUP","number":1},"status":"sent"}`.
+- It returns `invalid_signal`, `not_found`, or `not_running` without delivering a signal when
+  validation or target lookup fails.
+- MCP `restart` accepts `no_wait` and a positive per-name `timeout_ms`, and its text and
+  structured content carry `name`, `outcome`, `readiness`, `pid`, `launch_cursor`, and an
+  optional `message` with the same single-name semantics as the CLI.
 
-The tools share CLI definition, readiness, cursor, collision, and aggregate
-semantics. Bounded MCP `logs` without `after` selects the newest default entry
-window, while explicit `after` without `tail` keeps forward paging from the oldest
-eligible retained entry. MCP `logs` accepts a positive `since_ms` duration and captures
-one immutable inclusive request-time cutoff before applying the same cursor, since,
-tail, and entry/byte ordering; invalid, zero, negative, or overflowing values are rejected
-without daemon contact. Its output keeps `next` as the last source cursor consumed; process snapshots
-keep `next_cursor` as the next cursor to be assigned. `up` applies the same client-side
-`after` DAG scheduler and lexical results as the CLI; independent roots launch
-concurrently, dependents wait for all direct prerequisites to be ready, and skipped entries include sorted direct
-`blocked_by`. Drifted entries never satisfy a dependency gate. `up` reports
-removed manifest-sourced running or recovery-capable records as lexical
-`removed_definition` warnings with stop/remove guidance; warnings do not change
-aggregate status and omit ad-hoc/discovered records. `up` with `no_wait: true`
-is rejected before daemon contact when any dependency is declared. `start`
-remains singular and explicit-only. Only `start` and `up` may create or replace a daemon. Without one,
-`list` reports stopped definitions; `stop` and `down` succeed; the other control
-tools return unavailable-daemon errors. Recorded environments are never
-returned. MCP `status` and `list` return the same `followers` integer as the CLI
-snapshot.
+Requests with IDs run concurrently up to 64 in-flight requests.
 
-MCP exposes no follow or other unbounded operation; agents use bounded `wait`,
-`logs`, one-shot `input`, and observational `signal`. The adapter receives a protocol-shaped daemon client and constructs
-no app services, supervisors, or output stores in-process. It has no `run`,
-`serve`, or `shutdown`, HTTP transport, authentication, remote access, or arbitrary-command
-tool.
+- The mutex- protected request registry rejects a 65th request with JSON-RPC code `-32001`
+  without starting it, and rejects a duplicate in-flight ID with `-32600`.
+- Notifications and incoming responses consume no request slots.
+- A `notifications/cancelled` notification cancels only its matching in-flight ID; that request
+  receives code `-32800`, while an unknown cancellation ID is a no-op.
+- Responses are serialized by the Serve-owned closeable response transport.
+- On stdin EOF or parent cancellation, all request contexts are cancelled; Serve waits at most
+  one second for handlers, closes the response transport to unblock writes, joins the writer,
+  and returns within two seconds without leaving handler or writer goroutines behind.
+- A request abandoned that way reports the tool error code `cancelled`, which is distinct from
+  `internal`; `internal` remains reserved for unexpected adapter failures.
+
+The tools share CLI definition, readiness, cursor, collision, and aggregate semantics.
+
+- Bounded MCP `logs` without `after` selects the newest default entry window, while explicit
+  `after` without `tail` keeps forward paging from the oldest eligible retained entry.
+- MCP `logs` accepts a positive `since_ms` duration and captures one immutable inclusive
+  request-time cutoff before applying the same cursor, since, tail, and entry/byte ordering;
+  invalid, zero, negative, or overflowing values are rejected without daemon contact.
+- Its output keeps `next` as the last source cursor consumed; process snapshots keep
+  `next_cursor` as the next cursor to be assigned.
+- `up` applies the same client-side `after` DAG scheduler and lexical results as the CLI;
+  independent roots launch concurrently, dependents wait for all direct prerequisites to be
+  ready, and skipped entries include sorted direct `blocked_by`.
+- Drifted entries never satisfy a dependency.
+- `up` reports removed manifest-sourced running or recovery-capable records as lexical
+  `removed_definition` warnings with stop/remove guidance; warnings do not change aggregate
+  status and omit ad-hoc/discovered records.
+- `up` with `no_wait: true` is rejected before daemon contact when any dependency is declared.
+- `start` remains singular and explicit-only.
+- Only `start` and `up` may create or replace a daemon.
+- Without one, `list` reports stopped definitions; `stop` and `down` succeed; the other control
+  tools return unavailable-daemon errors.
+- Recorded environments are never returned.
+- MCP `status` and `list` return the same `followers` integer as the CLI snapshot.
+
+MCP exposes no follow or other unbounded operation; agents use bounded `wait`, `logs`, one-shot
+`input`, and observational `signal`.
+
+- The adapter receives a protocol-shaped daemon client and constructs no app services,
+  supervisors, or output stores in-process.
+- It has no `run`, `serve`, or `shutdown`, HTTP transport, authentication, remote access, or
+  arbitrary-command tool.
 
 ## Non-goals
 
-The foundation has no arbitrary or unbounded input API, queued input,
-remote transport, authentication, web UI, persistent
-process history, plugin system, OS service installation, or environment
-literals/files.
-The runtime directory contains only the socket, PID/startup lock/readiness
-artifacts, durable live-group state, and bounded daemon diagnostics.
+The foundation does not include:
+
+- arbitrary or unbounded input
+- queued input
+- remote transport or authentication
+- a web UI
+- persistent process history
+- a plugin system
+- OS service installation
+- environment literals or files
+
+The runtime directory contains only the socket, PID/startup/readiness files, durable live-group state, and bounded daemon diagnostics.
 
 ## Optional pseudo-terminals
 
-A process may declare `tty: true` when an interactive devtool requires a
-controlling terminal. The ad-hoc equivalent is `hum run NAME --tty --
-COMMAND`; TTY remains opt-in and the default `/dev/null` stdin plus separate
-stdout/stderr pipes are unchanged. The daemon owns the PTY master, launches a
-session leader with `Setsid`/`Setctty`, and signals its process group during
-stop, restart, down, remove, and forced shutdown. PTY output is merged once as
-raw retained `stdout`; bounded reads and matches apply the byte-wise child-output
-strip described above, without terminal emulation.
+A process may declare `tty: true` when an interactive devtool requires a controlling terminal.
 
-Exactly one attached `hum run` owns input. A second attachment follows output
-only, `logs --follow` never owns input, and the one-shot CLI/MCP input operation
-accepts exact text or strict padded base64 payloads bounded to 1-32768 bytes and
-scoped to the initial running launch cursor; state events identify
-stopped/running successors and the owner alone
-forwards SIGWINCH resize events from the attached terminal. Ctrl-] detaches
-input, local raw mode is restored on detach, panic, and transport-loss paths,
-terminal/application echo remains child output, and input is discarded while
-stopped. Ctrl-C, Ctrl-D, and Ctrl-Z are forwarded as input bytes; the child
-controls their terminal meaning. Ordinary exit preserves the lease; remove and
-daemon shutdown close it. MCP exposes `tty` snapshots and the bounded `input`
-tool for exact prompt responses.
+- The ad-hoc equivalent is `hum run NAME --tty -- COMMAND`; TTY remains opt-in and the default
+  `/dev/null` stdin plus separate stdout/stderr pipes are unchanged.
+- The daemon owns the PTY master, launches a session leader with `Setsid`/`Setctty`, and signals
+  its process group during stop, restart, down, remove, and forced shutdown.
+- PTY output is merged once as raw retained `stdout`; bounded reads and matches apply the
+  byte-wise child-output strip described above, without terminal emulation.
+
+Exactly one attached `hum run` owns input.
+
+- A second attachment follows output only, `logs --follow` never owns input, and the one-shot
+  CLI/MCP input operation accepts exact text or strict padded base64 payloads bounded to 1-32768
+  bytes and scoped to the initial running launch cursor; state events identify stopped/running
+  successors and the owner alone forwards SIGWINCH resize events from the attached terminal.
+- Ctrl-] detaches input, local raw mode is restored on detach, panic, and transport-loss paths,
+  terminal/application echo remains child output, and input is discarded while stopped.
+- Ctrl-C, Ctrl-D, and Ctrl-Z are forwarded as input bytes; the child controls their terminal
+  meaning.
+- Ordinary exit preserves the lease; remove and daemon shutdown close it.
+- MCP exposes `tty` snapshots and the bounded `input` tool for exact prompt responses.

@@ -2,9 +2,13 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Agent-oriented process supervisor with retained bounded logs, independent followers, readiness/dependencies, structured JSON/MCP, and controlled TTY input.
+Keep local project processes running between commands. `hum` gives humans and coding agents bounded logs, readiness checks, dependencies, JSON/MCP output, and controlled TTY input.
 
-`hum` keeps local project processes running between commands, with bounded logs and lifecycle controls. Let your agents see your stdout.
+```text
+hum.yaml ──> hum daemon ──> db ──> api ──> web
+                  │
+                  └── bounded logs <── CLI / coding agents
+```
 
 [![Demo of hum supervising a process, retaining its logs, and stopping it](docs/demo.gif)](docs/demo.tape)
 
@@ -21,7 +25,7 @@ To build from a checkout, see [development setup and checks](docs/development.md
 
 ## Quickstart
 
-In a fresh directory, create a portable clock process and try the full lifecycle:
+Try a portable clock process in a fresh directory:
 
 ```sh
 mkdir hum-quickstart && cd hum-quickstart
@@ -37,7 +41,7 @@ hum up
 hum logs --follow
 ```
 
-After the first clock line, press Ctrl+C to stop following logs, then stop the project process:
+After the first clock line, press Ctrl+C, then stop the process:
 
 ```sh
 hum down
@@ -45,7 +49,7 @@ hum down
 
 ## Start processes
 
-With no configuration, `hum up` finds a conventional `dev` task in Mise, Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or Phoenix.
+Without configuration, `hum up` finds a conventional `dev` task in Mise, Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or Phoenix.
 
 For multiple processes, add `hum.yaml`:
 
@@ -99,7 +103,16 @@ hum status -C ../checkout api
 hum run preview --project /path/to/checkout -- bun run preview
 ```
 
-A relative selector is resolved from the invocation directory, cleaned to an existing directory, and then resolved to the nearest Git root (or that directory when no Git marker exists). The selected directory is the cwd for ad-hoc `run`; manifest process `cwd` values remain relative to the resolved project root. `init` writes at that root, and `list --all` still merges declarations from the selected project. Follow-up guidance uses an absolute, shell-safe `--project` selector when the path needs spaces. The selector is not applicable to `serve`, `shutdown`, `mcp`, or `skill`. Existing `-d` aliases remain `serve --daemon` and `run --detach`.
+Project selection follows these rules:
+
+- A relative selector starts from the invocation directory.
+- The nearest Git root becomes the project root. Without Git, the selected directory is the root.
+- Ad-hoc `run` commands use the selected directory as their cwd.
+- Manifest `cwd` values stay relative to the project root.
+- `init` writes at the project root. `list --all` merges that project's declarations.
+- Guidance uses an absolute, shell-safe selector when paths contain spaces.
+
+`--project` does not apply to `serve`, `shutdown`, `mcp`, or `skill`. Existing `-d` aliases remain `serve --daemon` and `run --detach`.
 
 ## Sessions
 
@@ -113,7 +126,7 @@ hum stop preview
 hum remove preview
 ```
 
-Names identify durable sessions. `hum attach NAME` joins only a running session; `--tail 0` skips replay. TTY input and resize use the exclusive lease; non-TTY attach follows output. `hum logs --follow` is read-only; `hum run NAME` starts or attaches. `stop` preserves state; `remove` discards it. Status shows followers.
+Names identify durable sessions. `hum attach NAME` joins a running session; `--tail 0` skips replay. TTY attach owns input and resize; non-TTY attach follows output. `hum logs --follow` is read-only. `stop` preserves state; `remove` discards it. Status shows followers.
 
 ## Restart on failure
 
@@ -132,7 +145,7 @@ A non-zero exit schedules at most five relaunches after:
 1s, 2s, 4s, 8s, 16s
 ```
 
-Manual controls win. Relaunches reuse the last effective process definition and do not reread the manifest. Use `hum restart NAME` to adopt definition changes. Status, JSON, and MCP snapshots expose recovery state and relaunch counts. Read retained logs with `hum logs` to diagnose failures.
+Manual controls win. Relaunches reuse the last process definition. Use `hum restart NAME` to adopt changes. Status, JSON, and MCP expose recovery state and relaunch counts. Diagnose failures with `hum logs`.
 
 ## Aggregate logs
 
@@ -142,7 +155,16 @@ hum logs web worker --tail 50
 hum logs web --stream stdout --match Listening
 ```
 
-Without names, logs selects lexical declarations once; ad-hoc sessions are excluded. Bounded reads without `--after-cursor` show the newest default window; explicit cursors without `--tail` page forward from the oldest retained entry. Output is `[NAME]`-prefixed or named NDJSON; Ctrl+C only closes followers. Logs `next` is the consumed cursor; process `next_cursor` is the next assigned cursor.
+Log selection is predictable:
+
+| Input | Result |
+| --- | --- |
+| No names | Declared processes in lexical order; ad-hoc sessions are excluded |
+| No `--after-cursor` | newest default window |
+| `--after-cursor` without `--tail` | Page forward from the oldest retained entry |
+| Ctrl+C while following | Close followers; do not stop processes |
+
+Human output is prefixed with `[NAME]`; JSON output uses named NDJSON events. Logs `next` is the consumed cursor; process `next_cursor` is the next cursor to assign.
 
 ## Shell completion
 

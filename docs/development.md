@@ -17,9 +17,21 @@ task init
 
 ## Toolchain policy
 
-`mise.toml` pins Go 1.27.1 and Staticcheck 2026.2.1. Ordinary `task ci` uses those pins. The `go 1.22` directive in `go.mod` is the minimum supported Go version, not the development toolchain; `task check:go-min` compiles and tests the source with Go 1.22 to keep that compatibility promise executable.
+| Purpose | Version | Source |
+| --- | --- | --- |
+| Development Go | 1.27.1 | `mise.toml` |
+| Staticcheck | 2026.2.1 | `mise.toml` |
+| Minimum supported Go | 1.22 | `go.mod` |
 
-Upgrade either tool pin deliberately by changing its exact version in `mise.toml`, running `mise install`, and rerunning `task ci`; Go and Staticcheck pins may be upgraded independently. Raise the Go minimum only when the support policy changes: update the `go.mod` directive, the Go version in `task check:go-min`, and this policy together, then run both `task check:go-min` and `task ci`.
+`task ci` uses the development pins. `task check:go-min` compiles and tests with Go 1.22.
+
+To upgrade a development tool:
+
+1. Change its exact version in `mise.toml`.
+2. Run `mise install`.
+3. Run `task ci`.
+
+Go and Staticcheck can be upgraded separately. Raise the minimum Go version only when the support policy changes. Update `go.mod`, `task check:go-min`, and this table together. Then run both `task check:go-min` and `task ci`.
 
 ## Build
 
@@ -47,7 +59,7 @@ mise exec go -- go build \
   -o bin/hum ./cmd/hum
 ```
 
-## Project gates
+## Project checks
 
 ```sh
 task fix:staged
@@ -73,11 +85,12 @@ Commits use [Conventional Commits](https://www.conventionalcommits.org/):
 <type>(<optional scope>)<optional !>: <description>
 ```
 
-Use `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, or `chore` for
-most changes. `perf`, `revert`, and `style` are also accepted when they describe
-the change precisely. Keep the scope lowercase and omit it when it adds no
-information. Describe breaking changes with `!` or a `BREAKING CHANGE:` trailer.
-Commit messages do not need task IDs or ticket references.
+Choose the type that best describes the change:
+
+- Common: `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, `chore`
+- Also accepted: `perf`, `revert`, `style`
+
+Keep scopes lowercase and omit them when they add no information. Mark breaking changes with `!` or a `BREAKING CHANGE:` trailer. Do not add task IDs or ticket references.
 
 Examples:
 
