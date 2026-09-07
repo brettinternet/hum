@@ -42,7 +42,7 @@ func initCommand(ctx context.Context, cmd *urfavecli.Command, writer io.Writer) 
 		return err
 	}
 
-	result, err := project.InitManifest(selection.cwd)
+	result, err := project.InitManifest(selection.cwd, cmd.Bool("force"))
 	if err != nil {
 		var existsErr *project.ManifestExistsError
 		if !errors.As(err, &existsErr) {

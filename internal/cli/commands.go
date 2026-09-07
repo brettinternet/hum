@@ -49,10 +49,11 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		{
 			Name:        "init",
 			Usage:       "create hum.yaml from discovery",
-			UsageText:   "hum init [--json]",
+			UsageText:   "hum init [--force] [--json]",
 			ArgsUsage:   "",
-			Description: "Create a hum.yaml manifest from strict project discovery without starting a daemon. A single candidate is generated; no candidate or ambiguity produces a commented template, and output reports the absolute path and next command hum up; --json emits stable JSON.\n\nExamples:\n  hum init\n  hum init --json",
+			Description: "Create a hum.yaml manifest from strict project discovery without starting a daemon. A single candidate is generated; no candidate or ambiguity produces a commented template, and output reports the absolute path and next command hum up; --force atomically replaces an existing regular hum.yaml and reports outcome replaced; without --force, an existing manifest is preserved and refused; --json emits stable JSON.\n\nExamples:\n  hum init\n  hum init --force\n  hum init --json",
 			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "force", DefaultText: "false", Usage: "atomically replace an existing regular hum.yaml"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write stable JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,

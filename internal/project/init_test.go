@@ -285,6 +285,273 @@ func TestInitExistingManifest(t *testing.T) {
 	}
 }
 
+func TestInitManifestForceReplace(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "hum.yaml")
+	original := []byte("old manifest\n")
+	if err := os.WriteFile(manifestPath, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	writeDiscoveryFile(t, root, "package.json", `{"scripts":{"dev":"echo replacement"}}`, 0o600)
+	installDiscoveryStubs(t, nil)
+
+	oldRender, oldWrite := initRender, initWrite
+	oldSync, oldClose := initSync, initClose
+	oldRename := initRename
+	t.Cleanup(func() {
+		initRender = oldRender
+		initWrite = oldWrite
+		initSync = oldSync
+		initClose = oldClose
+		initRename = oldRename
+	})
+	var events []string
+	var temporaryPath string
+	initWrite = func(file *os.File, contents []byte) (int, error) {
+		n, err := oldWrite(file, contents)
+		if err == nil {
+			temporaryPath = file.Name()
+			events = append(events, "write")
+			info, statErr := file.Stat()
+			if statErr != nil {
+				t.Fatalf("stat temporary manifest: %v", statErr)
+			}
+			if got := info.Mode().Perm(); got != 0o600 {
+				t.Fatalf("temporary manifest mode = %04o, want 0600", got)
+			}
+			if filepath.Dir(temporaryPath) != root {
+				t.Fatalf("temporary manifest directory = %q, want %q", filepath.Dir(temporaryPath), root)
+			}
+		}
+		return n, err
+	}
+	initSync = func(file *os.File) error {
+		err := oldSync(file)
+		if err == nil {
+			events = append(events, "sync")
+		}
+		return err
+	}
+	initClose = func(file *os.File) error {
+		err := oldClose(file)
+		if err == nil {
+			events = append(events, "close")
+		}
+		return err
+	}
+	const recreatedTemp = "unrelated file recreated after rename\n"
+	initRename = func(tempPath, targetPath string) error {
+		if tempPath != temporaryPath || targetPath != manifestPath {
+			t.Fatalf("rename paths = (%q, %q), want (%q, %q)", tempPath, targetPath, temporaryPath, manifestPath)
+		}
+		if !reflect.DeepEqual(events, []string{"write", "sync", "close"}) {
+			t.Fatalf("publication events = %#v, want write/sync/close before rename", events)
+		}
+		contents, err := os.ReadFile(tempPath)
+		if err != nil {
+			t.Fatalf("read closed temporary manifest: %v", err)
+		}
+		if !strings.Contains(string(contents), "npm") || !strings.Contains(string(contents), "package_json") {
+			t.Fatalf("temporary manifest contents = %q, want replacement candidate", contents)
+		}
+		current, err := os.ReadFile(targetPath)
+		if err != nil {
+			t.Fatalf("read original manifest before rename: %v", err)
+		}
+		if !reflect.DeepEqual(current, original) {
+			t.Fatalf("original manifest before rename = %q, want %q", current, original)
+		}
+		if err := oldRename(tempPath, targetPath); err != nil {
+			return err
+		}
+		return os.WriteFile(tempPath, []byte(recreatedTemp), 0o600)
+	}
+
+	result, err := InitManifest(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Path != manifestPath || result.Outcome != InitOutcomeReplaced {
+		t.Fatalf("result = %#v, want path %q and outcome %q", result, manifestPath, InitOutcomeReplaced)
+	}
+	contents, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reflect.DeepEqual(contents, original) || !strings.Contains(string(contents), "package_json") {
+		t.Fatalf("replacement manifest contents = %q, want generated replacement", contents)
+	}
+	info, err := os.Stat(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("replacement manifest mode = %04o, want 0600", got)
+	}
+	recreated, err := os.ReadFile(temporaryPath)
+	if err != nil {
+		t.Fatalf("read unrelated recreated temp path: %v", err)
+	}
+	if string(recreated) != recreatedTemp {
+		t.Fatalf("recreated temp contents = %q, want %q", recreated, recreatedTemp)
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		t.Fatalf("remove unrelated recreated temp path: %v", err)
+	}
+	initAssertNoTemp(t, root)
+}
+
+func TestInitManifestForcePreservesOriginalOnFailure(t *testing.T) {
+	const originalText = "original manifest bytes\x00\xff\n"
+
+	t.Run("discovery", func(t *testing.T) {
+		root, manifestPath, original := initForceFailureProject(t, originalText)
+		writeDiscoveryFile(t, root, "package.json", "{\n", 0o600)
+		installDiscoveryStubs(t, nil)
+		initForceAssertFailure(t, root, manifestPath, original, "discovery")
+	})
+
+	t.Run("render", func(t *testing.T) {
+		root, manifestPath, original := initForceFailureProject(t, originalText)
+		installDiscoveryStubs(t, nil)
+		oldRender := initRender
+		t.Cleanup(func() { initRender = oldRender })
+		initRender = func([]Definition, InitOutcome, string) ([]byte, error) {
+			return nil, errors.New("injected render failure")
+		}
+		initForceAssertFailure(t, root, manifestPath, original, "render")
+	})
+
+	t.Run("write", func(t *testing.T) {
+		root, manifestPath, original := initForceFailureProject(t, originalText)
+		installDiscoveryStubs(t, nil)
+		oldWrite := initWrite
+		t.Cleanup(func() { initWrite = oldWrite })
+		initWrite = func(*os.File, []byte) (int, error) {
+			return 0, errors.New("injected write failure")
+		}
+		initForceAssertFailure(t, root, manifestPath, original, "write")
+	})
+
+	t.Run("sync", func(t *testing.T) {
+		root, manifestPath, original := initForceFailureProject(t, originalText)
+		installDiscoveryStubs(t, nil)
+		oldSync := initSync
+		t.Cleanup(func() { initSync = oldSync })
+		initSync = func(*os.File) error { return errors.New("injected sync failure") }
+		initForceAssertFailure(t, root, manifestPath, original, "sync")
+	})
+
+	t.Run("close", func(t *testing.T) {
+		root, manifestPath, original := initForceFailureProject(t, originalText)
+		installDiscoveryStubs(t, nil)
+		oldClose := initClose
+		t.Cleanup(func() { initClose = oldClose })
+		first := true
+		initClose = func(file *os.File) error {
+			if first {
+				first = false
+				return errors.New("injected close failure")
+			}
+			return oldClose(file)
+		}
+		initForceAssertFailure(t, root, manifestPath, original, "close")
+	})
+
+	t.Run("rename", func(t *testing.T) {
+		root, manifestPath, original := initForceFailureProject(t, originalText)
+		installDiscoveryStubs(t, nil)
+		oldRename := initRename
+		t.Cleanup(func() { initRename = oldRename })
+		initRename = func(string, string) error { return errors.New("injected rename failure") }
+		initForceAssertFailure(t, root, manifestPath, original, "rename")
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		root := t.TempDir()
+		manifestPath := filepath.Join(root, "hum.yaml")
+		targetPath := filepath.Join(root, "original")
+		original := []byte(originalText)
+		if err := os.WriteFile(targetPath, original, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Base(targetPath), manifestPath); err != nil {
+			t.Fatal(err)
+		}
+		installDiscoveryStubs(t, nil)
+		if _, err := InitManifest(root, true); err == nil || !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("symlink error = %v, want actionable symlink refusal", err)
+		}
+		if got, err := os.Readlink(manifestPath); err != nil || got != filepath.Base(targetPath) {
+			t.Fatalf("symlink target = %q, %v; want %q", got, err, filepath.Base(targetPath))
+		}
+		initForceAssertBytes(t, targetPath, original)
+		initAssertNoTemp(t, root)
+	})
+
+	t.Run("non-regular directory", func(t *testing.T) {
+		root := t.TempDir()
+		manifestPath := filepath.Join(root, "hum.yaml")
+		if err := os.Mkdir(manifestPath, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		installDiscoveryStubs(t, nil)
+		if _, err := InitManifest(root, true); err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("non-regular error = %v, want actionable regular-file refusal", err)
+		}
+		info, err := os.Stat(manifestPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("target mode = %s, want directory", info.Mode())
+		}
+		initAssertNoTemp(t, root)
+	})
+}
+
+func initForceFailureProject(t *testing.T, originalText string) (string, string, []byte) {
+	t.Helper()
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "hum.yaml")
+	original := []byte(originalText)
+	if err := os.WriteFile(manifestPath, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	return root, manifestPath, original
+}
+
+func initForceAssertFailure(t *testing.T, root, manifestPath string, original []byte, stage string) {
+	t.Helper()
+	if _, err := InitManifest(root, true); err == nil || !strings.Contains(strings.ToLower(err.Error()), stage) {
+		t.Fatalf("%s error = %v, want %s failure", stage, err, stage)
+	}
+	initForceAssertBytes(t, manifestPath, original)
+	initAssertNoTemp(t, root)
+}
+
+func initForceAssertBytes(t *testing.T, path string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s bytes = %q, want %q", path, got, want)
+	}
+}
+
+func initAssertNoTemp(t *testing.T, root string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(root, ".hum.yaml.tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary manifests = %v, want none", matches)
+	}
+}
+
 func TestInitManifestRace(t *testing.T) {
 	root := t.TempDir()
 	installDiscoveryStubs(t, nil)
