@@ -181,6 +181,22 @@ func TestOrchestrateUp(t *testing.T) {
 			t.Fatalf("removed=%#v", removed)
 		}
 	})
+
+	t.Run("surviving descendants retain the launch slot", func(t *testing.T) {
+		definition := Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}}
+		current := Process{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, State: "descendants", PGID: 41}
+		starts := 0
+		result := Ensure(context.Background(), root, definition, nil, false, EnsureOperations{
+			Get: func(context.Context, string, string) (Process, error) { return current, nil },
+			Start: func(context.Context, StartRequest) (Process, error) {
+				starts++
+				return Process{}, errors.New("unexpected start")
+			},
+		})
+		if starts != 0 || !result.Already || result.Result.Outcome != "already_running" || result.Process.State != "descendants" {
+			t.Fatalf("descendants ensure = %#v, starts=%d", result, starts)
+		}
+	})
 }
 
 func indexOf(values []string, value string) int {

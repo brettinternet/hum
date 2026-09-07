@@ -1113,17 +1113,20 @@ func TestUpReportsBlockedExistingState(t *testing.T) {
 
 func TestDown(t *testing.T) {
 	defs := []Definition{{Name: "declared", Source: "hum.yaml", Argv: []string{"x"}, Cwd: "/tmp"}}
-	client := &fakeClient{processes: map[string]protocol.Process{"transient": {Name: "transient", Root: "/root", State: "running"}}}
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"descendants": {Name: "descendants", Root: "/root", State: protocol.StateDescendants},
+		"transient":   {Name: "transient", Root: "/root", State: protocol.StateRunning},
+	}}
 	s, root, ensures := newTestServer(t, defs, client)
 	got, err := s.callTool(context.Background(), "down", args(root))
 	if err != nil {
 		t.Fatal(err)
 	}
 	results := got.([]stopResult)
-	if len(results) != 2 || results[0].Name != "declared" || results[0].State != "not_running" || results[1].State != "stopped" {
+	if len(results) != 3 || results[0].Name != "declared" || results[0].State != "not_running" || results[1].Name != "descendants" || results[1].State != "stopped" || results[2].Name != "transient" || results[2].State != "stopped" {
 		t.Fatalf("down=%#v", results)
 	}
-	if len(client.stops) != 1 || client.stops[0].Name != "transient" {
+	if len(client.stops) != 2 || client.stops[0].Name != "descendants" || client.stops[1].Name != "transient" {
 		t.Fatalf("stops=%#v", client.stops)
 	}
 	if (*ensures)[0] {
@@ -1207,6 +1210,15 @@ func TestSignalTool(t *testing.T) {
 	}
 	if len(client.signals) != 1 || client.signals[0].Signal != "SIGHUP" {
 		t.Fatalf("signal requests = %#v", client.signals)
+	}
+	descendants := client.processes["api"]
+	descendants.State = protocol.StateDescendants
+	client.processes["api"] = descendants
+	if _, err := server.callTool(context.Background(), "signal", args(root, "name", "api", "signal", "TERM")); err != nil {
+		t.Fatalf("signal descendants: %v", err)
+	}
+	if len(client.signals) != 2 || client.signals[1].Signal != "SIGTERM" {
+		t.Fatalf("descendant signal requests = %#v", client.signals)
 	}
 	for _, input := range []string{"", "0", "-1", "SIGUSR3"} {
 		before := len(client.signals)

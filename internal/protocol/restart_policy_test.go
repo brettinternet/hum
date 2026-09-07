@@ -8,8 +8,11 @@ import (
 )
 
 func TestRestartPolicyProtocol(t *testing.T) {
-	if Version != 13 {
-		t.Fatalf("protocol version = %d, want wait-observation protocol version 13", Version)
+	if Version != 14 {
+		t.Fatalf("protocol version = %d, want descendants-state protocol version 14", Version)
+	}
+	if !IsActiveState(StateRunning) || !IsActiveState(StateDescendants) || IsActiveState(StateExited) {
+		t.Fatal("active state classification does not include running leaders and surviving descendants")
 	}
 
 	start := NewStartRequest("api", []string{"server"}, "/project", nil)

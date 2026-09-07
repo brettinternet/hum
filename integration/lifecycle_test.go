@@ -159,6 +159,76 @@ func TestSignalExitObservation(t *testing.T) {
 	}
 }
 
+func TestSignalledLeaderWithSurvivingDescendant(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := testutil.BuildHum(t)
+	fixture := testutil.BuildFixture(t)
+	runtime := lifecycleNewRuntime(t)
+	var daemonPID int
+	t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
+
+	marker := filepath.Join(t.TempDir(), "surviving-descendant")
+	script := `trap 'trap - TERM; kill -TERM $$' TERM; "$1" tree-child "$2" ignore-term & wait`
+	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "descendant-state", "--detach", "--", "/bin/sh", "-c", script, "hum-descendant", fixture, marker)
+	if started.Code != 0 || started.Err != nil || started.Stderr != "" {
+		t.Fatalf("descendant launch: code=%d err=%v stdout=%q stderr=%q", started.Code, started.Err, started.Stdout, started.Stderr)
+	}
+	leaderPID := lifecycleParseManagedPID(t, started.Stdout, "descendant-state")
+	t.Cleanup(func() { _ = syscall.Kill(-leaderPID, syscall.SIGKILL) })
+	testutil.WaitForFile(t, marker+".child.pid", lifecycleTimeout)
+	testutil.WaitForFile(t, marker+".grandchild.pid", lifecycleTimeout)
+	daemonPID = lifecycleReadPID(t, runtime.paths.PID)
+
+	signalled := testutil.Run(t, hum, runtime.cwd, runtime.env, "signal", "descendant-state", "TERM")
+	if signalled.Code != 0 || signalled.Err != nil {
+		t.Fatalf("signal descendant group: code=%d err=%v stdout=%q stderr=%q", signalled.Code, signalled.Err, signalled.Stdout, signalled.Stderr)
+	}
+	testutil.WaitForFile(t, marker+".child.term", lifecycleTimeout)
+
+	var status protocol.Process
+	if !lifecycleWaitCondition(lifecycleTimeout, func() bool {
+		result := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "descendant-state", "--json")
+		if result.Code != 0 || json.Unmarshal([]byte(strings.TrimSpace(result.Stdout)), &status) != nil {
+			return false
+		}
+		return status.State == "descendants"
+	}) {
+		t.Fatalf("status did not report surviving descendants: %#v", status)
+	}
+	if status.PID != 0 || status.PGID != leaderPID || testutil.ProcessAlive(leaderPID) {
+		t.Fatalf("descendant status = %#v, want no live leader PID and PGID %d", status, leaderPID)
+	}
+
+	listed := testutil.Run(t, hum, runtime.cwd, runtime.env, "list", "--json")
+	if listed.Code != 0 || listed.Err != nil {
+		t.Fatalf("descendant list: code=%d err=%v stdout=%q stderr=%q", listed.Code, listed.Err, listed.Stdout, listed.Stderr)
+	}
+	var listSnapshot struct {
+		Processes []protocol.Process `json:"processes"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(listed.Stdout)), &listSnapshot); err != nil {
+		t.Fatalf("decode descendant list: %v; stdout=%q", err, listed.Stdout)
+	}
+	if len(listSnapshot.Processes) != 1 || listSnapshot.Processes[0].Name != "descendant-state" ||
+		listSnapshot.Processes[0].State != "descendants" || listSnapshot.Processes[0].PID != 0 || listSnapshot.Processes[0].PGID != leaderPID {
+		t.Fatalf("descendant list snapshot = %#v, want one descendants record without leader PID", listSnapshot.Processes)
+	}
+
+	stopped := testutil.Run(t, hum, runtime.cwd, runtime.env, "stop", "descendant-state", "--json")
+	if stopped.Code != 0 || stopped.Err != nil || !strings.Contains(stopped.Stdout, `"status":"stopped"`) {
+		t.Fatalf("stop surviving descendant group: code=%d err=%v stdout=%q stderr=%q", stopped.Code, stopped.Err, stopped.Stdout, stopped.Stderr)
+	}
+	if !lifecycleWaitCondition(lifecycleTimeout, func() bool {
+		result := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "descendant-state", "--json")
+		if result.Code != 0 || json.Unmarshal([]byte(strings.TrimSpace(result.Stdout)), &status) != nil {
+			return false
+		}
+		return status.State == "stopped"
+	}) {
+		t.Fatalf("status did not leave descendants state after group stop: %#v", status)
+	}
+}
+
 func TestForegroundServe(t *testing.T) {
 	lifecycleRequireUnix(t)
 	hum := testutil.BuildHum(t)

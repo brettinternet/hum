@@ -784,7 +784,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 			return nil, &ToolError{Code: "not_found", Message: fmt.Sprintf("process definition or retained session %q not found", input.Name)}
 		}
 		outcome := "already_running"
-		if process.State != "running" {
+		if !protocol.IsActiveState(process.State) {
 			process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: input.Name, Cwd: resolution.Root, Root: resolution.Root, TTY: process.TTY})
 			if err != nil {
 				return nil, mapError(err)
@@ -1202,7 +1202,7 @@ func (s *Server) down(ctx context.Context, resolution Resolution) (any, error) {
 	results := make([]stopResult, 0, len(byName))
 	for _, process := range sortedProcesses(byName) {
 		result := stopResult{Name: process.Name, State: "not_running"}
-		if process.State == "running" || process.State == "starting" || processNeedsRestartControl(process) {
+		if protocol.IsActiveState(process.State) || process.State == "starting" || processNeedsRestartControl(process) {
 			if stopErr := client.Stop(ctx, protocol.StopRequest{Op: protocol.OpStop, Name: process.Name, Cwd: resolution.Root}); stopErr != nil {
 				result.State = "error"
 				result.Error = mapError(stopErr)
@@ -1245,7 +1245,7 @@ func (s *Server) signal(ctx context.Context, resolution Resolution, input common
 		}
 		return nil, mapped
 	}
-	if process.State != protocol.StateRunning {
+	if !protocol.IsActiveState(process.State) {
 		return nil, &ToolError{Code: string(protocol.ErrorNotRunning), Message: fmt.Sprintf("process %q is not running; start it with hum start %s", input.Name, input.Name)}
 	}
 	request := protocol.NewSignalRequest(input.Name, resolution.Root, parsed.Name)
@@ -1424,7 +1424,7 @@ func (s *Server) stop(ctx context.Context, resolution Resolution, name string) (
 		}
 		return nil, mapped
 	}
-	if process.State != "running" && process.State != "starting" && !processNeedsRestartControl(process) {
+	if !protocol.IsActiveState(process.State) && process.State != "starting" && !processNeedsRestartControl(process) {
 		return map[string]string{"name": name, "state": "not_running"}, nil
 	}
 	if err := client.Stop(ctx, protocol.StopRequest{Op: protocol.OpStop, Name: name, Cwd: resolution.Root}); err != nil {

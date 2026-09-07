@@ -636,7 +636,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	// pre-existing non-TTY lifecycle race guarantees.
 	current, getErr = client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
 
-	shouldLaunch := !inputConflict && (len(argv) != 0 || declared && (getErr != nil || current.State != app.StateRunning))
+	shouldLaunch := !inputConflict && (len(argv) != 0 || declared && (getErr != nil || !app.IsActiveState(current.State)))
 	if shouldLaunch {
 		if _, err := launch(); err != nil {
 			if isNameInUse(err) || errors.Is(err, app.ErrNameInUse) {
@@ -644,7 +644,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 			}
 			return err
 		}
-	} else if getErr == nil && current.State != app.StateRunning {
+	} else if getErr == nil && !app.IsActiveState(current.State) {
 		if len(current.Argv) == 0 && !declared {
 			_, err = fmt.Fprintf(writer, "%s waiting for first launch (name does not resolve; %s may create it)\n", name, projectCommand(selection.selector, "run "+name+" -- COMMAND"))
 		} else if len(current.Argv) == 0 {
@@ -869,7 +869,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		}
 		return err
 	}
-	if process.State != app.StateRunning {
+	if !app.IsActiveState(process.State) {
 		return inputSessionNotRunningError(name, manifest.selector)
 	}
 
@@ -1148,7 +1148,7 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			return err
 		}
 		defer follower.Close()
-		if process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd}); getErr == nil && process.State != app.StateRunning {
+		if process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd}); getErr == nil && !app.IsActiveState(process.State) {
 			message := logsWaitingMessage(name, process, manifest)
 			if cmd.Bool("json") {
 				err = encodeJSON(writer, eventJSON(name, output.Event{Read: &output.ReadResult{Entries: []output.Entry{{Stream: output.System, Time: time.Now(), Text: message}}}}))
@@ -1448,7 +1448,7 @@ func aggregateLogsFollow(ctx context.Context, cmd *urfavecli.Command, client *da
 			followers[index] = nil
 			continue
 		}
-		if process.State == app.StateRunning {
+		if app.IsActiveState(process.State) {
 			continue
 		}
 		message := logsWaitingMessage(name, process, manifest)
@@ -1870,7 +1870,7 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	running := make(map[string]bool, len(processes))
 	resettable := make(map[string]bool, len(processes))
 	for _, process := range processes {
-		if process.State == app.StateRunning {
+		if app.IsActiveState(process.State) {
 			running[process.Name] = true
 		}
 		resettable[process.Name] = process.NextLaunchAt != nil || process.Restart == app.RestartOnFailure && process.Relaunches > 0
@@ -2000,7 +2000,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	byName := make(map[string]app.Process, len(processes))
 	for _, process := range processes {
 		existing, ok := byName[process.Name]
-		if !ok || (existing.State != app.StateRunning && process.State == app.StateRunning) {
+		if !ok || (!app.IsActiveState(existing.State) && app.IsActiveState(process.State)) {
 			byName[process.Name] = process
 		}
 	}
@@ -2021,7 +2021,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	workers := make(chan workerResult, len(names))
 	var waitGroup sync.WaitGroup
 	for index, name := range names {
-		if byName[name].State != app.StateRunning && !processNeedsRestartControl(byName[name]) {
+		if !app.IsActiveState(byName[name].State) && !processNeedsRestartControl(byName[name]) {
 			continue
 		}
 		waitGroup.Add(1)
@@ -2647,7 +2647,7 @@ func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd st
 			return definition, manifestLaunchError(definition, fmt.Errorf("no process definition or retained launch specification for %q", name)), app.Process{}
 		}
 		definition.Source, definition.Argv, definition.Cwd = current.Source, append([]string(nil), current.Argv...), current.Cwd
-		if current.State == app.StateRunning {
+		if app.IsActiveState(current.State) {
 			return definition, manifestLaunchResultFor(definition, current, "already_running"), current
 		}
 		process, startErr := client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root, TTY: current.TTY, Restart: string(app.RestartNever)})

@@ -455,6 +455,21 @@ func (c *Child) ResizeContext(ctx context.Context, columns, rows uint16) error {
 	return ctx.Err()
 }
 
+// HasSurvivingDescendants reports whether the process-group leader has been
+// reaped while another member of the original process group remains alive.
+func (c *Child) HasSurvivingDescendants() bool {
+	if c == nil || c.pgid <= 0 {
+		return false
+	}
+	select {
+	case <-c.leaderDone:
+		err := syscall.Kill(-c.pgid, 0)
+		return err == nil || errors.Is(err, syscall.EPERM)
+	default:
+		return false
+	}
+}
+
 // Done is closed after the process has been waited for, the original process
 // group has disappeared, both output streams have reached EOF or been
 // canceled, and the output store has been notified.

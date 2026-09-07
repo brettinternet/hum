@@ -14,10 +14,10 @@ import (
 // this value on every connection. Version 10 added explicit stopped terminal
 // snapshots and autonomous exit details; version 11 added immutable output
 // time-window cutoffs in output and follow requests; version 12 adds canonical
-// observational process-group signal requests and responses; version 13 adds
+// observational process-group signal requests and responses; version 13 added
 // process observation to wait timeout responses and optional terminating-signal
-// details on exit snapshots.
-const Version = 13
+// details on exit snapshots; version 14 adds the descendants process state.
+const Version = 14
 
 const (
 	RestartNever     = "never"
@@ -26,11 +26,17 @@ const (
 	// Process states are shared by daemon snapshots and client renderers.
 	// stopped identifies termination owned by stop/down; exited identifies an
 	// autonomous terminal process and carries its exit details.
-	StateRunning    = "running"
-	StateExited     = "exited"
-	StateStopped    = "stopped"
-	StateUnresolved = "unresolved"
+	StateRunning     = "running"
+	StateDescendants = "descendants"
+	StateExited      = "exited"
+	StateStopped     = "stopped"
+	StateUnresolved  = "unresolved"
 )
+
+// IsActiveState reports whether a process group still owns its lifecycle slot.
+func IsActiveState(state string) bool {
+	return state == StateRunning || state == StateDescendants
+}
 
 func effectiveRestart(policy string) string {
 	if policy == "" {
