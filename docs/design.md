@@ -30,6 +30,7 @@ hum [--project DIR|-C DIR] down [--json]
 hum run [--project DIR|-C DIR] <name> [--detach] [--json] [-- <command> [args...]]
 hum [--project DIR|-C DIR] list [--all] [--json]
 hum [--project DIR|-C DIR] status <name> [--json]
+hum [--project DIR|-C DIR] attach <name> [--tail N]
 hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|both] [--tail N] [--after-cursor N]
            [--limit-bytes N] [--match REGEX] [--follow] [--json]
 hum [--project DIR|-C DIR] wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
@@ -60,7 +61,7 @@ Combined short options are unsupported; MCP fields have no aliases.
 | `-t` | `--timeout` | `start`, `up`, `wait`, `restart` |
 | `-a` | `--all` | `list` |
 | `-s` | `--stream` | `logs` |
-| `-n` | `--tail` | `logs` |
+| `-n` | `--tail` | `attach`, `logs` |
 | `-c` | `--after-cursor` | `logs`, `wait` |
 | `-b` | `--limit-bytes` | `logs` |
 | `-m` | `--match` | `logs`, `wait` |
@@ -177,6 +178,16 @@ serializes writes, reports per-session errors with their names without stopping 
 sessions, and cancels the whole aggregate on daemon loss or output failure. Ctrl+C
 closes all aggregate followers and never signals managed processes. A single explicit
 name preserves the existing human and JSON output unchanged.
+`hum attach <name>` is the human-facing explicit terminal connection to an existing
+running session. It never starts or restarts a process or daemon. It reuses the
+attached-session stream and, for a TTY target, the existing exclusive input lease;
+raw input and terminal resize events go to the sole owner, while a non-TTY target
+follows output without input. `--tail N` replays the final N retained entries in
+source order before live output; `--tail 0` suppresses retained replay. Missing or
+stopped names return actionable guidance and leave the retained record unchanged.
+`run` remains the start-or-attach command (`hum run NAME`), while `logs --follow`
+remains a read-only log follower that may wait for a future launch. Copy-pasteable
+examples are `hum attach console` and `hum attach console --tail 50`.
 `input` is the bounded request/response surface for an existing TTY record: `--text` sends exact non-empty text bytes without a newline, while
 `--base64` accepts only standard padded base64 without whitespace and decodes to
 at most 32 KiB. It attaches only to the initial running state, writes exactly

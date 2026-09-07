@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
 	urfavecli "github.com/urfave/cli/v3"
 	"hum/internal/app"
 	"hum/internal/daemon"
@@ -120,6 +121,16 @@ func cliServeRunFixture(args []string) int {
 			return 2
 		}
 		return cliServeRunFixtureTerm(args[1])
+	case "tail":
+		if len(args) < 2 {
+			return 2
+		}
+		return cliServeRunFixtureTail(args[1])
+	case "tty":
+		if len(args) < 2 {
+			return 2
+		}
+		return cliServeRunFixtureTTY(args[1])
 	default:
 		return 2
 	}
@@ -207,6 +218,86 @@ func cliServeRunFixtureTerm(marker string) int {
 			return 0
 		case syscall.SIGINT:
 			fmt.Fprintln(os.Stdout, "fixture:sigint")
+		}
+	}
+}
+
+func cliServeRunFixtureTail(marker string) int {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGHUP, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	for _, line := range []string{
+		"tail-zero" + strings.Repeat("w", 24<<10),
+		"tail-one" + strings.Repeat("x", 24<<10),
+		"tail-two" + strings.Repeat("y", 24<<10),
+		"tail-three" + strings.Repeat("z", 24<<10),
+	} {
+		fmt.Fprintln(os.Stdout, line)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := os.WriteFile(marker+".started", []byte("started"), 0600); err != nil {
+		return 2
+	}
+	for {
+		switch <-signals {
+		case syscall.SIGHUP:
+			fmt.Fprintln(os.Stdout, "tail-live")
+		case syscall.SIGTERM:
+			if err := os.WriteFile(marker+".terminated", []byte("terminated"), 0600); err != nil {
+				return 2
+			}
+			return 0
+		}
+	}
+}
+
+func cliServeRunFixtureTTY(marker string) int {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(signals)
+	if err := os.WriteFile(marker+".started", []byte("started"), 0600); err != nil {
+		return 2
+	}
+	lastCols, lastRows := 0, 0
+	input := make(chan []byte, 1)
+	go func() {
+		buffer := make([]byte, 256)
+		for {
+			count, err := os.Stdin.Read(buffer)
+			if count > 0 {
+				payload := append([]byte(nil), buffer[:count]...)
+				select {
+				case input <- payload:
+				default:
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			rows, cols, err := pty.Getsize(os.Stdin)
+			if err == nil && cols > 0 && rows > 0 && (cols != lastCols || rows != lastRows) {
+				lastCols, lastRows = cols, rows
+				fmt.Fprintf(os.Stdout, "tty:size=%dx%d\n", cols, rows)
+			}
+		case payload := <-input:
+			fmt.Fprintf(os.Stdout, "tty:input=%q\n", payload)
+		case sig := <-signals:
+			switch sig {
+			case syscall.SIGTERM:
+				if err := os.WriteFile(marker+".terminated", []byte("terminated"), 0600); err != nil {
+					return 2
+				}
+				return 0
+			case syscall.SIGINT:
+				fmt.Fprintln(os.Stdout, "tty:sigint")
+			}
 		}
 	}
 }
@@ -956,6 +1047,218 @@ func TestAttachedRun(t *testing.T) {
 	})
 }
 
+func TestAttachRunningSession(t *testing.T) {
+	runtimeDir := cliServeRunRuntimeDir(t)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	cliServeRunStartDaemon(t, runtimeDir)
+	marker := filepath.Join(t.TempDir(), "attach-running")
+	if _, _, err := cliServeRunInvokeForTest(cliServeRunWithFixtureArgs([]string{"run", "attach-running", "--tty", "--detach"}, "tty", marker)...); err != nil {
+		t.Fatalf("start running tty session: %v", err)
+	}
+	if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+		t.Fatal(err)
+	}
+
+	first := cliServeRunStartPTYClient(t, "attach", "attach-running")
+	if err := first.waitForText("tty:size="); err != nil {
+		t.Fatalf("attach initial replay: %v; output=%q", err, first.output())
+	}
+	if _, err := first.master.Write([]byte("attach-input\n")); err != nil {
+		t.Fatalf("write through attach terminal: %v", err)
+	}
+	if err := cliServeRunWaitForTextIn(first.output, "tty:input=\"attach-input\\n\""); err != nil {
+		t.Fatalf("attach raw input forwarding: %v; output=%q", err, first.output())
+	}
+	if err := pty.Setsize(first.master, &pty.Winsize{Cols: 111, Rows: 37}); err != nil {
+		t.Fatalf("resize attached terminal: %v", err)
+	}
+	if err := first.cmd.Process.Signal(syscall.SIGWINCH); err != nil {
+		t.Fatalf("signal attached terminal resize: %v", err)
+	}
+	if err := cliServeRunWaitForTextIn(first.output, "tty:size=111x37"); err != nil {
+		t.Fatalf("attach resize forwarding: %v; output=%q", err, first.output())
+	}
+
+	second := cliServeRunStartPTYClient(t, "attach", "attach-running")
+	if err := second.waitForText("following output only"); err != nil {
+		t.Fatalf("second attach ownership notice: %v; output=%q", err, second.output())
+	}
+	if _, err := second.master.Write([]byte("second-input\n")); err != nil {
+		t.Fatalf("write through second attach terminal: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if strings.Contains(second.output(), "tty:input=\"second-input\\n\"") {
+		t.Fatalf("second attach unexpectedly forwarded input: %q", second.output())
+	}
+	if err := second.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("detach second attach: %v", err)
+	}
+	if err := second.wait(5 * time.Second); err != nil {
+		t.Fatalf("second attach detach: %v; output=%q", err, second.output())
+	}
+	if err := first.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("detach first attach: %v", err)
+	}
+	if err := first.wait(5 * time.Second); err != nil {
+		t.Fatalf("first attach detach: %v; output=%q", err, first.output())
+	}
+	cliServeRunAssertRunning(t, daemon.NewRuntimePaths(runtimeDir), "attach-running")
+	if err := cliServeRunStop(t, "attach-running"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cliServeRunWaitForFile(marker + ".terminated"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAttachNeverStartsSession(t *testing.T) {
+	runtimeDir := cliServeRunRuntimeDir(t)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	cliServeRunStartDaemon(t, runtimeDir)
+
+	if _, _, err := cliServeRunInvokeForTest("attach", "missing"); err == nil || !strings.Contains(err.Error(), "hum start missing") {
+		t.Fatalf("missing attach error = %v, want actionable start guidance", err)
+	}
+	client, err := daemon.Dial(context.Background(), daemon.NewRuntimePaths(runtimeDir).Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Get(context.Background(), daemon.GetRequest{Name: "missing", Cwd: mustWorkingDirectory(t)}); !isNotFound(err) {
+		t.Fatalf("missing attach created a record: %v", err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "attach-stopped")
+	if _, _, err := cliServeRunInvokeForTest(cliServeRunWithFixtureArgs([]string{"run", "attach-stopped", "--detach"}, "term", marker)...); err != nil {
+		t.Fatalf("start stopped-session fixture: %v", err)
+	}
+	if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := client.Get(context.Background(), daemon.GetRequest{Name: "attach-stopped", Cwd: mustWorkingDirectory(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cliServeRunStop(t, "attach-stopped"); err != nil {
+		t.Fatal(err)
+	}
+	afterStop, err := client.Get(context.Background(), daemon.GetRequest{Name: "attach-stopped", Cwd: mustWorkingDirectory(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterStop.State != app.StateExited {
+		t.Fatalf("stopped fixture state = %q, want exited", afterStop.State)
+	}
+	if _, _, err := cliServeRunInvokeForTest("attach", "attach-stopped"); err == nil || !strings.Contains(err.Error(), "is not running") {
+		t.Fatalf("stopped attach error = %v, want not-running guidance", err)
+	}
+	afterAttach, err := client.Get(context.Background(), daemon.GetRequest{Name: "attach-stopped", Cwd: mustWorkingDirectory(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterAttach.State != afterStop.State || afterAttach.LaunchCursor != afterStop.LaunchCursor || afterAttach.PID != afterStop.PID {
+		t.Fatalf("stopped record changed after attach: before=%+v after-stop=%+v after-attach=%+v", before, afterStop, afterAttach)
+	}
+}
+
+func TestAttachTail(t *testing.T) {
+	runtimeDir := cliServeRunRuntimeDir(t)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	if _, _, err := cliServeRunInvokeForTest("attach", "attach-tail", "--tail", "-1"); err == nil || !strings.Contains(err.Error(), "tail must not be negative") {
+		t.Fatalf("negative attach tail error before daemon contact = %v", err)
+	}
+	cliServeRunStartDaemon(t, runtimeDir)
+	marker := filepath.Join(t.TempDir(), "attach-tail")
+	if _, _, err := cliServeRunInvokeForTest(cliServeRunWithFixtureArgs([]string{"run", "attach-tail", "--detach"}, "tail", marker)...); err != nil {
+		t.Fatalf("start tail fixture: %v", err)
+	}
+	if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+		t.Fatal(err)
+	}
+	projectRoot := mustWorkingDirectory(t)
+	client, err := daemon.Dial(context.Background(), daemon.NewRuntimePaths(runtimeDir).Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	before, err := client.Output(context.Background(), daemon.OutputRequest{Name: "attach-tail", Cwd: projectRoot, Tail: 10, MaxBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attached := cliServeRunStartClient(t, "attach", "attach-tail", "--tail", "3")
+	// Emit live output once replay has started; attach must buffer it and
+	// preserve replay-before-live ordering.
+	if err := cliServeRunWaitForText(attached.stdoutPath, "tail-one"); err != nil {
+		t.Fatalf("tail replay start: %v; output bytes=%d", err, len(attached.stdout()))
+	}
+	if err := client.Signal(context.Background(), daemon.SignalRequest{Name: "attach-tail", Cwd: projectRoot, Signal: "SIGHUP"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cliServeRunWaitForText(attached.stdoutPath, "tail-live\n"); err != nil {
+		t.Fatalf("tail replay and live output: %v; output bytes=%d", err, len(attached.stdout()))
+	}
+	replay := attached.stdout()
+	oneIndex, twoIndex := strings.Index(replay, "tail-one"), strings.Index(replay, "tail-two")
+	threeIndex, liveIndex := strings.Index(replay, "tail-three"), strings.Index(replay, "tail-live\n")
+	if strings.Contains(replay, "tail-zero") || oneIndex < 0 || twoIndex < 0 || threeIndex < 0 || liveIndex < 0 || oneIndex >= twoIndex || twoIndex >= threeIndex || threeIndex >= liveIndex {
+		t.Fatalf("tail output bytes=%d indexes=(%d,%d,%d,%d), want exactly final three retained entries in source order before live output", len(replay), oneIndex, twoIndex, threeIndex, liveIndex)
+	}
+	if err := attached.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := attached.wait(5 * time.Second); err != nil {
+		t.Fatalf("detach tail attach: %v; output=%q", err, attached.stdout())
+	}
+	if err := cliServeRunWaitForCondition(func() bool {
+		process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: "attach-tail", Cwd: projectRoot})
+		return getErr == nil && process.Followers == 0
+	}); err != nil {
+		t.Fatalf("tail attach follower cleanup: %v", err)
+	}
+
+	liveOnly := cliServeRunStartClient(t, "attach", "attach-tail", "--tail", "0")
+	if err := cliServeRunWaitForCondition(func() bool {
+		process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: "attach-tail", Cwd: projectRoot})
+		return getErr == nil && process.Followers == 1
+	}); err != nil {
+		t.Fatalf("tail zero attach readiness: %v", err)
+	}
+	if got := liveOnly.stdout(); strings.Contains(got, "tail-zero") || strings.Contains(got, "tail-one") || strings.Contains(got, "tail-two") || strings.Contains(got, "tail-three") {
+		t.Fatalf("tail zero replayed retained output: %q", got)
+	}
+	if err := client.Signal(context.Background(), daemon.SignalRequest{Name: "attach-tail", Cwd: projectRoot, Signal: "SIGHUP"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cliServeRunWaitForText(liveOnly.stdoutPath, "tail-live\n"); err != nil {
+		t.Fatalf("tail zero live output: %v; output=%q", err, liveOnly.stdout())
+	}
+	if err := liveOnly.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := liveOnly.wait(5 * time.Second); err != nil {
+		t.Fatalf("detach tail zero attach: %v; output=%q", err, liveOnly.stdout())
+	}
+	after, err := client.Output(context.Background(), daemon.OutputRequest{Name: "attach-tail", Cwd: projectRoot, Tail: 10, MaxBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Entries) != len(before.Entries)+2 {
+		t.Fatalf("attach tail changed retained output unexpectedly: before=%d after=%d", len(before.Entries), len(after.Entries))
+	}
+	for index, entry := range before.Entries {
+		if after.Entries[index].Cursor != entry.Cursor || after.Entries[index].Text != entry.Text {
+			t.Fatalf("attach tail changed retained entry %d: before=%+v after=%+v", index, entry, after.Entries[index])
+		}
+	}
+	if err := cliServeRunStop(t, "attach-tail"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cliServeRunWaitForFile(marker + ".terminated"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDetachedRun(t *testing.T) {
 	runtimeDir := cliServeRunRuntimeDir(t)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
@@ -1023,6 +1326,90 @@ type cliServeRunProcess struct {
 	mu         sync.Mutex
 	hasExited  bool
 	waitErr    error
+}
+
+type cliServeRunPTYProcess struct {
+	cmd       *exec.Cmd
+	master    *os.File
+	finished  chan struct{}
+	mu        sync.Mutex
+	buffer    bytes.Buffer
+	hasExited bool
+	waitErr   error
+}
+
+func cliServeRunStartPTYClient(t *testing.T, args ...string) *cliServeRunPTYProcess {
+	t.Helper()
+	argv := []string{cliServeRunChildFlag, cliServeRunHelperMarker, "client"}
+	argv = append(argv, args...)
+	command := exec.Command(os.Args[0], argv...)
+	command.Env = append([]string(nil), os.Environ()...)
+	master, err := pty.Start(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := &cliServeRunPTYProcess{cmd: command, master: master, finished: make(chan struct{})}
+	go func() {
+		buffer := make([]byte, 4096)
+		for {
+			count, readErr := master.Read(buffer)
+			if count > 0 {
+				process.mu.Lock()
+				_, _ = process.buffer.Write(buffer[:count])
+				process.mu.Unlock()
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		err := command.Wait()
+		process.mu.Lock()
+		process.waitErr = err
+		process.hasExited = true
+		process.mu.Unlock()
+		close(process.finished)
+	}()
+	t.Cleanup(func() {
+		if !process.exited() {
+			_ = command.Process.Kill()
+			_ = process.wait(2 * time.Second)
+		}
+		_ = master.Close()
+	})
+	return process
+}
+
+func (p *cliServeRunPTYProcess) outputString() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.buffer.String()
+}
+
+func (p *cliServeRunPTYProcess) output() string { return p.outputString() }
+
+func (p *cliServeRunPTYProcess) waitForText(want string) error {
+	return cliServeRunWaitForTextIn(p.outputString, want)
+}
+
+func (p *cliServeRunPTYProcess) wait(timeout time.Duration) error {
+	select {
+	case <-p.finished:
+		p.mu.Lock()
+		err := p.waitErr
+		p.mu.Unlock()
+		return err
+	case <-time.After(timeout):
+		return fmt.Errorf("process did not exit within %s", timeout)
+	}
+}
+
+func (p *cliServeRunPTYProcess) exited() bool {
+	p.mu.Lock()
+	exited := p.hasExited
+	p.mu.Unlock()
+	return exited
 }
 
 func cliServeRunStartClient(t *testing.T, args ...string) *cliServeRunProcess {
@@ -1292,6 +1679,12 @@ func cliServeRunWaitForText(path, want string) error {
 	return cliServeRunWaitForCondition(func() bool {
 		data, err := os.ReadFile(path)
 		return err == nil && strings.Contains(string(data), want)
+	})
+}
+
+func cliServeRunWaitForTextIn(text func() string, want string) error {
+	return cliServeRunWaitForCondition(func() bool {
+		return strings.Contains(text(), want)
 	})
 }
 

@@ -113,7 +113,7 @@ hum stop preview
 hum remove preview
 ```
 
-Names identify durable sessions. Attached `run` and `logs --follow` clients stay attached across stops and launches until Ctrl+C. `wait` is bounded for automation. `stop` preserves session state; `remove` stops and discards it. `hum status NAME` and `hum list --all` show live followers. Followers do not reconnect after daemon loss.
+Names identify durable sessions. `hum attach NAME` joins only a running session; `--tail 0` skips replay. TTY input and resize use the exclusive lease; non-TTY attach follows output. `hum logs --follow` is read-only; `hum run NAME` starts or attaches. `stop` preserves state; `remove` discards it. Status shows followers.
 
 ## Restart on failure
 

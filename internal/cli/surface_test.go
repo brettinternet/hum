@@ -95,6 +95,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 		"down":     true,
 		"list":     true,
 		"status":   true,
+		"attach":   true,
 		"logs":     true,
 		"wait":     true,
 		"input":    true,
@@ -117,6 +118,50 @@ func TestStatusAndWaitSurface(t *testing.T) {
 		if !got[name] {
 			t.Errorf("root command is missing %q", name)
 		}
+	}
+}
+
+func TestAttachSurface(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+	attach := root.Command("attach")
+	if attach == nil || attach.Name != "attach" {
+		t.Fatalf("attach command is missing: %#v", attach)
+	}
+	if logs := root.Command("logs"); logs == nil || logs == attach {
+		t.Fatalf("attach must be distinct from logs: attach=%#v logs=%#v", attach, logs)
+	}
+	if err := root.Run(context.Background(), []string{"hum", "attach", "--help"}); err != nil {
+		t.Fatalf("attach help: %v", err)
+	}
+	help := strings.ToLower(output.String())
+	for _, want := range []string{"hum attach name", "--tail", "currently running", "without starting", "raw input", "--tail 0", "hum run", "hum logs"} {
+		if !strings.Contains(help, strings.ToLower(want)) {
+			t.Errorf("attach help missing %q: %q", want, output.String())
+		}
+	}
+	for _, unwanted := range []string{"--stream", "--json", "--match", "--limit-bytes", "--after-cursor"} {
+		if strings.Contains(help, unwanted) {
+			t.Errorf("attach help advertises unsupported flag %q: %q", unwanted, output.String())
+		}
+	}
+	for path, wants := range map[string][]string{
+		"../../README.md":      {"hum attach NAME", "--tail 0", "hum run", "hum logs --follow"},
+		"../../docs/design.md": {"hum attach <name>", "--tail 0", "never starts or restarts", "hum run", "| `-n` | `--tail` | `attach`, `logs` |"},
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content := strings.ToLower(string(data))
+		for _, want := range wants {
+			if !strings.Contains(content, strings.ToLower(want)) {
+				t.Errorf("%s missing %q", path, want)
+			}
+		}
+	}
+	if errorOutput.Len() != 0 {
+		t.Fatalf("attach help stderr = %q", errorOutput.String())
 	}
 }
 
