@@ -910,6 +910,66 @@ func manifestProgressText(value string) string {
 	}, value)
 }
 
+func buildManifestLaunchTable(results []manifestLaunchResult) listTable {
+	table := listTable{
+		header: listRow{
+			styledListCell("NAME", ansiBold),
+			styledListCell("RESULT", ansiBold),
+			styledListCell("STATE", ansiBold),
+			styledListCell("PID", ansiBold),
+		},
+		rows: make([]listRow, 0, len(results)),
+	}
+	for _, result := range results {
+		state := result.State
+		if state == "" {
+			state = "-"
+		}
+		pid := "-"
+		if result.PID != nil {
+			pid = fmt.Sprintf("%d", *result.PID)
+		}
+		exitCode := 0
+		if result.ExitCode != nil {
+			exitCode = *result.ExitCode
+		}
+		table.rows = append(table.rows, listRow{
+			plainListCell(result.Name),
+			styledListCell(manifestOutcomeLabel(result.Outcome), manifestOutcomeStyle(result.Outcome)),
+			styledListCell(state, processStateStyle(app.State(result.State), exitCode)),
+			plainListCell(pid),
+		})
+	}
+	return table
+}
+
+func manifestOutcomeLabel(outcome string) string {
+	switch outcome {
+	case "already_running":
+		return "already running"
+	case "running_unverified":
+		return "running unverified"
+	case "exited_before_ready":
+		return "exited before ready"
+	case "timed_out":
+		return "timed out"
+	case "definition_drift":
+		return "definition drift"
+	case "recovery_pending":
+		return "recovery pending"
+	case "recovery_exhausted":
+		return "recovery exhausted"
+	case "removed_definition":
+		return "removed definition"
+	default:
+		return outcome
+	}
+}
+
+func renderManifestLaunchTableWithPolicy(w io.Writer, results []manifestLaunchResult, colors colorPolicy) error {
+	return writeListTable(w, buildManifestLaunchTable(results), colors)
+}
+
 func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {
 	return renderManifestLaunchHumanWithPolicy(w, result, colorPolicy{})
 }

@@ -2604,17 +2604,19 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		_, err = fmt.Fprintln(writer, "No processes are declared in hum.yaml.")
 		return err
 	}
-	for _, result := range results {
-		if cmd.Bool("json") {
+	if cmd.Bool("json") {
+		for _, result := range results {
 			if err := encodeJSON(writer, manifestResultJSON(result)); err != nil {
 				return err
 			}
-		} else {
-			colors := colorPolicy{}
-			if ordered {
-				colors = colorPolicyForWriter(writer)
-			}
-			if err := renderManifestLaunchHumanWithPolicy(writer, result, colors); err != nil {
+		}
+	} else if ordered {
+		if err := renderManifestLaunchTableWithPolicy(writer, results, colorPolicyForWriter(writer)); err != nil {
+			return err
+		}
+	} else {
+		for _, result := range results {
+			if err := renderManifestLaunchHumanWithPolicy(writer, result, colorPolicy{}); err != nil {
 				return err
 			}
 		}

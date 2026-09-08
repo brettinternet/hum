@@ -169,8 +169,10 @@ byte bounds.
 This human-only `hum up` progress is enabled only in default human mode while readiness waiting
 is enabled.
 
-- It writes newline-terminated startup transitions to stderr; the unchanged final
-  per-declaration summaries remain on stdout.
+- It writes newline-terminated startup transitions to stderr. The final stdout summary is a
+  compact `NAME`, `RESULT`, `STATE`, and `PID` table in lexical declaration order; diagnostic
+  fields such as launch and readiness cursors and the readiness matcher remain available in
+  `up --json` rather than expanding human output.
 - Progress follows temporal transition completion rather than lexical declaration order, is
   serialized as complete lines, and is bounded to a maximum of two lines per declaration: one
   launch, observation, error, or dependency-blocked line and, only for a declaration that

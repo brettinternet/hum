@@ -984,9 +984,9 @@ processes:
 	if humanRunErr == nil || manifestCLIExitCode(humanRunErr) != 3 {
 		t.Fatalf("human blocked up: %v (stdout=%s stderr=%s)", humanRunErr, human, humanErr)
 	}
-	for _, phrase := range []string{"api: skipped (blocked by db); existing process stopped", "web: skipped (blocked by api); not launched"} {
+	for _, phrase := range []string{"NAME", "RESULT", "STATE", "PID", "api", "skipped", "web"} {
 		if !strings.Contains(human, phrase) {
-			t.Fatalf("human blocked output missing %q: %s", phrase, human)
+			t.Fatalf("human summary table missing %q: %s", phrase, human)
 		}
 	}
 	for _, phrase := range []string{"hum up: db: started; waiting for readiness", "hum up: db: exited before readiness; inspect retained logs: hum logs db", "hum up: api: skipped (blocked by db); existing process stopped", "hum up: web: skipped (blocked by api); not launched"} {
@@ -1247,23 +1247,18 @@ processes:
 
 	finalLines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
 	wantNames := []string{"blocked", "blocked-root", "error", "fast", "plain", "slow"}
-	if len(finalLines) != len(wantNames) {
-		t.Fatalf("final human result lines = %q, want %d lexical lines", stdout.String(), len(wantNames))
+	if len(finalLines) != len(wantNames)+1 {
+		t.Fatalf("final human result lines = %q, want header plus %d lexical rows", stdout.String(), len(wantNames))
 	}
-	for index, line := range finalLines {
+	if fields := strings.Fields(finalLines[0]); !reflect.DeepEqual(fields, []string{"NAME", "RESULT", "STATE", "PID"}) {
+		t.Fatalf("final human result header = %q", finalLines[0])
+	}
+	for index, line := range finalLines[1:] {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
-			t.Fatalf("final human result line %d is empty: %q", index, stdout.String())
+			t.Fatalf("final human result row %d is empty: %q", index, stdout.String())
 		}
-		nameField := strings.TrimSuffix(fields[0], ":")
-		switch nameField {
-		case "started", "already_running", "running_unverified", "exited_before_ready", "timed_out", "error":
-			if len(fields) < 2 {
-				t.Fatalf("final human result line %d lacks name: %q", index, line)
-			}
-			nameField = fields[1]
-		}
-		if nameField != wantNames[index] {
+		if fields[0] != wantNames[index] {
 			t.Fatalf("final human result order = %q, want %q at %d", stdout.String(), wantNames[index], index)
 		}
 	}
@@ -1309,8 +1304,8 @@ processes:
 	if err != nil || stderr != "" {
 		t.Fatalf("up --no-wait: err=%v stdout=%q stderr=%q", err, stdout, stderr)
 	}
-	if len(stopShutdownNonEmptyLines(stdout)) != 2 {
-		t.Fatalf("up --no-wait stdout = %q, want two final summaries", stdout)
+	if len(stopShutdownNonEmptyLines(stdout)) != 3 {
+		t.Fatalf("up --no-wait stdout = %q, want a header and two final rows", stdout)
 	}
 	for _, name := range []string{"alpha", "zeta"} {
 		if _, _, stopErr := stopShutdownRun(t, "stop", name); stopErr != nil {

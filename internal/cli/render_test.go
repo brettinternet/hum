@@ -222,6 +222,46 @@ func TestLifecycleColorMapping(t *testing.T) {
 	}
 }
 
+func TestManifestLaunchTable(t *testing.T) {
+	pid := 42
+	launchCursor, readyCursor := uint64(3), uint64(5)
+	results := []manifestLaunchResult{
+		{
+			Name: "api", Outcome: "started", State: string(app.StateRunning), PID: &pid,
+			LaunchCursor: &launchCursor, Readiness: app.ReadinessReady,
+			ReadinessMatch: "Listening on a very long address", ReadinessConfigured: true, ReadyCursor: &readyCursor,
+		},
+		{Name: "web", Outcome: "timed_out", State: string(app.StateRunning), PID: &pid},
+		{Name: "worker", Outcome: "exited_before_ready", State: string(app.StateExited), PID: &pid},
+	}
+	var output bytes.Buffer
+	if err := renderManifestLaunchTableWithPolicy(&output, results, colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	want := "NAME    RESULT               STATE    PID\n" +
+		"api     started              running  42\n" +
+		"web     timed out            running  42\n" +
+		"worker  exited before ready  exited   42\n"
+	if output.String() != want {
+		t.Fatalf("manifest launch table = %q, want %q", output.String(), want)
+	}
+	for _, hidden := range []string{"launch_cursor", "ready_cursor", "readiness_match", "Listening"} {
+		if strings.Contains(output.String(), hidden) {
+			t.Errorf("manifest launch table contains diagnostic detail %q: %q", hidden, output.String())
+		}
+	}
+
+	output.Reset()
+	if err := renderManifestLaunchTableWithPolicy(&output, results, colorPolicy{enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{ansiBoldString("NAME"), ansiBoldString("RESULT"), ansiGreenString("started"), ansiRedString("timed out"), ansiGreenString("running"), ansiDimString("exited")} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("colored manifest launch table missing %q: %q", want, output.String())
+		}
+	}
+}
+
 func ansiBoldString(value string) string  { return string(ansiBold) + value + ansiReset }
 func ansiGreenString(value string) string { return string(ansiGreen) + value + ansiReset }
 func ansiYellowString(value string) string {

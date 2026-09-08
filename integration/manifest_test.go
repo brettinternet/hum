@@ -394,8 +394,8 @@ processes:
 		t.Fatalf("timeout progress = %q", up.Stderr())
 	}
 	lines := strings.Split(strings.TrimSpace(up.Stdout()), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], "fast") || !strings.Contains(lines[1], "slow") {
-		t.Fatalf("final summaries = %q, want lexical fast then slow", up.Stdout())
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "NAME ") || !strings.HasPrefix(lines[1], "fast ") || !strings.HasPrefix(lines[2], "slow ") {
+		t.Fatalf("final summary table = %q, want header then lexical fast and slow rows", up.Stdout())
 	}
 }
 
@@ -431,7 +431,7 @@ processes:
 	if !strings.Contains(timeout.Stderr, "hum up: probe: readiness timed out; inspect retained logs: hum logs probe") {
 		t.Fatalf("timeout progress = %q", timeout.Stderr)
 	}
-	if strings.Contains(timeout.Stderr, "timeout-child-output") || !strings.Contains(timeout.Stdout, "timed_out") {
+	if strings.Contains(timeout.Stderr, "timeout-child-output") || !strings.Contains(timeout.Stdout, "timed out") {
 		t.Fatalf("timeout output = stdout %q stderr %q", timeout.Stdout, timeout.Stderr)
 	}
 	logs := testutil.Run(t, hum, projectRoot, env, "logs", "probe", "--json", "--stream", "stdout")
@@ -457,7 +457,7 @@ processes:
 	if !strings.Contains(early.Stderr, "hum up: probe: exited before readiness; inspect retained logs: hum logs probe") {
 		t.Fatalf("early-exit progress = %q", early.Stderr)
 	}
-	if strings.Contains(early.Stderr, "early-child-output") || !strings.Contains(early.Stdout, "exited_before_ready") {
+	if strings.Contains(early.Stderr, "early-child-output") || !strings.Contains(early.Stdout, "exited before ready") {
 		t.Fatalf("early-exit output = stdout %q stderr %q", early.Stdout, early.Stderr)
 	}
 	earlyLogs := testutil.Run(t, hum, projectRoot, env, "logs", "probe", "--json", "--stream", "stdout")
