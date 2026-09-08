@@ -113,13 +113,14 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		{
 			Name:        "up",
 			Usage:       "ensure manifest processes are running",
-			UsageText:   "hum up [--no-wait] [--timeout DURATION] [--json]",
+			UsageText:   "hum up [--detach] [--no-wait] [--timeout DURATION] [--json]",
 			ArgsUsage:   "",
-			Description: "Resolve processes lexically; launch independent roots concurrently, gate dependents on readiness, and continue after failures. Report skipped blockers and definition_drift changed_fields with hum restart guidance; removed_definition suggests hum stop NAME or hum remove NAME; progress uses at most two lines; see hum logs NAME; reject --no-wait before daemon contact when after is present; bounded recovery reports recovery_pending or recovery_exhausted as not running without start request; targeted start NAME or restart NAME cancels it; one invocation never follows an automatic successor (automatic prerequisite successor), so rerun hum up after recovery. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running.\n\nExamples:\n  hum up",
+			Description: "Resolve processes lexically; launch independent roots concurrently, gate dependents on readiness, and continue after failures; in an interactive terminal, stream prefixed output and keep following after startup, while Ctrl+C detaches, --detach waits and returns, --no-wait returns after spawn, and JSON or non-terminal output remains bounded. Report skipped blockers and definition_drift changed_fields with hum restart guidance; removed_definition suggests hum stop NAME or hum remove NAME; progress uses at most two lines; see hum logs NAME; reject --no-wait before daemon contact when after is present; bounded recovery reports recovery_pending or recovery_exhausted as not running without start request; targeted start NAME or restart NAME cancels it; one invocation never follows an automatic successor (automatic prerequisite successor), so rerun hum up after recovery. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C interrupts startup.\n\nExamples:\n  hum up\n  hum up --detach",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn; default waits for readiness"},
+				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "wait for readiness and return instead of following process output"},
+				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn without following output; default waits for readiness"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "readiness limit; omit for the manifest timeout"},
-				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write bounded JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -1376,10 +1377,25 @@ func aggregateLogsRead(ctx context.Context, cmd *urfavecli.Command, client *daem
 	return firstErr
 }
 
+type aggregateLogsFollowOptions struct {
+	ready           chan<- struct{}
+	signals         chan os.Signal
+	suppressWaiting bool
+	onEvent         func(string, output.Event)
+	onSignal        func(os.Signal)
+}
+
 func aggregateLogsFollow(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, request daemon.OutputRequest, names []string, manifest manifestState, writer, errWriter io.Writer) error {
+	return aggregateLogsFollowWithOptions(ctx, cmd, client, request, names, manifest, writer, errWriter, aggregateLogsFollowOptions{})
+}
+
+func aggregateLogsFollowWithOptions(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, request daemon.OutputRequest, names []string, manifest manifestState, writer, errWriter io.Writer, options aggregateLogsFollowOptions) error {
 	renderer := newAggregateLogRenderer(writer, errWriter, cmd.Bool("json"))
-	signals := notifyFollowSignals()
-	defer signal.Stop(signals)
+	signals := options.signals
+	if signals == nil {
+		signals = notifyFollowSignals()
+		defer signal.Stop(signals)
+	}
 
 	followCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1426,7 +1442,7 @@ func aggregateLogsFollow(ctx context.Context, cmd *urfavecli.Command, client *da
 	// Match the single-name follow lifecycle message without changing the
 	// fixed membership selected before the daemon was contacted.
 	for index, follower := range followers {
-		if follower == nil {
+		if follower == nil || options.suppressWaiting {
 			continue
 		}
 		name := names[index]
@@ -1484,6 +1500,10 @@ func aggregateLogsFollow(ctx context.Context, cmd *urfavecli.Command, client *da
 	if active == 0 {
 		return firstErr
 	}
+	if options.ready != nil {
+		close(options.ready)
+		options.ready = nil
+	}
 
 	for active > 0 {
 		select {
@@ -1496,6 +1516,9 @@ func aggregateLogsFollow(ctx context.Context, cmd *urfavecli.Command, client *da
 			}
 			if sig == nil {
 				continue
+			}
+			if options.onSignal != nil {
+				options.onSignal(sig)
 			}
 			return nil
 		case result := <-events:
@@ -1532,6 +1555,9 @@ func aggregateLogsFollow(ctx context.Context, cmd *urfavecli.Command, client *da
 			}
 			if err := renderer.writeEvent(name, result.event); err != nil {
 				return err
+			}
+			if options.onEvent != nil {
+				options.onEvent(name, result.event)
 			}
 		}
 	}
@@ -2436,6 +2462,7 @@ func startCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 }
 
 func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
+	followSince := time.Now()
 	if err := requireNoArgs(cmd, "up"); err != nil {
 		return err
 	}
@@ -2469,7 +2496,136 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	if cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
 		return errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies")
 	}
-	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, true, true, errWriter, noCandidateErr)
+	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, true, true, errWriter, noCandidateErr, followSince)
+}
+
+func upFollowsOutput(cmd *urfavecli.Command, writer io.Writer) bool {
+	return cmd != nil && !cmd.Bool("detach") && !cmd.Bool("no-wait") && !cmd.Bool("json") && terminalWriter(writer)
+}
+
+var notifyUpFollowSignals = func(signals chan<- os.Signal) {
+	signal.Notify(signals, os.Interrupt)
+}
+
+type upLogExit struct {
+	once sync.Once
+	done chan struct{}
+}
+
+type upLogFollowSession struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	detached <-chan struct{}
+	done     <-chan error
+	signals  chan os.Signal
+	exits    map[string]*upLogExit
+}
+
+func startUpLogFollow(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, names []string, manifest manifestState, writer, errWriter io.Writer, since time.Time, maxEntries, maxBytes int) (*upLogFollowSession, error) {
+	followCtx, cancel := context.WithCancel(nonNilContext(ctx))
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	signals := make(chan os.Signal, 4)
+	detached := make(chan struct{})
+	request := daemon.OutputRequest{
+		Cwd: cwd, SinceUnixNano: since.UnixNano(), Stream: protocol.Both,
+		MaxEntries: maxEntries, MaxBytes: maxBytes,
+	}
+	exits := make(map[string]*upLogExit, len(names))
+	for _, name := range names {
+		exits[name] = &upLogExit{done: make(chan struct{})}
+	}
+	session := &upLogFollowSession{
+		ctx: followCtx, cancel: cancel, detached: detached, done: done, signals: signals,
+		exits: exits,
+	}
+	go func() {
+		done <- aggregateLogsFollowWithOptions(followCtx, cmd, client, request, names, manifest, writer, errWriter, aggregateLogsFollowOptions{
+			ready: ready, signals: signals, suppressWaiting: true,
+			onEvent: session.recordEvent,
+			onSignal: func(os.Signal) {
+				close(detached)
+				cancel()
+			},
+		})
+	}()
+	select {
+	case <-ready:
+		notifyUpFollowSignals(signals)
+		return session, nil
+	case err := <-done:
+		cancel()
+		if err == nil {
+			err = errors.New("startup log follower stopped before it was ready")
+		}
+		return nil, err
+	case <-followCtx.Done():
+		cancel()
+		return nil, followCtx.Err()
+	}
+}
+
+func (s *upLogFollowSession) stop() error {
+	if s == nil {
+		return nil
+	}
+	signal.Stop(s.signals)
+	s.cancel()
+	return <-s.done
+}
+
+func (s *upLogFollowSession) wait() error {
+	if s == nil {
+		return nil
+	}
+	defer signal.Stop(s.signals)
+	return <-s.done
+}
+
+func (s *upLogFollowSession) interrupted() bool {
+	if s == nil {
+		return false
+	}
+	select {
+	case <-s.detached:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *upLogFollowSession) recordEvent(name string, event output.Event) {
+	if event.Exit == nil {
+		return
+	}
+	if exit := s.exits[name]; exit != nil {
+		exit.once.Do(func() { close(exit.done) })
+	}
+}
+
+// waitForEarlyExits lets each follower render child output through the exit
+// boundary before failed startup closes the streams. The wait is bounded;
+// retained logs remain available if a follower or output writer stalls.
+func (s *upLogFollowSession) waitForEarlyExits(results []manifestLaunchResult) {
+	if s == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for _, result := range results {
+		if result.Outcome != "exited_before_ready" {
+			continue
+		}
+		exit := s.exits[result.Name]
+		if exit == nil {
+			continue
+		}
+		select {
+		case <-exit.done:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, names []string) error {
@@ -2505,13 +2661,20 @@ func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version,
 }
 
 func manifestLaunchCommandWithState(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery bool) error {
-	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, preserveRecovery, false, nil, nil)
+	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, preserveRecovery, false, nil, nil, time.Time{})
 }
 
-func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery, ordered bool, progressWriter io.Writer, noCandidateErr error) error {
+func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, manifest manifestState, names []string, preserveRecovery, ordered bool, progressWriter io.Writer, noCandidateErr error, followSince time.Time) error {
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	followOutput := ordered && len(names) != 0 && upFollowsOutput(cmd, writer)
+	if followOutput {
+		writer = &synchronizedWriter{writer: writer}
+		if followSince.IsZero() {
+			followSince = time.Now()
+		}
 	}
 	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
@@ -2557,6 +2720,19 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		}
 	}
 	defer client.Close()
+	var followSession *upLogFollowSession
+	if followOutput {
+		followSession, err = startUpLogFollow(ctx, cmd, client, cwd, names, manifest, writer, progressWriter, followSince, cfg.ReadEntries, int(cfg.ReadBytes))
+		if err != nil {
+			return err
+		}
+		ctx = followSession.ctx
+		defer func() {
+			if followSession != nil {
+				_ = followSession.stop()
+			}
+		}()
+	}
 	env := manifestProcessEnv()
 	var results []manifestLaunchResult
 	var progress *manifestProgressRenderer
@@ -2573,6 +2749,19 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		}
 	} else {
 		results, err = manifestStartConcurrent(ctx, cmd, client, cwd, manifest, names, env, timeoutOverride)
+	}
+	if followSession.interrupted() {
+		session := followSession
+		followSession = nil
+		if waitErr := session.wait(); waitErr != nil {
+			return waitErr
+		}
+		if progressWriter != nil {
+			if _, writeErr := fmt.Fprintln(progressWriter, "hum up: startup interrupted; launched processes remain supervised"); writeErr != nil {
+				return writeErr
+			}
+		}
+		return urfavecli.Exit("", 130)
 	}
 	if err != nil {
 		return err
@@ -2611,7 +2800,10 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 			}
 		}
 	} else if ordered {
-		if err := renderManifestLaunchTableWithPolicy(writer, results, colorPolicyForWriter(writer)); err != nil {
+		colors := colorPolicyForWriter(writer)
+		if err := withSynchronizedWriter(writer, func(output io.Writer) error {
+			return renderManifestLaunchTableWithPolicy(output, results, colors)
+		}); err != nil {
 			return err
 		}
 	} else {
@@ -2621,7 +2813,29 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 			}
 		}
 	}
-	return aggregateManifestExit(results)
+	launchErr := aggregateManifestExit(results)
+	if followSession == nil {
+		return launchErr
+	}
+	if launchErr != nil {
+		session := followSession
+		followSession = nil
+		session.waitForEarlyExits(results)
+		if err := session.stop(); err != nil {
+			return err
+		}
+		return launchErr
+	}
+	statusWriter := progressWriter
+	if statusWriter == nil {
+		statusWriter = writer
+	}
+	if _, err := fmt.Fprintln(statusWriter, "hum up: startup complete; following logs (Ctrl+C detaches; hum down stops processes)"); err != nil {
+		return err
+	}
+	session := followSession
+	followSession = nil
+	return session.wait()
 }
 
 func manifestHasAfter(definitions []project.Definition) bool {

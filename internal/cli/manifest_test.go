@@ -479,6 +479,13 @@ func (c *manifestProgressCapture) waitFor(text string, timeout time.Duration) bo
 	}
 }
 
+type manifestTTYProgressCapture struct {
+	manifestProgressCapture
+	fd uintptr
+}
+
+func (c *manifestTTYProgressCapture) Fd() uintptr { return c.fd }
+
 type manifestBlockingProgressCapture struct {
 	manifestProgressCapture
 	started chan struct{}
@@ -1371,6 +1378,158 @@ func TestSignalExitDocs(t *testing.T) {
 	}
 }
 
+func TestUpAttachedOutput(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	gate := filepath.Join(root, "ready.release")
+	writeManifestCLITestFile(t, root, fmt.Sprintf(`version: 1
+processes:
+  app:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: app-ready, timeout: 3s}
+`, strconv.Quote(fmt.Sprintf("printf 'before-ready\\n'; while [ ! -f %s ]; do sleep 0.02; done; printf 'app-ready\\n'; sleep 0.05; printf 'after-ready\\n'; sleep 30", strconv.Quote(gate)))))
+	t.Cleanup(func() {
+		_, _, _ = stopShutdownRun(t, "stop", "app")
+	})
+
+	tty := renderTestTTY(t)
+	var stdout manifestTTYProgressCapture
+	stdout.fd = tty.Fd()
+	var stderr manifestProgressCapture
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewRootCommand("test", "test", &stdout, &stderr).Run(ctx, []string{"hum", "up"})
+	}()
+	if !stdout.waitFor("[app] before-ready\n", 3*time.Second) {
+		cancel()
+		t.Fatalf("attached up did not stream startup output: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if err := os.WriteFile(gate, []byte("ready\n"), 0o600); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if !stderr.waitFor("hum up: startup complete; following logs", 3*time.Second) {
+		cancel()
+		t.Fatalf("attached up did not enter follow mode: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !stdout.waitFor("[app] after-ready\n", 3*time.Second) {
+		cancel()
+		t.Fatalf("attached up did not continue after readiness: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("detached attached up: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("attached up did not detach after cancellation")
+	}
+	processes := stopShutdownListActive(t, server, root)
+	if len(processes) != 1 || processes[0].Name != "app" || !app.IsActiveState(processes[0].State) {
+		t.Fatalf("processes after detach = %#v, want app still active", processes)
+	}
+
+	var detachedStdout manifestTTYProgressCapture
+	detachedStdout.fd = tty.Fd()
+	var detachedStderr manifestProgressCapture
+	if err := NewRootCommand("test", "test", &detachedStdout, &detachedStderr).Run(context.Background(), []string{"hum", "up", "--detach"}); err != nil {
+		t.Fatalf("up --detach: %v; stdout=%q stderr=%q", err, detachedStdout.String(), detachedStderr.String())
+	}
+	if strings.Contains(detachedStdout.String(), "[app]") || strings.Contains(detachedStderr.String(), "following logs") {
+		t.Fatalf("up --detach followed output: stdout=%q stderr=%q", detachedStdout.String(), detachedStderr.String())
+	}
+}
+
+func TestUpAttachedStartupInterrupt(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  app:
+    argv: [/bin/sh, -c, "printf 'before-ready\\n'; sleep 30"]
+    ready: {match: never-ready, timeout: 30s}
+`)
+	t.Cleanup(func() {
+		_, _, _ = stopShutdownRun(t, "stop", "app")
+	})
+
+	registered := make(chan chan<- os.Signal, 1)
+	previousNotify := notifyUpFollowSignals
+	notifyUpFollowSignals = func(signals chan<- os.Signal) { registered <- signals }
+	t.Cleanup(func() { notifyUpFollowSignals = previousNotify })
+
+	tty := renderTestTTY(t)
+	var stdout manifestTTYProgressCapture
+	stdout.fd = tty.Fd()
+	var stderr manifestProgressCapture
+	done := make(chan error, 1)
+	go func() {
+		done <- NewRootCommand("test", "test", &stdout, &stderr).Run(context.Background(), []string{"hum", "up"})
+	}()
+	if !stdout.waitFor("[app] before-ready\n", 3*time.Second) {
+		t.Fatalf("attached up did not stream before interrupt: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	var signals chan<- os.Signal
+	select {
+	case signals = <-registered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("attached up did not register its interrupt handler")
+	}
+	signals <- os.Interrupt
+	select {
+	case err := <-done:
+		if manifestCLIExitCode(err) != 130 {
+			t.Fatalf("interrupted attached up exit = %v, want 130", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("interrupted attached up did not return")
+	}
+	if !strings.Contains(stderr.String(), "startup interrupted; launched processes remain supervised") {
+		t.Fatalf("interrupted attached up stderr = %q", stderr.String())
+	}
+	processes := stopShutdownListActive(t, server, root)
+	if len(processes) != 1 || processes[0].Name != "app" || !app.IsActiveState(processes[0].State) {
+		t.Fatalf("processes after startup interrupt = %#v, want app still active", processes)
+	}
+}
+
+func TestUpAttachedStartupFailure(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  broken:
+    argv: [/bin/sh, -c, "printf 'failure-detail\\n'; exit 7"]
+    ready: {match: never-ready, timeout: 3s}
+  dependent:
+    argv: [/bin/sh, -c, "sleep 30"]
+    after: [broken]
+`)
+
+	tty := renderTestTTY(t)
+	var stdout manifestTTYProgressCapture
+	stdout.fd = tty.Fd()
+	var stderr manifestProgressCapture
+	err := NewRootCommand("test", "test", &stdout, &stderr).Run(context.Background(), []string{"hum", "up"})
+	if manifestCLIExitCode(err) != 3 {
+		t.Fatalf("attached failing up exit = %v, want 3; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "[broken] failure-detail\n") {
+		t.Fatalf("attached failing up omitted diagnostics: stdout=%q", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "following logs") {
+		t.Fatalf("attached failing up continued following: stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "dependent: skipped (blocked by broken); not launched") {
+		t.Fatalf("attached failing up changed skipped state: stderr=%q", stderr.String())
+	}
+}
+
 func TestUpProgressDocs(t *testing.T) {
 	design, err := os.ReadFile("../../docs/design.md")
 	if err != nil {
@@ -1385,7 +1544,7 @@ func TestUpProgressDocs(t *testing.T) {
 		t.Fatalf("up help stderr = %q", helpErr.String())
 	}
 	all := strings.ToLower(help.String() + "\n" + string(design))
-	for _, phrase := range []string{"human-only", "stderr", "stdout", "--json", "--no-wait", "at most two lines", "temporal", "transition", "child output", "timeout", "early-exit", "hum logs name"} {
+	for _, phrase := range []string{"interactive terminal", "--detach", "ctrl+c detaches", "non-terminal", "stderr", "stdout", "--json", "--no-wait", "at most two lines", "temporal", "transition", "child output", "timeout", "early-exit", "hum logs name"} {
 		if !strings.Contains(all, phrase) {
 			t.Errorf("progress docs missing %q", phrase)
 		}

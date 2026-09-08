@@ -39,22 +39,49 @@ const (
 	ansiRed    ansiStyle = "\x1b[31m"
 )
 
+// terminalWriter reports whether writer ultimately targets a terminal.
+// NewRootCommand and attached up wrap stdout, so unwrap those adapters before
+// checking the file descriptor.
+func terminalWriter(writer io.Writer) bool {
+	switch wrapped := writer.(type) {
+	case *jsonOutputTracker:
+		return wrapped != nil && terminalWriter(wrapped.writer)
+	case *synchronizedWriter:
+		return wrapped != nil && terminalWriter(wrapped.writer)
+	}
+	fdWriter, ok := writer.(interface{ Fd() uintptr })
+	return ok && term.IsTerminal(int(fdWriter.Fd()))
+}
+
 // colorPolicyForWriter reports whether writer is stdout-like terminal output.
-// NewRootCommand wraps stdout in jsonOutputTracker, so unwrap that adapter
-// before checking its file descriptor. NO_COLOR is presence-based: even an
-// empty value disables styling.
+// NO_COLOR is presence-based: even an empty value disables styling.
 func colorPolicyForWriter(writer io.Writer) colorPolicy {
 	if _, present := os.LookupEnv("NO_COLOR"); present || os.Getenv("TERM") == "dumb" {
 		return colorPolicy{}
 	}
-	fdWriter, ok := writer.(interface{ Fd() uintptr })
-	if !ok {
-		if tracked, trackedOK := writer.(*jsonOutputTracker); trackedOK && tracked != nil {
-			return colorPolicyForWriter(tracked.writer)
-		}
-		return colorPolicy{}
+	return colorPolicy{enabled: terminalWriter(writer)}
+}
+
+// synchronizedWriter keeps aggregate followed logs and final up summaries
+// from interleaving writes on the shared stdout stream.
+type synchronizedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (w *synchronizedWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writer.Write(data)
+}
+
+func withSynchronizedWriter(writer io.Writer, write func(io.Writer) error) error {
+	if synchronized, ok := writer.(*synchronizedWriter); ok {
+		synchronized.mu.Lock()
+		defer synchronized.mu.Unlock()
+		return write(synchronized.writer)
 	}
-	return colorPolicy{enabled: term.IsTerminal(int(fdWriter.Fd()))}
+	return write(writer)
 }
 
 func (p colorPolicy) apply(style ansiStyle, value string) string {

@@ -29,7 +29,7 @@ MCP ─┘                       └─> stable outcomes
 hum [--project DIR|-C DIR] init [--force] [--json]
 hum serve [--daemon]
 hum [--project DIR|-C DIR] start <name>... [--no-wait] [--timeout DURATION] [--json]
-hum [--project DIR|-C DIR] up [--no-wait] [--timeout DURATION] [--json]
+hum [--project DIR|-C DIR] up [--detach] [--no-wait] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] down [--json]
 hum run [--project DIR|-C DIR] <name> [--detach] [--tty] [--json] [-- <command> [args...]]
 hum [--project DIR|-C DIR] list [--all] [--json]
@@ -66,7 +66,7 @@ Combined short options are unsupported; MCP fields have no aliases.
 | `-v` | `--version` | global |
 | `-C` | `--project` | project-scoped commands |
 | `-j` | `--json` | all supporting commands |
-| `-d` | `--daemon`, `--detach` | `serve`, `run` |
+| `-d` | `--daemon`, `--detach` | `serve`, `run`, `up` |
 | `-t` | `--timeout` | `start`, `up`, `wait`, `restart` |
 | `-a` | `--all` | `list` |
 | `-s` | `--stream` | `logs` |
@@ -77,8 +77,7 @@ Combined short options are unsupported; MCP fields have no aliases.
 | `-f` | `--follow` | `logs` |
 
 `--force`, `--since`, `--no-wait`, `--tty`, `--stop-processes`, `--runtime-dir`,
-`--stop-grace`,
-`--output-bytes`, and `--completed-records` remain long-only. The `input`
+`--stop-grace`, `--output-bytes`, and `--completed-records` remain long-only. The `input`
 command intentionally adds no short aliases, including for `--json`.
 
 `--project DIR` resolves DIR relative to the invocation directory, requires an existing
@@ -94,7 +93,7 @@ rule.
   selector, including paths with spaces.
 - `serve`, `shutdown`, `mcp`, and `skill` reject an explicit project selector because their
   scope is daemon-global, request-scoped, or static.
-- Existing `-d` remains `serve --daemon` and `run --detach`.
+- Command-local `-d` remains `serve --daemon` and `run --detach`, and now also selects `up --detach`.
 
 Human-readable output is the default.
 
@@ -166,22 +165,34 @@ byte bounds.
   bounded output is returned in selection order, human entries are atomic `[NAME]`-prefixed
   writes, and aggregate JSON uses named NDJSON event objects.
 
-This human-only `hum up` progress is enabled only in default human mode while readiness waiting
-is enabled.
+Human `hum up` has an attached interactive mode and bounded startup progress.
 
-- It writes newline-terminated startup transitions to stderr. The final stdout summary is a
-  compact `NAME`, `RESULT`, `STATE`, and `PID` table in lexical declaration order; diagnostic
-  fields such as launch and readiness cursors and the readiness matcher remain available in
-  `up --json` rather than expanding human output.
+- In an interactive terminal, plain `up` subscribes to every resolved declaration before launch,
+  streams atomic `[NAME]`-prefixed output written from that invocation onward, and keeps following
+  after successful startup. It prints `Ctrl+C detaches; hum down stops processes`; detaching never
+  signals a managed process.
+- Ctrl+C after successful startup detaches with exit 0. During startup it exits 130 immediately,
+  reports that launched processes remain supervised, and may leave dependency-gated declarations
+  unlaunched; rerun `hum up` to finish convergence.
+- `up --detach` keeps the bounded readiness-and-return behavior. `up --no-wait` returns after
+  spawn without following. JSON and non-terminal output are also bounded so automation does not
+  begin an indefinite follow implicitly.
+- Attached mode exits with the normal nonzero result instead of continuing to follow when initial
+  startup fails, exits before readiness, times out, or cannot reach a running state. Successfully
+  launched children remain supervised.
+- Readiness progress writes newline-terminated startup transitions to stderr. The final stdout
+  summary is a compact `NAME`, `RESULT`, `STATE`, and `PID` table in lexical declaration order;
+  diagnostic fields such as launch and readiness cursors and the readiness matcher remain
+  available in `up --json` rather than expanding human output.
 - Progress follows temporal transition completion rather than lexical declaration order, is
   serialized as complete lines, and is bounded to a maximum of two lines per declaration: one
   launch, observation, error, or dependency-blocked line and, only for a declaration that
-  entered `starting`, one ready, early-exit, or timeout line.
-- It never streams child output.
+  entered `starting`, one ready, early-exit, or timeout line. Child output is a separate prefixed
+  stdout stream and does not count against that progress bound.
 - `up --json` emits no progress and keeps stderr empty on success; `up --no-wait`, `start`, and
-  MCP `up` also keep their existing output and timing.
-- Timeout and early-exit progress names include `inspect retained logs: hum logs NAME`, which
-  directs operators to retained diagnostics without copying them into `up`.
+  MCP `up` keep their bounded output and timing.
+- Timeout and early-exit progress names include `inspect retained logs: hum logs NAME`, preserving
+  diagnostics for detached and non-terminal invocations.
 
 ### Command semantics
 
@@ -221,8 +232,9 @@ is enabled.
   declaration not running.
 - `wait` uses 0 for a match or an unfiltered exit, 1 for a request or usage error, 2 for
   timeout, and 3 when `--match` sees process exit first.
-- `--no-wait` returns after spawn only for dependency-free manifests; when any `after` is
-  declared it is rejected before daemon creation/contact.
+- Interactive plain `up` follows aggregate output after successful startup. `--detach` waits for
+  readiness and returns, while `--no-wait` returns after spawn only for dependency-free manifests;
+  when any `after` is declared, `--no-wait` is rejected before daemon creation/contact.
 - `start NAME...` remains explicitly named and concurrent but never adds or waits for transitive
   prerequisites.
 - `down` remains concurrent rather than reverse ordered.
@@ -264,7 +276,8 @@ session.
 - Without a daemon it reports resolved definitions as stopped.
 - `status`, `logs`, `wait`, `restart`, `stop`, and `remove` operate on resolved and ad hoc
   records in the project.
-- The recommended interactive workflow is `hum up` followed by `hum logs --follow`.
+- The recommended interactive workflow is plain `hum up`; use `hum up --detach` for a bounded
+  readiness check or `hum logs --follow` to observe independently of startup.
 - Bounded `logs` without `--after-cursor` shows the newest default entry window; use an explicit
   cursor without `--tail` to page forward from the oldest eligible retained entry.
 - `logs` with multiple names follows the explicit selection order; its no-name form uses the

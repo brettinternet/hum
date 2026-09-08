@@ -9,7 +9,7 @@ Use MCP as the primary integration. Use this skill only for shell-only fallback 
 
 ## Start and inspect
 
-- Try `hum up` first; when `hum.yaml` declares `after`, it starts independent roots concurrently and launches each dependent only after every direct prerequisite is observed `ready`. It waits for readiness by default; each process's readiness timeout starts at its own launch or first running observation; results settle in lexical order.
+- Try bounded `hum up --detach` first; interactive plain `hum up` keeps following aggregate output after startup. When `hum.yaml` declares `after`, up starts independent roots concurrently and launches each dependent only after every direct prerequisite is observed `ready`. It waits for readiness by default; each process's readiness timeout starts at its own launch or first running observation; results settle in lexical order.
 - Use `hum start <name>` for one resolved process; it waits for readiness unless you opt out. `start NAME...` is explicit-only and never pulls in `after` prerequisites. For a running or recovery-capable manifest record, changed argv, canonical cwd, readiness matcher, TTY, or normalized restart policy returns `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance; CLI `up` exits 1 for drift and the drift cannot satisfy an `after` gate.
 - `after` lists must name unique same-manifest processes that declare `ready`; cycles, unknown names, duplicates, self-reference, malformed lists, and dependencies without readiness are manifest errors. `up --no-wait` is rejected before daemon contact when any `after` is declared.
 - Use `hum list` for discovery, and to inspect each process's source and readiness.

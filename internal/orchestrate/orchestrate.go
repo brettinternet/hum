@@ -455,8 +455,15 @@ func RemovedDefinitionResults(root string, definitions []Definition, processes [
 // process snapshot without mutating its lifecycle.
 func SkippedResult(ctx context.Context, root string, definition Definition, blockedBy []string, get func(context.Context, string, string) (Process, error)) Result {
 	result := resultForDefinition(definition, "skipped")
+	result.BlockedBy = append([]string(nil), blockedBy...)
 	if get != nil {
 		if current, err := get(ctx, definition.Name, root); err == nil {
+			// A pre-launch log follower reserves an empty durable session. It is
+			// observable state, but it is not an existing process and must not
+			// change a dependency-blocked result from "not launched".
+			if current.Source == "" && len(current.Argv) == 0 && current.PID == 0 && current.Start.IsZero() && current.LaunchCursor == 0 {
+				return result
+			}
 			current = NormalizeProcess(current)
 			result.Process = &current
 			switch current.State {
@@ -465,7 +472,6 @@ func SkippedResult(ctx context.Context, root string, definition Definition, bloc
 			}
 		}
 	}
-	result.BlockedBy = append([]string(nil), blockedBy...)
 	return result
 }
 

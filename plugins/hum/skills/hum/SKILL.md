@@ -9,7 +9,7 @@ Use the bundled hum MCP tools when available. Pass the absolute current project 
 
 ## Start and inspect
 
-- Try `up` first; when `hum.yaml` declares `after`, it starts independent roots concurrently and launches each dependent only after every direct prerequisite is observed `ready`; each process timeout starts at its own launch or first running observation, with lexical final results. The CLI equivalent is `hum up`.
+- Try `up` first; when `hum.yaml` declares `after`, it starts independent roots concurrently and launches each dependent only after every direct prerequisite is observed `ready`; each process timeout starts at its own launch or first running observation, with lexical final results. The bounded CLI equivalent is `hum up --detach`; interactive plain `hum up` keeps following aggregate output after startup.
 - Use `start` for one explicitly named resolved process. It never pulls in `after` prerequisites. For a running or recovery-capable manifest record, changed argv, canonical cwd, readiness matcher, TTY, or normalized restart policy returns `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance; CLI `up` exits 1 for drift and drift cannot satisfy an `after` gate. The CLI equivalent is `hum start <name>`.
 - `after` must be a unique same-manifest name list whose dependencies declare `ready`; unknown names, duplicates, self-reference, malformed values, cycles, and dependencies without readiness fail manifest validation. `up --no-wait` is rejected before daemon contact when any `after` is declared.
 - Use `list` to discover processes and inspect source and readiness.

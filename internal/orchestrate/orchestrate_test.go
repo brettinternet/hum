@@ -154,6 +154,16 @@ func TestOrchestrateUp(t *testing.T) {
 		}
 	})
 
+	t.Run("pre-launch follower is not an existing process", func(t *testing.T) {
+		definition := Definition{Name: "dependent", Source: "manifest", Argv: []string{"dependent"}}
+		result := SkippedResult(context.Background(), root, definition, []string{"root"}, func(context.Context, string, string) (Process, error) {
+			return Process{Name: "dependent", Root: root, Cwd: root, State: "exited", NextCursor: uint64Pointer(0)}, nil
+		})
+		if result.Process != nil || result.ExistingState != "" {
+			t.Fatalf("pre-launch follower result = %#v, want no existing process", result)
+		}
+	})
+
 	t.Run("definition drift removed definitions and recovery", func(t *testing.T) {
 		definition := Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"new"}, Ready: &ReadinessConfig{Match: "new"}}
 		drifted := Process{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"old"}, State: "running", PID: 7, LaunchCursor: 8, Readiness: &Readiness{State: ReadinessStarting, Match: "old"}}

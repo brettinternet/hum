@@ -38,10 +38,9 @@ processes:
 YAML
 hum run hello --detach -- sh -c 'printf "hello from hum\\n"'
 hum up
-hum logs --follow
 ```
 
-After the first clock line, press Ctrl+C, then stop the process:
+`hum up` follows output. After a clock line, press Ctrl+C to detach, then stop:
 
 ```sh
 hum down
@@ -72,7 +71,7 @@ processes:
       match: "Local:"
 ```
 
-`hum up` starts independent processes concurrently and waits for each `ready` match before starting dependents. Existing Task and Just commands can remain the source of truth:
+`hum up` starts processes, gates dependents on `ready`, and follows prefixed terminal output. Ctrl+C detaches; `hum down` stops. `hum up --detach` waits and returns. JSON and redirected output stay bounded:
 
 ```yaml
 processes:
@@ -84,6 +83,7 @@ processes:
 
 ```sh
 hum up
+hum up --detach
 hum status web
 hum logs --follow
 hum start web
@@ -112,7 +112,7 @@ Project selection follows these rules:
 - `init` writes at the project root. `list --all` merges that project's declarations.
 - Guidance uses an absolute, shell-safe selector when paths contain spaces.
 
-`--project` does not apply to `serve`, `shutdown`, `mcp`, or `skill`. Existing `-d` aliases remain `serve --daemon` and `run --detach`.
+`--project` does not apply to `serve`, `shutdown`, `mcp`, or `skill`. `-d` means `serve --daemon`, `run --detach`, or `up --detach`.
 
 ## Sessions
 

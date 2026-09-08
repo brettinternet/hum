@@ -78,7 +78,8 @@ func TestResolvedProjectInstructions(t *testing.T) {
 
 	for _, instruction := range []string{
 		"Use MCP as the primary integration",
-		"Try `hum up` first",
+		"Try bounded `hum up --detach` first",
+		"interactive plain `hum up`",
 		"waits for readiness by default",
 		"hum start <name>",
 		"hum list",

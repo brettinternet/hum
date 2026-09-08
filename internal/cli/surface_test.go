@@ -43,7 +43,7 @@ func TestREADMEQuickstartStructure(t *testing.T) {
 		t.Fatal("README.md Quickstart has no following top-level section")
 	}
 	quickstartSection := readme[quickstart:quickstartEnd]
-	for _, command := range []string{"hum run", "hum up", "hum logs --follow", "hum down"} {
+	for _, command := range []string{"hum run", "hum up", "Ctrl+C", "hum down"} {
 		if !strings.Contains(quickstartSection, command) {
 			t.Errorf("README.md Quickstart missing %q", command)
 		}
