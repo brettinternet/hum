@@ -33,7 +33,7 @@ hum [--project DIR|-C DIR] up [--detach] [--no-wait] [--timeout DURATION] [--jso
 hum [--project DIR|-C DIR] down [--json]
 hum run [--project DIR|-C DIR] <name> [--detach] [--tty] [--json] [-- <command> [args...]]
 hum [--project DIR|-C DIR] list [--all] [--json]
-hum [--project DIR|-C DIR] status <name> [--json]
+hum [--project DIR|-C DIR] status [<name>] [--json]
 hum [--project DIR|-C DIR] attach <name> [--tail N]
 hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|both] [--tail N] [--after-cursor N]
            [--since DURATION] [--limit-bytes N] [--match REGEX] [--follow] [--json]
@@ -85,6 +85,9 @@ directory, cleans it to an absolute path, and applies the nearest-Git-root-or-di
 rule.
 
 - The resolved project root scopes names and manifests.
+- `status` without a name renders a compact current-project process table and includes unlaunched
+  manifest declarations; `status <name>` retains the full single-process detail view. Aggregate
+  JSON uses the same `{"processes":[...]}` collection shape as `list`.
 - An ad-hoc `run` keeps the selected DIR as the child cwd; a manifest definition keeps its
   declared root-relative `cwd`.
 - `init` writes at the resolved root, and `list --all` uses the selected project while merging

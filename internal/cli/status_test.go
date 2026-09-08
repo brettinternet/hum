@@ -102,6 +102,54 @@ func TestStatusRunningJSON(t *testing.T) {
 	}
 }
 
+func TestStatusSummary(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  api:\n    argv: [/bin/sh, -c, 'sleep 30']\n  worker:\n    argv: [/bin/sh, -c, 'exit 0']\n    restart: on-failure\n")
+	started := stopShutdownStartProcess(t, server, projectRoot, "api", []string{"/bin/sh", "-c", "sleep 30"})
+	t.Cleanup(func() { _, _, _ = stopShutdownRun(t, "stop", "api") })
+
+	stdout, stderr, err := stopShutdownRun(t, "status")
+	if err != nil || stderr != "" {
+		t.Fatalf("status summary: err=%v stderr=%q output=%q", err, stderr, stdout)
+	}
+	for _, want := range []string{"NAME", "STATE", "PID", "READINESS", "RESTART", "FOLLOWERS", "api", "running", fmt.Sprint(started.PID), "worker", "stopped", "on-failure"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("status summary missing %q: %q", want, stdout)
+		}
+	}
+	for _, hidden := range []string{"SOURCE", "ARGV", "source=", "argv=", projectRoot} {
+		if strings.Contains(stdout, hidden) {
+			t.Errorf("status summary contains detail %q: %q", hidden, stdout)
+		}
+	}
+}
+
+func TestStatusSummaryJSON(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	runtimeDir := hum006ListLogsTempDir(t, "status-summary-runtime")
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  api:\n    argv: [task, dev]\n  worker:\n    argv: [task, work]\n")
+
+	stdout, stderr, err := stopShutdownRun(t, "status", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("status summary JSON: err=%v stderr=%q output=%q", err, stderr, stdout)
+	}
+	var got listJSON
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decode status summary JSON: %v (%q)", err, stdout)
+	}
+	if len(got.Processes) != 2 || got.Processes[0].Name != "api" || got.Processes[1].Name != "worker" {
+		t.Fatalf("status summary processes = %#v, want api and worker", got.Processes)
+	}
+	for _, process := range got.Processes {
+		if process.Source != "manifest" || process.State != string(app.StateStopped) || process.Root != projectRoot {
+			t.Errorf("status summary process = %#v, want stopped manifest in %q", process, projectRoot)
+		}
+	}
+}
+
 func TestStatusListFollowers(t *testing.T) {
 	projectRoot := stopShutdownTestProject(t)
 	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
@@ -238,18 +286,11 @@ func TestStatusExitedAndSignaled(t *testing.T) {
 }
 
 func TestStatusErrors(t *testing.T) {
-	t.Run("requires exactly one name", func(t *testing.T) {
-		for _, test := range []struct {
-			args []string
-			want string
-		}{
-			{args: []string{"status"}, want: "status requires a process name"},
-			{args: []string{"status", "one", "two"}, want: "status accepts exactly one process name"},
-		} {
-			_, _, err := stopShutdownRun(t, test.args...)
-			if err == nil || err.Error() != test.want {
-				t.Errorf("hum %s error = %v, want %q", strings.Join(test.args, " "), err, test.want)
-			}
+	t.Run("accepts at most one name", func(t *testing.T) {
+		_, _, err := stopShutdownRun(t, "status", "one", "two")
+		const want = "status accepts at most one process name"
+		if err == nil || err.Error() != want {
+			t.Errorf("status error = %v, want %q", err, want)
 		}
 	})
 

@@ -158,11 +158,11 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:          "status",
-			Usage:         "show one supervised process",
-			UsageText:     "hum status NAME [--json]",
-			ArgsUsage:     "NAME",
+			Usage:         "show project or process status",
+			UsageText:     "hum status [NAME] [--json]",
+			ArgsUsage:     "[NAME]",
 			ShellComplete: completeProcessNames,
-			Description:   "Show one process read-only and never starts a daemon. Human and JSON output include followers, the live attached run and logs --follow count, and recovery state; when no daemon exists, resolved names point to hum start NAME and other names point to hum run <name> -- <command>.\n\nExamples:\n  hum status api\n  hum status api --json",
+			Description:   "Without NAME, show a compact table of current-project processes, including unlaunched manifest declarations. With NAME, show detailed status including followers and recovery state; status is read-only and never starts a daemon.\n\nExamples:\n  hum status\n  hum status api\n  hum status --json",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
 			},
@@ -682,59 +682,61 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err := requireNoArgs(cmd, "list"); err != nil {
 		return err
 	}
-	ctx = nonNilContext(ctx)
-	selection, err := selectedProjectDirectory(cmd)
+	processes, warnings, err := projectProcessList(ctx, cmd, version, buildTime, cmd.Bool("all"))
 	if err != nil {
 		return err
 	}
-	cwd := selection.cwd
-	manifest, err := loadManifestOrEmpty(cwd)
-	if err != nil {
-		return err
-	}
-	manifest.selector = selection.selector
-	cfg, err := cliConfig(cmd, version, buildTime)
-	if err != nil {
-		return err
-	}
-	client, err := daemonClient(ctx, cfg)
-	if err != nil {
-		if daemonUnavailable(err) {
-			processes := make([]app.Process, 0, len(manifest.defs))
-			for _, definition := range manifest.defs {
-				processes = append(processes, manifestProcess(definition, manifest.root))
-			}
-			if cmd.Bool("json") {
-				items := make([]listProcessJSON, 0, len(processes))
-				for _, process := range processes {
-					items = append(items, processJSON(process))
-				}
-				return encodeJSON(writer, listJSON{Processes: items})
-			}
-			return renderListHuman(writer, processes, cmd.Bool("all"))
-		}
-		return err
-	}
-	defer client.Close()
-	processes, err := client.List(ctx, daemon.ListRequest{Cwd: cwd, All: cmd.Bool("all"), IncludeCompleted: true})
-	if err != nil {
-		return err
-	}
-	processes = mergeManifestProcesses(manifest, processes)
-	warnings := client.StartupWarnings()
 	if !cmd.Bool("json") {
 		if err := writeStartupWarnings(errWriter, warnings); err != nil {
 			return err
 		}
 	}
 	if cmd.Bool("json") {
-		items := make([]listProcessJSON, 0, len(processes))
-		for _, process := range processes {
-			items = append(items, processJSON(process))
-		}
-		return encodeJSON(writer, listJSON{Processes: items, Warnings: warnings})
+		return encodeJSON(writer, processListJSON(processes, warnings))
 	}
 	return renderListHuman(writer, processes, cmd.Bool("all"))
+}
+
+func projectProcessList(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, all bool) ([]app.Process, []protocol.StartupWarning, error) {
+	ctx = nonNilContext(ctx)
+	selection, err := selectedProjectDirectory(cmd)
+	if err != nil {
+		return nil, nil, err
+	}
+	manifest, err := loadManifestOrEmpty(selection.cwd)
+	if err != nil {
+		return nil, nil, err
+	}
+	manifest.selector = selection.selector
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return nil, nil, err
+	}
+	client, err := daemonClient(ctx, cfg)
+	if err != nil {
+		if !daemonUnavailable(err) {
+			return nil, nil, err
+		}
+		processes := make([]app.Process, 0, len(manifest.defs))
+		for _, definition := range manifest.defs {
+			processes = append(processes, manifestProcess(definition, manifest.root))
+		}
+		return processes, nil, nil
+	}
+	defer client.Close()
+	processes, err := client.List(ctx, daemon.ListRequest{Cwd: selection.cwd, All: all, IncludeCompleted: true})
+	if err != nil {
+		return nil, nil, err
+	}
+	return mergeManifestProcesses(manifest, processes), client.StartupWarnings(), nil
+}
+
+func processListJSON(processes []app.Process, warnings []protocol.StartupWarning) listJSON {
+	items := make([]listProcessJSON, 0, len(processes))
+	for _, process := range processes {
+		items = append(items, processJSON(process))
+	}
+	return listJSON{Processes: items, Warnings: warnings}
 }
 
 func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, errWriters ...io.Writer) error {
@@ -743,11 +745,21 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		errWriter = errWriters[0]
 	}
 	args := cmd.Args().Slice()
-	if len(args) == 0 {
-		return errors.New("status requires a process name")
+	if len(args) > 1 {
+		return errors.New("status accepts at most one process name")
 	}
-	if len(args) != 1 {
-		return errors.New("status accepts exactly one process name")
+	if len(args) == 0 {
+		processes, warnings, err := projectProcessList(ctx, cmd, version, buildTime, false)
+		if err != nil {
+			return err
+		}
+		if cmd.Bool("json") {
+			return encodeJSON(writer, processListJSON(processes, warnings))
+		}
+		if err := writeStartupWarnings(errWriter, warnings); err != nil {
+			return err
+		}
+		return renderStatusSummaryHuman(writer, processes)
 	}
 	name := args[0]
 	ctx = nonNilContext(ctx)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -731,13 +732,50 @@ func renderListHumanWithPolicy(w io.Writer, processes []app.Process, all bool, p
 		_, err := fmt.Fprintln(w, stopUnavailableMessage)
 		return err
 	}
-	table := buildListTable(processes, all)
+	return writeLifecycleTable(w, buildListTable(processes, all), policy)
+}
+
+func renderStatusSummaryHuman(w io.Writer, processes []app.Process) error {
+	return renderStatusSummaryHumanWithPolicy(w, processes, colorPolicyForWriter(w))
+}
+
+func renderStatusSummaryHumanWithPolicy(w io.Writer, processes []app.Process, policy colorPolicy) error {
+	if len(processes) == 0 {
+		_, err := fmt.Fprintln(w, stopUnavailableMessage)
+		return err
+	}
+	header := listRow{
+		styledListCell("NAME", ansiBold), styledListCell("STATE", ansiBold), styledListCell("PID", ansiBold),
+		styledListCell("READINESS", ansiBold), styledListCell("RESTART", ansiBold), styledListCell("FOLLOWERS", ansiBold),
+	}
+	table := listTable{header: header, rows: make([]listRow, 0, len(processes))}
+	for _, process := range processes {
+		readiness, _ := processReadinessFields(process)
+		if readiness == "" {
+			readiness = "-"
+		}
+		pid := "-"
+		if process.PID != 0 {
+			pid = strconv.Itoa(process.PID)
+		}
+		table.rows = append(table.rows, listRow{
+			plainListCell(process.Name),
+			styledListCell(string(process.State), processStateStyle(process.State, process.ExitCode)),
+			plainListCell(pid),
+			styledListCell(readiness, readinessStyle(readiness)),
+			plainListCell(string(effectiveProcessRestart(process))),
+			plainListCell(strconv.Itoa(process.Followers)),
+		})
+	}
+	return writeLifecycleTable(w, table, policy)
+}
+
+func writeLifecycleTable(w io.Writer, table listTable, policy colorPolicy) error {
 	if policy.enabled {
 		return writeListTable(w, table, policy)
 	}
 
-	// Keep the existing tabwriter path byte-for-byte identical when styling is
-	// disabled. In particular, this preserves piped output and snapshots.
+	// Keep the tabwriter path byte-for-byte stable when styling is disabled.
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	if _, err := io.WriteString(tw, strings.Join(listRowText(table.header), "\t")+"\n"); err != nil {
 		return err

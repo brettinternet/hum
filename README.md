@@ -84,6 +84,7 @@ processes:
 ```sh
 hum up
 hum up --detach
+hum status
 hum status web
 hum logs --follow
 hum start web
@@ -126,7 +127,7 @@ hum stop preview
 hum remove preview
 ```
 
-Names identify durable sessions. `hum attach NAME` joins a running session; `--tail 0` skips replay. TTY attach owns input and resize; non-TTY attach follows output. `hum logs --follow` is read-only. `stop` preserves state; `remove` discards it. Status shows followers.
+Named sessions are durable. `hum status` summarizes the project; add NAME for details. `hum attach NAME` joins one; `--tail 0` skips replay. TTY attach owns input and resize; attachments follow output. `stop` preserves state; `remove` discards it.
 
 ## Restart on failure
 

@@ -491,11 +491,14 @@ func TestLifecycleHelp(t *testing.T) {
 			name: "status",
 			args: []string{"hum", "status", "--help"},
 			want: []string{
+				"without name",
+				"compact table",
+				"unlaunched manifest declarations",
+				"with name",
+				"detailed status",
+				"followers",
 				"read-only",
 				"never starts a daemon",
-				"followers",
-				"live attached run and logs --follow count",
-				"hum run <name> -- <command>",
 			},
 		},
 		{

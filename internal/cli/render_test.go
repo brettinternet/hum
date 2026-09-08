@@ -171,6 +171,23 @@ func TestLifecycleColorMapping(t *testing.T) {
 		t.Fatalf("colored list content changed after stripping ANSI:\ncolored=%q\nplain=%q", got, plainList.String())
 	}
 
+	var summary bytes.Buffer
+	if err := renderStatusSummaryHumanWithPolicy(&summary, processes, colors); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{ansiBoldString("READINESS"), ansiGreenString("running"), ansiGreenString("ready"), ansiCyanString("stopped"), ansiRedString("exited")} {
+		if !strings.Contains(summary.String(), want) {
+			t.Errorf("colored status summary missing %q: %q", want, summary.String())
+		}
+	}
+	var plainSummary bytes.Buffer
+	if err := renderStatusSummaryHumanWithPolicy(&plainSummary, processes, colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := stripRenderANSI(summary.String()); got != plainSummary.String() {
+		t.Fatalf("colored status summary changed after stripping ANSI:\ncolored=%q\nplain=%q", got, plainSummary.String())
+	}
+
 	var status bytes.Buffer
 	statusProcess := processes[0]
 	statusProcess.Cwd = "/tmp/project"
@@ -325,6 +342,20 @@ func TestUncoloredOutputUnchanged(t *testing.T) {
 	wantList := "NAME  STATE    PID     SOURCE           ARGV\napi   running  PID 42  source=manifest  argv=echo 'hello world'  readiness=ready  ready_cursor=5\n"
 	if list.String() != wantList {
 		t.Fatalf("uncolored list = %q, want %q", list.String(), wantList)
+	}
+
+	var summary bytes.Buffer
+	if err := renderStatusSummaryHuman(&summary, []app.Process{
+		process,
+		{Name: "worker", Source: "manifest", State: app.StateStopped, Restart: app.RestartOnFailure, Followers: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wantSummary := "NAME    STATE    PID  READINESS  RESTART     FOLLOWERS\n" +
+		"api     running  42   ready      never       0\n" +
+		"worker  stopped  -    -          on-failure  2\n"
+	if summary.String() != wantSummary {
+		t.Fatalf("uncolored status summary = %q, want %q", summary.String(), wantSummary)
 	}
 
 	var status bytes.Buffer
