@@ -132,7 +132,7 @@ processes:
 	}
 
 	human := testutil.Run(t, hum, projectRoot, env, "up")
-	if human.Code != 1 || human.Err == nil || !strings.Contains(human.Stdout, "definition_drift db") || !strings.Contains(human.Stdout, "hum restart db") || !strings.Contains(human.Stdout, "skipped (blocked by db)") {
+	if human.Code != 1 || human.Err == nil || !strings.Contains(human.Stdout, "db    definition drift") || !strings.Contains(human.Stdout, "api   skipped") || !strings.Contains(human.Stderr, "definition_drift (readiness_match); run hum restart db") || !strings.Contains(human.Stderr, "skipped (blocked by db)") {
 		t.Fatalf("human drift up = code %d err=%v stdout=%q stderr=%q", human.Code, human.Err, human.Stdout, human.Stderr)
 	}
 	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte("version: 1\nprocesses: {}\n"), 0o600); err != nil {
