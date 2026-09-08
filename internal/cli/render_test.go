@@ -222,6 +222,45 @@ func TestLifecycleColorMapping(t *testing.T) {
 	}
 }
 
+func TestAggregateLogPrefixColor(t *testing.T) {
+	colors := colorPolicy{enabled: true}
+	var stdout, stderr bytes.Buffer
+	renderer := &aggregateLogRenderer{
+		writer: &stdout, errWriter: &stderr, colors: colors, errColors: colors,
+	}
+	childText := "\x1b[31mchild text\x1b[0m\n"
+	if err := renderer.writeEvent("alpha", output.Event{Read: &output.ReadResult{Entries: []output.Entry{{Text: childText}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.writeEvent("beta", output.Event{Read: &output.ReadResult{Entries: []output.Entry{{Text: "other\n"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.writeCursor("alpha", output.ReadResult{}); err != nil {
+		t.Fatal(err)
+	}
+
+	alphaPrefix := colors.apply(processLogPrefixStyle("alpha"), "[alpha]")
+	betaPrefix := colors.apply(processLogPrefixStyle("beta"), "[beta]")
+	if processLogPrefixStyle("alpha") == processLogPrefixStyle("beta") {
+		t.Fatal("representative process names received the same prefix color")
+	}
+	if got, want := stdout.String(), alphaPrefix+" "+childText+betaPrefix+" other\n"; got != want {
+		t.Fatalf("colored aggregate logs = %q, want %q", got, want)
+	}
+	if got, want := stderr.String(), alphaPrefix+" next cursor: 0\n"; got != want {
+		t.Fatalf("colored cursor trailer = %q, want %q", got, want)
+	}
+	if got, want := stripRenderANSI(stdout.String()), "[alpha] child text\n[beta] other\n"; got != want {
+		t.Fatalf("stripped aggregate logs = %q, want %q", got, want)
+	}
+	for _, name := range []string{"alpha", "beta", "docker", "api", "web", "worker"} {
+		style := processLogPrefixStyle(name)
+		if style == ansiRed || style == ansiGreen {
+			t.Fatalf("process %q received semantic lifecycle color %q", name, style)
+		}
+	}
+}
+
 func TestManifestLaunchTable(t *testing.T) {
 	pid := 42
 	launchCursor, readyCursor := uint64(3), uint64(5)
@@ -371,7 +410,8 @@ func TestColorDocs(t *testing.T) {
 		"stdout is a terminal", "running and ready are green", "starting is yellow",
 		"operator-stopped is cyan", "autonomous successful exit is dim",
 		"failed\nexits, errors", "exhausted recovery", "dependency-skipped results are red",
-		"list headers are bold", "NO_COLOR", "including an empty value", "TERM=dumb",
+		"list headers are bold", "Aggregate log prefixes use a stable color", "Only `[NAME]` is styled",
+		"NO_COLOR", "including an empty value", "TERM=dumb",
 		"Piped output and JSON never contain ANSI styling",
 	} {
 		if !strings.Contains(text, phrase) {

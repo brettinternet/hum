@@ -1402,7 +1402,7 @@ processes:
 	go func() {
 		done <- NewRootCommand("test", "test", &stdout, &stderr).Run(ctx, []string{"hum", "up"})
 	}()
-	if !stdout.waitFor("[app] before-ready\n", 3*time.Second) {
+	if !stdout.waitFor(processLogPrefix(colorPolicy{enabled: true}, "app")+" before-ready\n", 3*time.Second) {
 		cancel()
 		t.Fatalf("attached up did not stream startup output: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -1414,7 +1414,7 @@ processes:
 		cancel()
 		t.Fatalf("attached up did not enter follow mode: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
-	if !stdout.waitFor("[app] after-ready\n", 3*time.Second) {
+	if !stdout.waitFor(processLogPrefix(colorPolicy{enabled: true}, "app")+" after-ready\n", 3*time.Second) {
 		cancel()
 		t.Fatalf("attached up did not continue after readiness: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -1470,7 +1470,7 @@ processes:
 	go func() {
 		done <- NewRootCommand("test", "test", &stdout, &stderr).Run(context.Background(), []string{"hum", "up"})
 	}()
-	if !stdout.waitFor("[app] before-ready\n", 3*time.Second) {
+	if !stdout.waitFor(processLogPrefix(colorPolicy{enabled: true}, "app")+" before-ready\n", 3*time.Second) {
 		t.Fatalf("attached up did not stream before interrupt: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 	var signals chan<- os.Signal
@@ -1519,7 +1519,7 @@ processes:
 	if manifestCLIExitCode(err) != 3 {
 		t.Fatalf("attached failing up exit = %v, want 3; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "[broken] failure-detail\n") {
+	if !strings.Contains(stdout.String(), processLogPrefix(colorPolicy{enabled: true}, "broken")+" failure-detail\n") {
 		t.Fatalf("attached failing up omitted diagnostics: stdout=%q", stdout.String())
 	}
 	if strings.Contains(stderr.String(), "following logs") {

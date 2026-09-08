@@ -98,7 +98,9 @@ rule.
 Human-readable output is the default.
 
 - When stdout is a terminal, `TERM` is not `dumb`, and `NO_COLOR` is absent, `list`, `status`,
-  and `up` use a fixed minimal palette.
+  `logs`, and `up` use a fixed minimal palette.
+- Aggregate log prefixes use a stable color derived from the process name, excluding the red and
+  green colors reserved for lifecycle meaning. Only `[NAME]` is styled; child output remains raw.
 - States use these colors: running and ready are green; starting is yellow; operator-stopped is cyan;
   an autonomous successful exit is dim.
 - Colors for failed
@@ -106,8 +108,8 @@ exits, errors, timeouts, definition drift, exhausted recovery, and dependency-sk
 - list headers are bold.
 - Any presence of `NO_COLOR`, including an empty value, disables styling, as does `TERM=dumb`.
 - Piped output and JSON never contain ANSI styling.
-- Only renderer-owned lifecycle labels are styled; names, paths, messages, and child output
-  remain unchanged.
+- Only renderer-owned lifecycle labels and aggregate log prefixes are styled; names outside log
+  prefixes, paths, messages, and child output remain unchanged.
 
 JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus
 identity, readiness, cursors, and errors when applicable.

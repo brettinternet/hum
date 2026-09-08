@@ -30,13 +30,19 @@ type colorPolicy struct {
 type ansiStyle string
 
 const (
-	ansiReset            = "\x1b[0m"
-	ansiBold   ansiStyle = "\x1b[1m"
-	ansiGreen  ansiStyle = "\x1b[32m"
-	ansiYellow ansiStyle = "\x1b[33m"
-	ansiCyan   ansiStyle = "\x1b[36m"
-	ansiDim    ansiStyle = "\x1b[2m"
-	ansiRed    ansiStyle = "\x1b[31m"
+	ansiReset                   = "\x1b[0m"
+	ansiBold          ansiStyle = "\x1b[1m"
+	ansiGreen         ansiStyle = "\x1b[32m"
+	ansiYellow        ansiStyle = "\x1b[33m"
+	ansiBlue          ansiStyle = "\x1b[34m"
+	ansiMagenta       ansiStyle = "\x1b[35m"
+	ansiCyan          ansiStyle = "\x1b[36m"
+	ansiBrightYellow  ansiStyle = "\x1b[93m"
+	ansiBrightBlue    ansiStyle = "\x1b[94m"
+	ansiBrightMagenta ansiStyle = "\x1b[95m"
+	ansiBrightCyan    ansiStyle = "\x1b[96m"
+	ansiDim           ansiStyle = "\x1b[2m"
+	ansiRed           ansiStyle = "\x1b[31m"
 )
 
 // terminalWriter reports whether writer ultimately targets a terminal.
@@ -593,11 +599,35 @@ type aggregateLogRenderer struct {
 	mu        sync.Mutex
 	writer    io.Writer
 	errWriter io.Writer
+	colors    colorPolicy
+	errColors colorPolicy
 	json      bool
 }
 
 func newAggregateLogRenderer(writer, errWriter io.Writer, jsonOutput bool) *aggregateLogRenderer {
-	return &aggregateLogRenderer{writer: writer, errWriter: errWriter, json: jsonOutput}
+	return &aggregateLogRenderer{
+		writer: writer, errWriter: errWriter,
+		colors: colorPolicyForWriter(writer), errColors: colorPolicyForWriter(errWriter),
+		json: jsonOutput,
+	}
+}
+
+func processLogPrefixStyle(name string) ansiStyle {
+	styles := [...]ansiStyle{
+		ansiBlue, ansiMagenta, ansiCyan, ansiYellow,
+		ansiBrightBlue, ansiBrightMagenta, ansiBrightCyan,
+	}
+	// FNV-1a keeps a process's color stable across commands and invocations.
+	hash := uint32(2166136261)
+	for index := 0; index < len(name); index++ {
+		hash ^= uint32(name[index])
+		hash *= 16777619
+	}
+	return styles[hash%uint32(len(styles))]
+}
+
+func processLogPrefix(colors colorPolicy, name string) string {
+	return colors.apply(processLogPrefixStyle(name), "["+name+"]")
 }
 
 func (r *aggregateLogRenderer) writeEvent(name string, event output.Event) error {
@@ -614,7 +644,7 @@ func (r *aggregateLogRenderer) writeEvent(name string, event output.Event) error
 		return nil
 	}
 	for _, entry := range event.Read.Entries {
-		if err := writeAggregateLogEntry(r.writer, name, entry); err != nil {
+		if err := writeAggregateLogEntry(r.writer, r.colors, name, entry); err != nil {
 			return err
 		}
 	}
@@ -633,7 +663,7 @@ func (r *aggregateLogRenderer) writeError(name string, wire *protocol.WireError)
 	if wire != nil && wire.Message != "" {
 		message = wire.Message
 	}
-	_, err := io.WriteString(r.writer, fmt.Sprintf("[%s] error: %s\n", name, message))
+	_, err := fmt.Fprintf(r.writer, "%s error: %s\n", processLogPrefix(r.colors, name), message)
 	return err
 }
 
@@ -646,7 +676,7 @@ func (r *aggregateLogRenderer) writeNotLaunched(name string) error {
 	if r.json {
 		return nil
 	}
-	_, err := fmt.Fprintf(r.writer, "[%s] not launched\n", name)
+	_, err := fmt.Fprintf(r.writer, "%s not launched\n", processLogPrefix(r.colors, name))
 	return err
 }
 
@@ -667,12 +697,12 @@ func (r *aggregateLogRenderer) writeCursor(name string, result output.ReadResult
 	if result.More {
 		trailer += " (more available)"
 	}
-	_, err := io.WriteString(r.errWriter, fmt.Sprintf("[%s] %s\n", name, trailer))
+	_, err := fmt.Fprintf(r.errWriter, "%s %s\n", processLogPrefix(r.errColors, name), trailer)
 	return err
 }
 
-func writeAggregateLogEntry(w io.Writer, name string, entry output.Entry) error {
-	_, err := io.WriteString(w, fmt.Sprintf("[%s] %s", name, entry.Text))
+func writeAggregateLogEntry(w io.Writer, colors colorPolicy, name string, entry output.Entry) error {
+	_, err := fmt.Fprintf(w, "%s %s", processLogPrefix(colors, name), entry.Text)
 	return err
 }
 
