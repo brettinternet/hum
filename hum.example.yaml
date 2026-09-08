@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
+version: 1
+processes:
+  db:
+    argv: [docker, compose, up, db]
+    ready:
+      match: "ready"
+  api:
+    argv: [bun, run, api]
+    after: [db]
+    ready:
+      match: "Listening"
+      timeout: 30s
+    restart: on-failure
+  web:
+    argv: [bun, run, dev]
+    cwd: web
+    after: [api]
+    ready:
+      match: "Local:"
+    tty: true
