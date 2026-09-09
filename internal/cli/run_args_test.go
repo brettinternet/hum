@@ -22,6 +22,7 @@ type runArgsResult struct {
 func parseRunArgsFor(t *testing.T, args ...string) runArgsResult {
 	t.Helper()
 	root := NewRootCommand("test", "test", os.Stdout, os.Stderr)
+	SetInvocationArgs(root, append([]string{"hum", "run"}, args...))
 	root.ExitErrHandler = func(context.Context, *urfavecli.Command, error) {}
 	var result runArgsResult
 	for _, command := range root.Commands {
@@ -39,6 +40,18 @@ func parseRunArgsFor(t *testing.T, args ...string) runArgsResult {
 		t.Fatalf("run %v: %v", args, err)
 	}
 	return result
+}
+
+func TestParseRunArgsRejectsCommandWithoutName(t *testing.T) {
+	got := parseRunArgsFor(t, "--", "npm", "run", "dev")
+	if got.err == nil || !strings.Contains(got.err.Error(), "run requires a process name before --") {
+		t.Fatalf("run -- npm run dev error = %v, want missing name guidance", got.err)
+	}
+
+	got = parseRunArgsFor(t, "--detach", "--", "npm", "run", "dev")
+	if got.err == nil || !strings.Contains(got.err.Error(), "run requires a process name before --") {
+		t.Fatalf("run --detach -- npm run dev error = %v, want missing name guidance", got.err)
+	}
 }
 
 func TestParseRunArgsAcceptsOptionsAfterName(t *testing.T) {

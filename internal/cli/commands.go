@@ -395,6 +395,9 @@ func serveCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 }
 
 func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
+	if rawRunMissingNameBeforeSeparator(cmd) {
+		return "", nil, errors.New("run requires a process name before --")
+	}
 	args := cmd.Args().Slice()
 	if len(args) == 0 {
 		return "", nil, errors.New("run requires a process name")
@@ -435,6 +438,56 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 		return "", nil, errors.New("run requires a non-empty command after --")
 	}
 	return args[0], argv, nil
+}
+
+func rawRunMissingNameBeforeSeparator(cmd *urfavecli.Command) bool {
+	root := cmd.Root()
+	if root == nil || root.Metadata == nil {
+		return false
+	}
+	state, ok := root.Metadata[jsonErrorStateMetadataKey].(*jsonErrorState)
+	if !ok || state == nil {
+		return false
+	}
+	state.mu.Lock()
+	args := append([]string(nil), state.invocationArgs...)
+	state.mu.Unlock()
+	if len(args) == 0 {
+		return false
+	}
+
+	values := invocationFlagValues(root, cmd)
+	runIndex := -1
+	for index := 1; index < len(args); index++ {
+		token := args[index]
+		if token == "run" {
+			runIndex = index
+			break
+		}
+		if strings.HasPrefix(token, "-") && token != "-" {
+			name, _, hasValue := strings.Cut(strings.TrimLeft(token, "-"), "=")
+			if !hasValue && values[name] && index+1 < len(args) {
+				index++
+			}
+		}
+	}
+	if runIndex < 0 {
+		return false
+	}
+	for index := runIndex + 1; index < len(args); index++ {
+		token := args[index]
+		if token == "--" {
+			return true
+		}
+		if !strings.HasPrefix(token, "-") || token == "-" {
+			return false
+		}
+		name, _, hasValue := strings.Cut(strings.TrimLeft(token, "-"), "=")
+		if !hasValue && values[name] && index+1 < len(args) {
+			index++
+		}
+	}
+	return false
 }
 
 // applyRunOptions applies run and global options that appear after NAME,
