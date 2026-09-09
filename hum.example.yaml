@@ -2,6 +2,7 @@
 version: 1
 processes:
   db:
+    # argv runs directly, without shell parsing.
     argv: [docker, compose, up, db]
     ready:
       match: "ready"
@@ -10,12 +11,14 @@ processes:
     after: [db]
     ready:
       match: "Listening"
-      timeout: 30s
-    restart: on-failure
+      timeout: 30s # Defaults to 30s.
+    restart: on-failure # Defaults to never.
   web:
     argv: [bun, run, dev]
+    # cwd is relative to the project root.
     cwd: web
+    # after waits until every dependency is ready.
     after: [api]
     ready:
       match: "Local:"
-    tty: true
+    tty: true # Defaults to false.
