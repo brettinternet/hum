@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"hum/internal/config"
+	"hum/internal/project"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -377,7 +378,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		Name:      "hum",
 		Usage:     "A local development process supervisor",
 		UsageText: "hum [global options] [command [command options]]",
-		Description: "Manifest projects use hum start NAME; hum run starts a detached daemon and stays attached by default; hum serve --daemon runs detached. " +
+		Description: "Project scope is selected automatically from the invocation directory and canonicalized physically (symlink aliases share a scope; linked worktrees remain separate); use --project PATH or -C PATH for explicit cross-worktree access; observation may target a removed known worktree, launch requires an existing directory, and list --all discovers every scope; JSON process records include scope project and canonical project_root; manifest projects use hum start NAME; hum run starts a detached daemon and stays attached by default; hum serve --daemon runs detached. " +
 			"Bounded controls, including logs without --follow, do not start an empty daemon; logs --follow and wait start one to observe future launches; stopping processes and daemon shutdown are separate. " +
 			"restart: on-failure retries spawn failures at 1s, 2s, 4s, 8s, and 16s five times; a 30-second survivor resets recovery, so inspect retained failing output.\n\n" +
 			"Examples:\n" +
@@ -419,6 +420,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 
 type projectSelection struct {
 	cwd      string
+	root     string
 	selector string
 }
 
@@ -431,7 +433,11 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 		return projectSelection{}, fmt.Errorf("current directory: %w", err)
 	}
 	if !cmd.IsSet("project") {
-		return projectSelection{cwd: invocationCwd}, nil
+		root, err := project.DiscoverProjectRoot(invocationCwd)
+		if err != nil {
+			return projectSelection{}, err
+		}
+		return projectSelection{cwd: invocationCwd, root: root}, nil
 	}
 
 	value := cmd.String("project")
@@ -444,13 +450,22 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 	}
 	selected = filepath.Clean(selected)
 	info, err := os.Stat(selected)
-	if err != nil {
+	allowMissing := false
+	switch cmd.Name {
+	case "list", "status", "logs", "wait", "signal", "stop", "remove", "down":
+		allowMissing = true
+	}
+	if err != nil && !allowMissing {
 		return projectSelection{}, fmt.Errorf("--project directory %q: %w", selected, err)
 	}
-	if !info.IsDir() {
+	if err == nil && !info.IsDir() {
 		return projectSelection{}, fmt.Errorf("--project path %q is not a directory", selected)
 	}
-	return projectSelection{cwd: selected, selector: "--project " + shellEscape(selected)}, nil
+	root, rootErr := project.CanonicalPath(selected)
+	if rootErr != nil {
+		return projectSelection{}, fmt.Errorf("--project path %q: %w", selected, rootErr)
+	}
+	return projectSelection{cwd: selected, root: root, selector: "--project " + shellEscape(root)}, nil
 }
 
 func rejectProjectOverride(cmd *urfavecli.Command, commandName string) error {

@@ -226,8 +226,12 @@ func protocolSignalResultFromWire(response wireResponse, fallbackName string) (p
 }
 
 func protocolProcessFromWire(item wireProcess) protocol.Process {
+	scope := item.Scope
+	if scope == "" {
+		scope = "project"
+	}
 	result := protocol.Process{
-		Name: item.Name, Source: item.Source, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
+		Name: item.Name, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: protocol.Cursor(item.LaunchCursor), State: item.State,
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,

@@ -388,7 +388,7 @@ func TestUncoloredOutputUnchanged(t *testing.T) {
 	if strings.Contains(listJSONOutput.String(), "\x1b[") {
 		t.Fatalf("list JSON contains ANSI: %q", listJSONOutput.String())
 	}
-	wantListJSON := `{"processes":[{"name":"api","source":"manifest","root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"start":"2026-01-01T02:03:04Z","launch_cursor":3,"next_cursor":4,"state":"running","exited_at":"0001-01-01T00:00:00Z","followers":0,"restart":"never","relaunches":0,"readiness":"ready","ready_cursor":5}]}` + "\n"
+	wantListJSON := `{"processes":[{"name":"api","source":"manifest","scope":"project","root":"/project","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"start":"2026-01-01T02:03:04Z","launch_cursor":3,"next_cursor":4,"state":"running","exited_at":"0001-01-01T00:00:00Z","followers":0,"restart":"never","relaunches":0,"readiness":"ready","ready_cursor":5}]}` + "\n"
 	if listJSONOutput.String() != wantListJSON {
 		t.Fatalf("list JSON = %q, want %q", listJSONOutput.String(), wantListJSON)
 	}
@@ -399,7 +399,7 @@ func TestUncoloredOutputUnchanged(t *testing.T) {
 	if strings.Contains(statusJSONOutput.String(), "\x1b[") {
 		t.Fatalf("status JSON contains ANSI: %q", statusJSONOutput.String())
 	}
-	wantStatusJSON := `{"name":"api","source":"manifest","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"started_at":"2026-01-01T02:03:04Z","state":"running","readiness":"ready","ready_cursor":5,"exit_status":null,"restart_count":0,"followers":0,"restart":"never","relaunches":0,"next_cursor":4}` + "\n"
+	wantStatusJSON := `{"name":"api","source":"manifest","scope":"project","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"started_at":"2026-01-01T02:03:04Z","state":"running","readiness":"ready","ready_cursor":5,"exit_status":null,"restart_count":0,"followers":0,"restart":"never","relaunches":0,"next_cursor":4}` + "\n"
 	if statusJSONOutput.String() != wantStatusJSON {
 		t.Fatalf("status JSON = %q, want %q", statusJSONOutput.String(), wantStatusJSON)
 	}

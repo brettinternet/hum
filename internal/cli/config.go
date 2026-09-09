@@ -280,6 +280,47 @@ func isNotFound(err error) bool {
 	return isWireCode(err, "not_found")
 }
 
+// crossScopeNotFoundMessage turns daemon discovery metadata into copyable,
+// explicit selectors. A local miss never changes the request's scope.
+func crossScopeNotFoundError(err error, action string) error {
+	if !isNotFound(err) {
+		return err
+	}
+	return wrapUserFacingError(err, crossScopeNotFoundMessage(err, action))
+}
+
+func crossScopeNotFoundMessage(err error, action string) string {
+	var wire *daemon.WireError
+	if !errors.As(err, &wire) || wire == nil {
+		return err.Error()
+	}
+	message := wire.Message
+	var details map[string]any
+	if value, ok := wire.Details.(map[string]any); ok {
+		details = value
+	}
+	if details == nil {
+		return message + ". Run hum list --all to see every scope."
+	}
+	matches, _ := details["other_scopes"].([]any)
+	lines := make([]string, 0, len(matches))
+	for _, value := range matches {
+		match, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		root, _ := match["project_root"].(string)
+		if root == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("hum --project %s %s", shellEscape(root), action))
+	}
+	if len(lines) == 0 {
+		return message + ". Run hum list --all to see every scope."
+	}
+	return message + ". Other scopes:\n  " + strings.Join(lines, "\n  ") + "\nRun hum list --all to see every scope."
+}
+
 func isNameInUse(err error) bool {
 	return isWireCode(err, "name_in_use")
 }

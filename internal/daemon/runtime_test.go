@@ -235,6 +235,14 @@ func TestStartupNeverSignalsReusedProcessIdentity(t *testing.T) {
 	if len(warnings) != 1 || warnings[0].Outcome != "unresolved" {
 		t.Fatalf("startup warnings = %+v", warnings)
 	}
+	otherRoot := t.TempDir()
+	all, err := server.listProcesses(otherRoot, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Name != "reused" || all[0].Root != warnings[0].Project {
+		t.Fatalf("list --all omitted recovered unresolved record: %+v", all)
+	}
 	if !runtimeGroupAlive(cmd.Process.Pid) {
 		t.Fatal("identity-mismatched group was signaled")
 	}
@@ -378,4 +386,69 @@ func mustProcessIdentity(t *testing.T, pid int) string {
 		t.Fatal(err)
 	}
 	return identity
+}
+
+func TestRuntimeStateScopeIdentity(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "main")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(dir, "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "hum.state")
+	state := RuntimeState{Version: RuntimeStateVersion, Daemon: RuntimeIdentity{PID: os.Getpid(), StartIdentity: "daemon"}, Groups: []RuntimeGroup{
+		{Scope: "project", ProjectRoot: root, Name: "web", LeaderPID: 1, PGID: 1, StartIdentity: "one"},
+		{Scope: "project", ProjectRoot: alias, Name: "web", LeaderPID: 2, PGID: 2, StartIdentity: "two"},
+	}}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readRuntimeState(statePath); err == nil || !strings.Contains(err.Error(), "aliases collapse") || !strings.Contains(err.Error(), "remove the file") {
+		t.Fatalf("alias state error = %v", err)
+	}
+	state.Groups = nil
+	state.Version++
+	data, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readRuntimeState(statePath); err == nil || !strings.Contains(err.Error(), "unsupported version") || !strings.Contains(err.Error(), "remove the file") {
+		t.Fatalf("version state error = %v", err)
+	}
+
+	cmd, done := startRuntimeTestGroup(t, false)
+	runtimeDir := filepath.Join(shortRuntimeDir(t), "scope-recovery")
+	recoveryRoot := t.TempDir()
+	writePriorRuntimeState(t, runtimeDir, RuntimeGroup{
+		Scope: "project", ProjectRoot: recoveryRoot, Name: "recovered", LeaderPID: cmd.Process.Pid, PGID: cmd.Process.Pid,
+		StartIdentity: mustProcessIdentity(t, cmd.Process.Pid) + "-different",
+	})
+	server := testServer(t, Config{RuntimeDir: runtimeDir, StopGrace: 20 * time.Millisecond})
+	warnings := server.StartupWarnings()
+	if len(warnings) != 1 || warnings[0].Outcome != "unresolved" {
+		t.Fatalf("scope recovery warnings = %+v", warnings)
+	}
+	all, err := server.listProcesses(t.TempDir(), true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Scope != "project" || all[0].Root != warnings[0].Project || all[0].Name != "recovered" {
+		t.Fatalf("recovered scoped snapshot = %+v", all)
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recovery test process was not reaped")
+	}
 }

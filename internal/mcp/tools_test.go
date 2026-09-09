@@ -1958,3 +1958,64 @@ func protocolCursor(cursor *output.Cursor) *protocol.Cursor {
 	value := protocol.Cursor(*cursor)
 	return &value
 }
+
+func TestScopeMCP(t *testing.T) {
+	root := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	input, err := decodeInput(json.RawMessage(fmt.Sprintf(`{"project_root":%q,"all":true}`, alias)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.ProjectRoot != canonical || !input.All {
+		t.Fatalf("decoded scope = %#v, want %q/all", input, canonical)
+	}
+	var list toolDefinition
+	for _, definition := range NewServer(Options{}).toolDefinitions() {
+		if definition.Name == "list" {
+			list = definition
+		}
+	}
+	properties := list.InputSchema["properties"].(map[string]any)
+	if _, ok := properties["all"]; !ok {
+		t.Fatal("list schema omits all")
+	}
+	client := &fakeClient{processes: map[string]protocol.Process{"web": {Name: "web", Scope: "project", Root: canonical}}}
+	server, selectedRoot, _ := newTestServer(t, nil, client)
+	if _, err := server.callTool(context.Background(), "list", args(selectedRoot, "all", true)); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.lists) != 1 || !client.lists[0].All || client.lists[0].Cwd != selectedRoot {
+		t.Fatalf("MCP list all request = %+v", client.lists)
+	}
+	mapped := mapError(&protocol.WireError{Code: protocol.ErrorNotFound, Message: "missing", Details: map[string]any{
+		"scope": "project", "project_root": "/work/linked", "other_scopes": []any{map[string]any{"scope": "project", "project_root": "/work/main"}},
+	}})
+	if mapped.Code != string(protocol.ErrorNotFound) {
+		t.Fatalf("mapped error code = %q", mapped.Code)
+	}
+	details, ok := mapped.Details.(map[string]any)
+	if !ok || details["other_scopes"] == nil {
+		t.Fatalf("mapped error details = %#v", mapped.Details)
+	}
+}
+
+func TestScopeDocs(t *testing.T) {
+	definitions := NewServer(Options{}).toolDefinitions()
+	blob, err := json.Marshal(definitions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(blob)
+	for _, phrase := range []string{`"scope"`, `"project_root"`, "canonical", "every project scope"} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("tool descriptions/schemas omit %q", phrase)
+		}
+	}
+}

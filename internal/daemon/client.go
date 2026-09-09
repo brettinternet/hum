@@ -1171,8 +1171,12 @@ func wireErrorToError(wire *wireError) error {
 }
 
 func appProcessFromWire(item wireProcess) app.Process {
+	scope := item.Scope
+	if scope == "" {
+		scope = "project"
+	}
 	result := app.Process{
-		Name: item.Name, Source: item.Source, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
+		Name: item.Name, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: output.Cursor(item.LaunchCursor), State: app.State(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,

@@ -20,6 +20,7 @@ import (
 
 	"hum/internal/output"
 	"hum/internal/process"
+	projectpkg "hum/internal/project"
 )
 
 // State is the lifecycle state of a supervised process.
@@ -123,13 +124,16 @@ type TTYSize struct {
 type Process struct {
 	Name   string
 	Source string
-	Root   string
-	TTY    bool
-	PID    int
-	PGID   int
-	Cwd    string
-	Argv   []string
-	Start  time.Time
+	// Scope identifies the namespace of this record. HUM-058 currently has
+	// only the project namespace; the field is explicit for protocol stability.
+	Scope string
+	Root  string
+	TTY   bool
+	PID   int
+	PGID  int
+	Cwd   string
+	Argv  []string
+	Start time.Time
 	// StartIdentity is retained only inside the daemon lifecycle boundary. It
 	// is never serialized into client-facing protocol snapshots.
 	StartIdentity string
@@ -628,9 +632,15 @@ func (e *DuplicateError) Error() string {
 func (e *DuplicateError) Unwrap() error { return ErrNameInUse }
 
 // NotFoundError identifies a project/name lookup that failed.
+type ScopeMatch struct {
+	Scope       string `json:"scope"`
+	ProjectRoot string `json:"project_root"`
+}
+
 type NotFoundError struct {
-	Root string
-	Name string
+	Root        string
+	Name        string
+	OtherScopes []ScopeMatch
 }
 
 func (e *NotFoundError) Error() string {
@@ -976,32 +986,8 @@ func New(opts Options) (*Supervisor, error) {
 	}, nil
 }
 
-// DiscoverProjectRoot returns the nearest ancestor containing a .git
-// directory or worktree file. If no marker exists, it returns the absolute,
-// cleaned cwd.
-func DiscoverProjectRoot(cwd string) (string, error) {
-	path, err := absoluteClean(cwd)
-	if err != nil {
-		return "", err
-	}
-	probe := path
-	if info, statErr := os.Stat(probe); statErr == nil && !info.IsDir() {
-		probe = filepath.Dir(probe)
-	}
-	for {
-		marker := filepath.Join(probe, ".git")
-		if info, statErr := os.Stat(marker); statErr == nil {
-			if info.IsDir() || info.Mode().IsRegular() {
-				return filepath.Clean(probe), nil
-			}
-		}
-		parent := filepath.Dir(probe)
-		if parent == probe {
-			return filepath.Clean(path), nil
-		}
-		probe = parent
-	}
-}
+// DiscoverProjectRoot returns the canonical physical project identity.
+func DiscoverProjectRoot(cwd string) (string, error) { return projectpkg.DiscoverProjectRoot(cwd) }
 
 // ProjectRoot is a concise alias for DiscoverProjectRoot.
 func ProjectRoot(cwd string) (string, error) { return DiscoverProjectRoot(cwd) }
@@ -1020,6 +1006,8 @@ func absoluteClean(path string) (string, error) {
 	}
 	return filepath.Clean(absolute), nil
 }
+
+func canonicalProjectRoot(path string) (string, error) { return projectpkg.CanonicalPath(path) }
 
 func keyFor(root, name string) string { return root + "\x00" + name }
 
@@ -1219,7 +1207,7 @@ func (s *Supervisor) AddUnresolved(root, name string, pid, pgid int, startIdenti
 	if err := ValidateName(name); err != nil {
 		return err
 	}
-	canonicalRoot, err := absoluteClean(root)
+	canonicalRoot, err := canonicalProjectRoot(root)
 	if err != nil {
 		return err
 	}
@@ -1257,7 +1245,7 @@ func (s *Supervisor) AddUnresolved(root, name string, pid, pgid int, startIdenti
 // ClearUnresolved removes a blocker after an external identity check proves
 // its recorded process group is gone.
 func (s *Supervisor) ClearUnresolved(root, name string) error {
-	canonicalRoot, err := absoluteClean(root)
+	canonicalRoot, err := canonicalProjectRoot(root)
 	if err != nil {
 		return err
 	}
@@ -1314,7 +1302,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	}
 	root := ""
 	if req.Root != "" {
-		root, err = absoluteClean(req.Root)
+		root, err = canonicalProjectRoot(req.Root)
 	} else {
 		root, err = DiscoverProjectRoot(requestCwd)
 	}
@@ -1666,7 +1654,7 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		}
 		updatedRoot := update.Root
 		if updatedRoot != "" {
-			updatedRoot, err = absoluteClean(updatedRoot)
+			updatedRoot, err = canonicalProjectRoot(updatedRoot)
 		} else {
 			updatedRoot, err = DiscoverProjectRoot(updatedCwd)
 		}
@@ -2116,7 +2104,7 @@ func (s *Supervisor) lookupRoot(cwd, name, rootHint string) (*record, error) {
 	if root == "" {
 		root, err = DiscoverProjectRoot(cwd)
 	} else {
-		root, err = absoluteClean(root)
+		root, err = canonicalProjectRoot(root)
 	}
 	if err != nil {
 		return nil, err
@@ -2124,9 +2112,18 @@ func (s *Supervisor) lookupRoot(cwd, name, rootHint string) (*record, error) {
 	key := keyFor(root, name)
 	s.mu.RLock()
 	rec := s.records[key]
+	var otherScopes []ScopeMatch
+	if rec == nil {
+		for _, candidate := range s.records {
+			if candidate.name == name && candidate.root != root {
+				otherScopes = append(otherScopes, ScopeMatch{Scope: "project", ProjectRoot: candidate.root})
+			}
+		}
+	}
 	s.mu.RUnlock()
 	if rec == nil {
-		return nil, &NotFoundError{Root: root, Name: name}
+		sort.Slice(otherScopes, func(i, j int) bool { return otherScopes[i].ProjectRoot < otherScopes[j].ProjectRoot })
+		return nil, &NotFoundError{Root: root, Name: name, OtherScopes: otherScopes}
 	}
 	return rec, nil
 }
@@ -2246,7 +2243,7 @@ func (s *Supervisor) PrepareTTY(req StartRequest) error {
 	if root == "" {
 		root, err = DiscoverProjectRoot(requestCwd)
 	} else {
-		root, err = absoluteClean(root)
+		root, err = canonicalProjectRoot(root)
 	}
 	if err != nil {
 		return err
@@ -2329,7 +2326,7 @@ func (s *Supervisor) acquireInput(rootHint, cwd, name string, requestedTTY, ttyS
 	if rootHint == "" {
 		rootHint, err = DiscoverProjectRoot(cwd)
 	} else {
-		rootHint, err = absoluteClean(rootHint)
+		rootHint, err = canonicalProjectRoot(rootHint)
 	}
 	if err != nil {
 		return nil, err
@@ -3261,6 +3258,7 @@ func (r *record) snapshotLocked() Process {
 	model := Process{
 		Name:          r.name,
 		Source:        r.source,
+		Scope:         "project",
 		Root:          r.root,
 		TTY:           r.tty,
 		PID:           r.pid,

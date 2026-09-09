@@ -224,3 +224,12 @@ func mustReadSkillFile(t *testing.T, path string) []byte {
 	}
 	return content
 }
+
+func TestScopeDocs(t *testing.T) {
+	text := Content()
+	for _, phrase := range []string{"canonical", "symlink", "worktree", "--project", "-C", "removed", "list --all", "scope", "project_root"} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("skill missing %q", phrase)
+		}
+	}
+}

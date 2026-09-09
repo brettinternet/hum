@@ -21,6 +21,7 @@ import (
 	"hum/internal/app"
 	"hum/internal/output"
 	"hum/internal/process"
+	"hum/internal/project"
 	"hum/internal/protocol"
 )
 
@@ -35,7 +36,7 @@ var (
 const (
 	defaultLogBytes     = 1 << 20
 	maxLogBytes         = 64 << 20
-	RuntimeStateVersion = 1
+	RuntimeStateVersion = 2
 )
 
 // RuntimeIdentity is the PID and OS process-start identity of one process.
@@ -46,11 +47,20 @@ type RuntimeIdentity struct {
 
 // RuntimeGroup is the persisted identity of one live child process group.
 type RuntimeGroup struct {
+	Scope         string `json:"scope"`
 	ProjectRoot   string `json:"project_root"`
 	Name          string `json:"name"`
 	LeaderPID     int    `json:"leader_pid"`
 	PGID          int    `json:"pgid"`
 	StartIdentity string `json:"start_identity"`
+}
+
+func (g RuntimeGroup) MarshalJSON() ([]byte, error) {
+	if g.Scope == "" {
+		g.Scope = "project"
+	}
+	type runtimeGroupJSON RuntimeGroup
+	return json.Marshal(runtimeGroupJSON(g))
 }
 
 // RuntimeState is the versioned, atomically replaced runtime-state document.
@@ -269,14 +279,20 @@ func readRuntimeState(path string) (RuntimeState, bool, error) {
 	}
 	seen := make(map[string]struct{}, len(state.Groups))
 	for index, group := range state.Groups {
-		if group.ProjectRoot == "" || !filepath.IsAbs(group.ProjectRoot) || group.Name == "" || group.LeaderPID <= 0 || group.PGID <= 0 || group.StartIdentity == "" {
+		if group.Scope != "project" || group.ProjectRoot == "" || !filepath.IsAbs(group.ProjectRoot) || group.Name == "" || group.LeaderPID <= 0 || group.PGID <= 0 || group.StartIdentity == "" {
 			return RuntimeState{}, true, runtimeStateCorrupt(path, fmt.Errorf("groups[%d] identity is incomplete", index))
 		}
+		canonical, canonicalErr := project.CanonicalPath(group.ProjectRoot)
+		if canonicalErr != nil {
+			return RuntimeState{}, true, runtimeStateCorrupt(path, fmt.Errorf("groups[%d] project root: %w", index, canonicalErr))
+		}
+		group.ProjectRoot = canonical
 		key := runtimeGroupKey(group.ProjectRoot, group.Name)
 		if _, exists := seen[key]; exists {
-			return RuntimeState{}, true, runtimeStateCorrupt(path, fmt.Errorf("groups[%d] duplicates project/name", index))
+			return RuntimeState{}, true, runtimeStateCorrupt(path, fmt.Errorf("groups[%d] aliases collapse to one project/name; remove the state after verifying managed processes", index))
 		}
 		seen[key] = struct{}{}
+		state.Groups[index] = group
 	}
 	return state, true, nil
 }
@@ -418,7 +434,11 @@ func runtimeGroupForProcess(item app.Process) (RuntimeGroup, error) {
 	if item.Root == "" || !filepath.IsAbs(item.Root) || item.Name == "" || item.PID <= 0 || item.PGID <= 0 || item.StartIdentity == "" {
 		return RuntimeGroup{}, errors.New("process identity is incomplete")
 	}
-	return RuntimeGroup{ProjectRoot: filepath.Clean(item.Root), Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}, nil
+	root, err := project.CanonicalPath(item.Root)
+	if err != nil {
+		return RuntimeGroup{}, fmt.Errorf("canonical project root: %w", err)
+	}
+	return RuntimeGroup{Scope: "project", ProjectRoot: root, Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}, nil
 }
 
 func (r *runtimeOwner) persistProcess(item app.Process) error {

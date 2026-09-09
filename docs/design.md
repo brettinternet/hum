@@ -80,9 +80,10 @@ Combined short options are unsupported; MCP fields have no aliases.
 `--stop-grace`, `--output-bytes`, and `--completed-records` remain long-only. The `input`
 command intentionally adds no short aliases, including for `--json`.
 
-`--project DIR` resolves DIR relative to the invocation directory, requires an existing
-directory, cleans it to an absolute path, and applies the nearest-Git-root-or-directory-fallback
-rule.
+`--project DIR` resolves DIR relative to the invocation directory, canonicalizes it to a
+physical absolute path, and applies the nearest-Git-root-or-directory-fallback rule. Launch
+commands require an existing directory; observation and lifecycle commands can target a removed
+worktree when DIR exactly matches a canonical root retained by the daemon.
 
 - The resolved project root scopes names and manifests.
 - `status` without a name renders a compact current-project process table and includes unlaunched
@@ -733,3 +734,6 @@ Exactly one attached `hum run` owns input.
   meaning.
 - Ordinary exit preserves the lease; remove and daemon shutdown close it.
 - MCP exposes `tty` snapshots and the bounded `input` tool for exact prompt responses.
+## Canonical project scopes
+
+hum selects scope automatically from the invocation directory. Git roots and linked worktrees are canonicalized physically, so symlink aliases share records while separate worktrees do not. Child cwd remains lexical. Use `hum --project /path/to/main` (or `-C` as shorthand) for explicit cross-worktree access; observation can address a removed known worktree, but launch requires an existing directory. `hum list --all` discovers every project scope. A local not-found result never falls through silently: use the copyable `--project` command or `hum list --all`. JSON process records contain `scope` (`project`) and canonical `project_root`.

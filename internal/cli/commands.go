@@ -32,7 +32,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 	signalStopOnNthArg := 1
 	mcpCommand := mcpCLICommand(version, buildTime, writer)
 	mcpCommand.Usage = "serve MCP lifecycle tools over stdio"
-	mcpCommand.Description = "Run a stdio Model Context Protocol server for one-time coding-agent registration; every tool requires an absolute existing project_root; start and up differ: start targets only named sessions without pulling prerequisites, while up resolves manifest readiness dependencies; resolved records and ad_hoc sessions handed off by hum run remain available until daemon shutdown or replacement; requests with IDs run concurrently up to 64 in flight, a 65th request returns -32001 without starting, duplicate in-flight IDs return -32600, notifications/cancelled returns -32800, responses are serialized, and EOF or parent cancellation cancels handlers and joins the response writer. Bounded output uses terminal-control-stripped text with no raw opt-out and explicit definitions use deterministic argv-based environment activation. The twelve tools are start, up, down, list, status, logs, wait, input, restart, stop, remove, and signal; run, serve, and shutdown are not MCP tools.\n\nExamples:\n  hum mcp"
+	mcpCommand.Description = "Run a stdio Model Context Protocol server for one-time coding-agent registration; every tool requires an absolute existing project_root, which is canonicalized without weakening validation; list supports all project scopes and process snapshots include scope project and canonical project_root; start and up differ: start targets only named sessions without pulling prerequisites, while up resolves manifest readiness dependencies; resolved records and ad_hoc sessions handed off by hum run remain available until daemon shutdown or replacement; requests with IDs run concurrently up to 64 in flight, a 65th request returns -32001 without starting, duplicate in-flight IDs return -32600, notifications/cancelled returns -32800, responses are serialized, and EOF or parent cancellation cancels handlers and joins the response writer. Bounded output uses terminal-control-stripped text with no raw opt-out and explicit definitions use deterministic argv-based environment activation. The twelve tools are start, up, down, list, status, logs, wait, input, restart, stop, remove, and signal; run, serve, and shutdown are not MCP tools.\n\nExamples:\n  hum mcp"
 	commands := []*urfavecli.Command{
 		{
 			Name:        "serve",
@@ -82,7 +82,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			ArgsUsage:     "NAME [-- COMMAND [ARGS...]]",
 			StopOnNthArg:  &runStopOnNthArg,
 			ShellComplete: completeProcessNames,
-			Description:   "Run a named session across process exits and launches, automatically starts a detached daemon when needed; without --detach, it stays attached by default and Ctrl+C detaches the observer, while with --detach it returns immediately and the daemon keeps owning it. Add --tty for an ad-hoc pseudo-terminal; stable JSON for detached runs is available, while attached runs stream raw child output; TTY input forwards terminal bytes and Ctrl-] detaches input.\n\nExamples:\n  hum run api\n  hum run api -- bun run api\n  hum run api --detach -- bun run api",
+			Description:   "Run in the automatically selected canonical project scope; symlink aliases share records and separate worktrees remain separate; use --project PATH or -C PATH for explicit access; child cwd stays lexical; run a named session across process exits and launches, automatically starts a detached daemon when needed; without --detach, it stays attached by default and Ctrl+C detaches the observer, while with --detach it returns immediately and the daemon keeps owning it. Add --tty for an ad-hoc pseudo-terminal; stable JSON for detached runs is available, while attached runs stream raw child output; TTY input forwards terminal bytes and Ctrl-] detaches input.\n\nExamples:\n  hum run api\n  hum run api -- bun run api\n  hum run api --detach -- bun run api",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "return without attaching; default is attached"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON for detached runs; default is raw attached output"},
@@ -146,7 +146,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:       "list supervised processes",
 			UsageText:   "hum list [--all] [--json]",
 			ArgsUsage:   "",
-			Description: "List is read-only and does not start an empty daemon. Use --all for every project; followed records show their followers count, while unfollowed human output is unchanged.\n\nExamples:\n  hum list\n  hum list --all\n  hum list --json",
+			Description: "List is read-only and does not start an empty daemon. The default is the automatic current canonical scope; use --all for every project scope (grouped by canonical root with copyable --project selectors); followed records show their followers count, while unfollowed human output is unchanged.\n\nExamples:\n  hum list\n  hum list --all\n  hum list --json",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "all", Aliases: []string{"a"}, DefaultText: "false", Usage: "include every project; default is the current project"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
@@ -747,7 +747,13 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if cmd.Bool("json") {
 		return encodeJSON(writer, processListJSON(processes, warnings))
 	}
-	return renderListHuman(writer, processes, cmd.Bool("all"))
+	root := ""
+	if len(processes) == 0 {
+		if selection, selectionErr := selectedProjectDirectory(cmd); selectionErr == nil {
+			root = selection.root
+		}
+	}
+	return renderListHuman(writer, processes, cmd.Bool("all"), root)
 }
 
 func projectProcessList(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, all bool) ([]app.Process, []protocol.StartupWarning, error) {
@@ -812,7 +818,13 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		if err := writeStartupWarnings(errWriter, warnings); err != nil {
 			return err
 		}
-		return renderStatusSummaryHuman(writer, processes)
+		root := ""
+		if len(processes) == 0 {
+			if selection, selectionErr := selectedProjectDirectory(cmd); selectionErr == nil {
+				root = selection.root
+			}
+		}
+		return renderStatusSummaryHuman(writer, processes, root)
 	}
 	name := args[0]
 	ctx = nonNilContext(ctx)
@@ -857,7 +869,7 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		}
 		definition, declared := manifest.byName[name]
 		if !declared {
-			return wrapUserFacingError(err, err.Error()+". Run "+projectCommand(manifest.selector, "list --all")+" to see known processes.")
+			return wrapUserFacingError(err, crossScopeNotFoundMessage(err, "status "+name))
 		}
 		// A declared process that has never launched has no daemon record yet;
 		// report it stopped, exactly as list does, instead of a raw lookup error.
@@ -1211,7 +1223,7 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			Match: request.Match, MaxEntries: request.MaxEntries, MaxBytes: request.MaxBytes,
 		})
 		if err != nil {
-			return err
+			return crossScopeNotFoundError(err, "logs "+name)
 		}
 		defer follower.Close()
 		if process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd}); getErr == nil && !app.IsActiveState(process.State) {
@@ -1243,7 +1255,7 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	result, err := client.Output(ctx, request)
 	if err != nil {
-		return err
+		return crossScopeNotFoundError(err, "logs "+name)
 	}
 	if cmd.Bool("json") {
 		return encodeJSON(writer, protocol.NewOutputResponse(outputJSON(result)))
@@ -1751,7 +1763,7 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		TimeoutMS: timeoutMS,
 	})
 	if err != nil {
-		return err
+		return crossScopeNotFoundError(err, "wait "+name)
 	}
 	if cmd.Bool("json") {
 		if err := encodeJSON(writer, waitJSONFor(result)); err != nil {
@@ -1887,7 +1899,7 @@ func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	result, err := client.SignalResult(ctx, daemon.SignalRequest{Name: name, Cwd: selection.cwd, Signal: parsed.Name})
 	if err != nil {
 		if isWireCode(err, string(protocol.ErrorNotFound)) {
-			return protocol.NewWireError(protocol.ErrorNotFound, fmt.Sprintf("process %q was not found; run hum list --all or hum start %s for a resolved name", name, name), nil)
+			return protocol.NewWireError(protocol.ErrorNotFound, crossScopeNotFoundMessage(err, "signal "+name+" "+specification), nil)
 		}
 		if isWireCode(err, string(protocol.ErrorNotRunning)) {
 			return protocol.NewWireError(protocol.ErrorNotRunning, fmt.Sprintf("process %q is not running; start it with hum start %s", name, name), nil)
@@ -2032,7 +2044,7 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	defer client.Close()
 	for _, name := range names {
 		if err := client.Remove(context.Background(), daemon.RemoveRequest{Name: name, Cwd: cwd}); err != nil {
-			return err
+			return crossScopeNotFoundError(err, "remove "+name)
 		}
 		result := stopResult{Name: name, Status: "removed"}
 		if cmd.Bool("json") {
@@ -2070,7 +2082,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			_ = client.Close()
 		}
 		if daemonUnavailable(err) {
-			return renderDownResults(writer, nil, cmd.Bool("json"))
+			return renderDownResults(writer, nil, cmd.Bool("json"), selection.root)
 		}
 		return err
 	}
@@ -2078,7 +2090,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	processes, err := client.List(ctx, daemon.ListRequest{Cwd: cwd})
 	if err != nil {
 		if daemonUnavailable(err) {
-			return renderDownResults(writer, nil, cmd.Bool("json"))
+			return renderDownResults(writer, nil, cmd.Bool("json"), selection.root)
 		}
 		return err
 	}
@@ -2101,7 +2113,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	sort.Strings(names)
 	if len(names) == 0 {
-		return renderDownResults(writer, nil, cmd.Bool("json"))
+		return renderDownResults(writer, nil, cmd.Bool("json"), selection.root)
 	}
 
 	type workerResult struct {
@@ -2155,7 +2167,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			stopErrors[worker.index] = worker.err
 		}
 	}
-	if err := renderDownResults(writer, results, cmd.Bool("json")); err != nil {
+	if err := renderDownResults(writer, results, cmd.Bool("json"), selection.root); err != nil {
 		return err
 	}
 	for _, stopErr := range stopErrors {

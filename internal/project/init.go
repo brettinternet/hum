@@ -65,7 +65,7 @@ func (e *ManifestExistsError) Unwrap() error { return ErrManifestExists }
 // The optional force argument preserves the original no-force call shape for
 // project callers while allowing hum init --force to publish replacements.
 func InitManifest(start string, force ...bool) (InitResult, error) {
-	root, err := DiscoverProjectRoot(start)
+	root, err := DiscoverProjectRootLexical(start)
 	if err != nil {
 		return InitResult{}, fmt.Errorf("hum init: discover project root: %w", err)
 	}

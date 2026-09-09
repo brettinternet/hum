@@ -2184,3 +2184,68 @@ func TestSinceWireRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestScopeDaemonWire(t *testing.T) {
+	wire := wireProcessFromApp(app.Process{Name: "web", Root: "/work/main"})
+	encoded, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"scope":"project"`) || !strings.Contains(string(encoded), `"project_root":"/work/main"`) {
+		t.Fatalf("wire snapshot = %s", encoded)
+	}
+	err = &app.NotFoundError{Root: "/work/linked", Name: "web", OtherScopes: []app.ScopeMatch{{Scope: "project", ProjectRoot: "/work/main"}}}
+	mapped := wireErrorToProtocol(protocolWireError(err))
+	if mapped == nil {
+		t.Fatal("missing wire error")
+	}
+	var details map[string]any
+	data, _ := json.Marshal(mapped.Details)
+	if json.Unmarshal(data, &details) != nil {
+		t.Fatal("invalid details")
+	}
+	if _, ok := details["other_scopes"]; !ok {
+		t.Fatalf("details = %#v", details)
+	}
+
+	server := testServer(t, Config{RuntimeDir: t.TempDir(), StopGrace: 50 * time.Millisecond})
+	root := filepath.Join(t.TempDir(), "project")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	started, err := client.Start(context.Background(), StartRequest{Name: "web", Root: alias, Cwd: alias, Argv: []string{"/bin/sh", "-c", "sleep 30"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Root != canonical || started.Scope != "project" {
+		t.Fatalf("alias start snapshot = %+v", started)
+	}
+	if _, err := client.Get(context.Background(), GetRequest{Name: "web", Cwd: root}); err != nil {
+		t.Fatalf("canonical get after alias start: %v", err)
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Get(context.Background(), GetRequest{Name: "web", Cwd: canonical}); err != nil {
+		t.Fatalf("removed-root get: %v", err)
+	}
+	if err := client.Stop(context.Background(), StopRequest{Name: "web", Cwd: canonical}); err != nil {
+		t.Fatalf("removed-root stop: %v", err)
+	}
+	if err := client.Remove(context.Background(), RemoveRequest{Name: "web", Cwd: canonical}); err != nil {
+		t.Fatalf("removed-root remove: %v", err)
+	}
+}

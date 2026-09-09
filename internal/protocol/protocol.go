@@ -16,8 +16,9 @@ import (
 // time-window cutoffs in output and follow requests; version 12 adds canonical
 // observational process-group signal requests and responses; version 13 added
 // process observation to wait timeout responses and optional terminating-signal
-// details on exit snapshots; version 14 adds the descendants process state.
-const Version = 14
+// details on exit snapshots; version 14 adds the descendants process state;
+// version 15 adds explicit project scope and canonical project_root snapshots.
+const Version = 15
 
 const (
 	RestartNever     = "never"
@@ -958,7 +959,8 @@ const (
 type Process struct {
 	Name         string     `json:"name"`
 	Source       string     `json:"source,omitempty"`
-	Root         string     `json:"root"`
+	Scope        string     `json:"scope"`
+	Root         string     `json:"project_root"`
 	TTY          bool       `json:"tty"`
 	PID          int        `json:"pid"`
 	PGID         int        `json:"pgid"`
@@ -985,6 +987,9 @@ func (p Process) MarshalJSON() ([]byte, error) {
 	if p.Restart == "" {
 		p.Restart = RestartNever
 	}
+	if p.Scope == "" {
+		p.Scope = "project"
+	}
 	type processJSON Process
 	return json.Marshal(processJSON(p))
 }
@@ -1000,6 +1005,9 @@ func (p *Process) UnmarshalJSON(data []byte) error {
 	*p = Process(value)
 	if p.Restart == "" {
 		p.Restart = RestartNever
+	}
+	if p.Scope == "" {
+		p.Scope = "project"
 	}
 	return nil
 }

@@ -2,9 +2,90 @@ package project
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
+
+func TestCanonicalProjectIdentity(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(root, "nested", "leaf")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cwd := range []string{nested, filepath.Join(alias, "nested", "leaf")} {
+		got, err := DiscoverProjectRoot(cwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != filepath.Clean(want) {
+			t.Fatalf("root(%q) = %q, want %q", cwd, got, want)
+		}
+	}
+	scope, err := Resolve(filepath.Join(alias, "nested", "leaf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.Cwd != filepath.Join(alias, "nested", "leaf") {
+		t.Fatalf("lexical cwd = %q", scope.Cwd)
+	}
+	fallback := filepath.Join(t.TempDir(), "fallback")
+	if err := os.Mkdir(fallback, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fallbackAlias := filepath.Join(t.TempDir(), "fallback-alias")
+	if err := os.Symlink(fallback, fallbackAlias); err != nil {
+		t.Fatal(err)
+	}
+	wantFallback, err := filepath.EvalSymlinks(fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DiscoverProjectRoot(filepath.Join(fallbackAlias, "."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Clean(wantFallback) {
+		t.Fatalf("fallback = %q, want %q", got, wantFallback)
+	}
+
+	repository := filepath.Join(t.TempDir(), "repository")
+	linked := filepath.Join(t.TempDir(), "linked")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", repository},
+		{"-C", repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial"},
+		{"-C", repository, "worktree", "add", "-b", "linked", linked},
+	} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	mainRoot, err := DiscoverProjectRoot(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkedRoot, err := DiscoverProjectRoot(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainRoot == linkedRoot {
+		t.Fatalf("linked worktrees collapsed to %q", mainRoot)
+	}
+}
 
 func TestDiscoverProjectRoot(t *testing.T) {
 	t.Run("nearest git directory", func(t *testing.T) {
@@ -23,7 +104,11 @@ func TestDiscoverProjectRoot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != nested {
+		want, err := filepath.EvalSymlinks(nested)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
 			t.Fatalf("root = %q, want %q", got, nested)
 		}
 	})
@@ -41,7 +126,11 @@ func TestDiscoverProjectRoot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != root {
+		want, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
 			t.Fatalf("root = %q, want %q", got, root)
 		}
 	})
@@ -62,7 +151,11 @@ func TestDiscoverProjectRoot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != root {
+		want, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
 			t.Fatalf("root = %q, want %q", got, root)
 		}
 	})
@@ -80,8 +173,11 @@ func TestDiscoverProjectRoot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := filepath.Clean(alias)
-		if got != want {
+		want, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != filepath.Clean(want) {
 			t.Fatalf("root = %q, want lexical alias %q", got, want)
 		}
 	})
@@ -96,7 +192,11 @@ func TestDiscoverProjectRoot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != cwd {
+		want, err := filepath.EvalSymlinks(cwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
 			t.Fatalf("root = %q, want %q", got, cwd)
 		}
 	})

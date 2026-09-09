@@ -15,6 +15,11 @@ import (
 )
 
 func TestProjectDirFlag(t *testing.T) {
+	testProjectDirFlag(t)
+}
+
+func testProjectDirFlag(t *testing.T) {
+	t.Helper()
 	invocation := t.TempDir()
 	projectRoot := filepath.Join(invocation, "checkout")
 	if err := os.MkdirAll(filepath.Join(projectRoot, ".git"), 0o700); err != nil {
@@ -227,7 +232,7 @@ func TestProjectDirFlagParsing(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("file"), 0o600); err != nil {
 		t.Fatalf("write file project value: %v", err)
 	}
-	for _, value := range []string{"", filepath.Join(invocation, "missing"), filePath} {
+	for _, value := range []string{"", filePath} {
 		_, _, err := stopShutdownRun(t, "list", "--project="+value)
 		if err == nil {
 			t.Fatalf("project value %q unexpectedly succeeded", value)

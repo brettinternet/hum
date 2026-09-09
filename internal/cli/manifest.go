@@ -33,7 +33,12 @@ func loadManifest(cwd string) (manifestState, error) {
 	if err != nil {
 		return manifestState{}, err
 	}
-	defs, err := project.ResolveDefinitions(root)
+	// Identity is canonical, but manifest-relative child cwd remains lexical.
+	filesystemRoot, err := project.DiscoverProjectRootLexical(cwd)
+	if err != nil {
+		return manifestState{}, err
+	}
+	defs, err := project.ResolveDefinitions(filesystemRoot)
 	if err != nil {
 		return manifestState{}, err
 	}
@@ -56,12 +61,9 @@ func loadManifestOrEmpty(cwd string) (manifestState, error) {
 	if !errors.As(err, &noCandidate) {
 		return manifestState{}, err
 	}
-	root := noCandidate.Root
-	if root == "" {
-		root, err = app.DiscoverProjectRoot(cwd)
-		if err != nil {
-			return manifestState{}, err
-		}
+	root, err := app.DiscoverProjectRoot(cwd)
+	if err != nil {
+		return manifestState{}, err
 	}
 	return manifestState{
 		root:   root,
