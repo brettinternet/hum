@@ -54,6 +54,21 @@ func TestJSONErrorsBeforeOutput(t *testing.T) {
 			code: string(jsonErrorUsage),
 		},
 		{
+			name: "global conflicts with project selector",
+			args: []string{"--global", "--project", "PROJECT", "status", "--json"},
+			code: string(jsonErrorUsage),
+		},
+		{
+			name: "global conflicts with all-scope list",
+			args: []string{"--global", "list", "--all", "--json"},
+			code: string(jsonErrorUsage),
+		},
+		{
+			name: "global up is rejected",
+			args: []string{"--global", "up", "--json"},
+			code: string(jsonErrorUsage),
+		},
+		{
 			name: "input wire invalid request",
 			args: []string{"input", "api", "--base64", "eA", "--json"},
 			code: string(protocol.ErrorInvalidRequest),

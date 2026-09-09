@@ -19,6 +19,23 @@ func TestGlobalScopeSelection(t *testing.T) {
 	if !rawScopeFlag(root, "global", "g") {
 		t.Fatal("global invocation flag was not retained after run name")
 	}
+	// A selector spelling that the parser consumes as another flag's value must
+	// not re-scope the command.
+	for _, probe := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"hum", "wait", "api", "--match", "-g", "--timeout", "1s"}, false},
+		{[]string{"hum", "logs", "api", "--match", "--global"}, false},
+		{[]string{"hum", "wait", "api", "--global", "--match", "ready"}, true},
+		{[]string{"hum", "run", "api", "-g", "--detach", "--", "echo", "-g"}, true},
+	} {
+		command := NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{})
+		SetInvocationArgs(command, probe.args)
+		if got := rawScopeFlag(command, "global", "g"); got != probe.want {
+			t.Errorf("rawScopeFlag(%v) = %v, want %v", probe.args, got, probe.want)
+		}
+	}
 	wantCommands := map[string]bool{"run": true, "start": true, "down": true, "list": true, "status": true, "attach": true, "logs": true, "wait": true, "input": true, "signal": true, "restart": true, "stop": true, "remove": true}
 	for _, command := range root.Commands {
 		if !wantCommands[command.Name] {
