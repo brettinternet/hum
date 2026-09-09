@@ -240,11 +240,12 @@ type esrchChild struct {
 }
 
 type signalPolicyChild struct {
-	pid     int
-	done    chan struct{}
-	once    sync.Once
-	mu      sync.Mutex
-	signals []os.Signal
+	pid      int
+	exitCode int
+	done     chan struct{}
+	once     sync.Once
+	mu       sync.Mutex
+	signals  []os.Signal
 }
 
 func (c *signalPolicyChild) PID() int              { return c.pid }
@@ -252,7 +253,11 @@ func (c *signalPolicyChild) PGID() int             { return c.pid }
 func (c *signalPolicyChild) Done() <-chan struct{} { return c.done }
 func (c *signalPolicyChild) Wait() process.Result {
 	<-c.done
-	return process.Result{ExitCode: -1, ExitedAt: time.Now()}
+	exitCode := c.exitCode
+	if exitCode == 0 {
+		exitCode = -1
+	}
+	return process.Result{ExitCode: exitCode, ExitedAt: time.Now()}
 }
 func (c *signalPolicyChild) Signal(sig os.Signal) error {
 	c.mu.Lock()
@@ -1626,6 +1631,76 @@ func TestControlSignalSuppressesOnFailureRestart(t *testing.T) {
 	}
 	if model.State != StateExited || model.ExitCode != 17 || model.NextLaunchAt != nil || model.Relaunches != 0 {
 		t.Fatalf("controlled exit = %+v, want terminal 17 with no successor", model)
+	}
+}
+
+func TestControlSignalSurvivorResumesOnFailureRestart(t *testing.T) {
+	root := makeProject(t, false)
+	graceTimer := make(chan time.Time, 1)
+	relaunchTimer := make(chan time.Time, 1)
+	first := &signalPolicyChild{pid: 4104, exitCode: 17, done: make(chan struct{})}
+	successor := newSubscriptionChild(4105, 0, time.Now(), "")
+	successorStarted := make(chan struct{})
+	launches := 0
+	s := testSupervisor(t, Options{
+		StopGrace: 20 * time.Millisecond,
+		After: func(delay time.Duration) <-chan time.Time {
+			if delay == 20*time.Millisecond {
+				return graceTimer
+			}
+			if delay == time.Second {
+				return relaunchTimer
+			}
+			return time.After(delay)
+		},
+		StartProcess: func(process.Spec) (Child, error) {
+			launches++
+			if launches == 1 {
+				return first, nil
+			}
+			close(successorStarted)
+			return successor, nil
+		},
+	})
+	if _, err := s.Start(StartRequest{
+		Name: "survivor", Root: root, Cwd: root, Argv: []string{"fake"}, Source: "manifest", Restart: RestartOnFailure,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SignalControl(root, "survivor", syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	graceTimer <- time.Now()
+	deadline := time.Now().Add(time.Second)
+	for {
+		s.mu.RLock()
+		controlIntent := s.records[keyFor(root, "survivor")].controlIntent
+		s.mu.RUnlock()
+		if !controlIntent {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("control intent remained latched after grace elapsed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	first.release()
+	waitSubscriptionSignal(t, recordDone(t, s, root, "survivor"), "survivor autonomous failure")
+	model, err := s.Get(root, "survivor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.State != StateExited || model.ExitCode != 17 || model.NextLaunchAt == nil || model.Relaunches != 0 {
+		t.Fatalf("survivor exit = %+v, want terminal 17 with a scheduled successor", model)
+	}
+	relaunchTimer <- time.Now()
+	waitSubscriptionSignal(t, successorStarted, "survivor successor launch")
+	model, err = s.Get(root, "survivor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.State != StateRunning || model.Relaunches != 1 || model.NextLaunchAt != nil {
+		t.Fatalf("survivor successor = %+v, want running first relaunch", model)
 	}
 }
 

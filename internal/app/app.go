@@ -793,15 +793,17 @@ type record struct {
 	automaticCurrent    bool
 	automaticStarting   bool
 	automaticGeneration uint64
-	// controlIntent suppresses autonomous relaunch after any explicit control
-	// operation. operatorStop separately identifies stop/down termination so
-	// Signal and restart remain autonomous/continuation semantics.
-	controlIntent bool
-	operatorStop  bool
-	ttySize       *TTYSize
-	input         *InputLease
-	inputMu       sync.Mutex
-	inputOp       *inputOperation
+	// controlIntent suppresses autonomous relaunch when an incarnation exits
+	// within the control signal's grace window. operatorStop separately
+	// identifies stop/down termination so Signal and restart remain
+	// autonomous/continuation semantics.
+	controlIntent           bool
+	controlIntentGeneration uint64
+	operatorStop            bool
+	ttySize                 *TTYSize
+	input                   *InputLease
+	inputMu                 sync.Mutex
+	inputOp                 *inputOperation
 	// incarnation changes for every successful launch, including same-store
 	// restarts. Each incarnation owns one tracker; an old tracker can never
 	// update a later launch.
@@ -3136,6 +3138,9 @@ func (s *Supervisor) SignalControlScoped(scope, cwd, name string, sig os.Signal)
 		return &NotRunningError{Root: rec.root, Name: rec.name}
 	}
 	rec.controlIntent = true
+	rec.controlIntentGeneration++
+	generation := rec.controlIntentGeneration
+	incarnation := rec.incarnation
 	child := rec.child
 	s.mu.Unlock()
 	if err := child.Signal(sig); err != nil {
@@ -3144,7 +3149,35 @@ func (s *Supervisor) SignalControlScoped(scope, cwd, name string, sig os.Signal)
 		}
 		return err
 	}
+	s.expireControlIntent(rec, child, incarnation, generation)
 	return nil
+}
+
+// expireControlIntent limits a forwarded control signal to the exit it can
+// reasonably have caused. A child that survives the ordinary stop grace has
+// resumed autonomous operation, so a later failure must follow restart policy.
+func (s *Supervisor) expireControlIntent(rec *record, child Child, incarnation, generation uint64) {
+	timer := s.after(s.stopGrace)
+	go func() {
+		select {
+		case <-child.Done():
+			return
+		case <-timer:
+		case <-s.timersDone:
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		select {
+		case <-child.Done():
+			return
+		default:
+		}
+		if s.closed || s.records[rec.key] != rec || rec.child != child || rec.incarnation != incarnation || rec.controlIntentGeneration != generation || rec.terminal || rec.operatorStop || rec.restarting {
+			return
+		}
+		rec.controlIntent = false
+	}()
 }
 
 // SignalObservational is the explicit spelling for callers that need to make
