@@ -177,6 +177,16 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 		wantDiscoveredDefinition(t, definitions, root, "task", "task", "dev")
 	})
 
+	t.Run("task alias", func(t *testing.T) {
+		root := t.TempDir()
+		installDiscoveryStubs(t, map[string]discoveryStub{"task": {output: []byte(`{"tasks":[{"name":"start","aliases":["dev"]}]}`)}})
+		definitions, err := ResolveDefinitions(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantDiscoveredDefinition(t, definitions, root, "task", "task", "dev")
+	})
+
 	t.Run("missing Taskfile with diagnostic output", func(t *testing.T) {
 		root := t.TempDir()
 		installDiscoveryStubs(t, map[string]discoveryStub{

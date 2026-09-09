@@ -342,12 +342,17 @@ func parseTaskJSON(source string, output []byte) (bool, error) {
 		return false, fmt.Errorf("%s output has invalid task records: %w", source, err)
 	}
 	for _, entry := range entries {
-		name, err := taskEntryName(entry)
+		name, aliases, err := taskEntryNames(entry)
 		if err != nil {
 			return false, fmt.Errorf("%s output has invalid task record: %w", source, err)
 		}
 		if name == "dev" {
 			return true, nil
+		}
+		for _, alias := range aliases {
+			if alias == "dev" {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
@@ -383,22 +388,38 @@ func taskEntries(value any) ([]any, error) {
 	}
 }
 
-func taskEntryName(value any) (string, error) {
+func taskEntryNames(value any) (string, []string, error) {
 	switch typed := value.(type) {
 	case string:
-		return typed, nil
+		return typed, nil, nil
 	case map[string]any:
 		raw, ok := typed["name"]
 		if !ok {
-			return "", errors.New("missing name")
+			return "", nil, errors.New("missing name")
 		}
 		name, ok := raw.(string)
 		if !ok {
-			return "", errors.New("name must be a string")
+			return "", nil, errors.New("name must be a string")
 		}
-		return name, nil
+		rawAliases, ok := typed["aliases"]
+		if !ok {
+			return name, nil, nil
+		}
+		values, ok := rawAliases.([]any)
+		if !ok {
+			return "", nil, errors.New("aliases must be an array")
+		}
+		aliases := make([]string, len(values))
+		for i, value := range values {
+			alias, ok := value.(string)
+			if !ok {
+				return "", nil, errors.New("aliases must contain strings")
+			}
+			aliases[i] = alias
+		}
+		return name, aliases, nil
 	default:
-		return "", errors.New("record must be an object")
+		return "", nil, errors.New("record must be an object")
 	}
 }
 
