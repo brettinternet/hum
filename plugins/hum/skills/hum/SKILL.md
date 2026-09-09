@@ -40,6 +40,10 @@ Read the failing incarnation's output before changing the definition.
 
 An absent `hum.yaml` is normal when conservative discovery resolves exactly one candidate named `dev`. If discovery finds no candidate or is ambiguous, or the project needs multiple commands, a custom cwd, or readiness, ask the developer to run `hum init` and commit the resulting `hum.yaml`. Do not run `hum init` yourself.
 
+## Foreground run ownership
+
+`hum run NAME -- COMMAND` owns exactly one incarnation: it streams raw child output, propagates the child exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. Use `hum run NAME --detach -- COMMAND` for daemon ownership, and `hum attach NAME` or `hum logs NAME --follow` for durable observation.
+
 ## Command boundary
 
 Never derive or run underlying development commands, including npm, bun, yarn, or pnpm-style commands. The MCP server intentionally has no arbitrary-command tool. Never use raw `hum run ... -- ...`; use resolved definitions and the lifecycle operations above.
@@ -65,10 +69,14 @@ frames remain separate.
 Leave `tty` off unless a tool requires a controlling terminal; prefer a
 non-interactive mode such as `npx --yes`, `CI=1`, or `--force`. A manifest process
 can set `tty: true`; an ad-hoc command can use the CLI TTY option with a command separator.
-Only one attached run owns input. A competing run and `hum logs --follow` are
-output-only. The owner uses raw mode and alone forwards SIGWINCH resizes;
-Ctrl-] detaches input, raw mode is restored after panic, terminal echo is
-child output, and Ctrl-C is forwarded only for TTY runs; Ctrl-D and Ctrl-Z are forwarded too; ordinary runs keep
-Ctrl-C observer detach. TTY output is merged as stdout and may contain ANSI
-controls. Stop/restart preserves the lease across launch cursors; remove and
-shutdown close it. MCP reports `tty` and provides bounded `input` for exact prompt responses.
+Only one attached run owns input; `hum logs --follow` is output-only. The owner uses raw
+mode and alone forwards SIGWINCH resizes. Ctrl-] detaches input, raw mode is restored after
+panic, terminal echo is child output, and Ctrl-C is forwarded only while TTY input is owned;
+Ctrl-D and Ctrl-Z are forwarded too. After Ctrl-], foreground Ctrl+C uses the control-signal
+rules. SIGTERM stops the foreground incarnation and SIGHUP detaches. TTY output is merged as
+stdout and may contain ANSI controls. Stop/restart preserves the lease across launch cursors;
+remove and shutdown close it. MCP reports `tty` and provides bounded `input` for exact prompt responses.
+
+## Project and global scopes
+
+hum selects project scope automatically from the invocation directory; symlink aliases share a canonical scope while separate worktrees remain distinct. Use `hum --project /path/to/main` (or `-C`) for explicit cross-worktree access, including a removed worktree. Use `hum --global` (`-g`) only for machine-wide ad-hoc retained sessions; it works around lifecycle commands and `run` NAME, conflicts with `--project` and `list --all`, and `init`/`up` reject it. Global `start`/`restart` reuse retained launch specifications without reading a manifest, and child cwd remains the lexical run directory. Project not-found guidance can produce `hum --global logs proxy`; `hum list --all` discovers every scope. MCP tool calls accept `scope`: omit it for project scope with an absolute `project_root`, or pass `scope: "global"` without `project_root`. JSON `scope` is `project` or `global`; global records omit `project_root`.

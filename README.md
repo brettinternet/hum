@@ -104,7 +104,7 @@ hum status -C ../checkout api
 hum run preview --project /path/to/checkout -- bun run preview
 ```
 
-A relative selector starts from the invocation directory. The nearest Git root is the project root; without Git, the selected directory is. Ad-hoc runs use the selected directory as cwd, while manifest cwd values remain project-relative.
+A relative selector starts from the invocation directory. Ad-hoc runs use the selected directory as cwd, while manifest cwd values remain project-relative.
 
 `--project` does not apply to `serve`, `shutdown`, `mcp`, or `skill`. `-d` means `serve --daemon`, `run --detach`, or `up --detach`.
 
@@ -205,4 +205,4 @@ A TTY has one input owner and sends exact text or strict padded base64 once; it 
 
 ## Project scopes
 
-symlinks share canonical records; worktrees differ. Use `--project PATH`/`-C PATH`, including removed worktrees. Global ad-hoc sessions use `hum -g run proxy -- caddy run` and `hum --global logs proxy`; selectors work around commands and `run` NAME. Global conflicts with project and `list --all`; `init`/`up` reject it; `start`/`restart` reuse retained commands. No fallback. JSON `scope` is `project` or `global`; global records omit `project_root`.
+hum scopes names by the invocation directory's nearest Git root, or that directory outside Git. Roots are canonical: symlink aliases share a record, separate worktrees do not. `--project PATH` or `-C PATH` reaches another scope, including a removed worktree. `hum --global` (`-g`) is a machine-wide ad-hoc namespace, as in `hum -g run proxy -- caddy run`; it conflicts with `--project` and `list --all`, and `init` and `up` reject it. Lookups never fall back across scopes. JSON `scope` is `project` or `global`; global records omit `project_root`.

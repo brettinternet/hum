@@ -736,6 +736,7 @@ Exactly one attached `hum run` owns input.
   detaches without signaling the daemon-owned child.
 - Ordinary exit preserves the lease; remove and daemon shutdown close it.
 - MCP exposes `tty` snapshots and the bounded `input` tool for exact prompt responses.
+
 ## Canonical project scopes
 
 hum selects project scope automatically from the invocation directory. Git roots and linked worktrees are canonicalized physically, so symlink aliases share records while separate worktrees do not. Child cwd remains lexical. Use `hum --project /path/to/main` (or `-C`) for explicit cross-worktree access. The deliberate `--global` selector (interactive shorthand `-g`) creates a machine-wide namespace only for ad-hoc retained sessions; selection never changes child cwd, reads a manifest, or falls back across scopes. It applies before or after lifecycle commands and before or after `run` NAME, conflicts with `--project` and `list --all`, and is rejected by `init` and `up`. Global `start` and `restart` reuse only a retained launch specification. `hum list --all` includes a `global` group with `hum --global` selectors, and project misses include copyable global guidance such as `hum --global logs proxy`. JSON process records contain `scope` (`project` or `global`); global records omit `project_root`.
