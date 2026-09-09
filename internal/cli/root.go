@@ -437,11 +437,11 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 	global := cmd.Bool("global") || cmd.IsSet("global") || rawScopeFlag(cmd, "global", "g")
 	projectSet := cmd.IsSet("project") || rawScopeFlag(cmd, "project", "C")
 	if global && projectSet {
-		return projectSelection{}, errors.New("--global conflicts with --project/-C; choose one scope")
+		return projectSelection{}, newCLIUsageError(errors.New("--global conflicts with --project/-C; choose one scope"))
 	}
 	if global {
 		if cmd.Name == "list" && cmd.Bool("all") {
-			return projectSelection{}, errors.New("--global conflicts with --all; --all already spans every scope")
+			return projectSelection{}, newCLIUsageError(errors.New("--global conflicts with --all; --all already spans every scope"))
 		}
 		return projectSelection{cwd: invocationCwd, scope: "global", selector: "--global"}, nil
 	}
@@ -474,7 +474,18 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 	if err == nil && !info.IsDir() {
 		return projectSelection{}, fmt.Errorf("--project path %q is not a directory", selected)
 	}
-	root, rootErr := project.CanonicalPath(selected)
+	// An existing directory's scope is its project root, not the directory
+	// itself: canonicalizing the selector as given would name a subdirectory as
+	// a scope in empty-state output and in generated --project guidance. A
+	// removed directory keeps the identity its records were retained under;
+	// discovering from it would walk up to a surviving ancestor, so a linked
+	// worktree removed from inside its main checkout would address — and
+	// mutate — the main checkout's records.
+	resolve := project.DiscoverProjectRoot
+	if err != nil {
+		resolve = project.CanonicalPath
+	}
+	root, rootErr := resolve(selected)
 	if rootErr != nil {
 		return projectSelection{}, fmt.Errorf("--project path %q: %w", selected, rootErr)
 	}
@@ -498,15 +509,57 @@ func rawScopeFlag(cmd *urfavecli.Command, long, short string) bool {
 			state.mu.Unlock()
 		}
 	}
+	// A selector token only counts when the parser did not consume it as
+	// another flag's value. Without this, `hum wait api --match -g` would
+	// silently retarget the global scope instead of matching the text "-g".
+	valueFlags := valueFlagTokens(cmd)
+	skipNext := false
 	for _, token := range tokens {
 		if token == "--" {
 			return false
+		}
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if _, ok := valueFlags[token]; ok {
+			skipNext = true
+			continue
 		}
 		if token == "--"+long || token == "--"+long+"=true" || token == "-"+short {
 			return true
 		}
 	}
 	return false
+}
+
+// valueFlagTokens returns every spelling of a flag that consumes a following
+// token as its value, across the invoked command and the root.
+func valueFlagTokens(cmd *urfavecli.Command) map[string]struct{} {
+	tokens := make(map[string]struct{})
+	commands := []*urfavecli.Command{cmd}
+	if root := cmd.Root(); root != nil {
+		commands = append(commands, root)
+		commands = append(commands, root.Commands...)
+	}
+	for _, command := range commands {
+		if command == nil {
+			continue
+		}
+		for _, flag := range cliCommandFlags(command) {
+			if _, isBool := flag.(*urfavecli.BoolFlag); isBool {
+				continue
+			}
+			for _, name := range flag.Names() {
+				if len(name) == 1 {
+					tokens["-"+name] = struct{}{}
+					continue
+				}
+				tokens["--"+name] = struct{}{}
+			}
+		}
+	}
+	return tokens
 }
 
 func rejectProjectOverride(cmd *urfavecli.Command, commandName string) error {

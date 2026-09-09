@@ -116,8 +116,14 @@ func TestSupervisorGlobalScope(t *testing.T) {
 	if err := s.RemoveScoped(context.Background(), ScopeGlobal, t.TempDir(), "proxy"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetScoped(ScopeGlobal, first, "proxy"); !errors.Is(err, ErrProcessNotFound) {
-		t.Fatalf("removed global get = %v", err)
+	globalMiss, err := s.GetScoped(ScopeGlobal, first, "proxy")
+	if !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("removed global get = %+v err=%v", globalMiss, err)
+	}
+	// The global scope has no project root, so its miss must not trail an
+	// empty path the way a project miss names its root.
+	if got := err.Error(); !strings.Contains(got, "in the global scope") || strings.HasSuffix(got, "in ") {
+		t.Fatalf("global not-found message = %q", got)
 	}
 	if _, err := s.Get(second, "proxy"); err != nil {
 		t.Fatalf("global remove affected project: %v", err)
@@ -197,6 +203,34 @@ func TestSupervisorProjectScopes(t *testing.T) {
 	assertOtherScope("remove", s.Remove(context.Background(), second, "isolated"))
 	if _, err := s.Get(first, "isolated"); err != nil {
 		t.Fatalf("cross-scope operations mutated source record: %v", err)
+	}
+
+	// A linked worktree nested inside its main checkout keeps addressing its own
+	// records after removal. Resolving by ancestor discovery would retarget the
+	// enclosing checkout, so a stop there would kill the wrong process.
+	nestedWorktree := filepath.Join(first, ".worktrees", "feature")
+	if err := os.MkdirAll(nestedWorktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedWorktree, ".git"), []byte("gitdir: ../../.git/worktrees/feature\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nested, err := startShell(s, nestedWorktree, "web", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nested.Root == one.Root {
+		t.Fatalf("nested worktree collapsed into %q", one.Root)
+	}
+	if err := os.RemoveAll(nestedWorktree); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := s.Get(nestedWorktree, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.Root != nested.Root || removed.PID != nested.PID {
+		t.Fatalf("removed worktree lookup = %+v, want root %q pid %d", removed, nested.Root, nested.PID)
 	}
 }
 

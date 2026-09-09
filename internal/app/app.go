@@ -647,6 +647,10 @@ type NotFoundError struct {
 }
 
 func (e *NotFoundError) Error() string {
+	// An empty root is the global scope, which has no project path to name.
+	if e.Root == "" {
+		return fmt.Sprintf("%s: %q in the global scope", ErrProcessNotFound, e.Name)
+	}
 	return fmt.Sprintf("%s: %q in %s", ErrProcessNotFound, e.Name, e.Root)
 }
 func (e *NotFoundError) Unwrap() error { return ErrProcessNotFound }
@@ -1012,6 +1016,32 @@ func absoluteClean(path string) (string, error) {
 }
 
 func canonicalProjectRoot(path string) (string, error) { return projectpkg.CanonicalPath(path) }
+
+// projectRootForRequest resolves an observation or lifecycle request's cwd to
+// its project scope. A cwd whose canonical spelling exactly matches a root the
+// supervisor already retains wins over ancestor discovery: a linked worktree
+// removed from inside its main checkout must keep addressing its own records
+// instead of resolving up to the checkout that still encloses its path.
+func (s *Supervisor) projectRootForRequest(cwd string) (string, error) {
+	if canonical, err := canonicalProjectRoot(cwd); err == nil && s.hasProjectRoot(canonical) {
+		return canonical, nil
+	}
+	return DiscoverProjectRoot(cwd)
+}
+
+func (s *Supervisor) hasProjectRoot(root string) bool {
+	if root == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, rec := range s.records {
+		if normalizedScope(rec.scope) == ScopeProject && rec.root == root {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	ScopeProject = "project"
@@ -2164,7 +2194,7 @@ func (s *Supervisor) lookupScoped(scope, cwd, name, rootHint string) (*record, e
 	if scope == ScopeGlobal {
 		root = ""
 	} else if root == "" {
-		root, err = DiscoverProjectRoot(cwd)
+		root, err = s.projectRootForRequest(cwd)
 	} else {
 		root, err = canonicalProjectRoot(root)
 	}
@@ -2229,7 +2259,7 @@ func (s *Supervisor) ListScoped(scope, cwd string, includeCompleted bool) ([]Pro
 	root := ""
 	var err error
 	if scope == ScopeProject {
-		root, err = DiscoverProjectRoot(cwd)
+		root, err = s.projectRootForRequest(cwd)
 		if err != nil {
 			return nil, err
 		}
@@ -2346,7 +2376,7 @@ func (s *Supervisor) PrepareTTYScoped(scope string, req StartRequest) error {
 		}
 		root = ""
 	} else if root == "" {
-		root, err = DiscoverProjectRoot(requestCwd)
+		root, err = s.projectRootForRequest(requestCwd)
 	} else {
 		root, err = canonicalProjectRoot(root)
 	}
@@ -2439,7 +2469,7 @@ func (s *Supervisor) acquireInputScoped(scope, rootHint, cwd, name string, reque
 		}
 		rootHint = ""
 	} else if rootHint == "" {
-		rootHint, err = DiscoverProjectRoot(cwd)
+		rootHint, err = s.projectRootForRequest(cwd)
 	} else {
 		rootHint, err = canonicalProjectRoot(rootHint)
 	}

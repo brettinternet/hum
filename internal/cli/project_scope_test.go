@@ -61,6 +61,19 @@ func TestProjectScopeSelection(t *testing.T) {
 		t.Fatalf("selection = %#v, canonical=%q alias=%q selector=%q", selected, canonical, alias, "--project "+canonical)
 	}
 
+	// A selector pointing inside a project resolves to that project's root, so
+	// empty-state output and generated guidance never name a non-scope.
+	subdirectory := filepath.Join(root, "packages", "api")
+	if err := os.MkdirAll(subdirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := capture("list", "--project", subdirectory); err != nil {
+		t.Fatal(err)
+	}
+	if selected.root != canonical || selected.selector != "--project "+canonical {
+		t.Fatalf("subdirectory selection = %#v, want root %q", selected, canonical)
+	}
+
 	removed := filepath.Join(parent, "removed")
 	if err := capture("list", "--project", removed); err != nil {
 		t.Fatalf("removed observation: %v", err)

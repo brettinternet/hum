@@ -469,6 +469,12 @@ func (s *Server) listProcessesScoped(cwd, scope string, all, includeCompleted bo
 		items = append(items, item)
 	}
 	for _, root := range roots {
+		// An empty tracked root records the global scope, which is listed
+		// separately below. Listing it as a project would rediscover the
+		// caller's own root and duplicate every record in it.
+		if root == "" {
+			continue
+		}
 		if _, ok := seen[root]; ok {
 			continue
 		}
