@@ -1,10 +1,10 @@
 ---
 id: HUM-058
 title: Canonicalize project scopes and guide cross-worktree discovery
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-09 16:05'
-updated_date: '2026-09-09 16:21'
+updated_date: '2026-09-09 18:03'
 labels:
   - cli
   - daemon
@@ -82,24 +82,24 @@ ordinal: 35700
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/project -run '^TestCanonicalProjectIdentity$' -count=1 -v` exits 0 and prints PASS, proving nested paths and symlink aliases resolve to one canonical physical project root, separate Git worktree roots stay distinct despite a shared common Git directory, non-Git directories use a canonical physical fallback, and the lexical path is preserved separately for child cwd.
-- [ ] #2 `go test ./internal/app -run '^TestSupervisorProjectScopes$' -count=1 -v` exits 0 and prints PASS, proving `(scope, name)` is the record key: equal names coexist across two projects, a symlink alias reaches the same project record, project list/get/output/wait/stop/remove cannot see another project's record, snapshots carry `scope` `project` and the canonical root, and a not-found result for a name present in another project carries `other_scopes` matches.
-- [ ] #3 `go test ./internal/cli -run '^TestProjectScopeSelection$' -count=1 -v` exits 0 and prints PASS, proving calls without a selector use the canonical scope of the invocation directory; a symlinked invocation directory and `--project` alias reach the same records; default list, status, name completion, and lifecycle commands stay current-scope-only; ad-hoc run and manifest cwd keep the lexical path; and `--project` on a removed worktree path still lists, stops, and removes its records while run, start, restart, up, and init reject it before daemon contact.
-- [ ] #4 `go test ./internal/cli -run '^TestCrossWorktreeScopeDiscovery$' -count=1 -v` exits 0 and prints PASS, proving a process in the main checkout is hidden by default from a linked worktree and reachable through `--project MAIN` and `-C MAIN`; `list --all` groups human rows under per-scope headings with the canonical root and selector prefix, and JSON carries `scope` and `project_root`; empty default output names the canonical scope and points to `hum list --all`; and a missing local name yields `not_found` naming the current scope with one copyable `hum --project PATH ...` command per other-scope match plus `hum list --all`, and nothing was mutated.
-- [ ] #5 `go test ./internal/protocol ./internal/daemon ./internal/mcp -run Scope -count=1 -v` exits 0 and prints PASS, proving daemon requests canonicalize an absolute existing project root and alias requests address one record; a cleaned absolute path for a removed directory matches a known canonical root exactly for observation and lifecycle operations; snapshots carry `scope`; MCP canonicalizes `project_root` without weakening validation, exposes `list` `all`, and returns `other_scopes` in not-found errors.
-- [ ] #6 `go test ./internal/daemon -run '^TestRuntimeStateScopeIdentity$' -count=1 -v` exits 0 and prints PASS, proving canonical project scope survives daemon crash recovery, alias paths cannot restore duplicate keys, and an incompatible prior protocol or runtime-state format produces the established actionable upgrade failure instead of silently orphaning, merging, or retargeting a live process.
-- [ ] #7 `go test ./internal/cli ./internal/mcp ./internal/skill -run 'ScopeDocs|HelpContract|FlagAliases' -count=1 -v` exits 0 and prints PASS, proving CLI help, README.md, docs/design.md, docs/coding-agents.md, MCP descriptions, and the embedded skill document automatic directory scope, separate worktree defaults, explicit `--project`/`-C` cross-worktree access, symlink canonicalization, removed-worktree targeting, not-found guidance, `list --all`, and the `scope`/`project_root` JSON fields with copyable examples, and that generated output uses the long `--project` flag.
-- [ ] #8 `task ci` exits 0.
+- [x] #1 `go test ./internal/project -run '^TestCanonicalProjectIdentity$' -count=1 -v` exits 0 and prints PASS, proving nested paths and symlink aliases resolve to one canonical physical project root, separate Git worktree roots stay distinct despite a shared common Git directory, non-Git directories use a canonical physical fallback, and the lexical path is preserved separately for child cwd.
+- [x] #2 `go test ./internal/app -run '^TestSupervisorProjectScopes$' -count=1 -v` exits 0 and prints PASS, proving `(scope, name)` is the record key: equal names coexist across two projects, a symlink alias reaches the same project record, project list/get/output/wait/stop/remove cannot see another project's record, snapshots carry `scope` `project` and the canonical root, and a not-found result for a name present in another project carries `other_scopes` matches.
+- [x] #3 `go test ./internal/cli -run '^TestProjectScopeSelection$' -count=1 -v` exits 0 and prints PASS, proving calls without a selector use the canonical scope of the invocation directory; a symlinked invocation directory and `--project` alias reach the same records; default list, status, name completion, and lifecycle commands stay current-scope-only; ad-hoc run and manifest cwd keep the lexical path; and `--project` on a removed worktree path still lists, stops, and removes its records while run, start, restart, up, and init reject it before daemon contact.
+- [x] #4 `go test ./internal/cli -run '^TestCrossWorktreeScopeDiscovery$' -count=1 -v` exits 0 and prints PASS, proving a process in the main checkout is hidden by default from a linked worktree and reachable through `--project MAIN` and `-C MAIN`; `list --all` groups human rows under per-scope headings with the canonical root and selector prefix, and JSON carries `scope` and `project_root`; empty default output names the canonical scope and points to `hum list --all`; and a missing local name yields `not_found` naming the current scope with one copyable `hum --project PATH ...` command per other-scope match plus `hum list --all`, and nothing was mutated.
+- [x] #5 `go test ./internal/protocol ./internal/daemon ./internal/mcp -run Scope -count=1 -v` exits 0 and prints PASS, proving daemon requests canonicalize an absolute existing project root and alias requests address one record; a cleaned absolute path for a removed directory matches a known canonical root exactly for observation and lifecycle operations; snapshots carry `scope`; MCP canonicalizes `project_root` without weakening validation, exposes `list` `all`, and returns `other_scopes` in not-found errors.
+- [x] #6 `go test ./internal/daemon -run '^TestRuntimeStateScopeIdentity$' -count=1 -v` exits 0 and prints PASS, proving canonical project scope survives daemon crash recovery, alias paths cannot restore duplicate keys, and an incompatible prior protocol or runtime-state format produces the established actionable upgrade failure instead of silently orphaning, merging, or retargeting a live process.
+- [x] #7 `go test ./internal/cli ./internal/mcp ./internal/skill -run 'ScopeDocs|HelpContract|FlagAliases' -count=1 -v` exits 0 and prints PASS, proving CLI help, README.md, docs/design.md, docs/coding-agents.md, MCP descriptions, and the embedded skill document automatic directory scope, separate worktree defaults, explicit `--project`/`-C` cross-worktree access, symlink canonicalization, removed-worktree targeting, not-found guidance, `list --all`, and the `scope`/`project_root` JSON fields with copyable examples, and that generated output uses the long `--project` flag.
+- [x] #8 `task ci` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -110,3 +110,25 @@ ordinal: 35700
 3. CLI: grouped list --all, scope-aware empty states and not-found guidance, removed-worktree targeting, completion.
 4. MCP canonicalization and list all; then help, README, design, coding-agents, and skill docs with focused doc tests; finish with task ci.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation commit dfce8a3, merged to main as 270674f.
+AC#1: go test ./internal/project -run '^TestCanonicalProjectIdentity$' -count=1 -v — PASS.
+AC#2: go test ./internal/app -run '^TestSupervisorProjectScopes$' -count=1 -v — PASS.
+AC#3: go test ./internal/cli -run '^TestProjectScopeSelection$' -count=1 -v — PASS.
+AC#4: go test ./internal/cli -run '^TestCrossWorktreeScopeDiscovery$' -count=1 -v — PASS.
+AC#5: go test ./internal/protocol ./internal/daemon ./internal/mcp -run Scope -count=1 -v — PASS.
+AC#6: go test ./internal/daemon -run '^TestRuntimeStateScopeIdentity$' -count=1 -v — PASS.
+AC#7: go test ./internal/cli ./internal/mcp ./internal/skill -run 'ScopeDocs|HelpContract|FlagAliases' -count=1 -v — PASS.
+AC#8: task ci — PASS on final implementation commit, including race and built-binary smoke checks.
+Independent verifier: PASS for every acceptance criterion; no concrete functional defects remained.
+Modified-file deviation justification: integration/lifecycle_test.go, internal/cli/down_test.go, project_dir_test.go, render_test.go, run_args_test.go, serve_run_test.go, status_test.go, internal/protocol/restart_policy_test.go update superseded canonical path and JSON contract expectations; internal/cli/completion_test.go exposes existing completion coverage to the AC3 umbrella; internal/cli/manifest.go and internal/project/init.go are required to preserve lexical manifest and init paths while canonicalizing identity. No tests were deleted, skipped, or weakened; no protected gate files changed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Canonical project scope identity, cross-worktree discovery and guidance, removed-worktree targeting, scoped protocol/runtime/MCP records, documentation, and acceptance coverage are complete. task ci and independent verification passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
