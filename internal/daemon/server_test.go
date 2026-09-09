@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,9 @@ func TestSinceProtocolVersionNegotiation(t *testing.T) {
 	}
 	if mismatch.ClientVersion != protocol.Version || mismatch.DaemonVersion != protocol.Version-1 {
 		t.Fatalf("since protocol mismatch = client %d daemon %d, want client %d daemon %d", mismatch.ClientVersion, mismatch.DaemonVersion, protocol.Version, protocol.Version-1)
+	}
+	if !strings.Contains(mismatch.Error(), "hum shutdown --stop-processes") {
+		t.Fatalf("protocol mismatch error missing actionable shutdown guidance: %q", mismatch.Error())
 	}
 	_, outputErr := client.Output(context.Background(), protocol.OutputRequest{
 		Op:            protocol.OpOutput,

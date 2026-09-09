@@ -19,7 +19,7 @@ func (e *VersionMismatchError) Error() string {
 	if e.Message != "" {
 		return e.Message
 	}
-	return fmt.Sprintf("daemon protocol version mismatch: client %d, daemon %d; run hum shutdown", e.ClientVersion, e.DaemonVersion)
+	return fmt.Sprintf("daemon protocol version mismatch: client %d, daemon %d; run hum shutdown --stop-processes (stops all managed processes)", e.ClientVersion, e.DaemonVersion)
 }
 
 var ErrVersionMismatch = errors.New("daemon protocol version mismatch")
