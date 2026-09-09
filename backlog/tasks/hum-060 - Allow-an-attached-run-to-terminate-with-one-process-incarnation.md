@@ -1,10 +1,10 @@
 ---
 id: HUM-060
 title: Make attached run own one process incarnation
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-06 19:10'
-updated_date: '2026-09-09 16:46'
+updated_date: '2026-09-09 18:29'
 labels:
   - cli
   - lifecycle
@@ -84,22 +84,40 @@ type: enhancement
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/cli -run "^TestAttachedRunOneIncarnation$" -count=1 -v` exits 0 and prints PASS, proving attached run launches an ad-hoc, declared, discovered, and retained stopped definition; writes child stdout and stderr raw to hum stdout and stderr without boundary lines or retained replay; closes on that incarnation's terminal event including an exit faster than follower setup; returns the child's exit code; maps a signal exit to 128+signal; and leaves the retained session and output readable through `hum logs NAME`.
-- [ ] #2 `go test ./internal/cli -run "^TestAttachedRunInterruptLifecycle$" -count=1 -v` exits 0 and prints PASS, proving the first Ctrl+C sends a control SIGINT to the process group, prints the hint, and waits for exit with status 130; the second Ctrl+C runs the bounded stop sequence; SIGTERM to hum runs the bounded stop sequence, stays attached, and exits with the child's status (143 for an unhandled SIGTERM); a Ctrl+C or SIGTERM exit of a `restart: on-failure` definition schedules no successor; an in-flight stop completes when the client disconnects mid-sequence; and SIGHUP, context cancellation, transport loss, and output failure detach with the attach notice and exit 0 without signaling the child.
-- [ ] #3 `go test ./internal/cli -run "^TestRunSelectionSemantics$" -count=1 -v` exits 0 and prints PASS, proving a running name fails before launch with the `hum attach NAME` / `hum stop NAME` guidance for argv-free and argv forms; an unresolved argv-free name fails with `requires a command after --`; a declared name with argv fails naming `hum run NAME` and `hum start NAME`; every selection failure exits 1 without mutating the daemon; and flag placement before or after NAME is unchanged.
-- [ ] #4 `go test ./internal/app ./internal/protocol ./internal/daemon -run "ControlSignal" -count=1 -v` exits 0 and prints PASS, proving the control-intent SIGINT path suppresses on-failure relaunch after the resulting exit, `Supervisor.Signal`, `hum signal`, and MCP `signal` remain observational, a stop sequence started by a client that then disconnects still runs to its terminal event, and the wire protocol round-trips the control variant while legacy signal requests stay observational.
-- [ ] #5 `go test ./internal/cli -run "^TestDetachedAndObserverLifecycleUnchanged$" -count=1 -v` exits 0 and prints PASS, proving run --detach returns after launch with unchanged human and JSON output, up/start processes remain running after their client exits, and Ctrl+C, SIGTERM, or SIGHUP on attach or logs --follow only detaches the observer while durable following across stop/start remains available.
-- [ ] #6 `go test ./integration -run "^TestAttachedRunForegroundLifecycle$" -count=1 -v` exits 0 and prints PASS with the built binary, proving an attached ad-hoc process receives group SIGINT on Ctrl+C and hum exits 130, SIGTERM to hum stops the child and hum exits 143, SIGHUP to hum leaves the child running and hum exits 0, a natural exit code is propagated, stdout and stderr are separated, retained logs remain readable, an on-failure successor is not followed by the original run, a detached run survives its launcher, a TTY run returns the mapped status when the child exits, and attach Ctrl+C does not stop the target.
-- [ ] #7 `go test ./internal/cli -run "HelpContract|AttachedRun|AttachSurface|LifecycleHelp" -count=1 -v` exits 0 and prints PASS, and `hum run --help`, README.md, docs/design.md, docs/coding-agents.md, and internal/skill/SKILL.md distinguish foreground one-incarnation run (Ctrl+C and SIGTERM stop, SIGHUP detaches, exit status propagates), detached daemon-owned run, durable observation through attach and logs --follow, and daemon-owned up/start lifecycle, with copyable examples `hum run api -- bun run api`, `hum run api --detach -- bun run api`, and `hum attach api`.
-- [ ] #8 `task ci` exits 0.
+- [x] #1 `go test ./internal/cli -run "^TestAttachedRunOneIncarnation$" -count=1 -v` exits 0 and prints PASS, proving attached run launches an ad-hoc, declared, discovered, and retained stopped definition; writes child stdout and stderr raw to hum stdout and stderr without boundary lines or retained replay; closes on that incarnation's terminal event including an exit faster than follower setup; returns the child's exit code; maps a signal exit to 128+signal; and leaves the retained session and output readable through `hum logs NAME`.
+- [x] #2 `go test ./internal/cli -run "^TestAttachedRunInterruptLifecycle$" -count=1 -v` exits 0 and prints PASS, proving the first Ctrl+C sends a control SIGINT to the process group, prints the hint, and waits for exit with status 130; the second Ctrl+C runs the bounded stop sequence; SIGTERM to hum runs the bounded stop sequence, stays attached, and exits with the child's status (143 for an unhandled SIGTERM); a Ctrl+C or SIGTERM exit of a `restart: on-failure` definition schedules no successor; an in-flight stop completes when the client disconnects mid-sequence; and SIGHUP, context cancellation, transport loss, and output failure detach with the attach notice and exit 0 without signaling the child.
+- [x] #3 `go test ./internal/cli -run "^TestRunSelectionSemantics$" -count=1 -v` exits 0 and prints PASS, proving a running name fails before launch with the `hum attach NAME` / `hum stop NAME` guidance for argv-free and argv forms; an unresolved argv-free name fails with `requires a command after --`; a declared name with argv fails naming `hum run NAME` and `hum start NAME`; every selection failure exits 1 without mutating the daemon; and flag placement before or after NAME is unchanged.
+- [x] #4 `go test ./internal/app ./internal/protocol ./internal/daemon -run "ControlSignal" -count=1 -v` exits 0 and prints PASS, proving the control-intent SIGINT path suppresses on-failure relaunch after the resulting exit, `Supervisor.Signal`, `hum signal`, and MCP `signal` remain observational, a stop sequence started by a client that then disconnects still runs to its terminal event, and the wire protocol round-trips the control variant while legacy signal requests stay observational.
+- [x] #5 `go test ./internal/cli -run "^TestDetachedAndObserverLifecycleUnchanged$" -count=1 -v` exits 0 and prints PASS, proving run --detach returns after launch with unchanged human and JSON output, up/start processes remain running after their client exits, and Ctrl+C, SIGTERM, or SIGHUP on attach or logs --follow only detaches the observer while durable following across stop/start remains available.
+- [x] #6 `go test ./integration -run "^TestAttachedRunForegroundLifecycle$" -count=1 -v` exits 0 and prints PASS with the built binary, proving an attached ad-hoc process receives group SIGINT on Ctrl+C and hum exits 130, SIGTERM to hum stops the child and hum exits 143, SIGHUP to hum leaves the child running and hum exits 0, a natural exit code is propagated, stdout and stderr are separated, retained logs remain readable, an on-failure successor is not followed by the original run, a detached run survives its launcher, a TTY run returns the mapped status when the child exits, and attach Ctrl+C does not stop the target.
+- [x] #7 `go test ./internal/cli -run "HelpContract|AttachedRun|AttachSurface|LifecycleHelp" -count=1 -v` exits 0 and prints PASS, and `hum run --help`, README.md, docs/design.md, docs/coding-agents.md, and internal/skill/SKILL.md distinguish foreground one-incarnation run (Ctrl+C and SIGTERM stop, SIGHUP detaches, exit status propagates), detached daemon-owned run, durable observation through attach and logs --follow, and daemon-owned up/start lifecycle, with copyable examples `hum run api -- bun run api`, `hum run api --detach -- bun run api`, and `hum attach api`.
+- [x] #8 `task ci` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation Notes:
+- Rewrote the old attached-run/start-or-attach assertions in TestAttachedRun, TestRunAttachesToRunning, and TestAttachSurface-related coverage for foreground one-incarnation ownership; unrelated observer assertions remain.
+- Commit: 7a5fd19 (feat(cli): make attached run own one incarnation), rebased onto and fast-forwarded into main.
+- AC#1: `go test ./internal/cli -run "^TestAttachedRunOneIncarnation$" -count=1 -v` passed.
+- AC#2: `go test ./internal/cli -run "^TestAttachedRunInterruptLifecycle$" -count=1 -v` passed.
+- AC#3: `go test ./internal/cli -run "^TestRunSelectionSemantics$" -count=1 -v` passed.
+- AC#4: `go test ./internal/app ./internal/protocol ./internal/daemon -run "ControlSignal" -count=1 -v` passed; the daemon disconnect case uses a deterministic fake child and also passed 20 consecutive focused repetitions.
+- AC#5: `go test ./internal/cli -run "^TestDetachedAndObserverLifecycleUnchanged$" -count=1 -v` passed.
+- AC#6: `go test ./integration -run "^TestAttachedRunForegroundLifecycle$" -count=1 -v` passed with the built binary.
+- AC#7: `go test ./internal/cli -run "HelpContract|AttachedRun|AttachSurface|LifecycleHelp" -count=1 -v` passed; run help and lifecycle docs contain the required examples and ownership distinctions.
+- AC#8: `task ci` passed on final commit 7a5fd19 after rebase onto main, including vet, staticcheck, all tests, race tests, build, and smoke test.
+- Independent verifier final verdict: PASS for AC#1 through AC#8; clean worktree, no deleted/skipped/weakened tests, and `git diff --check main...HEAD` passed.
+- Modified-file deviations: `integration/lifecycle_test.go` updates the legacy automatic attached-run expectation; `internal/cli/tty_test.go` updates the obsolete input-conflict run expectation because foreground run now owns one stopped incarnation; `internal/protocol/restart_policy_test.go` advances the protocol-version assertion to 16 after rebasing over HUM-058 protocol version 15. All three are required compatibility assertions for this behavior; no protected gate files changed.
+<!-- SECTION:NOTES:END -->
