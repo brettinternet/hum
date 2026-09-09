@@ -630,6 +630,12 @@ func structuredToolContent(name string, value any, warningSets ...[]protocol.Sta
 	switch name {
 	case "up", "down":
 		structured = map[string]any{"results": value}
+	case "remove":
+		if _, bulk := value.([]stopResult); bulk {
+			structured = map[string]any{"results": value}
+		} else {
+			structured = value
+		}
 	case "list":
 		structured = map[string]any{"processes": value}
 	default:

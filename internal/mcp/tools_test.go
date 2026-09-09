@@ -1383,6 +1383,42 @@ func TestRemoveAdHocProcessTools(t *testing.T) {
 	}
 }
 
+func TestRemoveAllProcessTools(t *testing.T) {
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"zeta":  {Name: "zeta", State: "running"},
+		"alpha": {Name: "alpha", State: "stopped"},
+	}}
+	s, root, _ := newTestServer(t, nil, client)
+
+	got, err := s.callTool(context.Background(), "remove", args(root, "all", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, ok := got.([]stopResult)
+	if !ok || len(results) != 2 || results[0].Name != "alpha" || results[1].Name != "zeta" {
+		t.Fatalf("remove all result = %#v", got)
+	}
+	if len(client.lists) != 1 || !client.lists[0].IncludeCompleted || client.lists[0].All {
+		t.Fatalf("remove all list request = %#v", client.lists)
+	}
+	if len(client.stops) != 2 || client.stops[0].Name != "alpha" || client.stops[1].Name != "zeta" {
+		t.Fatalf("remove all calls = %#v", client.stops)
+	}
+	for _, fields := range []map[string]any{
+		{"project_root": root},
+		{"project_root": root, "all": false},
+		{"project_root": root, "name": "alpha", "all": true},
+	} {
+		raw, marshalErr := json.Marshal(fields)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if _, callErr := s.callTool(context.Background(), "remove", raw); mapError(callErr).Code != "invalid_request" {
+			t.Fatalf("remove input %v error = %v", fields, callErr)
+		}
+	}
+}
+
 func TestSortedToolNames(t *testing.T) {
 	defs := NewServer(Options{}).toolDefinitions()
 	names := make([]string, len(defs))

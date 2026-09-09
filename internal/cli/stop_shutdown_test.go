@@ -111,6 +111,50 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+func TestRemoveAllSelectedScope(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+
+	stopShutdownStartProcess(t, server, projectRoot, "zeta", []string{"/bin/sh", "-c", "sleep 30"})
+	stopShutdownStartProcess(t, server, projectRoot, "alpha", []string{"/bin/sh", "-c", "sleep 30"})
+	client, err := daemon.Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.Stop(context.Background(), daemon.StopRequest{Name: "alpha", Cwd: projectRoot}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Start(context.Background(), daemon.StartRequest{Scope: "global", Name: "proxy", Cwd: projectRoot, Argv: []string{"/bin/sh", "-c", "sleep 30"}, Env: os.Environ()}); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, err := stopShutdownRun(t, "remove", "--all", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("remove --all: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	results := stopShutdownDecodeResults(t, stdout)
+	if len(results) != 2 || results[0].Name != "alpha" || results[1].Name != "zeta" || results[0].Status != "removed" || results[1].Status != "removed" {
+		t.Fatalf("remove --all results = %#v", results)
+	}
+	if _, err := client.Get(context.Background(), daemon.GetRequest{Name: "proxy", Scope: "global", Cwd: projectRoot}); err != nil {
+		t.Fatalf("project remove --all affected global session: %v", err)
+	}
+
+	stdout, stderr, err = stopShutdownRun(t, "remove", "--global", "--all", "--json")
+	if err != nil || stderr != "" || !strings.Contains(stdout, `"name":"proxy"`) || !strings.Contains(stdout, `"status":"removed"`) {
+		t.Fatalf("global remove --all: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if _, err := client.Get(context.Background(), daemon.GetRequest{Name: "proxy", Scope: "global", Cwd: projectRoot}); err == nil {
+		t.Fatal("global session remained after --global remove --all")
+	}
+
+	if _, _, err := stopShutdownRun(t, "remove", "alpha", "--all"); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("remove names with --all error = %v", err)
+	}
+}
+
 func TestShutdown(t *testing.T) {
 	t.Run("default refuses and lists each active project/name", func(t *testing.T) {
 		projectRoot := stopShutdownTestProject(t)

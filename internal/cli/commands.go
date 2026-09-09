@@ -294,11 +294,12 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		{
 			Name:          "remove",
 			Usage:         "remove supervision sessions",
-			UsageText:     "hum remove NAME... [--json]",
-			ArgsUsage:     "NAME...",
+			UsageText:     "hum remove (NAME... | --all) [--json]",
+			ArgsUsage:     "[NAME...]",
 			ShellComplete: completeProcessNames,
-			Description:   "It stops each running incarnation, closes attached followers, and discards retained output and launch state for named supervision sessions. It never edits hum.yaml, and the followers count never warns, prompts, or blocks removal.\n\nExamples:\n  hum remove api\n  hum remove api web --json",
+			Description:   "It stops each running incarnation, closes attached followers, and discards retained output and launch state for named supervision sessions. --all removes every runtime session in the selected project or global scope; it never spans scopes or targets unlaunched manifest declarations. It never edits hum.yaml, and the followers count never warns, prompts, or blocks removal.\n\nExamples:\n  hum remove api\n  hum remove --all\n  hum --global remove --all",
 			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "all", DefaultText: "false", Usage: "remove every runtime session in the selected scope"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,
@@ -2113,8 +2114,12 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 
 func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
 	names := cmd.Args().Slice()
-	if len(names) == 0 {
-		return errors.New("remove requires at least one process name")
+	all := cmd.Bool("all")
+	if len(names) == 0 && !all {
+		return errors.New("remove requires at least one process name or --all")
+	}
+	if len(names) != 0 && all {
+		return newCLIUsageError(errors.New("remove accepts process names or --all, not both"))
 	}
 	ctx = nonNilContext(ctx)
 	selection, err := selectedProjectDirectory(cmd)
@@ -2129,6 +2134,9 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	client, err := daemonClient(ctx, cfg)
 	if err != nil {
 		if daemonUnavailable(err) {
+			if all {
+				return nil
+			}
 			if cmd.Bool("json") {
 				for _, name := range names {
 					if err := encodeJSON(writer, stopResult{Name: name, Status: "not_running"}); err != nil {
@@ -2143,6 +2151,22 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return err
 	}
 	defer client.Close()
+	if all {
+		processes, err := client.List(ctx, daemon.ListRequest{Scope: selection.scope, Cwd: cwd, IncludeCompleted: true})
+		if err != nil {
+			return err
+		}
+		seen := make(map[string]struct{}, len(processes))
+		names = make([]string, 0, len(processes))
+		for _, process := range processes {
+			if _, ok := seen[process.Name]; ok {
+				continue
+			}
+			seen[process.Name] = struct{}{}
+			names = append(names, process.Name)
+		}
+		sort.Strings(names)
+	}
 	for _, name := range names {
 		if err := client.Remove(context.Background(), daemon.RemoveRequest{Name: name, Scope: selection.scope, Cwd: cwd}); err != nil {
 			return crossScopeNotFoundError(err, "remove "+name)

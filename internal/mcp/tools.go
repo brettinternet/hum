@@ -345,6 +345,16 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"name":         nameExisting,
 		"signal":       stringProperty("Case-insensitive signal name with an optional SIG prefix, or a positive decimal value present in the supported named signal table."),
 	}, "project_root", "name", "signal")
+	removeAll := map[string]any{"type": "boolean", "description": "Remove every runtime supervision session in the selected scope; must be true when name is omitted."}
+	removeSchema := objectSchema(map[string]any{
+		"project_root": root,
+		"name":         nameExisting,
+		"all":          removeAll,
+	}, "project_root")
+	removeSchema["oneOf"] = []any{
+		map[string]any{"required": []string{"name"}, "not": map[string]any{"required": []string{"all"}}},
+		map[string]any{"required": []string{"all"}, "properties": map[string]any{"all": map[string]any{"const": true, "description": removeAll["description"]}}, "not": map[string]any{"required": []string{"name"}}},
+	}
 	collectionResults := func(items map[string]any) map[string]any {
 		return objectSchema(map[string]any{"results": map[string]any{"type": "array", "items": items}, "warnings": startupWarningsSchema}, "results")
 	}
@@ -360,7 +370,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "input", Description: "Write one exact, bounded payload to an already-running TTY incarnation at its initial launch cursor with at-most-once behavior; never starts, waits, queues, retries, resends, retains, or explicitly echoes input and fails immediately on ownership conflict.", InputSchema: inputSchema, OutputSchema: inputResult},
 		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
 		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record while preserving its supervision session.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
-		{Name: "remove", Description: "Stop and discard one runtime supervision session, its retained launch specification, and output.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
+		{Name: "remove", Description: "Stop and discard one named runtime supervision session, or every runtime session in the selected scope when all is true. Bulk removal is lexical, never spans scopes, and does not target unlaunched declarations.", InputSchema: removeSchema, OutputSchema: map[string]any{"type": "object", "oneOf": []any{stop, collectionResults(stop)}}},
 		{Name: "signal", Description: "Send one observational signal to a running declared or ad_hoc process group without changing stop intent or automatic relaunch policy. Signal names are case-insensitive with an optional SIG prefix, and positive decimal values are accepted only when they map to the supported named signal table; the result is canonical and reports sent.", InputSchema: signalSchema, OutputSchema: signalResult},
 	}
 	const scopeDescription = " Scope is project by default or global for machine-wide ad-hoc retained sessions; project_root is required for project scope and forbidden for global scope. List all includes global records, whose scope is global and project_root is omitted."
@@ -714,7 +724,13 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if name != "up" && name != "down" && name != "list" && strings.TrimSpace(input.Name) == "" {
+	if name == "remove" {
+		_, allSet := input.fields["all"]
+		nameSet := strings.TrimSpace(input.Name) != ""
+		if nameSet == allSet || allSet && !input.All {
+			return nil, &ToolError{Code: "invalid_request", Message: "remove requires exactly one of name or all: true"}
+		}
+	} else if name != "up" && name != "down" && name != "list" && strings.TrimSpace(input.Name) == "" {
 		return nil, &ToolError{Code: "invalid_request", Message: "name is required"}
 	}
 	switch name {
@@ -739,6 +755,9 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	case "stop":
 		return s.stop(ctx, resolution, input.Name)
 	case "remove":
+		if input.All {
+			return s.removeAll(ctx, resolution)
+		}
 		return s.remove(ctx, resolution, input.Name)
 	case "signal":
 		return s.signal(ctx, resolution, input)
@@ -1281,6 +1300,35 @@ func (s *Server) down(ctx context.Context, resolution Resolution) (any, error) {
 			} else {
 				result.State = "stopped"
 			}
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (s *Server) removeAll(ctx context.Context, resolution Resolution) (any, error) {
+	client, err := s.client(ctx, false)
+	if err != nil {
+		if unavailable(err) {
+			return []stopResult{}, nil
+		}
+		return nil, mapError(err)
+	}
+	defer client.Close()
+	processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Scope: resolution.Scope, Cwd: resolution.Root, IncludeCompleted: true})
+	if err != nil {
+		return nil, mapError(err)
+	}
+	byName := make(map[string]protocol.Process, len(processes))
+	for _, process := range processes {
+		byName[process.Name] = process
+	}
+	results := make([]stopResult, 0, len(byName))
+	for _, process := range sortedProcesses(byName) {
+		result := stopResult{Name: process.Name, State: "removed"}
+		if removeErr := client.Remove(ctx, protocol.RemoveRequest{Op: protocol.OpRemove, Name: process.Name, Scope: resolution.Scope, Cwd: resolution.Root}); removeErr != nil {
+			result.State = "error"
+			result.Error = mapError(removeErr)
 		}
 		results = append(results, result)
 	}

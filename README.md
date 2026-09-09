@@ -122,7 +122,7 @@ hum stop preview
 hum remove preview
 ```
 
-Named sessions are durable. Foreground `hum run NAME -- COMMAND` owns exactly one incarnation, streams raw output, propagates its exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. `hum run NAME --detach -- COMMAND`, `hum up`, and `hum start` hand ownership to the daemon. `hum attach NAME` and `hum logs NAME --follow` are durable observers; observer signals never stop managed work. `hum status` summarizes the project; `stop` preserves state; `remove` discards it. Use `--tail 0` for live observer output only.
+Named sessions are durable. Foreground `hum run NAME -- COMMAND` owns one incarnation, streams raw output, propagates exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. `--detach`, `up`, and `start` hand ownership to the daemon. `hum attach NAME` and `hum logs NAME --follow` are durable observers; their signals never stop work. `hum status` summarizes the project; `stop` preserves state; `remove` discards one session or, with `--all`, the selected scope. Use `--tail 0` for live observer output only.
 
 ## Restart on failure
 
