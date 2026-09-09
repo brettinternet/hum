@@ -1,10 +1,10 @@
 ---
 id: HUM-058
 title: Canonicalize project scopes and guide cross-worktree discovery
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-09 16:05'
-updated_date: '2026-09-09 16:18'
+updated_date: '2026-09-09 16:21'
 labels:
   - cli
   - daemon
