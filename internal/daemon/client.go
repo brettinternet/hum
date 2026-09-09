@@ -214,7 +214,7 @@ func (c *Client) Start(ctx context.Context, req StartRequest) (app.Process, erro
 	request := wireRequest{
 		Op: "start", Name: req.Name, Source: req.Source, Root: req.Root,
 		Argv: append([]string(nil), req.Argv...), Cwd: req.Cwd,
-		Env: append([]string(nil), req.Env...), Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY, Restart: req.Restart,
+		Env: append([]string(nil), req.Env...), Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY, Restart: req.Restart, Attached: req.Attached,
 	}
 	if req.TTYSize != nil {
 		request.Columns, request.Rows = req.TTYSize.Columns, req.TTYSize.Rows
@@ -776,6 +776,15 @@ func (s *InputSession) Release() error {
 }
 func (s *InputSession) Close() error { return s.Release() }
 
+// ControlSignal forwards operator intent for an attached run. It is kept
+// separate from Signal so public observational signal callers cannot suppress
+// automatic relaunch policy accidentally.
+func (c *Client) ControlSignal(ctx context.Context, req SignalRequest) error {
+	req.Control = true
+	_, err := c.SignalResult(ctx, req)
+	return err
+}
+
 // Signal sends one observational signal and preserves the historical
 // error-only client surface for callers that do not need the canonical result.
 func (c *Client) Signal(ctx context.Context, req SignalRequest) error {
@@ -786,7 +795,7 @@ func (c *Client) Signal(ctx context.Context, req SignalRequest) error {
 // SignalResult sends one observational signal and returns its canonical name,
 // number, and sent status.
 func (c *Client) SignalResult(ctx context.Context, req SignalRequest) (protocol.SignalResult, error) {
-	response, err := c.roundTrip(ctx, wireRequest{Op: "signal", Name: req.Name, Cwd: req.Cwd, Signal: req.Signal})
+	response, err := c.roundTrip(ctx, wireRequest{Op: "signal", Name: req.Name, Cwd: req.Cwd, Signal: req.Signal, Control: req.Control})
 	if err != nil {
 		return protocol.SignalResult{}, err
 	}
@@ -1005,7 +1014,7 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 	case "start":
 		value = protocol.StartRequest{
 			Op: protocol.OpStart, Name: req.Name, Argv: req.Argv, Cwd: req.Cwd, Root: req.Root, Env: req.Env,
-			Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY, Restart: req.Restart,
+			Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY, Restart: req.Restart, Attached: req.Attached,
 		}
 		if req.Columns != 0 || req.Rows != 0 {
 			start := value.(protocol.StartRequest)
@@ -1019,11 +1028,11 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 	case "output":
 		value = protocol.OutputRequest{Op: protocol.OpOutput, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	case "follow":
-		value = protocol.FollowRequest{Op: protocol.OpFollow, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+		value = protocol.FollowRequest{Op: protocol.OpFollow, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), UntilExit: req.UntilExit, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	case "wait":
 		value = protocol.WaitRequest{Op: protocol.OpWait, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), Match: req.Match, TimeoutMS: req.TimeoutMS}
 	case "signal":
-		value = protocol.SignalRequest{Op: protocol.OpSignal, Name: req.Name, Cwd: req.Cwd, Signal: req.Signal}
+		value = protocol.SignalRequest{Op: protocol.OpSignal, Name: req.Name, Cwd: req.Cwd, Signal: req.Signal, Control: req.Control}
 	case "stop":
 		value = protocol.StopRequest{Op: protocol.OpStop, Name: req.Name, Cwd: req.Cwd}
 	case "remove":
@@ -1122,7 +1131,7 @@ func wireRequestFromProtocolOutputRequest(req protocol.OutputRequest) wireReques
 }
 
 func wireRequestFromProtocolFollowRequest(req protocol.FollowRequest) wireRequest {
-	wire := wireRequest{Op: string(protocol.OpFollow), Name: req.Name, Cwd: req.Cwd, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+	wire := wireRequest{Op: string(protocol.OpFollow), Name: req.Name, Cwd: req.Cwd, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes, UntilExit: req.UntilExit}
 	if req.After != nil {
 		value := uint64(*req.After)
 		wire.After = &value

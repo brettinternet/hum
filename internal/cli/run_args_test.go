@@ -9,6 +9,7 @@ import (
 	"time"
 
 	urfavecli "github.com/urfave/cli/v3"
+	"hum/internal/daemon"
 )
 
 type runArgsResult struct {
@@ -90,6 +91,69 @@ func TestParseRunArgsAcceptsOptionsAfterName(t *testing.T) {
 	got = parseRunArgsFor(t, "web", "--bogus")
 	if got.err == nil || !strings.Contains(got.err.Error(), `unknown run option "--bogus"`) {
 		t.Fatalf("run web --bogus error = %v", got.err)
+	}
+}
+
+func TestRunSelectionSemantics(t *testing.T) {
+	runtimeDir := cliServeRunRuntimeDir(t)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	cliServeRunStartDaemon(t, runtimeDir)
+
+	missing := cliServeRunStartClient(t, "run", "missing")
+	if err := missing.wait(5 * time.Second); cliServeRunExitCode(err) != 1 || !strings.Contains(missing.stderr(), "run missing requires a command after --") {
+		t.Fatalf("unresolved argv-free run = %v (code %d), stderr %q", err, cliServeRunExitCode(err), missing.stderr())
+	}
+	client, err := daemon.Dial(context.Background(), daemon.NewRuntimePaths(runtimeDir).Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Get(context.Background(), daemon.GetRequest{Name: "missing", Cwd: cwd}); !isNotFound(err) {
+		t.Fatalf("selection failure mutated daemon: %v", err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "selection-running")
+	if _, _, err := cliServeRunInvokeForTest(cliServeRunWithFixtureArgs([]string{"run", "busy", "--detach"}, "stream", marker)...); err != nil {
+		t.Fatal(err)
+	}
+	if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"run", "busy"}, {"run", "busy", "--", "/bin/true"}} {
+		refused := cliServeRunStartClient(t, args...)
+		if err := refused.wait(5 * time.Second); cliServeRunExitCode(err) != 1 || !strings.Contains(refused.stderr(), "busy is already running") || !strings.Contains(refused.stderr(), "hum attach busy") || !strings.Contains(refused.stderr(), "hum stop busy") {
+			t.Fatalf("running selection %v = %v (code %d), stderr %q", args, err, cliServeRunExitCode(err), refused.stderr())
+		}
+	}
+	if err := cliServeRunStop(t, "busy"); err != nil {
+		t.Fatal(err)
+	}
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte("version: 1\nprocesses:\n  api:\n    argv: [/bin/true]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldwd) }()
+	declared := cliServeRunStartClientInDir(t, projectRoot, "run", "api", "--", "/bin/true")
+	if err := declared.wait(5 * time.Second); cliServeRunExitCode(err) != 1 || !strings.Contains(declared.stderr(), "declared in hum.yaml") || !strings.Contains(declared.stderr(), "hum run api") || !strings.Contains(declared.stderr(), "hum start api") {
+		t.Fatalf("declared argv run = %v (code %d), stderr %q", err, cliServeRunExitCode(err), declared.stderr())
+	}
+	for _, args := range [][]string{{"web", "--detach"}, {"web", "-d", "--json"}, {"web", "--project", ".", "--", "sleep", "1"}, {"web", "-C", ".", "--", "sleep", "1"}} {
+		parsed := parseRunArgsFor(t, args...)
+		if parsed.err != nil || parsed.name != "web" {
+			t.Fatalf("flag placement %v = %+v", args, parsed)
+		}
 	}
 }
 

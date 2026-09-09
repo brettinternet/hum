@@ -120,9 +120,11 @@ func TestResolvedProjectInstructions(t *testing.T) {
 		}
 	}
 	rawRunWarning := "Never use raw `hum run ... -- ...`"
+	foregroundContract := "`hum run NAME -- COMMAND` owns exactly one incarnation: it streams raw child output, propagates the child exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. Use `hum run NAME --detach -- COMMAND` for daemon ownership, and `hum attach NAME` or `hum logs NAME --follow` for durable observation."
 	rawRunCommand := regexp.MustCompile(`\bhum[[:space:]]+run\b`)
-	if rawRunCommand.MatchString(strings.ReplaceAll(content, rawRunWarning, "")) {
-		t.Error("SKILL.md must not instruct a raw hum run command")
+	withoutContract := strings.ReplaceAll(strings.ReplaceAll(content, rawRunWarning, ""), foregroundContract, "")
+	if rawRunCommand.MatchString(withoutContract) {
+		t.Error("SKILL.md must not instruct a raw hum run command outside its human-facing lifecycle contract")
 	}
 
 	packageManagerCommand := regexp.MustCompile(`(^|[^[:alnum:]_-])(npm|bun|yarn|pnpm)[[:space:]]+[^[:space:]]+`)

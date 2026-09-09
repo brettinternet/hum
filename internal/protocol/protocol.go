@@ -10,15 +10,10 @@ import (
 	"time"
 )
 
-// Version is the current private protocol version. The hello exchange carries
-// this value on every connection. Version 10 added explicit stopped terminal
-// snapshots and autonomous exit details; version 11 added immutable output
-// time-window cutoffs in output and follow requests; version 12 adds canonical
-// observational process-group signal requests and responses; version 13 added
-// process observation to wait timeout responses and optional terminating-signal
-// details on exit snapshots; version 14 adds the descendants process state;
-// version 15 adds explicit project scope and canonical project_root snapshots.
-const Version = 15
+// Version is the current private protocol version. Version 15 added explicit
+// project scope and canonical project_root snapshots; version 16 adds attached-
+// run launch/follow scoping and control-intent signal requests.
+const Version = 16
 
 const (
 	RestartNever     = "never"
@@ -243,17 +238,18 @@ type ReadinessConfig struct {
 // Root is the explicit manifest project root used for supervisor keying; Cwd
 // remains the child working directory.
 type StartRequest struct {
-	Op      Operation        `json:"op"`
-	Name    string           `json:"name"`
-	Argv    []string         `json:"argv"`
-	Cwd     string           `json:"cwd"`
-	Root    string           `json:"root,omitempty"`
-	Env     []string         `json:"env"`
-	Source  string           `json:"source,omitempty"`
-	Ready   *ReadinessConfig `json:"ready,omitempty"`
-	TTY     bool             `json:"tty"`
-	TTYSize *TTYSize         `json:"tty_size,omitempty"`
-	Restart string           `json:"restart"`
+	Op       Operation        `json:"op"`
+	Name     string           `json:"name"`
+	Argv     []string         `json:"argv"`
+	Cwd      string           `json:"cwd"`
+	Root     string           `json:"root,omitempty"`
+	Env      []string         `json:"env"`
+	Source   string           `json:"source,omitempty"`
+	Ready    *ReadinessConfig `json:"ready,omitempty"`
+	TTY      bool             `json:"tty"`
+	TTYSize  *TTYSize         `json:"tty_size,omitempty"`
+	Restart  string           `json:"restart"`
+	Attached bool             `json:"attached,omitempty"`
 }
 
 // TTYSize is a terminal size in character cells.
@@ -270,35 +266,37 @@ func NewStartRequest(name string, argv []string, cwd string, env []string) Start
 // MarshalJSON writes the stable start request fields in protocol order.
 func (r StartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op      Operation        `json:"op"`
-		Name    string           `json:"name"`
-		Argv    []string         `json:"argv"`
-		Cwd     string           `json:"cwd"`
-		Root    string           `json:"root,omitempty"`
-		Env     []string         `json:"env"`
-		Source  string           `json:"source,omitempty"`
-		Ready   *ReadinessConfig `json:"ready,omitempty"`
-		TTY     bool             `json:"tty"`
-		TTYSize *TTYSize         `json:"tty_size,omitempty"`
-		Restart string           `json:"restart"`
-	}{Op: OpStart, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart)})
+		Op       Operation        `json:"op"`
+		Name     string           `json:"name"`
+		Argv     []string         `json:"argv"`
+		Cwd      string           `json:"cwd"`
+		Root     string           `json:"root,omitempty"`
+		Env      []string         `json:"env"`
+		Source   string           `json:"source,omitempty"`
+		Ready    *ReadinessConfig `json:"ready,omitempty"`
+		TTY      bool             `json:"tty"`
+		TTYSize  *TTYSize         `json:"tty_size,omitempty"`
+		Restart  string           `json:"restart"`
+		Attached bool             `json:"attached,omitempty"`
+	}{Op: OpStart, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart), Attached: r.Attached})
 }
 
 // UnmarshalJSON decodes a start request and validates its operation when
 // present.
 func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op      Operation        `json:"op"`
-		Name    string           `json:"name"`
-		Argv    []string         `json:"argv"`
-		Cwd     string           `json:"cwd"`
-		Root    string           `json:"root"`
-		Env     []string         `json:"env"`
-		Source  string           `json:"source"`
-		Ready   *ReadinessConfig `json:"ready"`
-		TTY     bool             `json:"tty"`
-		TTYSize *TTYSize         `json:"tty_size"`
-		Restart string           `json:"restart"`
+		Op       Operation        `json:"op"`
+		Name     string           `json:"name"`
+		Argv     []string         `json:"argv"`
+		Cwd      string           `json:"cwd"`
+		Root     string           `json:"root"`
+		Env      []string         `json:"env"`
+		Source   string           `json:"source"`
+		Ready    *ReadinessConfig `json:"ready"`
+		TTY      bool             `json:"tty"`
+		TTYSize  *TTYSize         `json:"tty_size"`
+		Restart  string           `json:"restart"`
+		Attached bool             `json:"attached"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -309,7 +307,7 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	r.Op = OpStart
 	r.Name, r.Argv, r.Cwd, r.Root, r.Env = wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env
 	r.Source, r.Ready = wire.Source, wire.Ready
-	r.TTY, r.TTYSize, r.Restart = wire.TTY, wire.TTYSize, effectiveRestart(wire.Restart)
+	r.TTY, r.TTYSize, r.Restart, r.Attached = wire.TTY, wire.TTYSize, effectiveRestart(wire.Restart), wire.Attached
 	return nil
 }
 
@@ -553,6 +551,7 @@ type FollowRequest struct {
 	Name          string    `json:"name"`
 	Cwd           string    `json:"cwd"`
 	After         *Cursor   `json:"after,omitempty"`
+	UntilExit     bool      `json:"until_exit,omitempty"`
 	SinceMS       int64     `json:"since_ms,omitempty"`
 	SinceUnixNano int64     `json:"since_unix_nano,omitempty"`
 	Tail          int       `json:"tail,omitempty"`
@@ -569,7 +568,20 @@ func NewFollowRequest(name, cwd string) FollowRequest {
 
 // MarshalJSON writes a follow request with its stable operation.
 func (r FollowRequest) MarshalJSON() ([]byte, error) {
-	return marshalOutputRequest(OpFollow, OutputRequest{Name: r.Name, Cwd: r.Cwd, After: r.After, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
+	return json.Marshal(struct {
+		Op            Operation `json:"op"`
+		Name          string    `json:"name"`
+		Cwd           string    `json:"cwd"`
+		After         *Cursor   `json:"after,omitempty"`
+		UntilExit     bool      `json:"until_exit,omitempty"`
+		SinceMS       int64     `json:"since_ms,omitempty"`
+		SinceUnixNano int64     `json:"since_unix_nano,omitempty"`
+		Tail          int       `json:"tail,omitempty"`
+		Stream        Stream    `json:"stream,omitempty"`
+		Match         string    `json:"match,omitempty"`
+		MaxEntries    int       `json:"max_entries,omitempty"`
+		MaxBytes      int       `json:"max_bytes,omitempty"`
+	}{Op: OpFollow, Name: r.Name, Cwd: r.Cwd, After: r.After, UntilExit: r.UntilExit, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
 }
 
 // UnmarshalJSON decodes a follow request.
@@ -578,18 +590,25 @@ func (r *FollowRequest) UnmarshalJSON(data []byte) error {
 	if err := unmarshalOutputRequest(data, &output, OpFollow); err != nil {
 		return err
 	}
+	var wire struct {
+		UntilExit bool `json:"until_exit"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
 	r.Op, r.Name, r.Cwd = OpFollow, output.Name, output.Cwd
-	r.After, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = output.After, output.SinceMS, output.SinceUnixNano, output.Tail, output.Stream, output.Match
+	r.After, r.UntilExit, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = output.After, wire.UntilExit, output.SinceMS, output.SinceUnixNano, output.Tail, output.Stream, output.Match
 	r.MaxEntries, r.MaxBytes = output.MaxEntries, output.MaxBytes
 	return nil
 }
 
 // SignalRequest asks the daemon to forward Signal to one process group.
 type SignalRequest struct {
-	Op     Operation `json:"op"`
-	Name   string    `json:"name"`
-	Cwd    string    `json:"cwd"`
-	Signal string    `json:"signal"`
+	Op      Operation `json:"op"`
+	Name    string    `json:"name"`
+	Cwd     string    `json:"cwd"`
+	Signal  string    `json:"signal"`
+	Control bool      `json:"control,omitempty"`
 }
 
 // NewSignalRequest builds a signal-forward request. Signal is normally a
@@ -599,23 +618,31 @@ func NewSignalRequest(name, cwd, signal string) SignalRequest {
 	return SignalRequest{Op: OpSignal, Name: name, Cwd: cwd, Signal: signal}
 }
 
+// NewControlSignalRequest builds the lifecycle-control signal variant used by
+// attached run. Ordinary signal requests remain observational.
+func NewControlSignalRequest(name, cwd, signal string) SignalRequest {
+	return SignalRequest{Op: OpSignal, Name: name, Cwd: cwd, Signal: signal, Control: true}
+}
+
 // MarshalJSON writes a signal request with its stable operation.
 func (r SignalRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op     Operation `json:"op"`
-		Name   string    `json:"name"`
-		Cwd    string    `json:"cwd"`
-		Signal string    `json:"signal"`
-	}{Op: OpSignal, Name: r.Name, Cwd: r.Cwd, Signal: r.Signal})
+		Op      Operation `json:"op"`
+		Name    string    `json:"name"`
+		Cwd     string    `json:"cwd"`
+		Signal  string    `json:"signal"`
+		Control bool      `json:"control,omitempty"`
+	}{Op: OpSignal, Name: r.Name, Cwd: r.Cwd, Signal: r.Signal, Control: r.Control})
 }
 
 // UnmarshalJSON decodes a signal request.
 func (r *SignalRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op     Operation `json:"op"`
-		Name   string    `json:"name"`
-		Cwd    string    `json:"cwd"`
-		Signal string    `json:"signal"`
+		Op      Operation `json:"op"`
+		Name    string    `json:"name"`
+		Cwd     string    `json:"cwd"`
+		Signal  string    `json:"signal"`
+		Control bool      `json:"control"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -623,7 +650,7 @@ func (r *SignalRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpSignal {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Name, r.Cwd, r.Signal = OpSignal, wire.Name, wire.Cwd, wire.Signal
+	r.Op, r.Name, r.Cwd, r.Signal, r.Control = OpSignal, wire.Name, wire.Cwd, wire.Signal, wire.Control
 	return nil
 }
 

@@ -82,7 +82,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			ArgsUsage:     "NAME [-- COMMAND [ARGS...]]",
 			StopOnNthArg:  &runStopOnNthArg,
 			ShellComplete: completeProcessNames,
-			Description:   "Run in the automatically selected canonical project scope; symlink aliases share records and separate worktrees remain separate; use --project PATH or -C PATH for explicit access; child cwd stays lexical; run a named session across process exits and launches, automatically starts a detached daemon when needed; without --detach, it stays attached by default and Ctrl+C detaches the observer, while with --detach it returns immediately and the daemon keeps owning it. Add --tty for an ad-hoc pseudo-terminal; stable JSON for detached runs is available, while attached runs stream raw child output; TTY input forwards terminal bytes and Ctrl-] detaches input.\n\nExamples:\n  hum run api\n  hum run api -- bun run api\n  hum run api --detach -- bun run api",
+			Description:   "Run in the automatically selected canonical project scope; symlink aliases share records and separate worktrees remain separate; use --project PATH or -C PATH for explicit access; child cwd stays lexical. Without --detach, foreground run automatically starts a detached daemon, launches exactly one incarnation, streams raw child output, returns its exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP; the named session across process exits and launches remains readable through logs; with --detach it returns immediately and the daemon keeps owning it; stable JSON for detached runs is available, while attached runs stream raw child output; durable observers use hum attach or hum logs --follow, where Ctrl+C detaches; up and start remain daemon-owned. Add --tty for an ad-hoc pseudo-terminal; TTY input forwards terminal bytes and Ctrl-] releases input, after which Ctrl+C follows the stop rules.\n\nExamples:\n  hum run api -- bun run api\n  hum run api --detach -- bun run api\n  hum attach api",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "return without attaching; default is attached"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON for detached runs; default is raw attached output"},
@@ -177,7 +177,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum attach NAME [--tail N]",
 			ArgsUsage:     "NAME",
 			ShellComplete: completeProcessNames,
-			Description:   "Join one currently running session without starting, restarting, or waiting for it; retained output is replayed before live output, --tail N selects the final N entries, and --tail 0 starts with live output only. A TTY target forwards raw input and terminal resizes under the existing exclusive input lease, while another attachment and every non-TTY attachment follow output only; Ctrl+C detaches without stopping the child. Use `hum logs NAME --follow` for a read-only follower that can wait across launches, or `hum run NAME` for start-or-attach behavior.\n\nExamples:\n  hum attach console\n  hum attach console --tail 50",
+			Description:   "Join one currently running session without starting or restarting it; retained output is replayed before live output, --tail N selects the final N entries, and --tail 0 starts with live output only. Raw input is available for the exclusive TTY owner; hum run launches foreground work, while hum logs --follow is a read-only observer. Attach and logs --follow are durable observers: Ctrl+C, SIGTERM, and SIGHUP detach without stopping managed work.\n\nExamples:\n  hum attach console\n  hum attach console --tail 50",
 			Flags: []urfavecli.Flag{
 				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "replay final N retained entries; omit for the configured default or use 0 for live output only"},
 			},
@@ -575,35 +575,34 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return errors.New("--tty requires an ad-hoc command after --")
 	}
 	if len(argv) != 0 && declared {
-		return fmt.Errorf("process %q is declared in hum.yaml; use %s", name, projectCommand(selection.selector, "start "+name))
+		return fmt.Errorf("process %q is declared in hum.yaml; use %s (foreground) or %s (background)", name, projectCommand(selection.selector, "run "+name), projectCommand(selection.selector, "start "+name))
 	}
 	client, err := runDaemonClient(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-
-	launch := func() (app.Process, error) {
+	current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+	if getErr == nil && app.IsActiveState(current.State) {
+		return fmt.Errorf("%s is already running; join it with %s or stop it with %s", name, projectCommand(selection.selector, "attach "+name), projectCommand(selection.selector, "stop "+name))
+	}
+	if len(argv) == 0 && !declared && (getErr != nil || len(current.Argv) == 0) {
+		return errors.New("run " + name + " requires a command after --")
+	}
+	launch := func(attached bool) (app.Process, error) {
 		if len(argv) != 0 {
-			return client.Start(ctx, daemon.StartRequest{Name: name, Source: "ad_hoc", Argv: argv, Cwd: cwd, Env: os.Environ(), TTY: cmd.Bool("tty")})
+			return client.Start(context.Background(), daemon.StartRequest{Name: name, Source: "ad_hoc", Root: manifest.root, Argv: argv, Cwd: cwd, Env: os.Environ(), TTY: cmd.Bool("tty"), Attached: attached})
 		}
 		if declared {
-			return client.Start(ctx, daemon.StartRequest{Name: name, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: os.Environ(), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition)})
+			return client.Start(context.Background(), daemon.StartRequest{Name: name, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: os.Environ(), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition), Attached: attached})
 		}
-		return client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root})
+		return client.Start(context.Background(), daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root, Attached: attached})
 	}
-
 	if cmd.Bool("detach") {
-		if len(argv) == 0 && !declared {
-			current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
-			if getErr != nil || len(current.Argv) == 0 {
-				return errors.New("run requires a command after --")
-			}
-		}
-		process, startErr := launch()
+		process, startErr := launch(false)
 		if startErr != nil {
 			if isNameInUse(startErr) || errors.Is(startErr, app.ErrNameInUse) {
-				return fmt.Errorf("%w; watch it with %s", startErr, projectCommand(selection.selector, "logs "+name+" --follow"))
+				return fmt.Errorf("%s is already running; join it with %s or stop it with %s", name, projectCommand(selection.selector, "attach "+name), projectCommand(selection.selector, "stop "+name))
 			}
 			return startErr
 		}
@@ -626,105 +625,157 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		_, err := fmt.Fprintf(writer, "started %s (PID %d, cursor %d)\n", process.Name, process.PID, process.LaunchCursor)
 		return err
 	}
-
-	current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
-	// A supplied command defines a replacement incarnation, so only an
-	// explicit --tty reserves input for it. Existing/declared TTY definitions
-	// are attached automatically when merely observing or launching them.
-	wantTTY := cmd.Bool("tty") || len(argv) == 0 && ((declared && definition.TTY) || (!declared && getErr == nil && current.TTY))
-	var localInput *ttyInput
-	inputConflict := false
-	if wantTTY && !cmd.Bool("detach") {
-		inputRequest := ttyInputRequest(name, manifest.root, definition, argv)
-		if len(argv) != 0 {
-			inputRequest.Cwd = cwd
-			inputRequest.Root = manifest.root
-			inputRequest.Argv = append([]string(nil), argv...)
-			inputRequest.Source = "ad_hoc"
-		}
-		if declared {
-			inputRequest.Cwd = definition.Cwd
-			inputRequest.Root = manifest.root
-		}
-		if len(argv) == 0 && !declared && getErr == nil {
-			// The retained record is already fully staged. Do not send its
-			// argv back through PrepareTTY: input attach has no environment
-			// payload and would otherwise erase the retained cwd/environment.
-			inputRequest.Cwd = current.Cwd
-		}
-		session, attachErr := client.InputAttach(ctx, inputRequest)
-		if attachErr != nil {
-			if isInputConflict(attachErr) {
-				inputConflict = true
-				if _, writeErr := fmt.Fprintln(errWriter, "tty input is already owned; following output only"); writeErr != nil {
-					return writeErr
-				}
-			} else {
-				return attachErr
-			}
-		} else {
-			localInput, err = newTTYInput(session, errWriter)
-			if err != nil {
-				_ = session.Release()
-				return err
-			}
-			if _, writeErr := fmt.Fprintln(errWriter, "tty input attached; press Ctrl-] to detach input"); writeErr != nil {
-				localInput.close()
-				return writeErr
-			}
-			localInput.start()
-			defer localInput.close()
-		}
+	if cmd.Bool("json") {
+		return errors.New("--json is supported only with --detach")
 	}
-
-	signals := notifyFollowSignals()
-	defer signal.Stop(signals)
-	follower, err := client.Follow(context.Background(), daemon.FollowRequest{Name: name, Cwd: manifest.root, Stream: protocol.StreamBoth, MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes)})
+	var after *protocol.Cursor
+	if getErr == nil {
+		// After is the last consumed cursor; NextCursor is the next cursor the
+		// launch may assign. Start immediately before it to avoid retained replay
+		// without asking the daemon for a cursor that is still in the future.
+		value := protocol.Cursor(current.NextCursor)
+		if value > 0 {
+			value--
+		}
+		after = &value
+	}
+	follower, err := client.Follow(context.Background(), daemon.FollowRequest{Name: name, Cwd: manifest.root, After: after, UntilExit: true, Stream: protocol.StreamBoth, MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes)})
 	if err != nil {
 		return err
 	}
 	defer follower.Close()
-
-	// Follow creates unresolved durable records. Refresh after the follower is
-	// registered so the waiting message and launch decision preserve the
-	// pre-existing non-TTY lifecycle race guarantees.
-	current, getErr = client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
-
-	shouldLaunch := !inputConflict && (len(argv) != 0 || declared && (getErr != nil || !app.IsActiveState(current.State)))
-	if shouldLaunch {
-		if _, err := launch(); err != nil {
-			if isNameInUse(err) || errors.Is(err, app.ErrNameInUse) {
-				return fmt.Errorf("%w; watch it with %s", err, projectCommand(selection.selector, "logs "+name+" --follow"))
-			}
-			return err
+	wantTTY := cmd.Bool("tty") || len(argv) == 0 && ((declared && definition.TTY) || (getErr == nil && current.TTY))
+	var localInput *ttyInput
+	if wantTTY {
+		inputRequest := ttyInputRequest(name, manifest.root, definition, argv)
+		if len(argv) != 0 {
+			inputRequest.Cwd, inputRequest.Root, inputRequest.Argv, inputRequest.Source = cwd, manifest.root, append([]string(nil), argv...), "ad_hoc"
 		}
-	} else if getErr == nil && !app.IsActiveState(current.State) {
-		if len(current.Argv) == 0 && !declared {
-			_, err = fmt.Fprintf(writer, "%s waiting for first launch (name does not resolve; %s may create it)\n", name, projectCommand(selection.selector, "run "+name+" -- COMMAND"))
-		} else if len(current.Argv) == 0 {
-			_, err = fmt.Fprintf(writer, "%s waiting for first launch\n", name)
-		} else {
-			_, err = fmt.Fprintf(writer, "%s waiting for next launch\n", name)
+		if declared {
+			inputRequest.Cwd, inputRequest.Root = definition.Cwd, manifest.root
 		}
+		if len(argv) == 0 && !declared && getErr == nil {
+			inputRequest.Cwd = current.Cwd
+		}
+		session, attachErr := client.InputAttach(context.Background(), inputRequest)
+		if attachErr != nil {
+			return attachErr
+		}
+		localInput, err = newTTYInput(session, errWriter)
 		if err != nil {
+			_ = session.Release()
 			return err
 		}
+		if _, err = fmt.Fprintln(errWriter, "tty input attached; press Ctrl-] to detach input"); err != nil {
+			localInput.close()
+			return err
+		}
+		localInput.start()
+		defer localInput.close()
 	}
-
-	_, _, err = followLoop(ctx, follower, signals, func(event output.Event) error {
+	// Register before launch so an interrupt during the start-to-follow handoff
+	// is queued and applied to this incarnation once launch completes.
+	signals := notifyFollowSignals()
+	defer signal.Stop(signals)
+	if _, err = launch(true); err != nil {
+		if isNameInUse(err) || errors.Is(err, app.ErrNameInUse) {
+			return fmt.Errorf("%s is already running; join it with %s or stop it with %s", name, projectCommand(selection.selector, "attach "+name), projectCommand(selection.selector, "stop "+name))
+		}
+		return err
+	}
+	// The top-level command context is also canceled by the process signal
+	// bridge. Give the signal channel first chance to classify SIGTERM/SIGHUP
+	// as operator intent, while still detaching on an independent cancellation.
+	followCtx, cancelFollow := context.WithCancel(context.Background())
+	defer cancelFollow()
+	signalHandled := make(chan struct{}, 1)
+	contextDetached := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			timer := time.NewTimer(25 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-signalHandled:
+			case <-timer.C:
+				close(contextDetached)
+				cancelFollow()
+			}
+		case <-followCtx.Done():
+		}
+	}()
+	terminal, detached := errors.New("attached run terminal"), errors.New("attached run detached")
+	var exit *output.Exit
+	interrupted := false
+	_, _, loopErr := followLoop(followCtx, follower, signals, func(event output.Event) error {
+		if event.Exit != nil {
+			exit = event.Exit
+			return terminal
+		}
 		if event.Read == nil {
 			return nil
 		}
 		for _, entry := range event.Read.Entries {
 			if err := writeAttachedEntry(writer, errWriter, entry); err != nil {
-				return err
+				_, _ = fmt.Fprintf(errWriter, "detached from %s; it keeps running (%s)\n", name, projectCommand(selection.selector, "attach "+name))
+				return detached
 			}
 		}
 		return nil
 	}, func(sig os.Signal) (bool, error) {
-		return sig == os.Interrupt || sig == syscall.SIGTERM || sig == syscall.SIGHUP, nil
+		select {
+		case signalHandled <- struct{}{}:
+		default:
+		}
+		switch sig {
+		case syscall.SIGHUP:
+			_, _ = fmt.Fprintf(errWriter, "detached from %s; it keeps running (%s)\n", name, projectCommand(selection.selector, "attach "+name))
+			return true, nil
+		case os.Interrupt:
+			if !interrupted {
+				interrupted = true
+				if err := client.ControlSignal(context.Background(), daemon.SignalRequest{Name: name, Cwd: manifest.root, Signal: "SIGINT", Control: true}); err != nil && !errors.Is(err, app.ErrNotRunning) {
+					return false, err
+				}
+				_, err := fmt.Fprintf(errWriter, "interrupt sent to %s; press Ctrl+C again to stop\n", name)
+				return false, err
+			}
+			return false, client.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: manifest.root})
+		case syscall.SIGTERM:
+			return false, client.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: manifest.root})
+		default:
+			return false, nil
+		}
 	})
-	return err
+	if errors.Is(loopErr, detached) {
+		return nil
+	}
+	if exit == nil && !errors.Is(loopErr, terminal) {
+		if loopErr == nil {
+			select {
+			case <-contextDetached:
+				_, _ = fmt.Fprintf(errWriter, "detached from %s; it keeps running (%s)\n", name, projectCommand(selection.selector, "attach "+name))
+			default:
+			}
+			return nil
+		}
+		return loopErr
+	}
+	if exit == nil {
+		return nil
+	}
+	status := exit.Code
+	if exit.SignalNumber > 0 {
+		status = 128 + exit.SignalNumber
+		_, _ = fmt.Fprintf(errWriter, "%s exited with code %d\n", name, status)
+	}
+	if process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: name, Cwd: manifest.root}); getErr == nil && process.NextLaunchAt != nil {
+		_, _ = fmt.Fprintf(errWriter, "%s exited with code %d; on-failure restart scheduled, follow it with %s\n", name, status, projectCommand(selection.selector, "attach "+name))
+	}
+	if status == 0 {
+		return nil
+	}
+	return urfavecli.Exit("", status)
 }
 
 func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer, errWriters ...io.Writer) error {

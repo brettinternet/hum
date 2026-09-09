@@ -182,6 +182,31 @@ func (c *daemonTestChild) Signal(os.Signal) error {
 	return nil
 }
 
+type daemonStopDisconnectChild struct {
+	pid      int
+	done     chan struct{}
+	termSent chan struct{}
+	termOnce sync.Once
+	doneOnce sync.Once
+}
+
+func (c *daemonStopDisconnectChild) PID() int              { return c.pid }
+func (c *daemonStopDisconnectChild) PGID() int             { return c.pid }
+func (c *daemonStopDisconnectChild) Done() <-chan struct{} { return c.done }
+func (c *daemonStopDisconnectChild) Wait() process.Result {
+	<-c.done
+	return process.Result{ExitCode: -1, Signal: &process.SignalInfo{Name: "SIGKILL", Number: int(syscall.SIGKILL)}, ExitedAt: time.Now()}
+}
+func (c *daemonStopDisconnectChild) Signal(sig os.Signal) error {
+	switch sig {
+	case syscall.SIGTERM:
+		c.termOnce.Do(func() { close(c.termSent) })
+	case syscall.SIGKILL:
+		c.doneOnce.Do(func() { close(c.done) })
+	}
+	return nil
+}
+
 func waitForDaemonTest(t *testing.T, timeout time.Duration, description string, condition func() bool) {
 	t.Helper()
 	timer := time.NewTimer(timeout)
@@ -1566,6 +1591,95 @@ func TestSignalCanonicalRoundTrip(t *testing.T) {
 	if process.PID <= 0 {
 		t.Fatalf("started process = %#v", process)
 	}
+}
+
+func TestControlSignalDaemonRoundTripSuppressesRestart(t *testing.T) {
+	server := testServer(t, Config{StopGrace: 20 * time.Millisecond})
+	root := t.TempDir()
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	request := testStartRequest(root, "controlled", testShell(t), "-c", "trap 'exit 17' INT; printf 'ready\\n'; while :; do :; done")
+	request.Source = "manifest"
+	request.Restart = string(app.RestartOnFailure)
+	if _, err := client.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	waitForDaemonTest(t, 3*time.Second, "controlled process readiness", func() bool {
+		read, readErr := client.Output(context.Background(), protocol.NewOutputRequest("controlled", root))
+		if readErr != nil {
+			return false
+		}
+		for _, entry := range read.Entries {
+			if strings.Contains(entry.Text, "ready") {
+				return true
+			}
+		}
+		return false
+	})
+	if err := client.ControlSignal(context.Background(), protocol.NewControlSignalRequest("controlled", root, "SIGINT")); err != nil {
+		t.Fatal(err)
+	}
+	waitForDaemonTest(t, 3*time.Second, "controlled terminal state", func() bool {
+		process, getErr := client.Get(context.Background(), protocol.NewGetRequest("controlled", root))
+		return getErr == nil && process.State == app.StateExited && process.ExitCode == 17
+	})
+	time.Sleep(1100 * time.Millisecond)
+	process, err := client.Get(context.Background(), protocol.NewGetRequest("controlled", root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if process.State != app.StateExited || process.NextLaunchAt != nil || process.Relaunches != 0 {
+		t.Fatalf("controlled process = %+v, want no scheduled or launched successor", process)
+	}
+}
+
+func TestControlSignalStopContinuesAfterClientDisconnect(t *testing.T) {
+	child := &daemonStopDisconnectChild{pid: 4201, done: make(chan struct{}), termSent: make(chan struct{})}
+	supervisor, err := app.New(app.Options{
+		StopGrace: 50 * time.Millisecond,
+		StartProcess: func(process.Spec) (app.Child, error) {
+			return child, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := testServer(t, Config{Supervisor: supervisor})
+	root := t.TempDir()
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Start(context.Background(), testStartRequest(root, "stubborn", testShell(t), "-c", "unused")); err != nil {
+		t.Fatal(err)
+	}
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- client.Stop(context.Background(), protocol.NewStopRequest("stubborn", root))
+	}()
+	select {
+	case <-child.termSent:
+	case <-time.After(time.Second):
+		t.Fatal("stop sequence did not send SIGTERM")
+	}
+	_ = client.Close()
+	select {
+	case <-child.done:
+	case <-time.After(time.Second):
+		t.Fatal("daemon-side stop did not reach SIGKILL after disconnect")
+	}
+	probe, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close()
+	waitForDaemonTest(t, time.Second, "daemon-side terminal reconciliation", func() bool {
+		process, getErr := probe.Get(context.Background(), protocol.NewGetRequest("stubborn", root))
+		return getErr == nil && !app.IsActiveState(process.State)
+	})
 }
 
 func TestDaemonSignal(t *testing.T) {

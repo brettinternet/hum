@@ -75,18 +75,16 @@ func TestTTYCLI(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("owner did not receive stopped state")
 	}
+	if err := owner.Release(); err != nil {
+		t.Fatalf("release stopped input owner: %v", err)
+	}
 	conflictCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	output.Reset()
 	errors.Reset()
-	_ = cliServeRunInvoke(conflictCtx, []string{"run", "dev", "--tty", "--", "/bin/echo", "replacement"}, &output, &errors)
-	if !strings.Contains(errors.String(), "following output only") {
-		t.Fatalf("conflict notice = %q", errors.String())
-	}
-	select {
-	case event := <-owner.Events():
-		t.Fatalf("competing output follower launched a successor: %+v", event)
-	default:
+	err = cliServeRunInvoke(conflictCtx, []string{"run", "dev", "--tty", "--", "/bin/echo", "replacement"}, &output, &errors)
+	if err != nil || !strings.Contains(output.String(), "replacement") {
+		t.Fatalf("replacement TTY run = %v, output %q stderr %q", err, output.String(), errors.String())
 	}
 
 	if _, _, err := cliServeRunInvokeForTest("shutdown", "--stop-processes"); err != nil {

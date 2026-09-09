@@ -88,20 +88,20 @@ func TestStatusReportsFollowers(t *testing.T) {
 func TestDurableFollowAcrossStopStart(t *testing.T) {
 	hum, runtime := durableSetup(t)
 	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "web", "--follow")
-	attached := testutil.Start(t, hum, runtime.cwd, runtime.env, "run", "web")
 	durableWaitText(t, follower, false, "waiting for first launch")
-	durableWaitText(t, attached, false, "waiting for first launch")
+	unresolvedRun := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "web")
+	if unresolvedRun.Code != 1 || !strings.Contains(unresolvedRun.Stderr, "run web requires a command after --") {
+		t.Fatalf("unresolved foreground run = %#v", unresolvedRun)
+	}
 	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "web", "--detach", "--", "/bin/sh", "-c", "printf 'web-output\\n'; sleep 30")
 	if started.Code != 0 {
 		t.Fatalf("start: %#v", started)
 	}
 	durableWaitText(t, follower, false, "web-output")
-	durableWaitText(t, attached, false, "web-output")
 	if stopped := testutil.Run(t, hum, runtime.cwd, runtime.env, "stop", "web"); stopped.Code != 0 {
 		t.Fatalf("stop: %#v", stopped)
 	}
 	durableWaitText(t, follower, false, "waiting for next launch")
-	durableWaitText(t, attached, true, "waiting for next launch")
 	if err := os.WriteFile(filepath.Join(runtime.cwd, "intermediate-work"), []byte("done"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -109,24 +109,11 @@ func TestDurableFollowAcrossStopStart(t *testing.T) {
 		t.Fatalf("restart stopped session: %#v", started)
 	}
 	deadline := time.Now().Add(lifecycleTimeout)
-	for (strings.Count(follower.Stdout(), "web-output") < 2 || strings.Count(attached.Stdout(), "web-output") < 2) && time.Now().Before(deadline) {
+	for strings.Count(follower.Stdout(), "web-output") < 2 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if strings.Count(follower.Stdout(), "web-output") < 2 {
 		t.Fatalf("logs follower did not resume: %q", follower.Stdout())
-	}
-	if strings.Count(attached.Stdout(), "web-output") < 2 {
-		t.Fatalf("attached run did not resume: %q", attached.Stdout())
-	}
-	if err := attached.Signal(os.Interrupt); err != nil {
-		t.Fatal(err)
-	}
-	if err := attached.Wait(lifecycleTimeout); err != nil {
-		t.Fatalf("attached detach: %v", err)
-	}
-	status := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "web", "--json")
-	if status.Code != 0 || !strings.Contains(status.Stdout, `"state":"running"`) {
-		t.Fatalf("Ctrl+C stopped child: %#v", status)
 	}
 	if removed := testutil.Run(t, hum, runtime.cwd, runtime.env, "remove", "web"); removed.Code != 0 {
 		t.Fatalf("remove: %#v", removed)
@@ -151,23 +138,21 @@ func TestFollowBeforeFirstLaunch(t *testing.T) {
 	_ = follower.Wait(lifecycleTimeout)
 }
 
-func TestRunAttachesToRunning(t *testing.T) {
+func TestRunRefusesRunningSession(t *testing.T) {
 	hum, runtime := durableSetup(t)
 	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "join", "--detach", "--", "/bin/sh", "-c", "printf 'joined\\n'; sleep 30")
 	if started.Code != 0 {
 		t.Fatalf("start: %#v", started)
 	}
-	attached := testutil.Start(t, hum, runtime.cwd, runtime.env, "run", "join")
-	durableWaitText(t, attached, false, "joined")
-	if err := attached.Signal(os.Interrupt); err != nil {
-		t.Fatal(err)
-	}
-	if err := attached.Wait(lifecycleTimeout); err != nil {
-		t.Fatalf("detach: %v", err)
+	for _, args := range [][]string{{"run", "join"}, {"run", "join", "--", "/bin/true"}} {
+		refused := testutil.Run(t, hum, runtime.cwd, runtime.env, args...)
+		if refused.Code != 1 || !strings.Contains(refused.Stderr, "join is already running") || !strings.Contains(refused.Stderr, "hum attach join") || !strings.Contains(refused.Stderr, "hum stop join") {
+			t.Fatalf("running run %v = %#v", args, refused)
+		}
 	}
 	status := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "join", "--json")
 	if status.Code != 0 || !strings.Contains(status.Stdout, `"state":"running"`) {
-		t.Fatalf("child stopped on detach: %#v", status)
+		t.Fatalf("refused run mutated child: %#v", status)
 	}
 	_ = testutil.Run(t, hum, runtime.cwd, runtime.env, "remove", "join")
 }

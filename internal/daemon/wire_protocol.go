@@ -22,7 +22,7 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 			return wireRequest{}, errors.New("start request is missing payload")
 		}
 		wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env = req.Start.Name, req.Start.Argv, req.Start.Cwd, req.Start.Root, req.Start.Env
-		wire.Source, wire.Ready, wire.TTY, wire.Restart = req.Start.Source, wireReadinessConfigFromProtocol(req.Start.Ready), req.Start.TTY, req.Start.Restart
+		wire.Source, wire.Ready, wire.TTY, wire.Restart, wire.Attached = req.Start.Source, wireReadinessConfigFromProtocol(req.Start.Ready), req.Start.TTY, req.Start.Restart, req.Start.Attached
 		if req.Start.TTYSize != nil {
 			wire.Columns, wire.Rows = req.Start.TTYSize.Columns, req.Start.TTYSize.Rows
 		}
@@ -46,6 +46,7 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 			return wireRequest{}, errors.New("follow request is missing payload")
 		}
 		wire = wireRequestFromProtocolOutput(string(req.Op), req.Follow.Name, req.Follow.Cwd, req.Follow.After, req.Follow.SinceMS, req.Follow.SinceUnixNano, req.Follow.Tail, req.Follow.Stream, req.Follow.Match, req.Follow.MaxEntries, req.Follow.MaxBytes)
+		wire.UntilExit = req.Follow.UntilExit
 	case protocol.OpWait:
 		if req.Wait == nil {
 			return wireRequest{}, errors.New("wait request is missing payload")
@@ -55,7 +56,7 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		if req.Signal == nil {
 			return wireRequest{}, errors.New("signal request is missing payload")
 		}
-		wire.Name, wire.Cwd, wire.Signal = req.Signal.Name, req.Signal.Cwd, req.Signal.Signal
+		wire.Name, wire.Cwd, wire.Signal, wire.Control = req.Signal.Name, req.Signal.Cwd, req.Signal.Signal, req.Signal.Control
 	case protocol.OpStop:
 		if req.Stop == nil {
 			return wireRequest{}, errors.New("stop request is missing payload")

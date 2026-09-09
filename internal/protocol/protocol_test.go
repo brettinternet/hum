@@ -92,7 +92,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":15}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":16}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -661,7 +661,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":15}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":16}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError
@@ -824,6 +824,24 @@ func TestSignalCanonicalRoundTrip(t *testing.T) {
 	}
 	if decoded.Op != OpSignal || !decoded.OK || decoded.Name != "api" || decoded.Signal == nil || decoded.Signal.Name != "SIGHUP" || decoded.Signal.Number != 1 || decoded.Status != "sent" {
 		t.Fatalf("decoded signal response = %#v", decoded)
+	}
+}
+
+func TestControlSignalRequestRoundTrip(t *testing.T) {
+	request := NewControlSignalRequest("api", "/project", "SIGINT")
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(raw), `{"op":"signal","name":"api","cwd":"/project","signal":"SIGINT","control":true}`; got != want {
+		t.Fatalf("control signal request = %s, want %s", got, want)
+	}
+	decoded, err := NewDecoder(bytes.NewReader(append(raw, '\n'))).DecodeRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Signal == nil || !decoded.Signal.Control || decoded.Signal.Signal != "SIGINT" {
+		t.Fatalf("decoded control signal = %#v", decoded.Signal)
 	}
 }
 

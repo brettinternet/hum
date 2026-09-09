@@ -4,8 +4,10 @@ package integration
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
 	"hum/internal/testutil"
 )
 
@@ -58,7 +61,7 @@ type runitListResponse struct {
 
 var runitHumanRunPattern = regexp.MustCompile(`^started ([A-Za-z0-9._-]+) \(PID ([0-9]+), cursor ([0-9]+)\)$`)
 
-func TestAttachedRun(t *testing.T) {
+func TestAttachedRunForegroundLifecycle(t *testing.T) {
 	t.Run("argv cwd environment and raw streams", func(t *testing.T) {
 		scenario := runitNewScenario(t)
 		name := "attached-inspect"
@@ -67,12 +70,10 @@ func TestAttachedRun(t *testing.T) {
 		fixtureArgs := []string{scenario.fixture, "inspect", "arg with spaces", "arg\twith-tabs", "--literal"}
 		runArgs := append([]string{"run", name, "--"}, fixtureArgs...)
 		result := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, runArgs...)
-		runitWaitForOutput(t, result, true, "waiting for next launch")
-		if err := result.Signal(syscall.SIGTERM); err != nil {
-			t.Fatal(err)
-		}
-		if err := result.Wait(runitWaitTimeout); err != nil {
-			t.Fatalf("attached detach: %v", err)
+		waitErr := result.Wait(runitWaitTimeout)
+		var exitErr *exec.ExitError
+		if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 23 {
+			t.Fatalf("attached exit = %v, want 23", waitErr)
 		}
 		stdout, stderr := result.Stdout(), result.Stderr()
 
@@ -113,17 +114,21 @@ func TestAttachedRun(t *testing.T) {
 		if err := client.Signal(os.Interrupt); err != nil {
 			t.Fatalf("send Ctrl-C: %v", err)
 		}
+		runitWaitForOutput(t, client, false, "fixture:sigint-1\n")
+		runitWaitForOutput(t, client, true, "interrupt sent to attached-signals; press Ctrl+C again to stop")
+		if client.Exited() {
+			t.Fatal("first Ctrl-C detached foreground run")
+		}
+		if err := client.Signal(os.Interrupt); err != nil {
+			t.Fatalf("send second Ctrl-C: %v", err)
+		}
 		if err := client.Wait(runitWaitTimeout); err != nil {
-			t.Fatalf("Ctrl-C detach: %v; stdout=%q stderr=%q", err, client.Stdout(), client.Stderr())
+			t.Fatalf("second Ctrl-C stop: %v; stdout=%q stderr=%q", err, client.Stdout(), client.Stderr())
 		}
-		managed := runitListProcess(t, scenario, name)
-		if managed.State != "running" {
-			t.Fatalf("Ctrl-C stopped child: %#v", managed)
-		}
-		runitStopProcess(t, scenario, name, marker, managed.PID)
+		testutil.WaitForFile(t, marker+".terminated", runitWaitTimeout)
 	})
 
-	t.Run("SIGTERM detaches without terminating", func(t *testing.T) {
+	t.Run("SIGTERM stops the incarnation", func(t *testing.T) {
 		scenario := runitNewScenario(t)
 		name := "attached-term-detach"
 		runitCleanup(t, scenario, name)
@@ -143,14 +148,99 @@ func TestAttachedRun(t *testing.T) {
 			t.Fatalf("send SIGTERM to attached client: %v", err)
 		}
 		if err := client.Wait(runitWaitTimeout); err != nil {
-			t.Fatalf("SIGTERM-detached client exit: %v; stdout=%q stderr=%q", err, client.Stdout(), client.Stderr())
+			t.Fatalf("SIGTERM stop: %v; stdout=%q stderr=%q", err, client.Stdout(), client.Stderr())
 		}
+		testutil.WaitForFile(t, marker+".terminated", runitWaitTimeout)
 		remaining := runitListProcess(t, scenario, name)
-		if remaining.State != "running" || remaining.PID != managed.PID || !testutil.ProcessAlive(remaining.PID) {
-			t.Fatalf("managed process after client SIGTERM = %#v, want same running process", remaining)
+		if remaining.State != "stopped" || testutil.ProcessAlive(managed.PID) {
+			t.Fatalf("managed process after client SIGTERM = %#v, want stopped", remaining)
 		}
+	})
 
+	t.Run("SIGHUP detaches and retained logs remain readable", func(t *testing.T) {
+		scenario := runitNewScenario(t)
+		name := "attached-hup"
+		runitCleanup(t, scenario, name)
+		marker := filepath.Join(t.TempDir(), "hup")
+		client := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, "run", name, "--", scenario.fixture, "stream", marker)
+		testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
+		if err := client.Signal(syscall.SIGHUP); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Wait(runitWaitTimeout); err != nil {
+			t.Fatalf("SIGHUP detach: %v", err)
+		}
+		managed := runitListProcess(t, scenario, name)
+		if managed.State != "running" || !testutil.ProcessAlive(managed.PID) || !strings.Contains(client.Stderr(), "detached from "+name) {
+			t.Fatalf("SIGHUP result: process=%+v stderr=%q", managed, client.Stderr())
+		}
+		logs := testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, "logs", name)
+		if logs.Code != 0 || !strings.Contains(logs.Stdout, "stdout:live") {
+			t.Fatalf("retained logs = %#v", logs)
+		}
 		runitStopProcess(t, scenario, name, marker, managed.PID)
+	})
+
+	t.Run("on-failure successor is not followed", func(t *testing.T) {
+		scenario := runitNewScenario(t)
+		marker := filepath.Join(scenario.cwd, "first-exit")
+		script := fmt.Sprintf("if test -e %s; then printf 'successor\\n'; sleep 30; else : > %s; printf 'first\\n'; exit 7; fi", marker, marker)
+		manifest := fmt.Sprintf("version: 1\nprocesses:\n  recovering:\n    argv: [%q, %q, %q]\n    restart: on-failure\n", "/bin/sh", "-c", script)
+		if err := os.WriteFile(filepath.Join(scenario.cwd, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		client := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, "run", "recovering")
+		waitErr := client.Wait(runitWaitTimeout)
+		var exitErr *exec.ExitError
+		if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 7 || strings.Count(client.Stdout(), "first") != 1 {
+			t.Fatalf("first incarnation = %v stdout %q stderr %q", waitErr, client.Stdout(), client.Stderr())
+		}
+		time.Sleep(1200 * time.Millisecond)
+		managed := runitListProcess(t, scenario, "recovering")
+		if managed.State != "running" {
+			t.Fatalf("scheduled successor = %+v", managed)
+		}
+		_ = testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, "stop", "recovering")
+	})
+
+	t.Run("detached launch and attach observer keep daemon ownership", func(t *testing.T) {
+		scenario := runitNewScenario(t)
+		marker := filepath.Join(t.TempDir(), "detached-survival")
+		started := testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, "run", "survivor", "--detach", "--", scenario.fixture, "stream", marker)
+		if started.Code != 0 {
+			t.Fatalf("detached start = %#v", started)
+		}
+		testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
+		observer := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, "attach", "survivor")
+		runitWaitForOutput(t, observer, false, "stdout:live")
+		if err := observer.Signal(os.Interrupt); err != nil {
+			t.Fatal(err)
+		}
+		if err := observer.Wait(runitWaitTimeout); err != nil {
+			t.Fatalf("attach Ctrl-C = %v", err)
+		}
+		managed := runitListProcess(t, scenario, "survivor")
+		if managed.State != "running" || !testutil.ProcessAlive(managed.PID) {
+			t.Fatalf("detached target after observer exit = %+v", managed)
+		}
+		runitStopProcess(t, scenario, "survivor", marker, managed.PID)
+	})
+
+	t.Run("TTY run returns mapped status", func(t *testing.T) {
+		scenario := runitNewScenario(t)
+		command := exec.Command(scenario.hum, "run", "tty-exit", "--tty", "--", "/bin/sh", "-c", "printf tty-output; exit 9")
+		command.Dir = scenario.cwd
+		command.Env = scenario.env
+		master, err := pty.Start(command)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer master.Close()
+		waitErr := command.Wait()
+		var exitErr *exec.ExitError
+		if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 9 {
+			t.Fatalf("TTY exit = %v, want 9", waitErr)
+		}
 	})
 }
 

@@ -172,6 +172,10 @@ independently per entry to each stdout/stderr stream.
 
 ### Interactive sessions
 
+Foreground `hum run NAME -- COMMAND` owns exactly one incarnation, streams raw output, propagates its
+exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. Use `hum run NAME --detach -- COMMAND`
+for daemon ownership, and `hum attach NAME` or `hum logs NAME --follow` for durable observation.
+
 Leave `tty` off unless a tool genuinely requires a controlling terminal; prefer its
 non-interactive mode (`npx --yes`, `CI=1`, or `--force`).
 
@@ -180,8 +184,8 @@ non-interactive mode (`npx --yes`, `CI=1`, or `--force`).
 - Only one attached run forwards input; competing runs and `logs --follow` are output-only.
 - The owner uses raw mode and alone forwards SIGWINCH resizes; Ctrl-] detaches input, raw mode
   is restored after panic, terminal echo is controlled by the child, and Ctrl-C is forwarded
-  only in TTY mode (normal non-TTY runs still use Ctrl-C to detach observation); Ctrl-D and
-  Ctrl-Z are forwarded in TTY mode.
+  only while TTY input is owned; after Ctrl-] releases input, foreground Ctrl+C uses the control
+  signal rules. SIGTERM stops the foreground incarnation and SIGHUP detaches without stopping it.
 - MCP reports `tty` and provides the same bounded `input` tool for exact prompt responses.
 - Stop/restart preserves the lease across successors, remove and shutdown close it, and
   `shutdown --stop-processes` is required when active work must be stopped.

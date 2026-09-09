@@ -96,16 +96,17 @@ const (
 // is the explicit manifest project root used for record keying; Cwd remains
 // only the child working directory.
 type StartRequest struct {
-	Name    string
-	Source  string
-	Root    string
-	Cwd     string
-	Argv    []string
-	Env     []string
-	Ready   *ReadinessConfig
-	TTY     bool
-	TTYSize *TTYSize
-	Restart RestartPolicy
+	Name     string
+	Source   string
+	Root     string
+	Cwd      string
+	Argv     []string
+	Env      []string
+	Ready    *ReadinessConfig
+	TTY      bool
+	TTYSize  *TTYSize
+	Restart  RestartPolicy
+	Attached bool
 
 	// The following fields are supervisor-internal. They let the timer claim a
 	// relaunch through the ordinary launch path without exposing a second API.
@@ -1485,7 +1486,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	)
 	markStarted := func() error {
 		markerOnce.Do(func() {
-			if wasLaunched || store.SubscriberCount() != 0 || tty {
+			if !req.Attached && (wasLaunched || store.SubscriberCount() != 0 || tty) {
 				marker := fmt.Sprintf("%s launched\n", req.Name)
 				launchCursor, markerErr = store.Append(output.System, s.now(), marker)
 				launchBoundary = markerErr == nil
@@ -2944,6 +2945,37 @@ func (s *Supervisor) Signal(cwd, name string, sig os.Signal) error {
 		s.mu.Unlock()
 		return &NotRunningError{Root: rec.root, Name: rec.name}
 	}
+	child := rec.child
+	s.mu.Unlock()
+	if err := child.Signal(sig); err != nil {
+		if signalMeansDone(err) {
+			return &NotRunningError{Root: rec.root, Name: rec.name}
+		}
+		return err
+	}
+	return nil
+}
+
+// SignalControl forwards a signal as operator intent. Unlike Signal, this
+// suppresses an on-failure successor for the resulting incarnation.
+func (s *Supervisor) SignalControl(cwd, name string, sig os.Signal) error {
+	if sig == nil {
+		return ErrInvalidSignal
+	}
+	rec, err := s.lookup(cwd, name)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.records[rec.key] != rec {
+		s.mu.Unlock()
+		return &NotFoundError{Root: rec.root, Name: rec.name}
+	}
+	if rec.unresolved || rec.terminal || rec.child == nil {
+		s.mu.Unlock()
+		return &NotRunningError{Root: rec.root, Name: rec.name}
+	}
+	rec.controlIntent = true
 	child := rec.child
 	s.mu.Unlock()
 	if err := child.Signal(sig); err != nil {

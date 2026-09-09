@@ -1468,7 +1468,7 @@ func TestSessionSubscribeSurvivesCompletedLimitEviction(t *testing.T) {
 	}
 }
 
-func TestObservationalSignalPreservesLifecyclePolicy(t *testing.T) {
+func TestControlSignalLeavesObservationalSignalPolicyUnchanged(t *testing.T) {
 	root := makeProject(t, false)
 	child := &signalPolicyChild{pid: 4103, done: make(chan struct{})}
 	s := testSupervisor(t, Options{StartProcess: func(process.Spec) (Child, error) {
@@ -1499,6 +1499,35 @@ func TestObservationalSignalPreservesLifecyclePolicy(t *testing.T) {
 	}
 	child.release()
 	waitSubscriptionSignal(t, rec.done, "observational signal process")
+}
+
+func TestControlSignalSuppressesOnFailureRestart(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StopGrace: 20 * time.Millisecond})
+	if _, err := s.Start(StartRequest{
+		Name: "controlled", Root: root, Cwd: root, Argv: []string{"/bin/sh", "-c", "trap 'exit 17' INT; printf 'ready\\n'; while :; do :; done"}, Env: []string{"PATH=/usr/bin:/bin"}, Source: "manifest", Restart: RestartOnFailure,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := recordDone(t, s, root, "controlled")
+	store, err := s.Output(root, "controlled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := store.Subscribe(output.ReadOptions{})
+	waitForOutput(t, subscription, "ready\n")
+	if err := s.SignalControl(root, "controlled", syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	waitSubscriptionSignal(t, done, "controlled process exit")
+	time.Sleep(1100 * time.Millisecond)
+	model, err := s.Get(root, "controlled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.State != StateExited || model.ExitCode != 17 || model.NextLaunchAt != nil || model.Relaunches != 0 {
+		t.Fatalf("controlled exit = %+v, want terminal 17 with no successor", model)
+	}
 }
 
 func TestSignalForwardsInterrupt(t *testing.T) {

@@ -104,14 +104,7 @@ hum status -C ../checkout api
 hum run preview --project /path/to/checkout -- bun run preview
 ```
 
-Project selection follows these rules:
-
-- A relative selector starts from the invocation directory.
-- The nearest Git root becomes the project root. Without Git, the selected directory is the root.
-- Ad-hoc `run` commands use the selected directory as their cwd.
-- Manifest `cwd` values stay relative to the project root.
-- `init` writes at the project root. `list --all` merges that project's declarations.
-- Guidance uses an absolute, shell-safe selector when paths contain spaces.
+A relative selector starts from the invocation directory. The nearest Git root is the project root; without Git, the selected directory is. Ad-hoc runs use the selected directory as cwd, while manifest cwd values remain project-relative.
 
 `--project` does not apply to `serve`, `shutdown`, `mcp`, or `skill`. `-d` means `serve --daemon`, `run --detach`, or `up --detach`.
 
@@ -121,13 +114,15 @@ Run a named process without a manifest:
 
 ```sh
 hum run preview -- bun run preview
+hum run preview --detach -- bun run preview
+hum attach preview
 hum logs preview --follow
 hum wait preview --match "ready"
 hum stop preview
 hum remove preview
 ```
 
-Named sessions are durable. `hum status` summarizes the project; add NAME for details. `hum attach NAME` joins one; `--tail 0` skips replay. TTY attach owns input and resize; attachments follow output. `stop` preserves state; `remove` discards it.
+Named sessions are durable. Foreground `hum run NAME -- COMMAND` owns exactly one incarnation, streams raw output, propagates its exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. `hum run NAME --detach -- COMMAND`, `hum up`, and `hum start` hand ownership to the daemon. `hum attach NAME` and `hum logs NAME --follow` are durable observers; observer signals never stop managed work. `hum status` summarizes the project; `stop` preserves state; `remove` discards it. Use `--tail 0` for live observer output only.
 
 ## Restart on failure
 
@@ -156,14 +151,7 @@ hum logs web worker --tail 50
 hum logs web --stream stdout --match Listening
 ```
 
-Log selection is predictable:
-
-| Input | Result |
-| --- | --- |
-| No names | Declared processes in lexical order; ad-hoc sessions are excluded |
-| No `--after-cursor` | newest default window |
-| `--after-cursor` without `--tail` | Page forward from the oldest retained entry |
-| Ctrl+C while following | Close followers; do not stop processes |
+Without names, logs selects declared processes lexically and excludes ad-hoc sessions. Without `--after-cursor`, it uses the newest default window; with it and no tail, paging starts at the oldest retained entry. Ctrl+C closes followers without stopping processes.
 
 Human output is prefixed with `[NAME]`; JSON output uses named NDJSON events. Logs `next` is the consumed cursor; process `next_cursor` is the next cursor to assign.
 

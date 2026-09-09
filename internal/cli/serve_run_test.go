@@ -101,6 +101,10 @@ type cliServeRunFixtureSnapshot struct {
 	Env  []string `json:"env"`
 }
 
+type cliServeRunFailWriter struct{}
+
+func (cliServeRunFailWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
 func cliServeRunFixture(args []string) int {
 	if len(args) == 0 {
 		return 2
@@ -118,6 +122,16 @@ func cliServeRunFixture(args []string) int {
 			return 2
 		}
 		return cliServeRunFixtureSignals(args[1])
+	case "unhandled":
+		if len(args) < 2 {
+			return 2
+		}
+		return cliServeRunFixtureUnhandled(args[1])
+	case "stubborn":
+		if len(args) < 2 {
+			return 2
+		}
+		return cliServeRunFixtureStubborn(args[1])
 	case "term":
 		if len(args) < 2 {
 			return 2
@@ -217,6 +231,29 @@ func cliServeRunFixtureStream(marker string) int {
 		case syscall.SIGHUP:
 			fmt.Fprint(os.Stdout, "\nfixture:sighup\n")
 		}
+	}
+}
+
+func cliServeRunFixtureStubborn(marker string) int {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(signals)
+	if err := os.WriteFile(marker+".started", []byte("started"), 0o600); err != nil {
+		return 2
+	}
+	for range signals {
+		fmt.Fprintln(os.Stdout, "fixture:ignored-term")
+	}
+	return 0
+}
+
+func cliServeRunFixtureUnhandled(marker string) int {
+	if err := os.WriteFile(marker+".started", []byte("started"), 0o600); err != nil {
+		return 2
+	}
+	fmt.Fprintln(os.Stdout, "fixture:ready")
+	for {
+		time.Sleep(time.Hour)
 	}
 }
 
@@ -575,8 +612,8 @@ func TestAutomaticDaemonStartup(t *testing.T) {
 			t.Fatalf("attached automatic run: %v", err)
 		}
 		stdout, stderr := attachedOut.String(), attachedErr.String()
-		if !strings.Contains(stdout, "attached") || !strings.Contains(stderr, "automatic-attached launched") || !strings.Contains(stderr, "waiting for next launch") {
-			t.Fatalf("attached automatic output = stdout %q stderr %q", stdout, stderr)
+		if stdout != "attached" || stderr != "" {
+			t.Fatalf("attached automatic output = stdout %q stderr %q, want raw child output only", stdout, stderr)
 		}
 
 		stdout, stderr, err = cliServeRunInvokeForTest("run", "automatic-detached", "--detach", "--", "/bin/sh", "-c", "sleep 30")
@@ -787,7 +824,7 @@ func TestVersionMismatch(t *testing.T) {
 	})
 }
 
-func TestAttachedRun(t *testing.T) {
+func TestAttachedRunOneIncarnation(t *testing.T) {
 	t.Run("argv cwd environment streams and exit", func(t *testing.T) {
 		runtimeDir := cliServeRunRuntimeDir(t)
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
@@ -813,14 +850,13 @@ func TestAttachedRun(t *testing.T) {
 		}
 		runArgs := append([]string{"run", "inspect", "--"}, fixtureArgs...)
 		client := cliServeRunStartClientInDir(t, clientDir, runArgs...)
-		if err := cliServeRunWaitForText(client.stderrPath, "waiting for next launch"); err != nil {
-			t.Fatalf("attached run did not remain on stopped session: %v; stderr=%q", err, client.stderr())
+		if err := client.wait(5 * time.Second); cliServeRunExitCode(err) != 23 {
+			t.Fatalf("attached run exit = %v (code %d), want 23; stdout=%q stderr=%q", err, cliServeRunExitCode(err), client.stdout(), client.stderr())
 		}
-		if err := client.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			t.Fatal(err)
-		}
-		if err := client.wait(5 * time.Second); err != nil {
-			t.Fatalf("attached run detach = %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
+		for _, boundary := range []string{" launched\n", " exited", "waiting for"} {
+			if strings.Contains(client.stdout()+client.stderr(), boundary) {
+				t.Fatalf("attached output contains boundary %q: stdout=%q stderr=%q", boundary, client.stdout(), client.stderr())
+			}
 		}
 
 		var snapshot cliServeRunFixtureSnapshot
@@ -854,34 +890,17 @@ func TestAttachedRun(t *testing.T) {
 			t.Fatalf("stderr lost raw line content: %q", client.stderr())
 		}
 	})
-	t.Run("json attached run streams raw child output", func(t *testing.T) {
+	t.Run("json is detached only and fails before launch", func(t *testing.T) {
 		runtimeDir := cliServeRunRuntimeDir(t)
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 		cliServeRunStartDaemon(t, runtimeDir)
 
 		client := cliServeRunStartClient(t, cliServeRunWithFixtureArgs([]string{"run", "attached-json", "--json"}, "inspect")...)
-		if err := cliServeRunWaitForText(client.stderrPath, "waiting for next launch"); err != nil {
-			t.Fatal(err)
+		if err := client.wait(5 * time.Second); cliServeRunExitCode(err) != 1 {
+			t.Fatalf("attached JSON exit = %v (code %d), want 1; stdout=%q stderr=%q", err, cliServeRunExitCode(err), client.stdout(), client.stderr())
 		}
-		if err := client.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			t.Fatal(err)
-		}
-		if err := client.wait(5 * time.Second); err != nil {
-			t.Fatalf("attached JSON detach = %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
-		}
-
-		stdout, stderr := client.stdout(), client.stderr()
-		if !strings.Contains(stdout, "SNAPSHOT ") || !strings.Contains(stdout, "stdout:raw with spaces \r\n") || !strings.Contains(stdout, "stdout:partial") {
-			t.Fatalf("attached --json stdout = %q, want raw child stdout", stdout)
-		}
-		if !strings.Contains(stderr, "stderr:raw with spaces \r\n") || !strings.Contains(stderr, "stderr:partial") {
-			t.Fatalf("attached --json stderr = %q, want raw child stderr", stderr)
-		}
-		for _, line := range strings.Split(stdout, "\n") {
-			var result runResult
-			if err := json.Unmarshal([]byte(line), &result); err == nil && result.Name == "attached-json" {
-				t.Fatalf("attached --json emitted a JSON start result: %q", line)
-			}
+		if !strings.Contains(client.stderr(), "--json is supported only with --detach") {
+			t.Fatalf("attached --json stderr = %q", client.stderr())
 		}
 	})
 
@@ -905,17 +924,94 @@ func TestAttachedRun(t *testing.T) {
 		cliServeRunStartDaemonWithSupervisor(t, runtimeDir, supervisor)
 
 		client := cliServeRunStartClient(t, "run", "already-exited", "--", "/bin/sh", "-c", "exit 37")
-		if err := cliServeRunWaitForText(client.stderrPath, "already-exited waiting for next launch"); err != nil {
-			t.Fatal(err)
-		}
-		if err := client.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			t.Fatal(err)
-		}
-		if err := client.wait(5 * time.Second); err != nil {
-			t.Fatalf("already-exited attached detach = %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
+		if err := client.wait(5 * time.Second); cliServeRunExitCode(err) != 37 {
+			t.Fatalf("already-exited run = %v (code %d), want 37; stdout=%q stderr=%q", err, cliServeRunExitCode(err), client.stdout(), client.stderr())
 		}
 	})
 
+	t.Run("declared and discovered stopped definitions", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name  string
+			setup func(string) error
+			want  string
+		}{
+			{name: "declared", want: "declared-output\n", setup: func(root string) error {
+				return os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  declared:\n    argv: [/bin/echo, declared-output]\n"), 0o600)
+			}},
+			{name: "dev", want: "discovered-output\n", setup: func(root string) error {
+				if err := os.Mkdir(filepath.Join(root, "bin"), 0o700); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(root, "bin", "dev"), []byte("#!/bin/sh\nprintf 'discovered-output\\n'\n"), 0o700)
+			}},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				runtimeDir := cliServeRunRuntimeDir(t)
+				t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+				cliServeRunStartDaemon(t, runtimeDir)
+				root := t.TempDir()
+				if err := testCase.setup(root); err != nil {
+					t.Fatal(err)
+				}
+				oldwd, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chdir(root); err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = os.Chdir(oldwd) }()
+				stdout, stderr, err := cliServeRunInvokeForTest("run", testCase.name)
+				if err != nil || stdout != testCase.want || stderr != "" {
+					t.Fatalf("resolved run = stdout %q stderr %q err %v", stdout, stderr, err)
+				}
+			})
+		}
+	})
+
+	t.Run("retained definition launches without replay and remains loggable", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		cliServeRunStartDaemon(t, runtimeDir)
+		marker := filepath.Join(t.TempDir(), "retained")
+		script := fmt.Sprintf("if test -e %s; then printf 'new-output\\n'; else : > %s; printf 'old-output\\n'; fi", strconv.Quote(marker), strconv.Quote(marker))
+		if _, _, err := cliServeRunInvokeForTest("run", "retained", "--detach", "--", "/bin/sh", "-c", script); err != nil {
+			t.Fatal(err)
+		}
+		paths := daemon.NewRuntimePaths(runtimeDir)
+		if err := cliServeRunWaitForCondition(func() bool {
+			client, dialErr := daemon.Dial(context.Background(), paths.Socket)
+			if dialErr != nil {
+				return false
+			}
+			defer client.Close()
+			process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: "retained", Cwd: mustWorkingDirectory(t)})
+			return getErr == nil && process.State == app.StateExited
+		}); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, err := cliServeRunInvokeForTest("run", "retained")
+		if err != nil || stdout != "new-output\n" || stderr != "" {
+			t.Fatalf("retained foreground run = stdout %q stderr %q err %v", stdout, stderr, err)
+		}
+		logs, logsErr, err := cliServeRunInvokeForTest("logs", "retained")
+		if err != nil || !strings.Contains(logs, "old-output") || !strings.Contains(logs, "new-output") {
+			t.Fatalf("retained logs = stdout %q stderr %q err %v", logs, logsErr, err)
+		}
+	})
+
+	t.Run("signal exit maps to 128 plus signal", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		cliServeRunStartDaemon(t, runtimeDir)
+		client := cliServeRunStartClient(t, "run", "signaled", "--", "/bin/sh", "-c", "kill -TERM $$")
+		if err := client.wait(5 * time.Second); cliServeRunExitCode(err) != 143 {
+			t.Fatalf("signal exit = %v (code %d), want 143; stderr=%q", err, cliServeRunExitCode(err), client.stderr())
+		}
+	})
+}
+
+func TestAttachedRunInterruptLifecycle(t *testing.T) {
 	t.Run("queued SIGINT during start-to-follow handoff forwards and stays attached", func(t *testing.T) {
 		runtimeDir := cliServeRunRuntimeDir(t)
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
@@ -962,12 +1058,17 @@ func TestAttachedRun(t *testing.T) {
 		if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
 			t.Fatalf("managed process readiness after queued interrupt: %v", err)
 		}
-		if err := client.wait(5 * time.Second); err != nil {
-			t.Fatalf("queued SIGINT did not detach: %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
+		if err := cliServeRunWaitForText(client.stdoutPath, "fixture:sigint-1\n"); err != nil {
+			t.Fatalf("queued SIGINT was not forwarded: %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
 		}
-		cliServeRunAssertRunning(t, daemon.NewRuntimePaths(runtimeDir), "queued-signals")
-		if err := cliServeRunStop(t, "queued-signals"); err != nil {
-			t.Fatal(err)
+		if client.cmd.ProcessState != nil {
+			t.Fatal("queued first SIGINT detached the client")
+		}
+		if err := client.cmd.Process.Signal(os.Interrupt); err != nil {
+			t.Fatalf("second interrupt: %v", err)
+		}
+		if err := client.wait(5 * time.Second); err != nil {
+			t.Fatalf("second interrupt stop = %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
 		}
 		if err := cliServeRunWaitForFile(marker + ".terminated"); err != nil {
 			t.Fatal(err)
@@ -993,19 +1094,27 @@ func TestAttachedRun(t *testing.T) {
 		if err := client.cmd.Process.Signal(os.Interrupt); err != nil {
 			t.Fatalf("first interrupt: %v", err)
 		}
-		if err := client.wait(5 * time.Second); err != nil {
-			t.Fatalf("first SIGINT did not detach: %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
+		if err := cliServeRunWaitForText(client.stdoutPath, "fixture:sigint-1\n"); err != nil {
+			t.Fatalf("first SIGINT was not forwarded: %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
 		}
-		cliServeRunAssertRunning(t, daemon.NewRuntimePaths(runtimeDir), "signals")
-		if err := cliServeRunStop(t, "signals"); err != nil {
-			t.Fatal(err)
+		if !strings.Contains(client.stderr(), "interrupt sent to signals; press Ctrl+C again to stop") {
+			t.Fatalf("first SIGINT hint missing: %q", client.stderr())
+		}
+		if client.cmd.ProcessState != nil {
+			t.Fatal("first SIGINT detached the client")
+		}
+		if err := client.cmd.Process.Signal(os.Interrupt); err != nil {
+			t.Fatalf("second interrupt: %v", err)
+		}
+		if err := client.wait(5 * time.Second); err != nil {
+			t.Fatalf("second interrupt stop = %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
 		}
 		if err := cliServeRunWaitForFile(marker + ".terminated"); err != nil {
 			t.Fatal(err)
 		}
 	})
 
-	t.Run("SIGTERM detaches without terminating", func(t *testing.T) {
+	t.Run("SIGTERM stops and waits for terminal event", func(t *testing.T) {
 		runtimeDir := cliServeRunRuntimeDir(t)
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 		cliServeRunStartDaemon(t, runtimeDir)
@@ -1030,11 +1139,7 @@ func TestAttachedRun(t *testing.T) {
 			t.Fatalf("SIGTERM client: %v", err)
 		}
 		if err := client.wait(5 * time.Second); err != nil {
-			t.Fatalf("SIGTERM-detached client exit: %v; stderr=%q", err, client.stderr())
-		}
-		cliServeRunAssertRunning(t, daemon.NewRuntimePaths(runtimeDir), "term-detach")
-		if err := cliServeRunStop(t, "term-detach"); err != nil {
-			t.Fatal(err)
+			t.Fatalf("SIGTERM stop exit: %v; stderr=%q", err, client.stderr())
 		}
 		if err := cliServeRunWaitForFile(marker + ".terminated"); err != nil {
 			t.Fatal(err)
@@ -1069,7 +1174,7 @@ func TestAttachedRun(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate names identify pid and logs suggestion", func(t *testing.T) {
+	t.Run("duplicate names identify attach and stop guidance", func(t *testing.T) {
 		runtimeDir := cliServeRunRuntimeDir(t)
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 		cliServeRunStartDaemon(t, runtimeDir)
@@ -1092,14 +1197,202 @@ func TestAttachedRun(t *testing.T) {
 			t.Fatalf("duplicate run exit = %v (code %d), want 1; stderr=%q", secondErr, cliServeRunExitCode(secondErr), second.stderr())
 		}
 		message := second.stderr() + second.stdout()
-		if !strings.Contains(message, "duplicate") || !strings.Contains(message, strconv.Itoa(firstPID)) || !strings.Contains(message, "hum logs duplicate --follow") {
-			t.Fatalf("duplicate error = %q, want name, PID %d, and follow suggestion", message, firstPID)
+		if !strings.Contains(message, "duplicate is already running") || !strings.Contains(message, "hum attach duplicate") || !strings.Contains(message, "hum stop duplicate") {
+			t.Fatalf("duplicate error = %q, want attach and stop guidance (running PID %d)", message, firstPID)
 		}
 		if err := cliServeRunStop(t, "duplicate"); err != nil {
 			t.Fatal(err)
 		}
 		if err := cliServeRunWaitForFile(marker + ".terminated"); err != nil {
 			t.Fatal(err)
+		}
+	})
+
+	t.Run("first SIGINT and SIGTERM preserve signal status", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name   string
+			signal os.Signal
+			code   int
+		}{
+			{name: "interrupt", signal: os.Interrupt, code: 130},
+			{name: "terminate", signal: syscall.SIGTERM, code: 143},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				runtimeDir := cliServeRunRuntimeDir(t)
+				t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+				cliServeRunStartDaemon(t, runtimeDir)
+				marker := filepath.Join(t.TempDir(), testCase.name)
+				client := cliServeRunStartClient(t, cliServeRunWithFixtureArgs([]string{"run", testCase.name}, "unhandled", marker)...)
+				if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+					t.Fatal(err)
+				}
+				if err := client.cmd.Process.Signal(testCase.signal); err != nil {
+					t.Fatal(err)
+				}
+				if err := client.wait(5 * time.Second); cliServeRunExitCode(err) != testCase.code {
+					t.Fatalf("signal exit = %v (code %d), want %d; stderr=%q", err, cliServeRunExitCode(err), testCase.code, client.stderr())
+				}
+			})
+		}
+	})
+
+	t.Run("SIGHUP detaches without stopping", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		cliServeRunStartDaemon(t, runtimeDir)
+		marker := filepath.Join(t.TempDir(), "hup")
+		client := cliServeRunStartClient(t, cliServeRunWithFixtureArgs([]string{"run", "hup"}, "stream", marker)...)
+		if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.cmd.Process.Signal(syscall.SIGHUP); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.wait(5 * time.Second); err != nil {
+			t.Fatalf("SIGHUP detach = %v", err)
+		}
+		if !strings.Contains(client.stderr(), "detached from hup; it keeps running (hum attach hup)") {
+			t.Fatalf("detach notice = %q", client.stderr())
+		}
+		cliServeRunAssertRunning(t, daemon.NewRuntimePaths(runtimeDir), "hup")
+		if err := cliServeRunStop(t, "hup"); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("context cancellation and output failure detach", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name       string
+			failOutput bool
+		}{
+			{name: "context"},
+			{name: "output", failOutput: true},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				runtimeDir := cliServeRunRuntimeDir(t)
+				t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+				cliServeRunStartDaemon(t, runtimeDir)
+				marker := filepath.Join(t.TempDir(), testCase.name)
+				args := cliServeRunWithFixtureArgs([]string{"run", testCase.name}, "stream", marker)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var stdout, stderr bytes.Buffer
+				done := make(chan error, 1)
+				go func() {
+					var writer io.Writer = &stdout
+					if testCase.failOutput {
+						writer = cliServeRunFailWriter{}
+					}
+					done <- cliServeRunInvoke(ctx, args, writer, &stderr)
+				}()
+				if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+					t.Fatal(err)
+				}
+				if !testCase.failOutput {
+					cancel()
+				}
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatalf("detach = %v", err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("detach timed out")
+				}
+				if !strings.Contains(stderr.String(), "detached from "+testCase.name) {
+					t.Fatalf("detach notice = %q", stderr.String())
+				}
+				cliServeRunAssertRunning(t, daemon.NewRuntimePaths(runtimeDir), testCase.name)
+				if err := cliServeRunStop(t, testCase.name); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	})
+
+	t.Run("in-flight bounded stop survives client loss", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		cliServeRunStartDaemon(t, runtimeDir)
+		marker := filepath.Join(t.TempDir(), "stubborn")
+		client := cliServeRunStartClient(t, cliServeRunWithFixtureArgs([]string{"run", "stubborn"}, "stubborn", marker)...)
+		if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.cmd.Process.Signal(os.Interrupt); err != nil {
+			t.Fatal(err)
+		}
+		if err := cliServeRunWaitForText(client.stderrPath, "interrupt sent"); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.cmd.Process.Signal(os.Interrupt); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+		_ = client.cmd.Process.Kill()
+		_ = client.wait(2 * time.Second)
+		if err := cliServeRunWaitForCondition(func() bool {
+			probe, dialErr := daemon.Dial(context.Background(), daemon.NewRuntimePaths(runtimeDir).Socket)
+			if dialErr != nil {
+				return false
+			}
+			defer probe.Close()
+			process, getErr := probe.Get(context.Background(), daemon.GetRequest{Name: "stubborn", Cwd: mustWorkingDirectory(t)})
+			return getErr == nil && !app.IsActiveState(process.State)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("control exits suppress on-failure successors", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name   string
+			signal os.Signal
+			code   int
+		}{
+			{name: "interrupt", signal: os.Interrupt, code: 130},
+			{name: "terminate", signal: syscall.SIGTERM, code: 143},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				runtimeDir := cliServeRunRuntimeDir(t)
+				t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+				cliServeRunStartDaemon(t, runtimeDir)
+				root := t.TempDir()
+				marker := filepath.Join(root, "restart")
+				argv := cliServeRunFixtureArgv("unhandled", marker)
+				encodedArgv, err := json.Marshal(argv)
+				if err != nil {
+					t.Fatal(err)
+				}
+				manifest := fmt.Sprintf("version: 1\nprocesses:\n  controlled:\n    argv: %s\n    restart: on-failure\n", encodedArgv)
+				if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				canonicalRoot, err := filepath.EvalSymlinks(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				client := cliServeRunStartClientInDir(t, canonicalRoot, "run", "controlled")
+				if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+					t.Fatal(err)
+				}
+				if err := client.cmd.Process.Signal(testCase.signal); err != nil {
+					t.Fatal(err)
+				}
+				if err := client.wait(5 * time.Second); cliServeRunExitCode(err) != testCase.code {
+					t.Fatalf("controlled exit = %v (code %d), want %d", err, cliServeRunExitCode(err), testCase.code)
+				}
+				time.Sleep(1100 * time.Millisecond)
+				probe, err := daemon.Dial(context.Background(), daemon.NewRuntimePaths(runtimeDir).Socket)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer probe.Close()
+				process, err := probe.Get(context.Background(), daemon.GetRequest{Name: "controlled", Cwd: canonicalRoot})
+				if err != nil || app.IsActiveState(process.State) || process.NextLaunchAt != nil || process.Relaunches != 0 {
+					t.Fatalf("controlled process = %+v err %v, want terminal state with no successor", process, err)
+				}
+			})
 		}
 	})
 }
@@ -1375,7 +1668,7 @@ func TestAttachTail(t *testing.T) {
 	}
 }
 
-func TestDetachedRun(t *testing.T) {
+func TestDetachedAndObserverLifecycleUnchanged(t *testing.T) {
 	runtimeDir := cliServeRunRuntimeDir(t)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 	cliServeRunStartDaemon(t, runtimeDir)
@@ -1432,6 +1725,118 @@ func TestDetachedRun(t *testing.T) {
 		}
 	})
 
+	t.Run("attach and logs signals detach observers only", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		cliServeRunStartDaemon(t, runtimeDir)
+		marker := filepath.Join(t.TempDir(), "observer")
+		if _, _, err := cliServeRunInvokeForTest(cliServeRunWithFixtureArgs([]string{"run", "observer", "--detach"}, "stream", marker)...); err != nil {
+			t.Fatal(err)
+		}
+		if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+			t.Fatal(err)
+		}
+		for _, command := range []string{"attach", "logs"} {
+			for _, sig := range []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP} {
+				args := []string{command, "observer"}
+				if command == "logs" {
+					args = append(args, "--follow")
+				}
+				observer := cliServeRunStartClient(t, args...)
+				if err := cliServeRunWaitForText(observer.stdoutPath, "stdout:live"); err != nil {
+					t.Fatalf("%s observer startup: %v", command, err)
+				}
+				if err := observer.cmd.Process.Signal(sig); err != nil {
+					t.Fatal(err)
+				}
+				if err := observer.wait(5 * time.Second); err != nil {
+					t.Fatalf("%s detach on %v = %v", command, sig, err)
+				}
+				cliServeRunAssertRunning(t, daemon.NewRuntimePaths(runtimeDir), "observer")
+			}
+		}
+		if err := cliServeRunStop(t, "observer"); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("logs follow remains durable across stop and start", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		cliServeRunStartDaemon(t, runtimeDir)
+		marker := filepath.Join(t.TempDir(), "durable")
+		args := cliServeRunWithFixtureArgs([]string{"run", "durable", "--detach"}, "stream", marker)
+		if _, _, err := cliServeRunInvokeForTest(args...); err != nil {
+			t.Fatal(err)
+		}
+		if err := cliServeRunWaitForFile(marker + ".started"); err != nil {
+			t.Fatal(err)
+		}
+		follower := cliServeRunStartClient(t, "logs", "durable", "--follow")
+		if err := cliServeRunWaitForText(follower.stdoutPath, "stdout:live"); err != nil {
+			t.Fatal(err)
+		}
+		if err := cliServeRunStop(t, "durable"); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := cliServeRunInvokeForTest("start", "durable", "--no-wait"); err != nil {
+			t.Fatal(err)
+		}
+		if err := cliServeRunWaitForCondition(func() bool {
+			return strings.Count(follower.stdout(), "stdout:live") >= 2
+		}); err != nil {
+			t.Fatalf("durable follower did not cross restart: %v; stdout=%q stderr=%q", err, follower.stdout(), follower.stderr())
+		}
+		if err := follower.cmd.Process.Signal(os.Interrupt); err != nil {
+			t.Fatal(err)
+		}
+		if err := follower.wait(5 * time.Second); err != nil {
+			t.Fatal(err)
+		}
+		if err := cliServeRunStop(t, "durable"); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("up and start hand ownership to daemon", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		cliServeRunStartDaemon(t, runtimeDir)
+		root := t.TempDir()
+		manifest := "version: 1\nprocesses:\n  started:\n    argv: [/bin/sh, -c, 'sleep 30']\n  upped:\n    argv: [/bin/sh, -c, 'sleep 30']\n"
+		if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		oldwd, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chdir(root); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Chdir(oldwd) }()
+		canonicalRoot, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := cliServeRunInvokeForTest("start", "started", "--no-wait"); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := cliServeRunInvokeForTest("up", "--no-wait"); err != nil {
+			t.Fatal(err)
+		}
+		probe, err := daemon.Dial(context.Background(), daemon.NewRuntimePaths(runtimeDir).Socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer probe.Close()
+		for _, name := range []string{"started", "upped"} {
+			process, getErr := probe.Get(context.Background(), daemon.GetRequest{Name: name, Cwd: canonicalRoot})
+			if getErr != nil || process.State != app.StateRunning {
+				t.Fatalf("%s after launcher exit = %+v err %v", name, process, getErr)
+			}
+		}
+	})
 }
 
 type cliServeRunProcess struct {

@@ -229,30 +229,17 @@ func TestBuiltBinaryIntegration(t *testing.T) {
 			t.Fatalf("attached line %d = %q, %v; want %q", index, line, lineErr, want)
 		}
 	}
-	attachedDeadline := time.Now().Add(8 * time.Second)
-	for !strings.Contains(attached.stderr.String(), "attached waiting for next launch\n") {
-		if time.Now().After(attachedDeadline) {
-			t.Fatalf("attached lifecycle stderr = %q", attached.stderr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if attached.cmd.ProcessState != nil {
-		t.Fatal("attached run exited instead of waiting for the next launch")
-	}
-	if err := attached.cmd.Process.Signal(os.Interrupt); err != nil {
-		t.Fatalf("detach attached run: %v", err)
-	}
 	select {
 	case err := <-attached.wait:
-		if err != nil {
-			t.Fatalf("attached detach: %v", err)
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 7 {
+			t.Fatalf("attached exit = %v, want code 7", err)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("attached run did not detach")
+	case <-time.After(8 * time.Second):
+		t.Fatal("attached run did not exit with its child")
 	}
-	wantAttachedStderr := "attached launched\nattached-stderr\nattached exited with code 7\nattached waiting for next launch\n"
-	if attached.stderr.String() != wantAttachedStderr {
-		t.Errorf("attached stderr = %q, want %q", attached.stderr.String(), wantAttachedStderr)
+	if attached.stderr.String() != "attached-stderr\n" {
+		t.Errorf("attached stderr = %q, want raw child stderr only", attached.stderr.String())
 	}
 
 	t.Setenv("HUM_INTEGRATION_GATE", detachedGate)

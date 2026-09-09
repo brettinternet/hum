@@ -585,7 +585,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		if req.Columns != 0 || req.Rows != 0 {
 			ttySize = &app.TTYSize{Columns: req.Columns, Rows: req.Rows}
 		}
-		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Source: req.Source, Root: req.Root, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...), Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize, Restart: app.RestartPolicy(req.Restart)})
+		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Source: req.Source, Root: req.Root, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...), Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize, Restart: app.RestartPolicy(req.Restart), Attached: req.Attached})
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
@@ -635,8 +635,14 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		if err := s.supervisor.SignalObservational(req.Cwd, req.Name, parsed.Signal); err != nil {
-			return dispatchError(req.Op, err), false
+		var signalErr error
+		if req.Control {
+			signalErr = s.supervisor.SignalControl(req.Cwd, req.Name, parsed.Signal)
+		} else {
+			signalErr = s.supervisor.SignalObservational(req.Cwd, req.Name, parsed.Signal)
+		}
+		if signalErr != nil {
+			return dispatchError(req.Op, signalErr), false
 		}
 		return wireResponse{Op: req.Op, OK: true, Name: req.Name, Signal: &wireSignal{Name: parsed.Name, Number: parsed.Number}, Status: "sent"}, false
 	case "stop":
@@ -828,6 +834,9 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 		}
 		if event.Exit != nil {
 			if err := encoder.EncodeResponse(protocolStreamEventFromOutput(req.Name, event)); err != nil {
+				return
+			}
+			if req.UntilExit {
 				return
 			}
 			exitText := fmt.Sprintf("%s exited with code %d\n", req.Name, event.Exit.Code)
@@ -1132,6 +1141,7 @@ type wireRequest struct {
 	Source           string               `json:"source,omitempty"`
 	Ready            *wireReadinessConfig `json:"ready,omitempty"`
 	Restart          string               `json:"restart,omitempty"`
+	Attached         bool                 `json:"attached,omitempty"`
 	Update           bool                 `json:"update,omitempty"`
 	TTY              bool                 `json:"tty"`
 	Columns          uint16               `json:"columns,omitempty"`
@@ -1150,6 +1160,8 @@ type wireRequest struct {
 	MaxEntries       int                  `json:"max_entries,omitempty"`
 	MaxBytes         int                  `json:"max_bytes,omitempty"`
 	Signal           string               `json:"signal,omitempty"`
+	Control          bool                 `json:"control,omitempty"`
+	UntilExit        bool                 `json:"until_exit,omitempty"`
 	Force            bool                 `json:"force,omitempty"`
 }
 type wireReadinessConfig struct {

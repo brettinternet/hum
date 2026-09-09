@@ -320,8 +320,9 @@ session.
 - `--tail N` replays the final N retained entries in source order before live output; `--tail 0`
   suppresses retained replay.
 - Missing or stopped names return actionable guidance and leave the retained record unchanged.
-- `run` remains the start-or-attach command (`hum run NAME`), while `logs --follow` remains a
-  read-only log follower that may wait for a future launch.
+- Foreground `hum run NAME -- COMMAND` launches exactly one incarnation, streams raw output, returns
+  its exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. `hum run NAME --detach -- COMMAND`
+  remains daemon-owned; `hum attach` and `logs --follow` remain read-only durable observers.
 - Copy-pasteable examples are `hum attach console` and `hum attach console --tail 50`.
 - `input` is the bounded request/response surface for an existing TTY record: `--text` sends
   exact non-empty text bytes without a newline, while `--base64` accepts only standard padded
@@ -730,8 +731,9 @@ Exactly one attached `hum run` owns input.
   successors and the owner alone forwards SIGWINCH resize events from the attached terminal.
 - Ctrl-] detaches input, local raw mode is restored on detach, panic, and transport-loss paths,
   terminal/application echo remains child output, and input is discarded while stopped.
-- Ctrl-C, Ctrl-D, and Ctrl-Z are forwarded as input bytes; the child controls their terminal
-  meaning.
+- While a TTY foreground run owns input, Ctrl-C is forwarded through the PTY; after Ctrl-] releases
+  input, Ctrl+C uses the foreground control-signal stop rules. SIGTERM stops the incarnation and SIGHUP
+  detaches without signaling the daemon-owned child.
 - Ordinary exit preserves the lease; remove and daemon shutdown close it.
 - MCP exposes `tty` snapshots and the bounded `input` tool for exact prompt responses.
 ## Canonical project scopes
