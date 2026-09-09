@@ -92,7 +92,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":14}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":15}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -507,7 +507,7 @@ func TestStatusGetRequestResponseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","root":"/work/project","tty":false,"pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0,"restart":"never","relaunches":0}}`+"\n"; got != want {
+	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","scope":"project","project_root":"/work/project","tty":false,"pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0,"restart":"never","relaunches":0}}`+"\n"; got != want {
 		t.Fatalf("get response JSON = %s, want %s", got, want)
 	}
 
@@ -661,7 +661,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":14}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":15}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError
@@ -1039,5 +1039,22 @@ func TestSinceRequestRoundTrip(t *testing.T) {
 		if ms != test.ms || nano != test.nano {
 			t.Fatalf("request %s JSON = %s, got since_ms=%d since_unix_nano=%d, want %d and %d", test.request.Op, encoded, ms, nano, test.ms, test.nano)
 		}
+	}
+}
+
+func TestScopeProtocol(t *testing.T) {
+	encoded, err := json.Marshal(Process{Name: "web", Root: "/work/main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"scope":"project"`) || !strings.Contains(string(encoded), `"project_root":"/work/main"`) {
+		t.Fatalf("snapshot JSON = %s", encoded)
+	}
+	var decoded Process
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Scope != "project" || decoded.Root != "/work/main" {
+		t.Fatalf("decoded snapshot = %#v", decoded)
 	}
 }

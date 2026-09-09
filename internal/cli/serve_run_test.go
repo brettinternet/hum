@@ -26,6 +26,7 @@ import (
 	"hum/internal/app"
 	"hum/internal/daemon"
 	"hum/internal/process"
+	"hum/internal/project"
 	"hum/internal/protocol"
 )
 
@@ -411,13 +412,18 @@ func testDaemonUnavailable(t *testing.T) {
 		nothingOutput  = "Nothing is running.\n"
 		shutdownOutput = "No hum daemon is running.\n"
 	)
+	currentRoot, err := project.DiscoverProjectRoot("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listOutput := fmt.Sprintf("Nothing is running in %s. Use hum list --all to see every scope.\n", currentRoot)
 	tests := []struct {
 		name    string
 		args    []string
 		wantErr string
 		wantOut string
 	}{
-		{name: "list", args: []string{"list"}, wantOut: nothingOutput},
+		{name: "list", args: []string{"list"}, wantOut: listOutput},
 		{name: "logs", args: []string{"logs", "missing"}, wantErr: logsError},
 		{name: "stop", args: []string{"stop", "missing"}, wantOut: nothingOutput},
 		{name: "shutdown", args: []string{"shutdown"}, wantOut: shutdownOutput},

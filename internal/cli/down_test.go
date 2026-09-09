@@ -97,6 +97,7 @@ processes:
 
 func TestDownNoDaemonDoesNotCreateRuntimeState(t *testing.T) {
 	projectRoot := stopShutdownTestProject(t)
+	canonicalRoot := projectDirCanonical(t, projectRoot)
 	runtimeDir := t.TempDir()
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 	writeManifestCLITestFile(t, projectRoot, `version: 1
@@ -112,7 +113,7 @@ processes:
 	if stderr != "" {
 		t.Fatalf("unexpected stderr: %q", stderr)
 	}
-	if want := "Nothing is running in this project.\n"; stdout != want {
+	if want := fmt.Sprintf("Nothing is running in %s. Use hum list --all to see every scope.\n", canonicalRoot); stdout != want {
 		t.Fatalf("down without daemon output = %q, want %q", stdout, want)
 	}
 	assertDownRuntimeAbsent(t, runtimeDir)
@@ -129,6 +130,7 @@ processes:
 
 func TestDownMalformedManifestWithoutDaemonIsNoop(t *testing.T) {
 	projectRoot := stopShutdownTestProject(t)
+	canonicalRoot := projectDirCanonical(t, projectRoot)
 	runtimeDir := t.TempDir()
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 	writeManifestCLITestFile(t, projectRoot, "version: [\n")
@@ -140,14 +142,14 @@ func TestDownMalformedManifestWithoutDaemonIsNoop(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("unexpected stderr: %q", stderr)
 	}
-	if want := "Nothing is running in this project.\n"; stdout != want {
+	if want := fmt.Sprintf("Nothing is running in %s. Use hum list --all to see every scope.\n", canonicalRoot); stdout != want {
 		t.Fatalf("down with malformed manifest and no daemon output = %q, want %q", stdout, want)
 	}
 	assertDownRuntimeAbsent(t, runtimeDir)
 }
 
 func TestDownAvailableNoopSuccess(t *testing.T) {
-	stopShutdownTestProject(t)
+	canonicalRoot := projectDirCanonical(t, stopShutdownTestProject(t))
 	server, runtimeDir := stopShutdownTestServer(t, 500*time.Millisecond)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 
@@ -158,7 +160,7 @@ func TestDownAvailableNoopSuccess(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("unexpected stderr: %q", stderr)
 	}
-	if want := "Nothing is running in this project.\n"; stdout != want {
+	if want := fmt.Sprintf("Nothing is running in %s. Use hum list --all to see every scope.\n", canonicalRoot); stdout != want {
 		t.Fatalf("down with no records output = %q, want %q", stdout, want)
 	}
 	if _, err := os.Stat(server.Paths().Socket); err != nil {

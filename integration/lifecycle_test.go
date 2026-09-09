@@ -250,7 +250,7 @@ func TestForegroundServe(t *testing.T) {
 	if list.Code != 0 || list.Err != nil {
 		t.Fatalf("foreground readiness probe: code=%d err=%v stdout=%q stderr=%q", list.Code, list.Err, list.Stdout, list.Stderr)
 	}
-	if list.Stdout != "Nothing is running.\n" || list.Stderr != "" {
+	if list.Stdout == "" || !strings.Contains(list.Stdout, "Nothing is running in ") || !strings.Contains(list.Stdout, "hum list --all") || list.Stderr != "" {
 		t.Fatalf("foreground readiness probe output: stdout=%q stderr=%q", list.Stdout, list.Stderr)
 	}
 	testutil.WaitForFile(t, runtime.paths.Ready, lifecycleTimeout)

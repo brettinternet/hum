@@ -213,8 +213,8 @@ hum input console --text 'value'
 hum input console --base64 PADDED_VALUE
 ```
 
-A TTY has one input owner. Other `run` clients and `logs --follow` receive output only. Ctrl-] detaches input. Ctrl-C, Ctrl-D, and Ctrl-Z go to the child.
+A TTY has one input owner and sends exact text or strict padded base64 once; it never queues or echoes input. `logs --follow` receives output only. Use `--json` for the operation result; MCP provides the same operation.
 
-`--text` sends exact bytes without a newline. `--base64` accepts strict padded base64 up to 32 KiB. `input` targets only a running TTY, sends once, and never queues, retries, or echoes the payload. Use `--json` for `name`, `bytes`, and `launch_cursor`. MCP provides the same `input` operation.
+## Project scopes
 
-TTY log matches strip terminal control sequences from child text; emitted follow output remains raw. Keep TTY off when non-interactive modes such as `--yes`, `CI=1`, or `--force` are sufficient.
+Scope is automatic from the invocation directory: canonical Git/worktree roots make symlink aliases share records while separate worktrees stay separate; child cwd remains lexical. Use `hum --project PATH` or `-C PATH`, including for removed known worktrees; `hum list --all` discovers scopes. JSON includes `scope` and `project_root`.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -259,7 +260,9 @@ type listJSON struct {
 type listProcessJSON struct {
 	Name         string           `json:"name"`
 	Source       string           `json:"source"`
+	Scope        string           `json:"scope"`
 	Root         string           `json:"root"`
+	ProjectRoot  string           `json:"project_root"`
 	TTY          bool             `json:"tty"`
 	PID          int              `json:"pid"`
 	PGID         int              `json:"pgid"`
@@ -287,6 +290,7 @@ type listProcessJSON struct {
 type statusJSON struct {
 	Name         string                    `json:"name"`
 	Source       string                    `json:"source,omitempty"`
+	Scope        string                    `json:"scope"`
 	ProjectRoot  string                    `json:"project_root"`
 	TTY          bool                      `json:"tty"`
 	PID          int                       `json:"pid"`
@@ -309,9 +313,14 @@ type statusJSON struct {
 }
 
 func statusJSONFor(process app.Process) statusJSON {
+	scope := process.Scope
+	if scope == "" {
+		scope = "project"
+	}
 	result := statusJSON{
 		Name:         process.Name,
 		Source:       process.Source,
+		Scope:        scope,
 		ProjectRoot:  process.Root,
 		TTY:          process.TTY,
 		PID:          process.PID,
@@ -441,10 +450,16 @@ func writeStartupWarnings(w io.Writer, warnings []protocol.StartupWarning) error
 	return err
 }
 func processJSON(process app.Process) listProcessJSON {
+	scope := process.Scope
+	if scope == "" {
+		scope = "project"
+	}
 	result := listProcessJSON{
 		Name:         process.Name,
 		Source:       process.Source,
+		Scope:        scope,
 		Root:         process.Root,
+		ProjectRoot:  process.Root,
 		TTY:          process.TTY,
 		PID:          process.PID,
 		PGID:         process.PGID,
@@ -723,25 +738,58 @@ func writeCursorTrailer(w io.Writer, result output.ReadResult) error {
 	return err
 }
 
-func renderListHuman(w io.Writer, processes []app.Process, all bool) error {
-	return renderListHumanWithPolicy(w, processes, all, colorPolicyForWriter(w))
+func renderListHuman(w io.Writer, processes []app.Process, all bool, roots ...string) error {
+	return renderListHumanWithPolicy(w, processes, all, colorPolicyForWriter(w), roots...)
 }
 
-func renderListHumanWithPolicy(w io.Writer, processes []app.Process, all bool, policy colorPolicy) error {
+func renderListHumanWithPolicy(w io.Writer, processes []app.Process, all bool, policy colorPolicy, roots ...string) error {
 	if len(processes) == 0 {
-		_, err := fmt.Fprintln(w, stopUnavailableMessage)
+		message := stopUnavailableMessage
+		if len(roots) != 0 && roots[0] != "" {
+			message = fmt.Sprintf("Nothing is running in %s. Use hum list --all to see every scope.", roots[0])
+		}
+		_, err := fmt.Fprintln(w, message)
 		return err
 	}
-	return writeLifecycleTable(w, buildListTable(processes, all), policy)
+	if all {
+		groups := make(map[string][]app.Process)
+		for _, process := range processes {
+			groups[process.Root] = append(groups[process.Root], process)
+		}
+		ordered := make([]string, 0, len(groups))
+		for root := range groups {
+			ordered = append(ordered, root)
+		}
+		sort.Strings(ordered)
+		for index, root := range ordered {
+			if index > 0 {
+				if _, err := fmt.Fprintln(w); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprintf(w, "Project: %s (hum --project %s)\n", root, shellEscape(root)); err != nil {
+				return err
+			}
+			if err := writeLifecycleTable(w, buildListTable(groups[root], false), policy); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return writeLifecycleTable(w, buildListTable(processes, false), policy)
 }
 
-func renderStatusSummaryHuman(w io.Writer, processes []app.Process) error {
-	return renderStatusSummaryHumanWithPolicy(w, processes, colorPolicyForWriter(w))
+func renderStatusSummaryHuman(w io.Writer, processes []app.Process, roots ...string) error {
+	return renderStatusSummaryHumanWithPolicy(w, processes, colorPolicyForWriter(w), roots...)
 }
 
-func renderStatusSummaryHumanWithPolicy(w io.Writer, processes []app.Process, policy colorPolicy) error {
+func renderStatusSummaryHumanWithPolicy(w io.Writer, processes []app.Process, policy colorPolicy, roots ...string) error {
 	if len(processes) == 0 {
-		_, err := fmt.Fprintln(w, stopUnavailableMessage)
+		message := stopUnavailableMessage
+		if len(roots) != 0 && roots[0] != "" {
+			message = fmt.Sprintf("Nothing is running in %s. Use hum list --all to see every scope.", roots[0])
+		}
+		_, err := fmt.Fprintln(w, message)
 		return err
 	}
 	header := listRow{
@@ -1162,12 +1210,16 @@ func renderStopHuman(w io.Writer, result stopResult) error {
 	}
 }
 
-func renderDownResults(w io.Writer, results []stopResult, jsonOutput bool) error {
+func renderDownResults(w io.Writer, results []stopResult, jsonOutput bool, roots ...string) error {
 	if len(results) == 0 {
 		if jsonOutput {
 			return nil
 		}
-		_, err := fmt.Fprintln(w, "Nothing is running in this project.")
+		message := "Nothing is running in this project."
+		if len(roots) != 0 && roots[0] != "" {
+			message = fmt.Sprintf("Nothing is running in %s. Use hum list --all to see every scope.", roots[0])
+		}
+		_, err := fmt.Fprintln(w, message)
 		return err
 	}
 	for _, result := range results {

@@ -75,3 +75,5 @@ child output, and Ctrl-C is forwarded only for TTY runs; Ctrl-D and Ctrl-Z are f
 Ctrl-C observer detach. TTY output is merged as stdout and may contain ANSI
 controls. Stop/restart preserves the lease across launch cursors; remove and
 shutdown close it. MCP reports `tty` and provides the same bounded `input` tool for exact prompt responses.
+
+hum selects scope automatically from the invocation directory. Git roots and linked worktrees are canonicalized physically, so symlink aliases share records while separate worktrees do not. Child cwd remains lexical. Use `hum --project /path/to/main` (or `-C` as shorthand) for explicit cross-worktree access; observation can address a removed known worktree, but launch requires an existing directory. `hum list --all` discovers every project scope. A local not-found result never falls through silently: use the copyable `--project` command or `hum list --all`. JSON process records contain `scope` (`project`) and canonical `project_root`.

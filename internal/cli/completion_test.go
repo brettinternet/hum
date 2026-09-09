@@ -91,6 +91,11 @@ func TestCompletionScripts(t *testing.T) {
 }
 
 func TestNameCompletion(t *testing.T) {
+	testNameCompletion(t)
+}
+
+func testNameCompletion(t *testing.T) {
+	t.Helper()
 	projectRoot := stopShutdownTestProject(t)
 	server, runtimeDir := stopShutdownTestServer(t, 100*time.Millisecond)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"hum/internal/app"
 	"hum/internal/output"
+	"hum/internal/project"
 	"hum/internal/protocol"
 	sharedsignals "hum/internal/signals"
 )
@@ -136,6 +138,10 @@ func NewServer(cfg Config) (*Server, error) {
 	// The lock serializes only setup. It remains as a stable inode and is
 	// reacquired by cleanup so startup and teardown cannot race.
 	owner.unlockStartup()
+	projects := make(map[string]struct{})
+	for _, item := range supervisor.UnresolvedProcesses() {
+		projects[item.Root] = struct{}{}
+	}
 	server := &Server{
 		owner:          owner,
 		paths:          paths,
@@ -144,7 +150,7 @@ func NewServer(cfg Config) (*Server, error) {
 		version:        version,
 		maxLine:        maxLine,
 		log:            log,
-		projects:       make(map[string]struct{}),
+		projects:       projects,
 		serveDone:      make(chan struct{}),
 		ready:          make(chan struct{}),
 		shutdownDone:   make(chan struct{}),
@@ -178,7 +184,7 @@ func (s *Server) monitorUnresolved() {
 		select {
 		case <-ticker.C:
 			for _, item := range s.supervisor.UnresolvedProcesses() {
-				group := RuntimeGroup{ProjectRoot: item.Root, Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}
+				group := RuntimeGroup{Scope: "project", ProjectRoot: item.Root, Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}
 				if !runtimeGroupAlive(group.PGID) {
 					// Keep blocking duplicate launches until durable state no longer
 					// claims the unresolved group.
@@ -560,6 +566,13 @@ func dispatchError(op string, err error) wireResponse {
 func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 	switch req.Op {
 	case "start":
+		if req.Root != "" {
+			canonical, err := canonicalRequestRoot(req.Root)
+			if err != nil {
+				return dispatchError(req.Op, err), false
+			}
+			req.Root = canonical
+		}
 		s.shutdownMu.Lock()
 		if s.shutdownStarted {
 			s.shutdownMu.Unlock()
@@ -643,6 +656,13 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		}
 		return wireResponse{Op: req.Op, OK: true}, false
 	case "restart":
+		if req.Root != "" {
+			canonical, err := canonicalRequestRoot(req.Root)
+			if err != nil {
+				return dispatchError(req.Op, err), false
+			}
+			req.Root = canonical
+		}
 		s.shutdownMu.Lock()
 		if s.shutdownStarted {
 			s.shutdownMu.Unlock()
@@ -828,7 +848,30 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 	}
 }
 
+func canonicalRequestRoot(root string) (string, error) {
+	if root == "" || !filepath.IsAbs(root) {
+		return "", fmt.Errorf("%w: project root must be an absolute existing directory", app.ErrInvalidRequest)
+	}
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("%w: project root must be an absolute existing directory", app.ErrInvalidRequest)
+	}
+	canonical, err := project.CanonicalPath(root)
+	if err != nil {
+		return "", fmt.Errorf("%w: project root: %v", app.ErrInvalidRequest, err)
+	}
+	return canonical, nil
+}
+
 func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protocol.Decoder, encoder *protocol.Encoder, req wireRequest) {
+	if req.Root != "" {
+		canonical, err := canonicalRequestRoot(req.Root)
+		if err != nil {
+			_ = writeProtocolError(encoder, protocol.OpInputAttach, err)
+			return
+		}
+		req.Root = canonical
+	}
 	if !req.TTY {
 		_ = writeProtocolError(encoder, protocol.OpInputAttach, app.ErrInputNotTTY)
 		return
@@ -1157,7 +1200,8 @@ type wireError struct {
 type wireProcess struct {
 	Name         string           `json:"name"`
 	Source       string           `json:"source,omitempty"`
-	Root         string           `json:"root"`
+	Scope        string           `json:"scope"`
+	Root         string           `json:"project_root"`
 	TTY          bool             `json:"tty"`
 	PID          int              `json:"pid"`
 	PGID         int              `json:"pgid"`
@@ -1235,6 +1279,14 @@ func protocolWireError(err error) *wireError {
 	if errors.As(err, &active) {
 		return &wireError{Code: string(protocol.ErrorActiveProcesses), Message: active.Error(), Details: append([]string(nil), active.Names...), Processes: append([]string(nil), active.Names...)}
 	}
+	var notFound *app.NotFoundError
+	if errors.As(err, &notFound) && notFound != nil {
+		details := map[string]any{"scope": "project", "project_root": notFound.Root}
+		if len(notFound.OtherScopes) != 0 {
+			details["other_scopes"] = notFound.OtherScopes
+		}
+		return &wireError{Code: string(protocol.ErrorNotFound), Message: notFound.Error(), Details: details}
+	}
 	var malformed *MalformedRequestError
 	if errors.As(err, &malformed) {
 		return &wireError{Code: string(protocol.ErrorMalformed), Message: malformed.Error()}
@@ -1288,8 +1340,12 @@ func wireProcessesFromApp(items []app.Process) []wireProcess {
 }
 
 func wireProcessFromApp(item app.Process) wireProcess {
+	scope := item.Scope
+	if scope == "" {
+		scope = "project"
+	}
 	result := wireProcess{
-		Name: item.Name, Source: item.Source, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
+		Name: item.Name, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: uint64(item.LaunchCursor), State: string(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,

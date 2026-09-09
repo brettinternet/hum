@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"hum/internal/orchestrate"
+	"hum/internal/project"
 	"hum/internal/protocol"
 	sharedsignals "hum/internal/signals"
 )
@@ -251,7 +252,8 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	startupWarningsSchema := map[string]any{"type": "array", "items": startupWarning}
 	process := objectSchema(map[string]any{
 		"name": map[string]any{"type": "string"}, "source": map[string]any{"type": "string"},
-		"root": map[string]any{"type": "string"}, "tty": map[string]any{"type": "boolean"}, "pid": map[string]any{"type": "integer"},
+		"scope": map[string]any{"type": "string", "enum": []string{"project"}}, "project_root": map[string]any{"type": "string"},
+		"tty": map[string]any{"type": "boolean"}, "pid": map[string]any{"type": "integer"},
 		"pgid": map[string]any{"type": "integer"}, "cwd": map[string]any{"type": "string"},
 		"argv":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"start": map[string]any{"type": "string"}, "launch_cursor": map[string]any{"type": "integer", "minimum": 0},
@@ -264,7 +266,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"next_launch_at": map[string]any{"type": "string"},
 		"readiness":      readiness,
 		"warnings":       startupWarningsSchema,
-	}, "name", "source", "root", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches")
+	}, "name", "source", "scope", "project_root", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
 	restart := objectSchema(map[string]any{
@@ -332,7 +334,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; it never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
 		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop every running runtime record in the project and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
-		{Name: "list", Description: "Merge resolved definitions with all daemon runtime records in the project, including ad_hoc records. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionProcesses},
+		{Name: "list", Description: "Merge resolved definitions with daemon runtime records in the project, including ad_hoc records; use all to discover every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: objectSchema(map[string]any{"project_root": root, "all": map[string]any{"type": "boolean", "description": "Include every project scope; default is false."}}, "project_root"), OutputSchema: collectionProcesses},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
 		{Name: "logs", Description: "Read a bounded cursor-based output window for an existing declared or ad_hoc runtime record. since_ms uses one request-time cutoff and includes entries at or after it; it composes with the cursor, tail, and entry/byte bounds. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to read from; omitting it selects the newest default window."}, "since_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Positive duration in milliseconds from the request time; entries at or after the computed cutoff are included."}, "tail": map[string]any{"type": "integer", "minimum": 0, "description": "Return at most this many of the most recent entries; omitting it uses the newest default window."}, "max_entries": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of entries to return in this window."}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum total text bytes to return across this window's entries."}}, "project_root", "name"), OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms. Timeout results include process_observed from the same daemon wait request without an extra round trip; false means no runtime record for NAME was observed and includes actionable guidance.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
@@ -354,6 +356,7 @@ func cloneProperties(src map[string]any) map[string]any {
 
 type commonInput struct {
 	ProjectRoot   string  `json:"project_root"`
+	All           bool    `json:"all,omitempty"`
 	Name          string  `json:"name,omitempty"`
 	NoWait        bool    `json:"no_wait,omitempty"`
 	TimeoutMS     int64   `json:"timeout_ms,omitempty"`
@@ -395,6 +398,11 @@ func decodeInput(raw json.RawMessage) (commonInput, error) {
 	if err != nil || !info.IsDir() {
 		return input, &ToolError{Code: "invalid_request", Message: "project_root must be an absolute existing directory"}
 	}
+	canonical, err := project.CanonicalPath(input.ProjectRoot)
+	if err != nil {
+		return input, &ToolError{Code: "invalid_request", Message: "project_root must be an absolute existing directory"}
+	}
+	input.ProjectRoot = canonical
 	return input, nil
 }
 
@@ -536,7 +544,7 @@ func orchestrateProcess(process protocol.Process) orchestrate.Process {
 func protocolProcess(process orchestrate.Process) protocol.Process {
 	process = orchestrate.NormalizeProcess(process)
 	result := protocol.Process{
-		Name: process.Name, Source: process.Source, Root: process.Root, TTY: process.TTY,
+		Name: process.Name, Source: process.Source, Scope: "project", Root: process.Root, TTY: process.TTY,
 		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
 		Start: process.Start, LaunchCursor: protocol.Cursor(process.LaunchCursor), State: process.State,
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
@@ -673,7 +681,7 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	case "down":
 		return s.down(ctx, resolution)
 	case "list":
-		return s.list(ctx, resolution)
+		return s.list(ctx, resolution, input)
 	case "status":
 		return s.status(ctx, resolution, input.Name)
 	case "logs":
@@ -781,7 +789,8 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		defer client.Close()
 		process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Cwd: resolution.Root})
 		if err != nil {
-			return nil, &ToolError{Code: "not_found", Message: fmt.Sprintf("process definition or retained session %q not found", input.Name)}
+			mapped := mapError(err)
+			return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process definition or retained session %q not found", input.Name), Details: mapped.Details}
 		}
 		outcome := "already_running"
 		if !protocol.IsActiveState(process.State) {
@@ -988,7 +997,7 @@ func definitionsHaveAfter(definitions []Definition) bool {
 	return orchestrate.DefinitionsHaveAfter(shared)
 }
 
-func (s *Server) list(ctx context.Context, resolution Resolution) (any, error) {
+func (s *Server) list(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
 	byName := make(map[string]protocol.Process, len(resolution.Definitions))
 	for _, definition := range resolution.Definitions {
 		byName[definition.Name] = stoppedProcess(resolution.Root, definition)
@@ -1002,7 +1011,7 @@ func (s *Server) list(ctx context.Context, resolution Resolution) (any, error) {
 	}
 	defer client.Close()
 	recordStartupWarnings(ctx, startupWarnings(client))
-	processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, IncludeCompleted: true})
+	processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, All: input.All, IncludeCompleted: true})
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -1129,7 +1138,7 @@ func (s *Server) input(ctx context.Context, resolution Resolution, input commonI
 		if declared {
 			return nil, mcpInputSessionNotRunningError(input.Name)
 		}
-		return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process %q was not found; use hum start %s for a resolved name or hum run %s -- COMMAND", input.Name, input.Name, input.Name)}
+		return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process %q was not found; use hum start %s for a resolved name or hum run %s -- COMMAND", input.Name, input.Name, input.Name), Details: mapped.Details}
 	}
 	if declared && !definition.TTY {
 		return nil, mcpInputNotTTYError(input.Name, false)
@@ -1241,7 +1250,7 @@ func (s *Server) signal(ctx context.Context, resolution Resolution, input common
 	if err != nil {
 		mapped := mapError(err)
 		if mapped.Code == string(protocol.ErrorNotFound) {
-			return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process %q was not found; use hum start %s for a resolved name or hum run %s -- COMMAND", input.Name, input.Name, input.Name)}
+			return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process %q was not found; use hum start %s for a resolved name or hum run %s -- COMMAND", input.Name, input.Name, input.Name), Details: mapped.Details}
 		}
 		return nil, mapped
 	}

@@ -43,7 +43,11 @@ func makeProject(t *testing.T, gitFile bool) string {
 	} else if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return root
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }
 
 func startShell(s *Supervisor, root, name, script string) (Process, error) {
@@ -53,6 +57,82 @@ func startShell(s *Supervisor, root, name, script string) (Process, error) {
 		Argv: []string{"/bin/sh", "-c", script},
 		Env:  []string{"HUM_PRIVATE=secret", "PATH=/usr/bin:/bin"},
 	})
+}
+
+func TestSupervisorProjectScopes(t *testing.T) {
+	first := makeProject(t, false)
+	second := makeProject(t, true)
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(first, alias); err != nil {
+		t.Fatal(err)
+	}
+	s := testSupervisor(t, Options{})
+	one, err := startShell(s, first, "web", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := startShell(s, second, "web", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.Scope != "project" || two.Scope != "project" || one.Root == two.Root {
+		t.Fatalf("scoped snapshots = %#v %#v", one, two)
+	}
+	if one.Cwd != first {
+		t.Fatalf("child cwd = %q, want lexical %q", one.Cwd, first)
+	}
+	for root, wantCount := range map[string]int{first: 1, second: 1} {
+		items, err := s.List(root, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != wantCount || items[0].Root != root {
+			t.Fatalf("list(%q) leaked another scope: %+v", root, items)
+		}
+	}
+	aliased, err := s.Get(filepath.Join(alias, "child"), "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aliased.Root != one.Root {
+		t.Fatalf("alias root = %q, want %q", aliased.Root, one.Root)
+	}
+	_, err = s.Get(first, "missing")
+	if err == nil {
+		t.Fatal("missing process unexpectedly found")
+	}
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) || len(notFound.OtherScopes) != 0 {
+		t.Fatalf("local miss = %#v", err)
+	}
+	_, err = s.Get(filepath.Join(t.TempDir(), "outside"), "web")
+	var other *NotFoundError
+	if !errors.As(err, &other) || len(other.OtherScopes) != 2 {
+		t.Fatalf("cross-scope miss = %#v", err)
+	}
+
+	if _, err := startShell(s, first, "isolated", "sleep 30"); err != nil {
+		t.Fatal(err)
+	}
+	assertOtherScope := func(operation string, err error) {
+		t.Helper()
+		var scoped *NotFoundError
+		if !errors.As(err, &scoped) || len(scoped.OtherScopes) != 1 || scoped.OtherScopes[0].ProjectRoot != first {
+			t.Fatalf("%s cross-scope error = %#v", operation, err)
+		}
+	}
+	_, err = s.Output(second, "isolated")
+	assertOtherScope("output", err)
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	after := output.Cursor(0)
+	_, err = s.Wait(waitCtx, second, "isolated", WaitOptions{After: &after})
+	assertOtherScope("wait", err)
+	assertOtherScope("stop", s.Stop(context.Background(), second, "isolated"))
+	assertOtherScope("remove", s.Remove(context.Background(), second, "isolated"))
+	if _, err := s.Get(first, "isolated"); err != nil {
+		t.Fatalf("cross-scope operations mutated source record: %v", err)
+	}
 }
 
 type esrchChild struct {
@@ -411,8 +491,8 @@ func TestProjectScopedNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotRoot != filepath.Clean(alias) {
-		t.Fatalf("symlinked project root = %q, want cleaned lexical path %q", gotRoot, filepath.Clean(alias))
+	if gotRoot != rootA {
+		t.Fatalf("symlinked project root = %q, want canonical root %q", gotRoot, rootA)
 	}
 
 	fallback := t.TempDir()
@@ -424,8 +504,12 @@ func TestProjectScopedNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotRoot != fallbackCwd {
-		t.Fatalf("cwd fallback root = %q, want %q", gotRoot, fallbackCwd)
+	wantFallback, err := filepath.EvalSymlinks(fallbackCwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != wantFallback {
+		t.Fatalf("cwd fallback root = %q, want %q", gotRoot, wantFallback)
 	}
 
 	s := testSupervisor(t, Options{StopGrace: 20 * time.Millisecond})

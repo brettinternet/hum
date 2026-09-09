@@ -118,7 +118,7 @@ func TestStatusDeclaredButUnstartedWithDaemon(t *testing.T) {
 	}
 
 	_, _, err = stopShutdownRun(t, "status", "ghost")
-	if err == nil || !strings.Contains(err.Error(), "Run hum list --all to see known processes.") || !isNotFound(err) {
+	if err == nil || !strings.Contains(err.Error(), "Run hum list --all to see every scope.") || !isNotFound(err) {
 		t.Fatalf("status of unknown name error = %v, want typed not-found with guidance", err)
 	}
 }
