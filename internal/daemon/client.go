@@ -54,10 +54,11 @@ type InputAttachRequest = protocol.InputAttachRequest
 // daemon client resolves the initial input state, writes exactly once at its
 // initial launch cursor, and releases the input lease before returning.
 type InputRequest struct {
-	Name string
-	Cwd  string
-	Root string
-	Data []byte
+	Name  string
+	Scope string
+	Cwd   string
+	Root  string
+	Data  []byte
 }
 
 // InputResult reports the bytes acknowledged by the daemon and the launch
@@ -212,7 +213,7 @@ func (c *Client) recordWarnings(response wireResponse) {
 
 func (c *Client) Start(ctx context.Context, req StartRequest) (app.Process, error) {
 	request := wireRequest{
-		Op: "start", Name: req.Name, Source: req.Source, Root: req.Root,
+		Op: "start", Scope: req.Scope, Name: req.Name, Source: req.Source, Root: req.Root,
 		Argv: append([]string(nil), req.Argv...), Cwd: req.Cwd,
 		Env: append([]string(nil), req.Env...), Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY, Restart: req.Restart, Attached: req.Attached,
 	}
@@ -230,7 +231,7 @@ func (c *Client) Start(ctx context.Context, req StartRequest) (app.Process, erro
 }
 
 func (c *Client) List(ctx context.Context, req ListRequest) ([]app.Process, error) {
-	response, err := c.roundTrip(ctx, wireRequest{Op: "list", Cwd: req.Cwd, All: req.All, IncludeCompleted: req.IncludeCompleted})
+	response, err := c.roundTrip(ctx, wireRequest{Op: "list", Scope: req.Scope, Cwd: req.Cwd, All: req.All, IncludeCompleted: req.IncludeCompleted})
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +243,7 @@ func (c *Client) List(ctx context.Context, req ListRequest) ([]app.Process, erro
 }
 
 func (c *Client) Get(ctx context.Context, req GetRequest) (app.Process, error) {
-	response, err := c.roundTrip(ctx, wireRequest{Op: "get", Name: req.Name, Cwd: req.Cwd})
+	response, err := c.roundTrip(ctx, wireRequest{Op: "get", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd})
 	if err != nil {
 		return app.Process{}, err
 	}
@@ -427,7 +428,7 @@ func (c *Client) InputAttach(ctx context.Context, req InputAttachRequest) (*Inpu
 	if err != nil {
 		return nil, err
 	}
-	request := wireRequest{Op: "input_attach", Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: req.TTY, Argv: append([]string(nil), req.Argv...), Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready), Columns: req.Columns, Rows: req.Rows}
+	request := wireRequest{Op: "input_attach", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: req.TTY, Argv: append([]string(nil), req.Argv...), Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready), Columns: req.Columns, Rows: req.Rows}
 	if err := inputClient.writeOnly(ctx, request); err != nil {
 		_ = inputClient.Close()
 		return nil, err
@@ -473,7 +474,7 @@ func (c *Client) Input(ctx context.Context, req InputRequest) (InputResult, erro
 		return InputResult{}, err
 	}
 	session, err := c.InputAttach(ctx, InputAttachRequest{
-		Op: protocol.OpInputAttach, Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: true,
+		Op: protocol.OpInputAttach, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: true,
 	})
 	if err != nil {
 		return InputResult{}, err
@@ -795,7 +796,7 @@ func (c *Client) Signal(ctx context.Context, req SignalRequest) error {
 // SignalResult sends one observational signal and returns its canonical name,
 // number, and sent status.
 func (c *Client) SignalResult(ctx context.Context, req SignalRequest) (protocol.SignalResult, error) {
-	response, err := c.roundTrip(ctx, wireRequest{Op: "signal", Name: req.Name, Cwd: req.Cwd, Signal: req.Signal, Control: req.Control})
+	response, err := c.roundTrip(ctx, wireRequest{Op: "signal", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Signal: req.Signal, Control: req.Control})
 	if err != nil {
 		return protocol.SignalResult{}, err
 	}
@@ -803,18 +804,18 @@ func (c *Client) SignalResult(ctx context.Context, req SignalRequest) (protocol.
 }
 
 func (c *Client) Stop(ctx context.Context, req StopRequest) error {
-	_, err := c.roundTrip(ctx, wireRequest{Op: "stop", Name: req.Name, Cwd: req.Cwd})
+	_, err := c.roundTrip(ctx, wireRequest{Op: "stop", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd})
 	return err
 }
 
 func (c *Client) Remove(ctx context.Context, req RemoveRequest) error {
-	_, err := c.roundTrip(ctx, wireRequest{Op: "remove", Name: req.Name, Cwd: req.Cwd})
+	_, err := c.roundTrip(ctx, wireRequest{Op: "remove", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd})
 	return err
 }
 
 func (c *Client) Restart(ctx context.Context, req RestartRequest) (app.Process, error) {
 	request := wireRequest{
-		Op: "restart", Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
+		Op: "restart", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
 		Argv: append([]string(nil), req.Argv...), Env: append([]string(nil), req.Env...),
 		Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY, Restart: req.Restart,
 	}
@@ -1013,7 +1014,7 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 		value = protocol.Hello{Op: protocol.OpHello, Version: req.Version}
 	case "start":
 		value = protocol.StartRequest{
-			Op: protocol.OpStart, Name: req.Name, Argv: req.Argv, Cwd: req.Cwd, Root: req.Root, Env: req.Env,
+			Op: protocol.OpStart, Scope: req.Scope, Name: req.Name, Argv: req.Argv, Cwd: req.Cwd, Root: req.Root, Env: req.Env,
 			Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY, Restart: req.Restart, Attached: req.Attached,
 		}
 		if req.Columns != 0 || req.Rows != 0 {
@@ -1022,24 +1023,24 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 			value = start
 		}
 	case "list":
-		value = protocol.ListRequest{Op: protocol.OpList, Cwd: req.Cwd, All: req.All, IncludeCompleted: req.IncludeCompleted}
+		value = protocol.ListRequest{Op: protocol.OpList, Scope: req.Scope, Cwd: req.Cwd, All: req.All, IncludeCompleted: req.IncludeCompleted}
 	case "get":
-		value = protocol.GetRequest{Op: protocol.OpGet, Name: req.Name, Cwd: req.Cwd}
+		value = protocol.GetRequest{Op: protocol.OpGet, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd}
 	case "output":
-		value = protocol.OutputRequest{Op: protocol.OpOutput, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+		value = protocol.OutputRequest{Op: protocol.OpOutput, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	case "follow":
-		value = protocol.FollowRequest{Op: protocol.OpFollow, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), UntilExit: req.UntilExit, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+		value = protocol.FollowRequest{Op: protocol.OpFollow, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), UntilExit: req.UntilExit, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	case "wait":
-		value = protocol.WaitRequest{Op: protocol.OpWait, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), Match: req.Match, TimeoutMS: req.TimeoutMS}
+		value = protocol.WaitRequest{Op: protocol.OpWait, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), Match: req.Match, TimeoutMS: req.TimeoutMS}
 	case "signal":
-		value = protocol.SignalRequest{Op: protocol.OpSignal, Name: req.Name, Cwd: req.Cwd, Signal: req.Signal, Control: req.Control}
+		value = protocol.SignalRequest{Op: protocol.OpSignal, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Signal: req.Signal, Control: req.Control}
 	case "stop":
-		value = protocol.StopRequest{Op: protocol.OpStop, Name: req.Name, Cwd: req.Cwd}
+		value = protocol.StopRequest{Op: protocol.OpStop, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd}
 	case "remove":
-		value = protocol.RemoveRequest{Op: protocol.OpRemove, Name: req.Name, Cwd: req.Cwd}
+		value = protocol.RemoveRequest{Op: protocol.OpRemove, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd}
 	case "restart":
 		value = protocol.RestartRequest{
-			Op: protocol.OpRestart, Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
+			Op: protocol.OpRestart, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
 			Argv: req.Argv, Env: req.Env, Source: req.Source,
 			Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY, Restart: req.Restart,
 		}
@@ -1051,7 +1052,7 @@ func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
 	case "shutdown":
 		value = protocol.ShutdownRequest{Op: protocol.OpShutdown, Force: req.Force}
 	case "input_attach":
-		value = protocol.InputAttachRequest{Op: protocol.OpInputAttach, Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: req.TTY, Argv: req.Argv, Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), Columns: req.Columns, Rows: req.Rows}
+		value = protocol.InputAttachRequest{Op: protocol.OpInputAttach, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: req.TTY, Argv: req.Argv, Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), Columns: req.Columns, Rows: req.Rows}
 	case "input_release":
 		value = protocol.InputReleaseRequest{Op: protocol.OpInputRelease}
 	case "input_write":
@@ -1122,7 +1123,7 @@ func setConnContextWithCancel(conn net.Conn, ctx context.Context) (func(), error
 func clearConnDeadline(conn net.Conn) { _ = conn.SetDeadline(time.Time{}) }
 
 func wireRequestFromProtocolOutputRequest(req protocol.OutputRequest) wireRequest {
-	wire := wireRequest{Op: string(protocol.OpOutput), Name: req.Name, Cwd: req.Cwd, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
+	wire := wireRequest{Op: string(protocol.OpOutput), Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
 	if req.After != nil {
 		value := uint64(*req.After)
 		wire.After = &value
@@ -1131,7 +1132,7 @@ func wireRequestFromProtocolOutputRequest(req protocol.OutputRequest) wireReques
 }
 
 func wireRequestFromProtocolFollowRequest(req protocol.FollowRequest) wireRequest {
-	wire := wireRequest{Op: string(protocol.OpFollow), Name: req.Name, Cwd: req.Cwd, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes, UntilExit: req.UntilExit}
+	wire := wireRequest{Op: string(protocol.OpFollow), Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes, UntilExit: req.UntilExit}
 	if req.After != nil {
 		value := uint64(*req.After)
 		wire.After = &value

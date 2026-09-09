@@ -96,7 +96,7 @@ hum down
 
 ### Operate from anywhere
 
-Project-scoped commands accept a persistent `--project DIR` selector (or `-C DIR`) before or after the subcommand:
+Project commands accept `--project DIR` (or `-C DIR`) before or after the subcommand:
 
 ```sh
 hum --project /path/to/checkout up
@@ -205,4 +205,4 @@ A TTY has one input owner and sends exact text or strict padded base64 once; it 
 
 ## Project scopes
 
-Scope is automatic from the invocation directory: canonical Git/worktree roots make symlink aliases share records while separate worktrees stay separate; child cwd remains lexical. Use `hum --project PATH` or `-C PATH`, including for removed known worktrees; `hum list --all` discovers scopes. JSON includes `scope` and `project_root`.
+symlinks share canonical records; worktrees differ. Use `--project PATH`/`-C PATH`, including removed worktrees. Global ad-hoc sessions use `hum -g run proxy -- caddy run` and `hum --global logs proxy`; selectors work around commands and `run` NAME. Global conflicts with project and `list --all`; `init`/`up` reject it; `start`/`restart` reuse retained commands. No fallback. JSON `scope` is `project` or `global`; global records omit `project_root`.

@@ -41,10 +41,14 @@ func TestFlagAliases(t *testing.T) {
 		"stop-grace":        nil,
 		"output-bytes":      nil,
 		"completed-records": nil,
+		"global":            {"g"},
 	}
 	flagAliasesAssertFlags(t, "hum", root.Flags, rootExpected)
 	if got := urfavecli.HelpFlag.Names(); !reflect.DeepEqual(got, []string{"help", "h"}) {
 		t.Fatalf("help names = %v, want [help h]", got)
+	}
+	for _, name := range []string{"init", "run", "start", "up", "down", "list", "status", "attach", "logs", "wait", "input", "signal", "restart", "stop", "remove"} {
+		expected[name]["global"] = []string{"g"}
 	}
 	if got := urfavecli.VersionFlag.Names(); !reflect.DeepEqual(got, []string{"version", "v"}) {
 		t.Fatalf("version names = %v, want [version v]", got)

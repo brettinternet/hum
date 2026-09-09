@@ -74,6 +74,12 @@ type RuntimeState struct {
 type RuntimeStateFile = RuntimeState
 
 func runtimeGroupKey(project, name string) string { return project + "\x00" + name }
+func scopedRuntimeGroupKey(scope, project, name string) string {
+	if scope == app.ScopeGlobal {
+		return "global\x00" + name
+	}
+	return runtimeGroupKey(project, name)
+}
 
 // RuntimePaths names every artifact belonging to one daemon instance. Dir is
 // private to the current user; all other files are children of Dir.
@@ -279,15 +285,21 @@ func readRuntimeState(path string) (RuntimeState, bool, error) {
 	}
 	seen := make(map[string]struct{}, len(state.Groups))
 	for index, group := range state.Groups {
-		if group.Scope != "project" || group.ProjectRoot == "" || !filepath.IsAbs(group.ProjectRoot) || group.Name == "" || group.LeaderPID <= 0 || group.PGID <= 0 || group.StartIdentity == "" {
+		if group.Scope == "" {
+			group.Scope = app.ScopeProject
+		}
+		validRoot := group.Scope == app.ScopeGlobal && group.ProjectRoot == "" || group.Scope == app.ScopeProject && group.ProjectRoot != "" && filepath.IsAbs(group.ProjectRoot)
+		if (group.Scope != app.ScopeProject && group.Scope != app.ScopeGlobal) || !validRoot || group.Name == "" || group.LeaderPID <= 0 || group.PGID <= 0 || group.StartIdentity == "" {
 			return RuntimeState{}, true, runtimeStateCorrupt(path, fmt.Errorf("groups[%d] identity is incomplete", index))
 		}
-		canonical, canonicalErr := project.CanonicalPath(group.ProjectRoot)
-		if canonicalErr != nil {
-			return RuntimeState{}, true, runtimeStateCorrupt(path, fmt.Errorf("groups[%d] project root: %w", index, canonicalErr))
+		if group.Scope == app.ScopeProject {
+			canonical, canonicalErr := project.CanonicalPath(group.ProjectRoot)
+			if canonicalErr != nil {
+				return RuntimeState{}, true, runtimeStateCorrupt(path, fmt.Errorf("groups[%d] project root: %w", index, canonicalErr))
+			}
+			group.ProjectRoot = canonical
 		}
-		group.ProjectRoot = canonical
-		key := runtimeGroupKey(group.ProjectRoot, group.Name)
+		key := scopedRuntimeGroupKey(group.Scope, group.ProjectRoot, group.Name)
 		if _, exists := seen[key]; exists {
 			return RuntimeState{}, true, runtimeStateCorrupt(path, fmt.Errorf("groups[%d] aliases collapse to one project/name; remove the state after verifying managed processes", index))
 		}
@@ -431,14 +443,20 @@ func (r *runtimeOwner) recoverStale() error {
 }
 
 func runtimeGroupForProcess(item app.Process) (RuntimeGroup, error) {
-	if item.Root == "" || !filepath.IsAbs(item.Root) || item.Name == "" || item.PID <= 0 || item.PGID <= 0 || item.StartIdentity == "" {
+	if item.Name == "" || item.PID <= 0 || item.PGID <= 0 || item.StartIdentity == "" {
+		return RuntimeGroup{}, errors.New("process identity is incomplete")
+	}
+	if item.Scope == app.ScopeGlobal {
+		return RuntimeGroup{Scope: app.ScopeGlobal, Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}, nil
+	}
+	if item.Root == "" || !filepath.IsAbs(item.Root) {
 		return RuntimeGroup{}, errors.New("process identity is incomplete")
 	}
 	root, err := project.CanonicalPath(item.Root)
 	if err != nil {
 		return RuntimeGroup{}, fmt.Errorf("canonical project root: %w", err)
 	}
-	return RuntimeGroup{Scope: "project", ProjectRoot: root, Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}, nil
+	return RuntimeGroup{Scope: app.ScopeProject, ProjectRoot: root, Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}, nil
 }
 
 func (r *runtimeOwner) persistProcess(item app.Process) error {
@@ -463,7 +481,7 @@ func (r *runtimeOwner) persistProcess(item app.Process) error {
 	}
 	updated := false
 	for index := range r.state.Groups {
-		if runtimeGroupKey(r.state.Groups[index].ProjectRoot, r.state.Groups[index].Name) == runtimeGroupKey(group.ProjectRoot, group.Name) {
+		if scopedRuntimeGroupKey(r.state.Groups[index].Scope, r.state.Groups[index].ProjectRoot, r.state.Groups[index].Name) == scopedRuntimeGroupKey(group.Scope, group.ProjectRoot, group.Name) {
 			r.state.Groups[index] = group
 			updated = true
 			break
@@ -476,17 +494,17 @@ func (r *runtimeOwner) persistProcess(item app.Process) error {
 }
 
 func (r *runtimeOwner) removeProcess(item app.Process) error {
-	if item.Root == "" || item.Name == "" {
+	if item.Name == "" || item.Scope != app.ScopeGlobal && item.Root == "" {
 		return nil
 	}
 	r.stateMu.Lock()
 	defer r.stateMu.Unlock()
-	key := runtimeGroupKey(filepath.Clean(item.Root), item.Name)
+	key := scopedRuntimeGroupKey(item.Scope, filepath.Clean(item.Root), item.Name)
 	previous := make([]RuntimeGroup, len(r.state.Groups))
 	copy(previous, r.state.Groups)
 	filtered := make([]RuntimeGroup, 0, len(previous))
 	for _, group := range previous {
-		if runtimeGroupKey(group.ProjectRoot, group.Name) == key && (item.StartIdentity == "" || group.StartIdentity == item.StartIdentity) {
+		if scopedRuntimeGroupKey(group.Scope, group.ProjectRoot, group.Name) == key && (item.StartIdentity == "" || group.StartIdentity == item.StartIdentity) {
 			continue
 		}
 		filtered = append(filtered, group)
@@ -610,7 +628,7 @@ func (r *runtimeOwner) reconcileStartup(supervisor *app.Supervisor, grace time.D
 		if reclaimErr != nil {
 			message = fmt.Sprintf("recorded process group was left unresolved: %v", reclaimErr)
 			remaining = append(remaining, group)
-			if err := supervisor.AddUnresolved(group.ProjectRoot, group.Name, group.LeaderPID, group.PGID, group.StartIdentity); err != nil {
+			if err := supervisor.AddUnresolvedScoped(group.Scope, group.ProjectRoot, group.Name, group.LeaderPID, group.PGID, group.StartIdentity); err != nil {
 				return nil, fmt.Errorf("retain unresolved %s/%s: %w", group.ProjectRoot, group.Name, err)
 			}
 		}

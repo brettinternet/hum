@@ -12,6 +12,7 @@ import (
 	urfavecli "github.com/urfave/cli/v3"
 
 	"hum/internal/daemon"
+	"hum/internal/project"
 	"hum/internal/protocol"
 )
 
@@ -53,9 +54,12 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	}
 	cwd := selection.cwd
 	selector := selection.selector
-	manifest, err := loadManifestOrEmpty(cwd)
-	if err != nil {
-		return inputCommandError(cmd, writer, name, err)
+	manifest := manifestState{byName: make(map[string]project.Definition)}
+	if selection.scope != "global" {
+		manifest, err = loadManifestOrEmpty(cwd)
+		if err != nil {
+			return inputCommandError(cmd, writer, name, err)
+		}
 	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
@@ -74,7 +78,7 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	defer client.Close()
 
 	definition, declared := manifest.byName[name]
-	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 	if err != nil {
 		if !isNotFound(err) {
 			return inputCommandError(cmd, writer, name, err)
@@ -102,7 +106,7 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	if inputCwd == "" {
 		inputCwd = manifest.root
 	}
-	result, err := client.Input(ctx, daemon.InputRequest{Name: name, Cwd: inputCwd, Root: root, Data: data})
+	result, err := client.Input(ctx, daemon.InputRequest{Name: name, Scope: selection.scope, Cwd: inputCwd, Root: root, Data: data})
 	if err != nil {
 		var notRunning *daemon.SessionNotRunningError
 		if errors.As(err, &notRunning) {

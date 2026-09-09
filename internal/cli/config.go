@@ -309,11 +309,15 @@ func crossScopeNotFoundMessage(err error, action string) string {
 		if !ok {
 			continue
 		}
-		root, _ := match["project_root"].(string)
-		if root == "" {
+		scope, _ := match["scope"].(string)
+		if scope == "global" {
+			lines = append(lines, "hum --global "+action)
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("hum --project %s %s", shellEscape(root), action))
+		root, _ := match["project_root"].(string)
+		if root != "" {
+			lines = append(lines, fmt.Sprintf("hum --project %s %s", shellEscape(root), action))
+		}
 	}
 	if len(lines) == 0 {
 		return message + ". Run hum list --all to see every scope."

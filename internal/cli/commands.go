@@ -325,6 +325,9 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 	for _, command := range commands {
 		if command != nil {
 			command.ShellComplete = completeProcessNames
+			if command.Name != "serve" && command.Name != "shutdown" && command.Name != "mcp" && command.Name != "skill" {
+				command.Flags = append(command.Flags, &urfavecli.BoolFlag{Name: "global", Aliases: []string{"g"}, DefaultText: "false", Usage: "use the explicit machine-wide global process namespace"})
+			}
 		}
 	}
 	return commands
@@ -395,6 +398,9 @@ func serveCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 }
 
 func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
+	if rawScopeFlag(cmd, "global", "g") {
+		_ = cmd.Set("global", "true")
+	}
 	if rawRunMissingNameBeforeSeparator(cmd) {
 		return "", nil, errors.New("run requires a process name before --")
 	}
@@ -505,13 +511,15 @@ func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool
 			name = "json"
 		case "-C":
 			name = "project"
+		case "-g":
+			name = "global"
 		default:
 			if strings.HasPrefix(flagName, "--") {
 				name = strings.TrimPrefix(flagName, "--")
 			}
 		}
 		switch name {
-		case "detach", "json", "tty":
+		case "detach", "json", "tty", "global":
 			if hasValue {
 				return fmt.Errorf("--%s does not take a value", name)
 			}
@@ -565,9 +573,12 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	if err != nil {
 		return err
 	}
-	manifest, err := loadManifestOrEmpty(cwd)
-	if err != nil {
-		return err
+	manifest := manifestState{byName: make(map[string]project.Definition)}
+	if selection.scope != "global" {
+		manifest, err = loadManifestOrEmpty(cwd)
+		if err != nil {
+			return err
+		}
 	}
 	manifest.selector = selection.selector
 	definition, declared := manifest.byName[name]
@@ -582,7 +593,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return err
 	}
 	defer client.Close()
-	current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+	current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 	if getErr == nil && app.IsActiveState(current.State) {
 		return fmt.Errorf("%s is already running; join it with %s or stop it with %s", name, projectCommand(selection.selector, "attach "+name), projectCommand(selection.selector, "stop "+name))
 	}
@@ -591,12 +602,12 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	}
 	launch := func(attached bool) (app.Process, error) {
 		if len(argv) != 0 {
-			return client.Start(context.Background(), daemon.StartRequest{Name: name, Source: "ad_hoc", Root: manifest.root, Argv: argv, Cwd: cwd, Env: os.Environ(), TTY: cmd.Bool("tty"), Attached: attached})
+			return client.Start(context.Background(), daemon.StartRequest{Name: name, Scope: selection.scope, Source: "ad_hoc", Root: manifest.root, Argv: argv, Cwd: cwd, Env: os.Environ(), TTY: cmd.Bool("tty"), Attached: attached})
 		}
 		if declared {
-			return client.Start(context.Background(), daemon.StartRequest{Name: name, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: os.Environ(), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition), Attached: attached})
+			return client.Start(context.Background(), daemon.StartRequest{Name: name, Scope: selection.scope, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: os.Environ(), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition), Attached: attached})
 		}
-		return client.Start(context.Background(), daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root, Attached: attached})
+		return client.Start(context.Background(), daemon.StartRequest{Name: name, Scope: selection.scope, Root: manifest.root, Cwd: current.Cwd, Attached: attached})
 	}
 	if cmd.Bool("detach") {
 		process, startErr := launch(false)
@@ -639,7 +650,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		}
 		after = &value
 	}
-	follower, err := client.Follow(context.Background(), daemon.FollowRequest{Name: name, Cwd: manifest.root, After: after, UntilExit: true, Stream: protocol.StreamBoth, MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes)})
+	follower, err := client.Follow(context.Background(), daemon.FollowRequest{Name: name, Scope: selection.scope, Cwd: manifest.root, After: after, UntilExit: true, Stream: protocol.StreamBoth, MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes)})
 	if err != nil {
 		return err
 	}
@@ -648,6 +659,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	var localInput *ttyInput
 	if wantTTY {
 		inputRequest := ttyInputRequest(name, manifest.root, definition, argv)
+		inputRequest.Scope = selection.scope
 		if len(argv) != 0 {
 			inputRequest.Cwd, inputRequest.Root, inputRequest.Argv, inputRequest.Source = cwd, manifest.root, append([]string(nil), argv...), "ad_hoc"
 		}
@@ -734,15 +746,15 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		case os.Interrupt:
 			if !interrupted {
 				interrupted = true
-				if err := client.ControlSignal(context.Background(), daemon.SignalRequest{Name: name, Cwd: manifest.root, Signal: "SIGINT", Control: true}); err != nil && !errors.Is(err, app.ErrNotRunning) {
+				if err := client.ControlSignal(context.Background(), daemon.SignalRequest{Name: name, Scope: selection.scope, Cwd: manifest.root, Signal: "SIGINT", Control: true}); err != nil && !errors.Is(err, app.ErrNotRunning) {
 					return false, err
 				}
 				_, err := fmt.Fprintf(errWriter, "interrupt sent to %s; press Ctrl+C again to stop\n", name)
 				return false, err
 			}
-			return false, client.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: manifest.root})
+			return false, client.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 		case syscall.SIGTERM:
-			return false, client.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: manifest.root})
+			return false, client.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 		default:
 			return false, nil
 		}
@@ -769,7 +781,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		status = 128 + exit.SignalNumber
 		_, _ = fmt.Fprintf(errWriter, "%s exited with code %d\n", name, status)
 	}
-	if process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: name, Cwd: manifest.root}); getErr == nil && process.NextLaunchAt != nil {
+	if process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root}); getErr == nil && process.NextLaunchAt != nil {
 		_, _ = fmt.Fprintf(errWriter, "%s exited with code %d; on-failure restart scheduled, follow it with %s\n", name, status, projectCommand(selection.selector, "attach "+name))
 	}
 	if status == 0 {
@@ -813,9 +825,12 @@ func projectProcessList(ctx context.Context, cmd *urfavecli.Command, version, bu
 	if err != nil {
 		return nil, nil, err
 	}
-	manifest, err := loadManifestOrEmpty(selection.cwd)
-	if err != nil {
-		return nil, nil, err
+	manifest := manifestState{byName: make(map[string]project.Definition)}
+	if selection.scope != "global" {
+		manifest, err = loadManifestOrEmpty(selection.cwd)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	manifest.selector = selection.selector
 	cfg, err := cliConfig(cmd, version, buildTime)
@@ -834,7 +849,7 @@ func projectProcessList(ctx context.Context, cmd *urfavecli.Command, version, bu
 		return processes, nil, nil
 	}
 	defer client.Close()
-	processes, err := client.List(ctx, daemon.ListRequest{Cwd: selection.cwd, All: all, IncludeCompleted: true})
+	processes, err := client.List(ctx, daemon.ListRequest{Scope: selection.scope, Cwd: selection.cwd, All: all, IncludeCompleted: true})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -884,9 +899,12 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return err
 	}
 	cwd := selection.cwd
-	manifest, err := loadManifestOrEmpty(cwd)
-	if err != nil {
-		return err
+	manifest := manifestState{byName: make(map[string]project.Definition)}
+	if selection.scope != "global" {
+		manifest, err = loadManifestOrEmpty(cwd)
+		if err != nil {
+			return err
+		}
 	}
 	manifest.selector = selection.selector
 	cfg, err := cliConfig(cmd, version, buildTime)
@@ -907,7 +925,7 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return err
 	}
 	defer client.Close()
-	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd})
+	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: cwd})
 	warnings := client.StartupWarnings()
 	if !cmd.Bool("json") {
 		if warningErr := writeStartupWarnings(errWriter, warnings); warningErr != nil {
@@ -972,9 +990,12 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	if err != nil {
 		return err
 	}
-	manifest, err := loadManifestOrEmpty(selection.cwd)
-	if err != nil {
-		return err
+	manifest := manifestState{byName: make(map[string]project.Definition)}
+	if selection.scope != "global" {
+		manifest, err = loadManifestOrEmpty(selection.cwd)
+		if err != nil {
+			return err
+		}
 	}
 	manifest.selector = selection.selector
 	cfg, err := cliConfig(cmd, version, buildTime)
@@ -991,7 +1012,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	defer client.Close()
 
 	name := args[0]
-	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 	if err != nil {
 		if isNotFound(err) {
 			return inputNotFoundError(name, manifest.selector)
@@ -1013,6 +1034,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	var localInput *ttyInput
 	if process.TTY {
 		inputRequest := ttyInputRequest(name, inputCwd, project.Definition{}, nil)
+		inputRequest.Scope = selection.scope
 		inputRequest.Root = root
 		inputRequest.Cwd = inputCwd
 		inputRequest.Argv = nil
@@ -1048,7 +1070,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	var snapshot, replayOldest *protocol.Cursor
 	if replayTail > 0 {
 		metadata, metadataErr := client.Output(ctx, daemon.OutputRequest{
-			Name: name, Cwd: root, Tail: 1, Stream: protocol.StreamBoth,
+			Name: name, Scope: selection.scope, Cwd: root, Tail: 1, Stream: protocol.StreamBoth,
 			MaxEntries: 1, MaxBytes: int(cfg.ReadBytes),
 		})
 		if metadataErr != nil {
@@ -1070,7 +1092,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	// buffers newer output without subjecting an exact tail to one response's
 	// byte cap, and avoids a gap between replay and live delivery.
 	follower, err := client.Follow(context.Background(), daemon.FollowRequest{
-		Name: name, Cwd: root, After: snapshot, Stream: protocol.StreamBoth,
+		Name: name, Scope: selection.scope, Cwd: root, After: snapshot, Stream: protocol.StreamBoth,
 		MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes),
 	})
 	if err != nil {
@@ -1092,7 +1114,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	var pageAfter *protocol.Cursor
 	for snapshot != nil && replayTail > 0 {
 		page, readErr := client.Output(ctx, daemon.OutputRequest{
-			Name: name, Cwd: root, After: pageAfter, Stream: protocol.StreamBoth,
+			Name: name, Scope: selection.scope, Cwd: root, After: pageAfter, Stream: protocol.StreamBoth,
 			MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes),
 		})
 		if readErr != nil {
@@ -1227,9 +1249,12 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	cwd := selection.cwd
-	manifest, err := loadManifestOrEmpty(cwd)
-	if err != nil {
-		return err
+	manifest := manifestState{byName: make(map[string]project.Definition)}
+	if selection.scope != "global" {
+		manifest, err = loadManifestOrEmpty(cwd)
+		if err != nil {
+			return err
+		}
 	}
 	manifest.selector = selection.selector
 	cfg, err := cliConfig(cmd, version, buildTime)
@@ -1263,21 +1288,21 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	requestTail, maxEntries := logReadBounds(after, tail, cfg.ReadEntries, cmd.IsSet("tail"), cmd.Bool("follow"))
 	request := daemon.OutputRequest{
-		Name: name, Cwd: cwd, After: after, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
+		Name: name, Scope: selection.scope, Cwd: cwd, After: after, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
 		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 	if cmd.Bool("follow") {
 		signals := notifyFollowSignals()
 		defer signal.Stop(signals)
 		follower, err := client.Follow(context.Background(), daemon.FollowRequest{
-			Name: request.Name, Cwd: request.Cwd, After: request.After, SinceUnixNano: request.SinceUnixNano, Tail: request.Tail, Stream: request.Stream,
+			Name: request.Name, Scope: request.Scope, Cwd: request.Cwd, After: request.After, SinceUnixNano: request.SinceUnixNano, Tail: request.Tail, Stream: request.Stream,
 			Match: request.Match, MaxEntries: request.MaxEntries, MaxBytes: request.MaxBytes,
 		})
 		if err != nil {
 			return crossScopeNotFoundError(err, "logs "+name)
 		}
 		defer follower.Close()
-		if process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: cwd}); getErr == nil && !app.IsActiveState(process.State) {
+		if process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: cwd}); getErr == nil && !app.IsActiveState(process.State) {
 			message := logsWaitingMessage(name, process, manifest)
 			if cmd.Bool("json") {
 				err = encodeJSON(writer, eventJSON(name, output.Event{Read: &output.ReadResult{Entries: []output.Entry{{Stream: output.System, Time: time.Now(), Text: message}}}}))
@@ -1359,13 +1384,15 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 	}
 	cwd := selection.cwd
 
-	var manifest manifestState
-	if len(args) == 0 {
-		// The no-name form is intentionally strict: it has the same definition
-		// set as up, rather than falling back to an ad-hoc session.
-		manifest, err = loadManifest(cwd)
-	} else {
-		manifest, err = loadManifestOrEmpty(cwd)
+	manifest := manifestState{byName: make(map[string]project.Definition)}
+	if selection.scope != "global" {
+		if len(args) == 0 {
+			// The no-name form is intentionally strict: it has the same definition
+			// set as up, rather than falling back to an ad-hoc session.
+			manifest, err = loadManifest(cwd)
+		} else {
+			manifest, err = loadManifestOrEmpty(cwd)
+		}
 	}
 	if err != nil {
 		return projectGuidanceError(err, selection.selector)
@@ -1392,7 +1419,7 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 	}
 	requestTail, maxEntries := logReadBounds(nil, tail, cfg.ReadEntries, cmd.IsSet("tail"), cmd.Bool("follow"))
 	request := daemon.OutputRequest{
-		Cwd: cwd, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
+		Scope: selection.scope, Cwd: cwd, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
 		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 	var client *daemon.Client
@@ -1460,7 +1487,7 @@ func aggregateLogsRequest(request daemon.OutputRequest, name string) daemon.Outp
 
 func aggregateLogsFollowRequest(request daemon.OutputRequest, name string) daemon.FollowRequest {
 	return daemon.FollowRequest{
-		Name: name, Cwd: request.Cwd, After: request.After, SinceUnixNano: request.SinceUnixNano,
+		Name: name, Scope: request.Scope, Cwd: request.Cwd, After: request.After, SinceUnixNano: request.SinceUnixNano,
 		Tail: request.Tail, Stream: request.Stream, Match: request.Match, MaxEntries: request.MaxEntries, MaxBytes: request.MaxBytes,
 	}
 }
@@ -1574,7 +1601,7 @@ func aggregateLogsFollowWithOptions(ctx context.Context, cmd *urfavecli.Command,
 			continue
 		}
 		name := names[index]
-		process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: request.Cwd})
+		process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: request.Scope, Cwd: request.Cwd})
 		if getErr != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -1658,7 +1685,7 @@ func aggregateLogsFollowWithOptions(ctx context.Context, cmd *urfavecli.Command,
 				cleanClose := false
 				fatal := aggregateLogFatalError(result.err)
 				if errors.Is(result.err, io.EOF) {
-					_, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: request.Cwd})
+					_, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: request.Scope, Cwd: request.Cwd})
 					cleanClose = getErr == nil || isNotFound(getErr)
 					fatal = !cleanClose && aggregateLogFatalError(getErr)
 				}
@@ -1791,8 +1818,10 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	cwd := selection.cwd
-	if _, err := loadManifestOrEmpty(cwd); err != nil {
-		return err
+	if selection.scope != "global" {
+		if _, err := loadManifestOrEmpty(cwd); err != nil {
+			return err
+		}
 	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
@@ -1807,6 +1836,7 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	defer client.Close()
 	result, err := client.Wait(ctx, daemon.WaitRequest{
+		Scope:     selection.scope,
 		Name:      name,
 		Cwd:       cwd,
 		After:     after,
@@ -1947,7 +1977,7 @@ func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return err
 	}
 	defer client.Close()
-	result, err := client.SignalResult(ctx, daemon.SignalRequest{Name: name, Cwd: selection.cwd, Signal: parsed.Name})
+	result, err := client.SignalResult(ctx, daemon.SignalRequest{Name: name, Scope: selection.scope, Cwd: selection.cwd, Signal: parsed.Name})
 	if err != nil {
 		if isWireCode(err, string(protocol.ErrorNotFound)) {
 			return protocol.NewWireError(protocol.ErrorNotFound, crossScopeNotFoundMessage(err, "signal "+name+" "+specification), nil)
@@ -2005,7 +2035,7 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	defer client.Close()
-	processes, err := client.List(ctx, daemon.ListRequest{Cwd: cwd})
+	processes, err := client.List(ctx, daemon.ListRequest{Scope: selection.scope, Cwd: cwd})
 	if err != nil {
 		if daemonUnavailable(err) {
 			if cmd.Bool("json") {
@@ -2035,7 +2065,7 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		if !running[name] && !resettable[name] {
 			result.Status = "not_running"
 		} else {
-			stopErr := client.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: cwd})
+			stopErr := client.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
 			if stopErr == nil {
 				result.Status = "stopped"
 				running[name] = false
@@ -2094,7 +2124,7 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	defer client.Close()
 	for _, name := range names {
-		if err := client.Remove(context.Background(), daemon.RemoveRequest{Name: name, Cwd: cwd}); err != nil {
+		if err := client.Remove(context.Background(), daemon.RemoveRequest{Name: name, Scope: selection.scope, Cwd: cwd}); err != nil {
 			return crossScopeNotFoundError(err, "remove "+name)
 		}
 		result := stopResult{Name: name, Status: "removed"}
@@ -2138,16 +2168,19 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	defer client.Close()
-	processes, err := client.List(ctx, daemon.ListRequest{Cwd: cwd})
+	processes, err := client.List(ctx, daemon.ListRequest{Scope: selection.scope, Cwd: cwd})
 	if err != nil {
 		if daemonUnavailable(err) {
 			return renderDownResults(writer, nil, cmd.Bool("json"), selection.root)
 		}
 		return err
 	}
-	manifest, err := loadManifestOrEmpty(cwd)
-	if err != nil {
-		return err
+	manifest := manifestState{byName: make(map[string]project.Definition)}
+	if selection.scope != "global" {
+		manifest, err = loadManifestOrEmpty(cwd)
+		if err != nil {
+			return err
+		}
 	}
 	manifest.selector = selection.selector
 	processes = mergeManifestProcesses(manifest, processes)
@@ -2190,7 +2223,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 				if worker == nil {
 					stopErr = errors.New("daemon connection returned nil client")
 				} else {
-					stopErr = worker.Stop(context.Background(), daemon.StopRequest{Name: name, Cwd: cwd})
+					stopErr = worker.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
 				}
 			}
 			switch {
@@ -2412,9 +2445,12 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		return err
 	}
 	cwd := selection.cwd
-	manifest, err := loadManifestOrEmpty(cwd)
-	if err != nil {
-		return err
+	manifest := manifestState{byName: make(map[string]project.Definition)}
+	if selection.scope != "global" {
+		manifest, err = loadManifestOrEmpty(cwd)
+		if err != nil {
+			return err
+		}
 	}
 	manifest.selector = selection.selector
 	cfg, err := cliConfig(cmd, version, buildTime)
@@ -2437,7 +2473,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 
 	results := make([]restartOutputResult, 0, len(names))
 	for _, name := range names {
-		request := daemon.RestartRequest{Name: name, Cwd: cwd}
+		request := daemon.RestartRequest{Name: name, Scope: selection.scope, Cwd: cwd}
 		definition, manifestLaunch := manifest.byName[name]
 		if !manifestLaunch {
 			definition = undefinedManifestDefinition(name)
@@ -2597,6 +2633,9 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
 		return err
+	}
+	if selection.scope == "global" {
+		return errors.New("hum --global up is not supported; use hum --global run NAME -- COMMAND")
 	}
 	cwd := selection.cwd
 	// A genuinely empty hum.yaml stays inert (HUM-033). No hum.yaml and no
@@ -2762,6 +2801,9 @@ func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version,
 		return err
 	}
 	cwd := selection.cwd
+	if selection.scope == "global" {
+		return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifestState{byName: make(map[string]project.Definition), selector: selection.selector}, names, false)
+	}
 	manifest, err := loadManifest(cwd)
 	if err != nil {
 		var noCandidate *project.NoCandidateError
@@ -2983,10 +3025,14 @@ type manifestLaunchState struct {
 }
 
 func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd string, manifest manifestState, name string, env []string, preserveRecovery bool) (project.Definition, manifestLaunchResult, app.Process) {
+	scope := app.ScopeProject
+	if manifest.selector == "--global" {
+		scope = app.ScopeGlobal
+	}
 	definition, ok := manifest.byName[name]
 	if !ok {
 		definition = undefinedManifestDefinition(name)
-		current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: manifest.root})
+		current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: scope, Cwd: manifest.root})
 		if getErr != nil || len(current.Argv) == 0 {
 			return definition, manifestLaunchError(definition, fmt.Errorf("no process definition or retained launch specification for %q", name)), app.Process{}
 		}
@@ -2994,7 +3040,7 @@ func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd st
 		if app.IsActiveState(current.State) {
 			return definition, manifestLaunchResultFor(definition, current, "already_running"), current
 		}
-		process, startErr := client.Start(ctx, daemon.StartRequest{Name: name, Root: manifest.root, Cwd: manifest.root, TTY: current.TTY, Restart: string(app.RestartNever)})
+		process, startErr := client.Start(ctx, daemon.StartRequest{Name: name, Scope: scope, Root: manifest.root, Cwd: current.Cwd, TTY: current.TTY, Restart: string(app.RestartNever)})
 		if startErr != nil {
 			return definition, manifestLaunchError(definition, startErr), app.Process{}
 		}

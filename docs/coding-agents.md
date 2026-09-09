@@ -60,7 +60,7 @@ Cursor and other clients that accept an `mcpServers` configuration:
 }
 ```
 
-Every tool call requires `project_root`, set to the project's absolute path.
+Tool calls accept `scope`: omit it for project scope and provide the absolute `project_root`; use `scope: "global"` without `project_root` for retained global sessions.
 
 - Prefer `up` over sequencing `start` calls when `hum.yaml` declares `after`: independent roots
   launch concurrently, each dependency waits for readiness, and each process timeout starts at
@@ -200,4 +200,4 @@ wait --match "prompt" ──> input ──> wait --match "complete"
 The same loop works with bounded `logs` instead of the first `wait`.
 ## Canonical project scopes
 
-hum selects scope automatically from the invocation directory. Git roots and linked worktrees are canonicalized physically, so symlink aliases share records while separate worktrees do not. Child cwd remains lexical. Use `hum --project /path/to/main` (or `-C` as shorthand) for explicit cross-worktree access; observation can address a removed known worktree, but launch requires an existing directory. `hum list --all` discovers every project scope. A local not-found result never falls through silently: use the copyable `--project` command or `hum list --all`. JSON process records contain `scope` (`project`) and canonical `project_root`.
+hum selects project scope automatically from the invocation directory. symlink aliases share a canonical scope while separate worktrees do not. Use `hum --project /path/to/main` for explicit cross-worktree access. Use `hum --global` (`-g`) only for machine-wide ad-hoc retained sessions; it works around commands and `run` NAME, conflicts with `--project` and `list --all`, and `init`/`up` reject it. Global `start`/`restart` reuse retained launch specifications and never read the caller's manifest; child cwd remains the lexical run directory. Use `hum --global logs proxy` for a global match reported by project not-found guidance, or `hum list --all` to discover all scopes. JSON `scope` is `project` or `global`; global records omit `project_root`.

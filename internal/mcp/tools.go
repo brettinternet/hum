@@ -74,16 +74,18 @@ type Definition struct {
 // Resolution is the canonical project root and its process definitions.
 type Resolution struct {
 	Root        string
+	Scope       string
 	Definitions []Definition
 }
 
 // InputRequest is the protocol-independent one-shot input seam used by MCP.
 // Data is already decoded and is never retained by the adapter.
 type InputRequest struct {
-	Name string
-	Cwd  string
-	Root string
-	Data []byte
+	Name  string
+	Scope string
+	Cwd   string
+	Root  string
+	Data  []byte
 }
 
 // InputResult is the stable result returned by the input tool.
@@ -212,7 +214,24 @@ type toolDefinition struct {
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {
-	return map[string]any{"type": "object", "additionalProperties": false, "properties": properties, "required": required}
+	if _, ok := properties["scope"]; !ok {
+		properties["scope"] = map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}, "default": protocol.ScopeProject, "description": "Process namespace: project (default) or global."}
+	}
+	schema := map[string]any{"type": "object", "additionalProperties": false, "properties": properties, "required": required}
+	if _, hasRoot := properties["project_root"]; hasRoot {
+		filtered := make([]string, 0, len(required))
+		for _, field := range required {
+			if field != "project_root" {
+				filtered = append(filtered, field)
+			}
+		}
+		schema["required"] = filtered
+		schema["allOf"] = []any{
+			map[string]any{"if": map[string]any{"properties": map[string]any{"scope": map[string]any{"const": protocol.ScopeProject}}}, "then": map[string]any{"required": []string{"project_root"}}},
+			map[string]any{"if": map[string]any{"required": []string{"scope"}, "properties": map[string]any{"scope": map[string]any{"const": protocol.ScopeGlobal}}}, "then": map[string]any{"not": map[string]any{"required": []string{"project_root"}}}},
+		}
+	}
+	return schema
 }
 
 func stringProperty(description string) map[string]any {
@@ -252,7 +271,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	startupWarningsSchema := map[string]any{"type": "array", "items": startupWarning}
 	process := objectSchema(map[string]any{
 		"name": map[string]any{"type": "string"}, "source": map[string]any{"type": "string"},
-		"scope": map[string]any{"type": "string", "enum": []string{"project"}}, "project_root": map[string]any{"type": "string"},
+		"scope": map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}}, "project_root": map[string]any{"type": "string"},
 		"tty": map[string]any{"type": "boolean"}, "pid": map[string]any{"type": "integer"},
 		"pgid": map[string]any{"type": "integer"}, "cwd": map[string]any{"type": "string"},
 		"argv":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
@@ -266,7 +285,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"next_launch_at": map[string]any{"type": "string"},
 		"readiness":      readiness,
 		"warnings":       startupWarningsSchema,
-	}, "name", "source", "scope", "project_root", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches")
+	}, "name", "source", "scope", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
 	restart := objectSchema(map[string]any{
@@ -330,7 +349,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		return objectSchema(map[string]any{"results": map[string]any{"type": "array", "items": items}, "warnings": startupWarningsSchema}, "results")
 	}
 	collectionProcesses := objectSchema(map[string]any{"processes": map[string]any{"type": "array", "items": process}, "warnings": startupWarningsSchema}, "processes")
-	return []toolDefinition{
+	definitions := []toolDefinition{
 		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; it never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
 		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop every running runtime record in the project and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
@@ -344,6 +363,11 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "remove", Description: "Stop and discard one runtime supervision session, its retained launch specification, and output.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
 		{Name: "signal", Description: "Send one observational signal to a running declared or ad_hoc process group without changing stop intent or automatic relaunch policy. Signal names are case-insensitive with an optional SIG prefix, and positive decimal values are accepted only when they map to the supported named signal table; the result is canonical and reports sent.", InputSchema: signalSchema, OutputSchema: signalResult},
 	}
+	const scopeDescription = " Scope is project by default or global for machine-wide ad-hoc retained sessions; project_root is required for project scope and forbidden for global scope. List all includes global records, whose scope is global and project_root is omitted."
+	for index := range definitions {
+		definitions[index].Description += scopeDescription
+	}
+	return definitions
 }
 
 func cloneProperties(src map[string]any) map[string]any {
@@ -355,7 +379,8 @@ func cloneProperties(src map[string]any) map[string]any {
 }
 
 type commonInput struct {
-	ProjectRoot   string  `json:"project_root"`
+	Scope         string  `json:"scope,omitempty"`
+	ProjectRoot   string  `json:"project_root,omitempty"`
 	All           bool    `json:"all,omitempty"`
 	Name          string  `json:"name,omitempty"`
 	NoWait        bool    `json:"no_wait,omitempty"`
@@ -391,6 +416,18 @@ func decodeInput(raw json.RawMessage) (commonInput, error) {
 	input.fields = fields
 	_, input.textSet = fields["text"]
 	_, input.base64Set = fields["base64"]
+	if input.Scope == "" {
+		input.Scope = protocol.ScopeProject
+	}
+	if input.Scope != protocol.ScopeProject && input.Scope != protocol.ScopeGlobal {
+		return input, &ToolError{Code: "invalid_request", Message: "scope must be project or global"}
+	}
+	if input.Scope == protocol.ScopeGlobal {
+		if _, present := fields["project_root"]; present {
+			return input, &ToolError{Code: "invalid_request", Message: "project_root is not allowed for global scope"}
+		}
+		return input, nil
+	}
 	if input.ProjectRoot == "" || !filepath.IsAbs(input.ProjectRoot) {
 		return input, &ToolError{Code: "invalid_request", Message: "project_root must be an absolute existing directory"}
 	}
@@ -440,6 +477,9 @@ func decodeInputPayload(input commonInput) ([]byte, error) {
 }
 
 func (s *Server) resolve(ctx context.Context, root string) (Resolution, error) {
+	if root == "" {
+		return Resolution{Root: "", Scope: protocol.ScopeGlobal}, nil
+	}
 	if s == nil || s.opts.Resolver == nil {
 		return Resolution{}, errors.New("MCP resolver is not configured")
 	}
@@ -450,6 +490,7 @@ func (s *Server) resolve(ctx context.Context, root string) (Resolution, error) {
 	if resolution.Root == "" {
 		return Resolution{}, errors.New("resolver returned an empty project root")
 	}
+	resolution.Scope = protocol.ScopeProject
 	return resolution, nil
 }
 
@@ -474,7 +515,10 @@ func effectiveRestart(policy string) string {
 }
 
 func normalizeProcess(process protocol.Process) protocol.Process {
-	return protocolProcess(orchestrate.NormalizeProcess(orchestrateProcess(process)))
+	scope, root := process.Scope, process.Root
+	process = protocolProcess(orchestrate.NormalizeProcess(orchestrateProcess(process)))
+	process.Scope, process.Root = scope, root
+	return process
 }
 
 func mcpDefinitionDriftResult(resolution Resolution, definition Definition, process protocol.Process) launchResult {
@@ -646,7 +690,7 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	if name == "input" {
 		for field := range input.fields {
 			switch field {
-			case "project_root", "name", "text", "base64":
+			case "scope", "project_root", "name", "text", "base64":
 			default:
 				return nil, &ToolError{Code: "invalid_request", Message: fmt.Sprintf("unknown input field %q", field)}
 			}
@@ -705,7 +749,7 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution Resolution, definition Definition, preserveRecovery bool) (protocol.Process, bool, string, error) {
 	shared := orchestrate.Ensure(ctx, resolution.Root, mcpDefinition(definition), s.environment(), preserveRecovery, orchestrate.EnsureOperations{
 		Get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
-			current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: root})
+			current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Scope: resolution.Scope, Name: name, Cwd: root})
 			return orchestrateProcess(current), err
 		},
 		Start: func(ctx context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
@@ -713,7 +757,7 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 			if request.Ready != nil {
 				ready = &protocol.ReadinessConfig{Match: request.Ready.Match, Timeout: request.Ready.Timeout}
 			}
-			current, err := client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: request.Name, Argv: append([]string(nil), request.Argv...), Cwd: request.Cwd, Root: request.Root, Env: append([]string(nil), request.Env...), Source: request.Source, Ready: ready, TTY: request.TTY, Restart: request.Restart})
+			current, err := client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Scope: resolution.Scope, Name: request.Name, Argv: append([]string(nil), request.Argv...), Cwd: request.Cwd, Root: request.Root, Env: append([]string(nil), request.Env...), Source: request.Source, Ready: ready, TTY: request.TTY, Restart: request.Restart})
 			return orchestrateProcess(current), err
 		},
 		IsNotFound:  func(err error) bool { return mapError(err).Code == string(protocol.ErrorNotFound) },
@@ -724,6 +768,9 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 		process = protocolProcess(*shared.Result.Process)
 	} else if shared.Process.Name != "" || shared.Process.State != "" {
 		process = protocolProcess(shared.Process)
+	}
+	if process.Name != "" {
+		process.Scope, process.Root = resolution.Scope, resolution.Root
 	}
 	if shared.Result.Error != nil {
 		return process, false, "", shared.Result.Error
@@ -739,7 +786,7 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 func (s *Server) mcpWaitForReadiness(ctx context.Context, client Client, resolution Resolution, definition Definition, process protocol.Process, initial string, timeout int64) (protocol.Process, string, error) {
 	shared, err := orchestrate.WaitForReadiness(ctx, resolution.Root, mcpDefinition(definition), orchestrateProcess(process), initial, time.Duration(timeout)*time.Millisecond, orchestrate.ReadinessOperations{
 		Get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
-			current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: root})
+			current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Scope: resolution.Scope, Name: name, Cwd: root})
 			return orchestrateProcess(current), err
 		},
 		Wait: func(ctx context.Context, request orchestrate.WaitRequest) (orchestrate.WaitResult, error) {
@@ -747,7 +794,7 @@ func (s *Server) mcpWaitForReadiness(ctx context.Context, client Client, resolut
 			if err != nil {
 				return orchestrate.WaitResult{}, err
 			}
-			waited, err := client.Wait(ctx, protocol.WaitRequest{Op: protocol.OpWait, Name: request.Name, Cwd: request.Cwd, Match: request.Match, TimeoutMS: milliseconds})
+			waited, err := client.Wait(ctx, protocol.WaitRequest{Op: protocol.OpWait, Scope: resolution.Scope, Name: request.Name, Cwd: request.Cwd, Match: request.Match, TimeoutMS: milliseconds})
 			result := orchestrate.WaitResult{Outcome: string(waited.Outcome), Cursor: uint64(waited.Cursor)}
 			if waited.Exit != nil {
 				result.Exit = &orchestrate.Exit{Code: waited.Exit.Code, Time: waited.Exit.Time, Error: waited.Exit.Error}
@@ -765,7 +812,9 @@ func (s *Server) mcpWaitForReadiness(ctx context.Context, client Client, resolut
 	if shared.Process == nil {
 		return protocol.Process{}, shared.Outcome, nil
 	}
-	return protocolProcess(*shared.Process), shared.Outcome, nil
+	result := protocolProcess(*shared.Process)
+	result.Scope, result.Root = resolution.Scope, resolution.Root
+	return result, shared.Outcome, nil
 }
 
 func mcpTimeoutMilliseconds(timeout time.Duration) (int64, error) {
@@ -787,14 +836,14 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 			return nil, mapError(err)
 		}
 		defer client.Close()
-		process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Cwd: resolution.Root})
+		process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Scope: resolution.Scope, Cwd: resolution.Root})
 		if err != nil {
 			mapped := mapError(err)
 			return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process definition or retained session %q not found", input.Name), Details: mapped.Details}
 		}
 		outcome := "already_running"
 		if !protocol.IsActiveState(process.State) {
-			process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: input.Name, Cwd: resolution.Root, Root: resolution.Root, TTY: process.TTY})
+			process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: input.Name, Scope: resolution.Scope, Cwd: process.Cwd, Root: resolution.Root, TTY: process.TTY})
 			if err != nil {
 				return nil, mapError(err)
 			}
@@ -861,7 +910,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		}
 		defer client.Close()
 		recordStartupWarnings(ctx, startupWarnings(client))
-		processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, IncludeCompleted: true})
+		processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Scope: resolution.Scope, Cwd: resolution.Root, IncludeCompleted: true})
 		if err != nil {
 			return nil, mapError(err)
 		}
@@ -925,12 +974,12 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		},
 		Skipped: func(ctx context.Context, definition orchestrate.Definition, blocked []string) orchestrate.Result {
 			return orchestrate.SkippedResult(ctx, resolution.Root, definition, blocked, func(ctx context.Context, name, root string) (orchestrate.Process, error) {
-				current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: root})
+				current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Scope: resolution.Scope, Name: name, Cwd: root})
 				return orchestrateProcess(current), err
 			})
 		},
 		List: func(ctx context.Context) ([]orchestrate.Process, error) {
-			processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, IncludeCompleted: true})
+			processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Scope: resolution.Scope, Cwd: resolution.Root, IncludeCompleted: true})
 			if err != nil {
 				return nil, err
 			}
@@ -997,10 +1046,15 @@ func definitionsHaveAfter(definitions []Definition) bool {
 	return orchestrate.DefinitionsHaveAfter(shared)
 }
 
+func listProcessKey(process protocol.Process) string {
+	return process.Scope + "\x00" + process.Root + "\x00" + process.Name
+}
+
 func (s *Server) list(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
 	byName := make(map[string]protocol.Process, len(resolution.Definitions))
 	for _, definition := range resolution.Definitions {
-		byName[definition.Name] = stoppedProcess(resolution.Root, definition)
+		process := stoppedProcess(resolution.Root, definition)
+		byName[listProcessKey(process)] = process
 	}
 	client, err := s.client(ctx, false)
 	if err != nil {
@@ -1011,13 +1065,14 @@ func (s *Server) list(ctx context.Context, resolution Resolution, input commonIn
 	}
 	defer client.Close()
 	recordStartupWarnings(ctx, startupWarnings(client))
-	processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root, All: input.All, IncludeCompleted: true})
+	processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Scope: resolution.Scope, Cwd: resolution.Root, All: input.All, IncludeCompleted: true})
 	if err != nil {
 		return nil, mapError(err)
 	}
 	recordStartupWarnings(ctx, startupWarnings(client))
 	for _, process := range processes {
-		byName[process.Name] = normalizeProcess(process)
+		process = normalizeProcess(process)
+		byName[listProcessKey(process)] = process
 	}
 	return sortedProcesses(byName), nil
 }
@@ -1027,7 +1082,15 @@ func sortedProcesses(byName map[string]protocol.Process) []protocol.Process {
 	for _, process := range byName {
 		result = append(result, process)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Name != result[j].Name {
+			return result[i].Name < result[j].Name
+		}
+		if result[i].Scope != result[j].Scope {
+			return result[i].Scope < result[j].Scope
+		}
+		return result[i].Root < result[j].Root
+	})
 	return result
 }
 
@@ -1038,7 +1101,7 @@ func (s *Server) status(ctx context.Context, resolution Resolution, name string)
 	}
 	defer client.Close()
 	recordStartupWarnings(ctx, startupWarnings(client))
-	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: resolution.Root})
+	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Scope: resolution.Scope, Cwd: resolution.Root})
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -1076,7 +1139,7 @@ func (s *Server) logs(ctx context.Context, resolution Resolution, input commonIn
 		// the oldest portion of the window instead of the most recent entries.
 		maxEntries = tail
 	}
-	request := protocol.OutputRequest{Op: protocol.OpOutput, Name: input.Name, Cwd: resolution.Root, SinceUnixNano: sinceUnixNano, Tail: tail, MaxEntries: maxEntries, MaxBytes: input.MaxBytes}
+	request := protocol.OutputRequest{Op: protocol.OpOutput, Name: input.Name, Scope: resolution.Scope, Cwd: resolution.Root, SinceUnixNano: sinceUnixNano, Tail: tail, MaxEntries: maxEntries, MaxBytes: input.MaxBytes}
 	if input.After != nil {
 		cursor := protocol.Cursor(*input.After)
 		request.After = &cursor
@@ -1103,7 +1166,7 @@ func (s *Server) wait(ctx context.Context, resolution Resolution, input commonIn
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	request := protocol.WaitRequest{Op: protocol.OpWait, Name: input.Name, Cwd: resolution.Root, Match: input.Match, TimeoutMS: timeout}
+	request := protocol.WaitRequest{Op: protocol.OpWait, Name: input.Name, Scope: resolution.Scope, Cwd: resolution.Root, Match: input.Match, TimeoutMS: timeout}
 	if input.After != nil {
 		cursor := protocol.Cursor(*input.After)
 		request.After = &cursor
@@ -1126,7 +1189,7 @@ func (s *Server) input(ctx context.Context, resolution Resolution, input commonI
 	defer client.Close()
 
 	definition, declared := findDefinition(resolution, input.Name)
-	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Cwd: resolution.Root})
+	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Scope: resolution.Scope, Cwd: resolution.Root})
 	if err != nil {
 		mapped := mapError(err)
 		if mapped.Code != string(protocol.ErrorNotFound) {
@@ -1155,7 +1218,7 @@ func (s *Server) input(ctx context.Context, resolution Resolution, input commonI
 	if cwd == "" {
 		cwd = resolution.Root
 	}
-	result, err := client.Input(ctx, InputRequest{Name: input.Name, Cwd: cwd, Root: root, Data: append([]byte(nil), input.Data...)})
+	result, err := client.Input(ctx, InputRequest{Name: input.Name, Scope: resolution.Scope, Cwd: cwd, Root: root, Data: append([]byte(nil), input.Data...)})
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -1201,7 +1264,7 @@ func (s *Server) down(ctx context.Context, resolution Resolution) (any, error) {
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Cwd: resolution.Root})
+	processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Scope: resolution.Scope, Cwd: resolution.Root})
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -1212,7 +1275,7 @@ func (s *Server) down(ctx context.Context, resolution Resolution) (any, error) {
 	for _, process := range sortedProcesses(byName) {
 		result := stopResult{Name: process.Name, State: "not_running"}
 		if protocol.IsActiveState(process.State) || process.State == "starting" || processNeedsRestartControl(process) {
-			if stopErr := client.Stop(ctx, protocol.StopRequest{Op: protocol.OpStop, Name: process.Name, Cwd: resolution.Root}); stopErr != nil {
+			if stopErr := client.Stop(ctx, protocol.StopRequest{Op: protocol.OpStop, Name: process.Name, Scope: resolution.Scope, Cwd: resolution.Root}); stopErr != nil {
 				result.State = "error"
 				result.Error = mapError(stopErr)
 			} else {
@@ -1230,7 +1293,7 @@ func (s *Server) remove(ctx context.Context, resolution Resolution, name string)
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	if err := client.Remove(ctx, protocol.RemoveRequest{Op: protocol.OpRemove, Name: name, Cwd: resolution.Root}); err != nil {
+	if err := client.Remove(ctx, protocol.RemoveRequest{Op: protocol.OpRemove, Name: name, Scope: resolution.Scope, Cwd: resolution.Root}); err != nil {
 		return nil, mapError(err)
 	}
 	return stopResult{Name: name, State: "removed"}, nil
@@ -1246,7 +1309,7 @@ func (s *Server) signal(ctx context.Context, resolution Resolution, input common
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Cwd: resolution.Root})
+	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Scope: resolution.Scope, Cwd: resolution.Root})
 	if err != nil {
 		mapped := mapError(err)
 		if mapped.Code == string(protocol.ErrorNotFound) {
@@ -1258,6 +1321,7 @@ func (s *Server) signal(ctx context.Context, resolution Resolution, input common
 		return nil, &ToolError{Code: string(protocol.ErrorNotRunning), Message: fmt.Sprintf("process %q is not running; start it with hum start %s", input.Name, input.Name)}
 	}
 	request := protocol.NewSignalRequest(input.Name, resolution.Root, parsed.Name)
+	request.Scope = resolution.Scope
 	result, signalErr := client.SignalResult(ctx, request)
 	if signalErr != nil {
 		return nil, mapError(signalErr)
@@ -1358,7 +1422,7 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 	name := input.Name
 	definition, declared := findDefinition(resolution, name)
 	if !declared {
-		if process, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: resolution.Root}); getErr != nil {
+		if process, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Scope: resolution.Scope, Cwd: resolution.Root}); getErr != nil {
 			return nil, mapError(getErr)
 		} else {
 			definition = Definition{Name: name, Source: process.Source, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...)}
@@ -1369,7 +1433,7 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 		return nil, err
 	}
 
-	request := protocol.RestartRequest{Op: protocol.OpRestart, Name: name, Cwd: resolution.Root}
+	request := protocol.RestartRequest{Op: protocol.OpRestart, Name: name, Scope: resolution.Scope, Cwd: resolution.Root}
 	if declared {
 		request.Root, request.Cwd, request.Update = resolution.Root, definition.Cwd, true
 		request.Argv, request.Env, request.Source, request.Ready, request.TTY = append([]string(nil), definition.Argv...), s.environment(), definition.Source, definition.Ready, definition.TTY
@@ -1425,7 +1489,7 @@ func (s *Server) stop(ctx context.Context, resolution Resolution, name string) (
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Cwd: resolution.Root})
+	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Scope: resolution.Scope, Cwd: resolution.Root})
 	if err != nil {
 		mapped := mapError(err)
 		if mapped.Code == string(protocol.ErrorNotFound) {
@@ -1436,7 +1500,7 @@ func (s *Server) stop(ctx context.Context, resolution Resolution, name string) (
 	if !protocol.IsActiveState(process.State) && process.State != "starting" && !processNeedsRestartControl(process) {
 		return map[string]string{"name": name, "state": "not_running"}, nil
 	}
-	if err := client.Stop(ctx, protocol.StopRequest{Op: protocol.OpStop, Name: name, Cwd: resolution.Root}); err != nil {
+	if err := client.Stop(ctx, protocol.StopRequest{Op: protocol.OpStop, Name: name, Scope: resolution.Scope, Cwd: resolution.Root}); err != nil {
 		return nil, mapError(err)
 	}
 	return map[string]string{"name": name, "state": "stopped"}, nil

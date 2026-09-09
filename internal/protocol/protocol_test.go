@@ -87,12 +87,36 @@ func TestSignalExitRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGlobalScopeRequests(t *testing.T) {
+	encoded, err := json.Marshal(GetRequest{Op: OpGet, Scope: ScopeGlobal, Name: "proxy", Cwd: "/caller"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"scope":"global"`) {
+		t.Fatalf("global request JSON = %s", encoded)
+	}
+	var legacy GetRequest
+	if err := json.Unmarshal([]byte(`{"op":"get","name":"proxy","cwd":"/project"}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Scope != "" {
+		t.Fatalf("legacy scope = %q, want daemon project default", legacy.Scope)
+	}
+	processJSON, err := json.Marshal(Process{Name: "proxy", Scope: ScopeGlobal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(processJSON), "project_root") {
+		t.Fatalf("global process JSON includes project_root: %s", processJSON)
+	}
+}
+
 func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	hello, err := json.Marshal(NewHello())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":16}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":17}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -661,7 +685,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":16}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":17}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError

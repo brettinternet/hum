@@ -636,8 +636,8 @@ The launching client supplies cwd and its full environment.
 
 `hum mcp` serves JSON-RPC over stdin/stdout.
 
-- Every request requires an absolute, existing `project_root` chosen by the same root rule as
-  the CLI.
+- Every request accepts `scope`: `project` (default) requires an absolute existing
+  `project_root`, while `global` rejects `project_root` and addresses retained ad-hoc sessions.
 - It exposes twelve tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `input`,
   `restart`, `stop`, `remove`, and `signal`.
 - `input` accepts exactly one non-empty `text` or `base64` payload, uses the same bounded
@@ -738,4 +738,4 @@ Exactly one attached `hum run` owns input.
 - MCP exposes `tty` snapshots and the bounded `input` tool for exact prompt responses.
 ## Canonical project scopes
 
-hum selects scope automatically from the invocation directory. Git roots and linked worktrees are canonicalized physically, so symlink aliases share records while separate worktrees do not. Child cwd remains lexical. Use `hum --project /path/to/main` (or `-C` as shorthand) for explicit cross-worktree access; observation can address a removed known worktree, but launch requires an existing directory. `hum list --all` discovers every project scope. A local not-found result never falls through silently: use the copyable `--project` command or `hum list --all`. JSON process records contain `scope` (`project`) and canonical `project_root`.
+hum selects project scope automatically from the invocation directory. Git roots and linked worktrees are canonicalized physically, so symlink aliases share records while separate worktrees do not. Child cwd remains lexical. Use `hum --project /path/to/main` (or `-C`) for explicit cross-worktree access. The deliberate `--global` selector (interactive shorthand `-g`) creates a machine-wide namespace only for ad-hoc retained sessions; selection never changes child cwd, reads a manifest, or falls back across scopes. It applies before or after lifecycle commands and before or after `run` NAME, conflicts with `--project` and `list --all`, and is rejected by `init` and `up`. Global `start` and `restart` reuse only a retained launch specification. `hum list --all` includes a `global` group with `hum --global` selectors, and project misses include copyable global guidance such as `hum --global logs proxy`. JSON process records contain `scope` (`project` or `global`); global records omit `project_root`.

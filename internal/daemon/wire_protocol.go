@@ -21,7 +21,7 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		if req.Start == nil {
 			return wireRequest{}, errors.New("start request is missing payload")
 		}
-		wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env = req.Start.Name, req.Start.Argv, req.Start.Cwd, req.Start.Root, req.Start.Env
+		wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env, wire.Scope = req.Start.Name, req.Start.Argv, req.Start.Cwd, req.Start.Root, req.Start.Env, req.Start.Scope
 		wire.Source, wire.Ready, wire.TTY, wire.Restart, wire.Attached = req.Start.Source, wireReadinessConfigFromProtocol(req.Start.Ready), req.Start.TTY, req.Start.Restart, req.Start.Attached
 		if req.Start.TTYSize != nil {
 			wire.Columns, wire.Rows = req.Start.TTYSize.Columns, req.Start.TTYSize.Rows
@@ -30,22 +30,22 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		if req.List == nil {
 			return wireRequest{}, errors.New("list request is missing payload")
 		}
-		wire.Cwd, wire.All, wire.IncludeCompleted = req.List.Cwd, req.List.All, req.List.IncludeCompleted
+		wire.Cwd, wire.All, wire.IncludeCompleted, wire.Scope = req.List.Cwd, req.List.All, req.List.IncludeCompleted, req.List.Scope
 	case protocol.OpGet:
 		if req.Get == nil {
 			return wireRequest{}, errors.New("get request is missing payload")
 		}
-		wire.Name, wire.Cwd = req.Get.Name, req.Get.Cwd
+		wire.Name, wire.Cwd, wire.Scope = req.Get.Name, req.Get.Cwd, req.Get.Scope
 	case protocol.OpOutput:
 		if req.Output == nil {
 			return wireRequest{}, errors.New("output request is missing payload")
 		}
-		wire = wireRequestFromProtocolOutput(string(req.Op), req.Output.Name, req.Output.Cwd, req.Output.After, req.Output.SinceMS, req.Output.SinceUnixNano, req.Output.Tail, req.Output.Stream, req.Output.Match, req.Output.MaxEntries, req.Output.MaxBytes)
+		wire = wireRequestFromProtocolOutput(string(req.Op), req.Output.Name, req.Output.Cwd, req.Output.After, req.Output.SinceMS, req.Output.SinceUnixNano, req.Output.Tail, req.Output.Stream, req.Output.Match, req.Output.MaxEntries, req.Output.MaxBytes, req.Output.Scope)
 	case protocol.OpFollow:
 		if req.Follow == nil {
 			return wireRequest{}, errors.New("follow request is missing payload")
 		}
-		wire = wireRequestFromProtocolOutput(string(req.Op), req.Follow.Name, req.Follow.Cwd, req.Follow.After, req.Follow.SinceMS, req.Follow.SinceUnixNano, req.Follow.Tail, req.Follow.Stream, req.Follow.Match, req.Follow.MaxEntries, req.Follow.MaxBytes)
+		wire = wireRequestFromProtocolOutput(string(req.Op), req.Follow.Name, req.Follow.Cwd, req.Follow.After, req.Follow.SinceMS, req.Follow.SinceUnixNano, req.Follow.Tail, req.Follow.Stream, req.Follow.Match, req.Follow.MaxEntries, req.Follow.MaxBytes, req.Follow.Scope)
 		wire.UntilExit = req.Follow.UntilExit
 	case protocol.OpWait:
 		if req.Wait == nil {
@@ -56,17 +56,17 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		if req.Signal == nil {
 			return wireRequest{}, errors.New("signal request is missing payload")
 		}
-		wire.Name, wire.Cwd, wire.Signal, wire.Control = req.Signal.Name, req.Signal.Cwd, req.Signal.Signal, req.Signal.Control
+		wire.Name, wire.Cwd, wire.Signal, wire.Control, wire.Scope = req.Signal.Name, req.Signal.Cwd, req.Signal.Signal, req.Signal.Control, req.Signal.Scope
 	case protocol.OpStop:
 		if req.Stop == nil {
 			return wireRequest{}, errors.New("stop request is missing payload")
 		}
-		wire.Name, wire.Cwd = req.Stop.Name, req.Stop.Cwd
+		wire.Name, wire.Cwd, wire.Scope = req.Stop.Name, req.Stop.Cwd, req.Stop.Scope
 	case protocol.OpRestart:
 		if req.Restart == nil {
 			return wireRequest{}, errors.New("restart request is missing payload")
 		}
-		wire.Name, wire.Cwd, wire.Root = req.Restart.Name, req.Restart.Cwd, req.Restart.Root
+		wire.Name, wire.Cwd, wire.Root, wire.Scope = req.Restart.Name, req.Restart.Cwd, req.Restart.Root, req.Restart.Scope
 		wire.Update, wire.Argv, wire.Env = req.Restart.Update, req.Restart.Argv, req.Restart.Env
 		wire.Source, wire.Ready, wire.TTY, wire.Restart = req.Restart.Source, wireReadinessConfigFromProtocol(req.Restart.Ready), req.Restart.TTY, req.Restart.Restart
 		if req.Restart.TTYSize != nil {
@@ -76,7 +76,7 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		if req.Remove == nil {
 			return wireRequest{}, errors.New("remove request is missing payload")
 		}
-		wire.Name, wire.Cwd = req.Remove.Name, req.Remove.Cwd
+		wire.Name, wire.Cwd, wire.Scope = req.Remove.Name, req.Remove.Cwd, req.Remove.Scope
 	case protocol.OpShutdown:
 		if req.Shutdown == nil {
 			return wireRequest{}, errors.New("shutdown request is missing payload")
@@ -86,7 +86,7 @@ func wireRequestFromProtocol(req protocol.Request) (wireRequest, error) {
 		if req.InputAttach == nil {
 			return wireRequest{}, errors.New("input attach request is missing payload")
 		}
-		wire.Name, wire.Cwd, wire.Root = req.InputAttach.Name, req.InputAttach.Cwd, req.InputAttach.Root
+		wire.Name, wire.Cwd, wire.Root, wire.Scope = req.InputAttach.Name, req.InputAttach.Cwd, req.InputAttach.Root, req.InputAttach.Scope
 		wire.TTY, wire.Argv, wire.Source, wire.Ready = req.InputAttach.TTY, req.InputAttach.Argv, req.InputAttach.Source, wireReadinessConfigFromProtocol(req.InputAttach.Ready)
 		wire.Columns, wire.Rows = req.InputAttach.Columns, req.InputAttach.Rows
 	case protocol.OpInputRelease:
@@ -129,8 +129,11 @@ func appReadinessConfigFromWire(config *wireReadinessConfig) *app.ReadinessConfi
 	return &app.ReadinessConfig{Match: config.Match, Timeout: config.Timeout}
 }
 
-func wireRequestFromProtocolOutput(op, name, cwd string, after *protocol.Cursor, sinceMS, sinceUnixNano int64, tail int, stream protocol.Stream, match string, maxEntries, maxBytes int) wireRequest {
+func wireRequestFromProtocolOutput(op, name, cwd string, after *protocol.Cursor, sinceMS, sinceUnixNano int64, tail int, stream protocol.Stream, match string, maxEntries, maxBytes int, scopes ...string) wireRequest {
 	wire := wireRequest{Op: op, Name: name, Cwd: cwd, SinceMS: sinceMS, SinceUnixNano: sinceUnixNano, Tail: tail, Stream: string(stream), Match: match, MaxEntries: maxEntries, MaxBytes: maxBytes}
+	if len(scopes) > 0 {
+		wire.Scope = scopes[0]
+	}
 	if after != nil {
 		value := uint64(*after)
 		wire.After = &value
@@ -139,7 +142,7 @@ func wireRequestFromProtocolOutput(op, name, cwd string, after *protocol.Cursor,
 }
 
 func wireRequestFromProtocolWait(req *protocol.WaitRequest) wireRequest {
-	wire := wireRequest{Op: string(protocol.OpWait), Name: req.Name, Cwd: req.Cwd, Match: req.Match, TimeoutMS: req.TimeoutMS}
+	wire := wireRequest{Op: string(protocol.OpWait), Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Match: req.Match, TimeoutMS: req.TimeoutMS}
 	if req.After != nil {
 		value := uint64(*req.After)
 		wire.After = &value
