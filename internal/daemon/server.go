@@ -184,12 +184,12 @@ func (s *Server) monitorUnresolved() {
 		select {
 		case <-ticker.C:
 			for _, item := range s.supervisor.UnresolvedProcesses() {
-				group := RuntimeGroup{Scope: "project", ProjectRoot: item.Root, Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}
+				group := RuntimeGroup{Scope: item.Scope, ProjectRoot: item.Root, Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}
 				if !runtimeGroupAlive(group.PGID) {
 					// Keep blocking duplicate launches until durable state no longer
 					// claims the unresolved group.
 					if s.owner.removeProcess(item) == nil {
-						_ = s.supervisor.ClearUnresolved(item.Root, item.Name)
+						_ = s.supervisor.ClearUnresolvedScoped(item.Scope, item.Root, item.Name)
 					}
 				}
 			}
@@ -416,7 +416,11 @@ func (s *Server) activeProcessNames() []string {
 	sort.Strings(projects)
 	var names []string
 	for _, root := range projects {
-		items, err := s.supervisor.List(root, false)
+		scope := app.ScopeProject
+		if root == "" {
+			scope = app.ScopeGlobal
+		}
+		items, err := s.supervisor.ListScoped(scope, root, false)
 		if err != nil {
 			continue
 		}
@@ -437,7 +441,11 @@ func (s *Server) trackProcess(p app.Process) {
 }
 
 func (s *Server) listProcesses(cwd string, all, includeCompleted bool) ([]app.Process, error) {
-	first, err := s.supervisor.List(cwd, includeCompleted)
+	return s.listProcessesScoped(cwd, app.ScopeProject, all, includeCompleted)
+}
+
+func (s *Server) listProcessesScoped(cwd, scope string, all, includeCompleted bool) ([]app.Process, error) {
+	first, err := s.supervisor.ListScoped(scope, cwd, includeCompleted)
 	if err != nil {
 		return nil, err
 	}
@@ -464,11 +472,17 @@ func (s *Server) listProcesses(cwd string, all, includeCompleted bool) ([]app.Pr
 		if _, ok := seen[root]; ok {
 			continue
 		}
-		other, err := s.supervisor.List(root, includeCompleted)
+		other, err := s.supervisor.ListScoped(app.ScopeProject, root, includeCompleted)
 		if err != nil {
 			continue
 		}
 		items = append(items, other...)
+	}
+	if scope != app.ScopeGlobal {
+		global, globalErr := s.supervisor.ListScoped(app.ScopeGlobal, "", includeCompleted)
+		if globalErr == nil {
+			items = append(items, global...)
+		}
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Root != items[j].Root {
@@ -523,6 +537,10 @@ func (s *Server) serveConn(conn net.Conn) {
 			_ = writeProtocolError(encoder, protocolReq.Op, err)
 			continue
 		}
+		if err := normalizeWireScope(&req); err != nil {
+			_ = writeProtocolError(encoder, protocolReq.Op, err)
+			continue
+		}
 		shutdownResponseRegistered := false
 		if req.Op == "shutdown" {
 			shutdownResponseRegistered = s.registerShutdownResponse()
@@ -563,6 +581,22 @@ func dispatchError(op string, err error) wireResponse {
 	return wireResponse{Op: op, Error: protocolWireError(err)}
 }
 
+func normalizeWireScope(req *wireRequest) error {
+	if req.Scope == "" {
+		req.Scope = app.ScopeProject
+	}
+	if req.Scope != app.ScopeProject && req.Scope != app.ScopeGlobal {
+		return protocol.NewWireError(protocol.ErrorInvalidRequest, "scope must be project or global", nil)
+	}
+	if req.Scope == app.ScopeGlobal && req.Root != "" {
+		return protocol.NewWireError(protocol.ErrorInvalidRequest, "global scope cannot include a project root", nil)
+	}
+	if req.Scope == app.ScopeGlobal && req.All {
+		return protocol.NewWireError(protocol.ErrorInvalidRequest, "global scope conflicts with all; all already spans every scope", nil)
+	}
+	return nil
+}
+
 func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 	switch req.Op {
 	case "start":
@@ -585,7 +619,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		if req.Columns != 0 || req.Rows != 0 {
 			ttySize = &app.TTYSize{Columns: req.Columns, Rows: req.Rows}
 		}
-		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Source: req.Source, Root: req.Root, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...), Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize, Restart: app.RestartPolicy(req.Restart), Attached: req.Attached})
+		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Scope: req.Scope, Source: req.Source, Root: req.Root, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...), Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize, Restart: app.RestartPolicy(req.Restart), Attached: req.Attached})
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
@@ -598,7 +632,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		if req.Cwd == "" {
 			req.Cwd = "."
 		}
-		items, err := s.listProcesses(req.Cwd, req.All, req.IncludeCompleted)
+		items, err := s.listProcessesScoped(req.Cwd, req.Scope, req.All, req.IncludeCompleted)
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
@@ -607,7 +641,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		}
 		return wireResponse{Op: req.Op, OK: true, Processes: wireProcessesFromApp(items), Warnings: s.StartupWarnings()}, false
 	case "get":
-		p, err := s.supervisor.Get(req.Cwd, req.Name)
+		p, err := s.supervisor.GetScoped(req.Scope, req.Cwd, req.Name)
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
@@ -617,7 +651,7 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		process.NextCursor = &nextCursor
 		return wireResponse{Op: req.Op, OK: true, Process: &process, Warnings: s.StartupWarnings()}, false
 	case "output":
-		store, err := s.supervisor.Output(req.Cwd, req.Name)
+		store, err := s.supervisor.OutputScoped(req.Scope, req.Cwd, req.Name)
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
@@ -637,27 +671,27 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		}
 		var signalErr error
 		if req.Control {
-			signalErr = s.supervisor.SignalControl(req.Cwd, req.Name, parsed.Signal)
+			signalErr = s.supervisor.SignalControlScoped(req.Scope, req.Cwd, req.Name, parsed.Signal)
 		} else {
-			signalErr = s.supervisor.SignalObservational(req.Cwd, req.Name, parsed.Signal)
+			signalErr = s.supervisor.SignalObservationalScoped(req.Scope, req.Cwd, req.Name, parsed.Signal)
 		}
 		if signalErr != nil {
 			return dispatchError(req.Op, signalErr), false
 		}
 		return wireResponse{Op: req.Op, OK: true, Name: req.Name, Signal: &wireSignal{Name: parsed.Name, Number: parsed.Number}, Status: "sent"}, false
 	case "stop":
-		if err := s.supervisor.Stop(context.Background(), req.Cwd, req.Name); err != nil {
+		if err := s.supervisor.StopScoped(context.Background(), req.Scope, req.Cwd, req.Name); err != nil {
 			return dispatchError(req.Op, err), false
 		}
 		var process *wireProcess
-		if item, err := s.supervisor.Get(req.Cwd, req.Name); err == nil {
+		if item, err := s.supervisor.GetScoped(req.Scope, req.Cwd, req.Name); err == nil {
 			s.trackProcess(item)
 			value := wireProcessFromApp(item)
 			process = &value
 		}
 		return wireResponse{Op: req.Op, OK: true, Process: process}, false
 	case "remove":
-		if err := s.supervisor.Remove(context.Background(), req.Cwd, req.Name); err != nil {
+		if err := s.supervisor.RemoveScoped(context.Background(), req.Scope, req.Cwd, req.Name); err != nil {
 			return dispatchError(req.Op, err), false
 		}
 		return wireResponse{Op: req.Op, OK: true}, false
@@ -684,7 +718,8 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 			Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize,
 			Restart: app.RestartPolicy(req.Restart),
 		}
-		process, err := s.supervisor.Restart(context.Background(), req.Cwd, req.Name, options)
+		options.Scope = req.Scope
+		process, err := s.supervisor.RestartScoped(context.Background(), req.Scope, req.Cwd, req.Name, options)
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
@@ -714,7 +749,7 @@ func (s *Server) executeWait(ctx context.Context, req wireRequest) (wireResponse
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	result, err := s.supervisor.Wait(waitCtx, req.Cwd, req.Name, options)
+	result, err := s.supervisor.WaitScoped(waitCtx, req.Scope, req.Cwd, req.Name, options)
 	if err != nil {
 		return wireResponse{}, err
 	}
@@ -788,7 +823,7 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 		_ = writeProtocolError(encoder, protocol.OpFollow, err)
 		return
 	}
-	sub, err := s.supervisor.Subscribe(req.Cwd, req.Name, options)
+	sub, err := s.supervisor.SubscribeScoped(req.Scope, req.Cwd, req.Name, options)
 	if err != nil {
 		_ = writeProtocolError(encoder, protocol.OpFollow, err)
 		return
@@ -890,12 +925,12 @@ func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protoc
 		size = &app.TTYSize{Columns: req.Columns, Rows: req.Rows}
 	}
 	if len(req.Argv) != 0 {
-		if err := s.supervisor.PrepareTTY(app.StartRequest{Name: req.Name, Root: req.Root, Cwd: req.Cwd, Argv: req.Argv, Source: req.Source, TTY: true, TTYSize: size}); err != nil {
+		if err := s.supervisor.PrepareTTYScoped(req.Scope, app.StartRequest{Name: req.Name, Scope: req.Scope, Root: req.Root, Cwd: req.Cwd, Argv: req.Argv, Source: req.Source, TTY: true, TTYSize: size}); err != nil {
 			_ = writeProtocolError(encoder, protocol.OpInputAttach, err)
 			return
 		}
 	}
-	lease, err := s.supervisor.AcquireInputAt(req.Root, req.Cwd, req.Name, true, size)
+	lease, err := s.supervisor.AcquireInputAtScoped(req.Scope, req.Root, req.Cwd, req.Name, true, size)
 	if err != nil {
 		_ = writeProtocolError(encoder, protocol.OpInputAttach, err)
 		return
@@ -1132,6 +1167,7 @@ func streamMask(stream string) output.StreamMask {
 // wire DTOs intentionally contain no environment field on responses.
 type wireRequest struct {
 	Op               string               `json:"op"`
+	Scope            string               `json:"scope,omitempty"`
 	Version          int                  `json:"version,omitempty"`
 	Name             string               `json:"name,omitempty"`
 	Argv             []string             `json:"argv,omitempty"`
@@ -1213,7 +1249,7 @@ type wireProcess struct {
 	Name         string           `json:"name"`
 	Source       string           `json:"source,omitempty"`
 	Scope        string           `json:"scope"`
-	Root         string           `json:"project_root"`
+	Root         string           `json:"project_root,omitempty"`
 	TTY          bool             `json:"tty"`
 	PID          int              `json:"pid"`
 	PGID         int              `json:"pgid"`
@@ -1293,7 +1329,12 @@ func protocolWireError(err error) *wireError {
 	}
 	var notFound *app.NotFoundError
 	if errors.As(err, &notFound) && notFound != nil {
-		details := map[string]any{"scope": "project", "project_root": notFound.Root}
+		details := map[string]any{"scope": app.ScopeProject}
+		if notFound.Root == "" {
+			details["scope"] = app.ScopeGlobal
+		} else {
+			details["project_root"] = notFound.Root
+		}
 		if len(notFound.OtherScopes) != 0 {
 			details["other_scopes"] = notFound.OtherScopes
 		}

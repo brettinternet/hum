@@ -338,6 +338,32 @@ func TestNoInProcessSupervisor(t *testing.T) {
 	}
 }
 
+func TestGlobalScopeTools(t *testing.T) {
+	global, err := decodeInput(json.RawMessage(`{"scope":"global","name":"proxy"}`))
+	if err != nil || global.Scope != protocol.ScopeGlobal || global.ProjectRoot != "" {
+		t.Fatalf("global input = %+v err=%v", global, err)
+	}
+	if _, err := decodeInput(json.RawMessage(`{"scope":"global","project_root":"","name":"proxy"}`)); err == nil {
+		t.Fatal("global input accepted project_root")
+	}
+	if _, err := decodeInput(json.RawMessage(`{"name":"proxy"}`)); err == nil {
+		t.Fatal("project input accepted without project_root")
+	}
+	got := normalizeProcess(protocol.Process{Name: "proxy", Scope: protocol.ScopeGlobal, State: protocol.StateExited})
+	if got.Scope != protocol.ScopeGlobal || got.Root != "" {
+		t.Fatalf("normalized global process = %+v", got)
+	}
+	project := protocol.Process{Name: "proxy", Scope: protocol.ScopeProject, Root: "/project"}
+	if listProcessKey(got) == listProcessKey(project) {
+		t.Fatal("global and project list keys collide")
+	}
+	for _, definition := range NewServer(Options{}).toolDefinitions() {
+		if !strings.Contains(definition.Description, "global") || !strings.Contains(definition.Description, "project_root") {
+			t.Fatalf("%s description omits global scope contract", definition.Name)
+		}
+	}
+}
+
 func TestToolSchemas(t *testing.T) {
 	s := NewServer(Options{})
 	defs := s.toolDefinitions()
@@ -345,8 +371,11 @@ func TestToolSchemas(t *testing.T) {
 	for _, d := range defs {
 		names = append(names, d.Name)
 		req := d.InputSchema["required"].([]string)
-		if !contains(req, "project_root") {
-			t.Errorf("%s does not require project_root", d.Name)
+		if contains(req, "project_root") {
+			t.Errorf("%s unconditionally requires project_root", d.Name)
+		}
+		if rules, ok := d.InputSchema["allOf"].([]any); !ok || len(rules) != 2 {
+			t.Errorf("%s lacks conditional project/global root rules", d.Name)
 		}
 		props := d.InputSchema["properties"].(map[string]any)
 		if _, ok := props["project_root"]; !ok {
@@ -1377,7 +1406,7 @@ func TestInputTool(t *testing.T) {
 		t.Fatalf("input schema = %#v", inputDefinition)
 	}
 	inputRequired, ok := inputDefinition.InputSchema["required"].([]string)
-	if !ok || !contains(inputRequired, "project_root") || !contains(inputRequired, "name") {
+	if !ok || contains(inputRequired, "project_root") || !contains(inputRequired, "name") {
 		t.Fatalf("input required fields = %#v", inputDefinition.InputSchema["required"])
 	}
 	branches, ok := inputDefinition.InputSchema["oneOf"].([]any)
@@ -1390,8 +1419,11 @@ func TestInputTool(t *testing.T) {
 			t.Fatalf("input branch %d = %#v", index, branch)
 		}
 		required, ok := branchSchema["required"].([]string)
-		if !ok || !contains(required, "project_root") || !contains(required, "name") {
+		if !ok || contains(required, "project_root") || !contains(required, "name") {
 			t.Fatalf("input branch %d required = %#v", index, branchSchema["required"])
+		}
+		if rules, ok := branchSchema["allOf"].([]any); !ok || len(rules) != 2 {
+			t.Fatalf("input branch %d lacks conditional root rules", index)
 		}
 		properties, ok := branchSchema["properties"].(map[string]any)
 		if !ok {

@@ -25,12 +25,12 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 		ArgsUsage: "",
 		Description: "Run a stdio Model Context Protocol server for one-time coding-agent registration. " +
 			"Requests with IDs run concurrently up to 64 in flight; a 65th request returns -32001 without starting, duplicate in-flight IDs return -32600, and notifications/cancelled returns -32800. Responses are serialized, and EOF or parent cancellation cancels handlers and joins the response writer. " +
-			"Every tool requires an absolute existing project_root. up honors manifest after readiness dependencies with concurrent roots, lexical results, and sorted direct blocked_by skips; no_wait is rejected before daemon contact when after is declared. start is explicitly named and never pulls in prerequisites. start and up accept only resolved explicit or discovered definitions and may start the daemon; status, logs, wait, input, restart, and stop control existing declared or ad_hoc records and never start it. " +
+			"Every tool accepts scope (project by default or global). project_root is required for project and rejected for global; global addresses machine-wide ad_hoc retained sessions, and list all includes them. up honors manifest after readiness dependencies with concurrent roots, lexical results, and sorted direct blocked_by skips; no_wait is rejected before daemon contact when after is declared. start is explicitly named and never pulls in prerequisites. start and up accept only resolved explicit or discovered definitions and may start the daemon; status, logs, wait, input, restart, and stop control existing declared or ad_hoc records and never start it. " +
 			"A process handed off by hum run is available as ad_hoc while its daemon retains the record; daemon shutdown or replacement loses that launch definition. " +
 			"Bounded child-output logs and matches use terminal-control-stripped text, while system entries, stored bytes, cursors, and limit accounting remain raw; there is no --raw flag or other raw opt-out. " +
 			"MCP wait timeout results include process_observed from the same daemon wait request without an extra round trip; false includes no-process guidance. " +
 			"Explicit definitions use deterministic argv-based environment activation with the MCP server environment. " +
-			"The eleven tools are start, up, down, list, status, logs, wait, input, restart, stop, and remove; run, serve, and shutdown are not MCP tools.",
+			"The twelve tools are start, up, down, list, status, logs, wait, input, restart, stop, remove, and signal; run, serve, and shutdown are not MCP tools.",
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 			if err := rejectProjectOverride(cmd, "mcp"); err != nil {
 				return err
@@ -133,7 +133,7 @@ func (c *mcpDaemonClient) Wait(ctx context.Context, request protocol.WaitRequest
 	return response, nil
 }
 func (c *mcpDaemonClient) Input(ctx context.Context, request mcpserver.InputRequest) (mcpserver.InputResult, error) {
-	result, err := c.client.Input(ctx, daemon.InputRequest{Name: request.Name, Cwd: request.Cwd, Root: request.Root, Data: append([]byte(nil), request.Data...)})
+	result, err := c.client.Input(ctx, daemon.InputRequest{Name: request.Name, Scope: request.Scope, Cwd: request.Cwd, Root: request.Root, Data: append([]byte(nil), request.Data...)})
 	if err != nil {
 		var notRunning *daemon.SessionNotRunningError
 		if errors.As(err, &notRunning) {
@@ -144,7 +144,7 @@ func (c *mcpDaemonClient) Input(ctx context.Context, request mcpserver.InputRequ
 	return mcpserver.InputResult{Name: request.Name, Bytes: result.Bytes, LaunchCursor: result.LaunchCursor}, nil
 }
 func (c *mcpDaemonClient) SignalResult(ctx context.Context, request protocol.SignalRequest) (protocol.SignalResult, error) {
-	return c.client.SignalResult(ctx, daemon.SignalRequest{Name: request.Name, Cwd: request.Cwd, Signal: request.Signal})
+	return c.client.SignalResult(ctx, daemon.SignalRequest{Name: request.Name, Scope: request.Scope, Cwd: request.Cwd, Signal: request.Signal})
 }
 func (c *mcpDaemonClient) Stop(ctx context.Context, request protocol.StopRequest) error {
 	return c.client.Stop(ctx, request)
@@ -159,7 +159,7 @@ func (c *mcpDaemonClient) Restart(ctx context.Context, request protocol.RestartR
 
 func mcpProcess(process app.Process) protocol.Process {
 	result := protocol.Process{
-		Name: process.Name, Source: process.Source, Root: process.Root, TTY: process.TTY, PID: process.PID, PGID: process.PGID,
+		Name: process.Name, Source: process.Source, Scope: process.Scope, Root: process.Root, TTY: process.TTY, PID: process.PID, PGID: process.PGID,
 		Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...), Start: process.Start,
 		LaunchCursor: protocol.Cursor(process.LaunchCursor), State: string(process.State), Exit: mcpExit(process.Exit),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,

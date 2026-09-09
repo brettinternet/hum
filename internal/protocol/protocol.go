@@ -12,8 +12,14 @@ import (
 
 // Version is the current private protocol version. Version 15 added explicit
 // project scope and canonical project_root snapshots; version 16 adds attached-
-// run launch/follow scoping and control-intent signal requests.
-const Version = 16
+// run launch/follow scoping and control-intent signal requests; version 17 adds
+// the explicit global process namespace.
+const Version = 17
+
+const (
+	ScopeProject = "project"
+	ScopeGlobal  = "global"
+)
 
 const (
 	RestartNever     = "never"
@@ -239,6 +245,7 @@ type ReadinessConfig struct {
 // remains the child working directory.
 type StartRequest struct {
 	Op       Operation        `json:"op"`
+	Scope    string           `json:"scope,omitempty"`
 	Name     string           `json:"name"`
 	Argv     []string         `json:"argv"`
 	Cwd      string           `json:"cwd"`
@@ -267,6 +274,7 @@ func NewStartRequest(name string, argv []string, cwd string, env []string) Start
 func (r StartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Op       Operation        `json:"op"`
+		Scope    string           `json:"scope,omitempty"`
 		Name     string           `json:"name"`
 		Argv     []string         `json:"argv"`
 		Cwd      string           `json:"cwd"`
@@ -278,7 +286,7 @@ func (r StartRequest) MarshalJSON() ([]byte, error) {
 		TTYSize  *TTYSize         `json:"tty_size,omitempty"`
 		Restart  string           `json:"restart"`
 		Attached bool             `json:"attached,omitempty"`
-	}{Op: OpStart, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart), Attached: r.Attached})
+	}{Op: OpStart, Scope: r.Scope, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart), Attached: r.Attached})
 }
 
 // UnmarshalJSON decodes a start request and validates its operation when
@@ -286,6 +294,7 @@ func (r StartRequest) MarshalJSON() ([]byte, error) {
 func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		Op       Operation        `json:"op"`
+		Scope    string           `json:"scope"`
 		Name     string           `json:"name"`
 		Argv     []string         `json:"argv"`
 		Cwd      string           `json:"cwd"`
@@ -305,7 +314,7 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
 	r.Op = OpStart
-	r.Name, r.Argv, r.Cwd, r.Root, r.Env = wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env
+	r.Name, r.Argv, r.Cwd, r.Root, r.Env, r.Scope = wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env, wire.Scope
 	r.Source, r.Ready = wire.Source, wire.Ready
 	r.TTY, r.TTYSize, r.Restart, r.Attached = wire.TTY, wire.TTYSize, effectiveRestart(wire.Restart), wire.Attached
 	return nil
@@ -314,6 +323,7 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 // ListRequest asks for process snapshots in a project or across all projects.
 type ListRequest struct {
 	Op               Operation `json:"op"`
+	Scope            string    `json:"scope,omitempty"`
 	Cwd              string    `json:"cwd"`
 	All              bool      `json:"all,omitempty"`
 	IncludeCompleted bool      `json:"include_completed,omitempty"`
@@ -328,16 +338,18 @@ func NewListRequest(cwd string, all, includeCompleted bool) ListRequest {
 func (r ListRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Op               Operation `json:"op"`
+		Scope            string    `json:"scope,omitempty"`
 		Cwd              string    `json:"cwd"`
 		All              bool      `json:"all,omitempty"`
 		IncludeCompleted bool      `json:"include_completed,omitempty"`
-	}{Op: OpList, Cwd: r.Cwd, All: r.All, IncludeCompleted: r.IncludeCompleted})
+	}{Op: OpList, Scope: r.Scope, Cwd: r.Cwd, All: r.All, IncludeCompleted: r.IncludeCompleted})
 }
 
 // UnmarshalJSON decodes a list request.
 func (r *ListRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		Op               Operation `json:"op"`
+		Scope            string    `json:"scope"`
 		Cwd              string    `json:"cwd"`
 		All              bool      `json:"all"`
 		IncludeCompleted bool      `json:"include_completed"`
@@ -348,15 +360,16 @@ func (r *ListRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpList {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Cwd, r.All, r.IncludeCompleted = OpList, wire.Cwd, wire.All, wire.IncludeCompleted
+	r.Op, r.Scope, r.Cwd, r.All, r.IncludeCompleted = OpList, wire.Scope, wire.Cwd, wire.All, wire.IncludeCompleted
 	return nil
 }
 
 // GetRequest asks for one process snapshot.
 type GetRequest struct {
-	Op   Operation `json:"op"`
-	Name string    `json:"name"`
-	Cwd  string    `json:"cwd"`
+	Op    Operation `json:"op"`
+	Scope string    `json:"scope,omitempty"`
+	Name  string    `json:"name"`
+	Cwd   string    `json:"cwd"`
 }
 
 // NewGetRequest builds a process lookup request.
@@ -367,18 +380,20 @@ func NewGetRequest(name, cwd string) GetRequest {
 // MarshalJSON writes a get request with its stable operation.
 func (r GetRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op   Operation `json:"op"`
-		Name string    `json:"name"`
-		Cwd  string    `json:"cwd"`
-	}{Op: OpGet, Name: r.Name, Cwd: r.Cwd})
+		Op    Operation `json:"op"`
+		Scope string    `json:"scope,omitempty"`
+		Name  string    `json:"name"`
+		Cwd   string    `json:"cwd"`
+	}{Op: OpGet, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd})
 }
 
 // UnmarshalJSON decodes a get request.
 func (r *GetRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op   Operation `json:"op"`
-		Name string    `json:"name"`
-		Cwd  string    `json:"cwd"`
+		Op    Operation `json:"op"`
+		Scope string    `json:"scope"`
+		Name  string    `json:"name"`
+		Cwd   string    `json:"cwd"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -386,7 +401,7 @@ func (r *GetRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpGet {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Name, r.Cwd = OpGet, wire.Name, wire.Cwd
+	r.Op, r.Scope, r.Name, r.Cwd = OpGet, wire.Scope, wire.Name, wire.Cwd
 	return nil
 }
 
@@ -396,6 +411,7 @@ func (r *GetRequest) UnmarshalJSON(data []byte) error {
 // milliseconds and is validated by the daemon against its bounds.
 type WaitRequest struct {
 	Op        Operation `json:"op"`
+	Scope     string    `json:"scope,omitempty"`
 	Name      string    `json:"name"`
 	Cwd       string    `json:"cwd"`
 	After     *Cursor   `json:"after,omitempty"`
@@ -413,12 +429,13 @@ func NewWaitRequest(name, cwd string, timeoutMS int64) WaitRequest {
 func (r WaitRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Op        Operation `json:"op"`
+		Scope     string    `json:"scope,omitempty"`
 		Name      string    `json:"name"`
 		Cwd       string    `json:"cwd"`
 		After     *Cursor   `json:"after,omitempty"`
 		Match     string    `json:"match,omitempty"`
 		TimeoutMS int64     `json:"timeout_ms"`
-	}{Op: OpWait, Name: r.Name, Cwd: r.Cwd, After: r.After, Match: r.Match, TimeoutMS: r.TimeoutMS})
+	}{Op: OpWait, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, Match: r.Match, TimeoutMS: r.TimeoutMS})
 }
 
 // UnmarshalJSON decodes a wait request and validates its operation when
@@ -426,6 +443,7 @@ func (r WaitRequest) MarshalJSON() ([]byte, error) {
 func (r *WaitRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		Op        Operation `json:"op"`
+		Scope     string    `json:"scope"`
 		Name      string    `json:"name"`
 		Cwd       string    `json:"cwd"`
 		After     *Cursor   `json:"after"`
@@ -438,7 +456,7 @@ func (r *WaitRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpWait {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Name, r.Cwd = OpWait, wire.Name, wire.Cwd
+	r.Op, r.Scope, r.Name, r.Cwd = OpWait, wire.Scope, wire.Name, wire.Cwd
 	r.After, r.Match, r.TimeoutMS = wire.After, wire.Match, wire.TimeoutMS
 	return nil
 }
@@ -476,6 +494,7 @@ const DefaultReadEntries = 100
 // the immutable cutoff captured by a top-level CLI or MCP request.
 type OutputRequest struct {
 	Op            Operation `json:"op"`
+	Scope         string    `json:"scope,omitempty"`
 	Name          string    `json:"name"`
 	Cwd           string    `json:"cwd"`
 	After         *Cursor   `json:"after,omitempty"`
@@ -496,6 +515,7 @@ func NewOutputRequest(name, cwd string) OutputRequest {
 func marshalOutputRequest(op Operation, r OutputRequest) ([]byte, error) {
 	return json.Marshal(struct {
 		Op            Operation `json:"op"`
+		Scope         string    `json:"scope,omitempty"`
 		Name          string    `json:"name"`
 		Cwd           string    `json:"cwd"`
 		After         *Cursor   `json:"after,omitempty"`
@@ -506,7 +526,7 @@ func marshalOutputRequest(op Operation, r OutputRequest) ([]byte, error) {
 		Match         string    `json:"match,omitempty"`
 		MaxEntries    int       `json:"max_entries,omitempty"`
 		MaxBytes      int       `json:"max_bytes,omitempty"`
-	}{Op: op, Name: r.Name, Cwd: r.Cwd, After: r.After, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
+	}{Op: op, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
 }
 
 // MarshalJSON writes an output request with its stable operation.
@@ -517,6 +537,7 @@ func (r OutputRequest) MarshalJSON() ([]byte, error) {
 func unmarshalOutputRequest(data []byte, r *OutputRequest, want Operation) error {
 	var wire struct {
 		Op            Operation `json:"op"`
+		Scope         string    `json:"scope"`
 		Name          string    `json:"name"`
 		Cwd           string    `json:"cwd"`
 		After         *Cursor   `json:"after"`
@@ -534,7 +555,7 @@ func unmarshalOutputRequest(data []byte, r *OutputRequest, want Operation) error
 	if wire.Op != "" && wire.Op != want {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Name, r.Cwd = want, wire.Name, wire.Cwd
+	r.Op, r.Scope, r.Name, r.Cwd = want, wire.Scope, wire.Name, wire.Cwd
 	r.After, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = wire.After, wire.SinceMS, wire.SinceUnixNano, wire.Tail, wire.Stream, wire.Match
 	r.MaxEntries, r.MaxBytes = wire.MaxEntries, wire.MaxBytes
 	return nil
@@ -548,6 +569,7 @@ func (r *OutputRequest) UnmarshalJSON(data []byte) error {
 // FollowRequest asks for bounded output followed by independent stream events.
 type FollowRequest struct {
 	Op            Operation `json:"op"`
+	Scope         string    `json:"scope,omitempty"`
 	Name          string    `json:"name"`
 	Cwd           string    `json:"cwd"`
 	After         *Cursor   `json:"after,omitempty"`
@@ -570,6 +592,7 @@ func NewFollowRequest(name, cwd string) FollowRequest {
 func (r FollowRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Op            Operation `json:"op"`
+		Scope         string    `json:"scope,omitempty"`
 		Name          string    `json:"name"`
 		Cwd           string    `json:"cwd"`
 		After         *Cursor   `json:"after,omitempty"`
@@ -581,7 +604,7 @@ func (r FollowRequest) MarshalJSON() ([]byte, error) {
 		Match         string    `json:"match,omitempty"`
 		MaxEntries    int       `json:"max_entries,omitempty"`
 		MaxBytes      int       `json:"max_bytes,omitempty"`
-	}{Op: OpFollow, Name: r.Name, Cwd: r.Cwd, After: r.After, UntilExit: r.UntilExit, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
+	}{Op: OpFollow, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, UntilExit: r.UntilExit, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
 }
 
 // UnmarshalJSON decodes a follow request.
@@ -596,7 +619,7 @@ func (r *FollowRequest) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
-	r.Op, r.Name, r.Cwd = OpFollow, output.Name, output.Cwd
+	r.Op, r.Scope, r.Name, r.Cwd = OpFollow, output.Scope, output.Name, output.Cwd
 	r.After, r.UntilExit, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = output.After, wire.UntilExit, output.SinceMS, output.SinceUnixNano, output.Tail, output.Stream, output.Match
 	r.MaxEntries, r.MaxBytes = output.MaxEntries, output.MaxBytes
 	return nil
@@ -605,6 +628,7 @@ func (r *FollowRequest) UnmarshalJSON(data []byte) error {
 // SignalRequest asks the daemon to forward Signal to one process group.
 type SignalRequest struct {
 	Op      Operation `json:"op"`
+	Scope   string    `json:"scope,omitempty"`
 	Name    string    `json:"name"`
 	Cwd     string    `json:"cwd"`
 	Signal  string    `json:"signal"`
@@ -628,17 +652,19 @@ func NewControlSignalRequest(name, cwd, signal string) SignalRequest {
 func (r SignalRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Op      Operation `json:"op"`
+		Scope   string    `json:"scope,omitempty"`
 		Name    string    `json:"name"`
 		Cwd     string    `json:"cwd"`
 		Signal  string    `json:"signal"`
 		Control bool      `json:"control,omitempty"`
-	}{Op: OpSignal, Name: r.Name, Cwd: r.Cwd, Signal: r.Signal, Control: r.Control})
+	}{Op: OpSignal, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Signal: r.Signal, Control: r.Control})
 }
 
 // UnmarshalJSON decodes a signal request.
 func (r *SignalRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		Op      Operation `json:"op"`
+		Scope   string    `json:"scope"`
 		Name    string    `json:"name"`
 		Cwd     string    `json:"cwd"`
 		Signal  string    `json:"signal"`
@@ -650,15 +676,16 @@ func (r *SignalRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpSignal {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Name, r.Cwd, r.Signal, r.Control = OpSignal, wire.Name, wire.Cwd, wire.Signal, wire.Control
+	r.Op, r.Scope, r.Name, r.Cwd, r.Signal, r.Control = OpSignal, wire.Scope, wire.Name, wire.Cwd, wire.Signal, wire.Control
 	return nil
 }
 
 // StopRequest asks the daemon to stop one process group.
 type StopRequest struct {
-	Op   Operation `json:"op"`
-	Name string    `json:"name"`
-	Cwd  string    `json:"cwd"`
+	Op    Operation `json:"op"`
+	Scope string    `json:"scope,omitempty"`
+	Name  string    `json:"name"`
+	Cwd   string    `json:"cwd"`
 }
 
 // NewStopRequest builds a stop request.
@@ -669,18 +696,20 @@ func NewStopRequest(name, cwd string) StopRequest {
 // MarshalJSON writes a stop request with its stable operation.
 func (r StopRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op   Operation `json:"op"`
-		Name string    `json:"name"`
-		Cwd  string    `json:"cwd"`
-	}{Op: OpStop, Name: r.Name, Cwd: r.Cwd})
+		Op    Operation `json:"op"`
+		Scope string    `json:"scope,omitempty"`
+		Name  string    `json:"name"`
+		Cwd   string    `json:"cwd"`
+	}{Op: OpStop, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd})
 }
 
 // UnmarshalJSON decodes a stop request.
 func (r *StopRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op   Operation `json:"op"`
-		Name string    `json:"name"`
-		Cwd  string    `json:"cwd"`
+		Op    Operation `json:"op"`
+		Scope string    `json:"scope"`
+		Name  string    `json:"name"`
+		Cwd   string    `json:"cwd"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -688,15 +717,16 @@ func (r *StopRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpStop {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Name, r.Cwd = OpStop, wire.Name, wire.Cwd
+	r.Op, r.Scope, r.Name, r.Cwd = OpStop, wire.Scope, wire.Name, wire.Cwd
 	return nil
 }
 
 // RemoveRequest asks the daemon to stop and discard one supervision session.
 type RemoveRequest struct {
-	Op   Operation `json:"op"`
-	Name string    `json:"name"`
-	Cwd  string    `json:"cwd"`
+	Op    Operation `json:"op"`
+	Scope string    `json:"scope,omitempty"`
+	Name  string    `json:"name"`
+	Cwd   string    `json:"cwd"`
 }
 
 func NewRemoveRequest(name, cwd string) RemoveRequest {
@@ -705,17 +735,19 @@ func NewRemoveRequest(name, cwd string) RemoveRequest {
 
 func (r RemoveRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op   Operation `json:"op"`
-		Name string    `json:"name"`
-		Cwd  string    `json:"cwd"`
-	}{Op: OpRemove, Name: r.Name, Cwd: r.Cwd})
+		Op    Operation `json:"op"`
+		Scope string    `json:"scope,omitempty"`
+		Name  string    `json:"name"`
+		Cwd   string    `json:"cwd"`
+	}{Op: OpRemove, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd})
 }
 
 func (r *RemoveRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op   Operation `json:"op"`
-		Name string    `json:"name"`
-		Cwd  string    `json:"cwd"`
+		Op    Operation `json:"op"`
+		Scope string    `json:"scope"`
+		Name  string    `json:"name"`
+		Cwd   string    `json:"cwd"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -723,7 +755,7 @@ func (r *RemoveRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpRemove {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Name, r.Cwd = OpRemove, wire.Name, wire.Cwd
+	r.Op, r.Scope, r.Name, r.Cwd = OpRemove, wire.Scope, wire.Name, wire.Cwd
 	return nil
 }
 
@@ -734,6 +766,7 @@ func (r *RemoveRequest) UnmarshalJSON(data []byte) error {
 // lookup and retained record keying; Cwd remains the update child directory.
 type RestartRequest struct {
 	Op      Operation        `json:"op"`
+	Scope   string           `json:"scope,omitempty"`
 	Name    string           `json:"name"`
 	Cwd     string           `json:"cwd"`
 	Root    string           `json:"root,omitempty"`
@@ -757,6 +790,7 @@ func NewRestartRequest(name, cwd string) RestartRequest {
 func (r RestartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Op      Operation        `json:"op"`
+		Scope   string           `json:"scope,omitempty"`
 		Name    string           `json:"name"`
 		Cwd     string           `json:"cwd"`
 		Root    string           `json:"root,omitempty"`
@@ -768,13 +802,14 @@ func (r RestartRequest) MarshalJSON() ([]byte, error) {
 		TTY     bool             `json:"tty"`
 		TTYSize *TTYSize         `json:"tty_size,omitempty"`
 		Restart string           `json:"restart,omitempty"`
-	}{Op: OpRestart, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: r.Restart})
+	}{Op: OpRestart, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: r.Restart})
 }
 
 // UnmarshalJSON decodes a restart request.
 func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		Op      Operation        `json:"op"`
+		Scope   string           `json:"scope"`
 		Name    string           `json:"name"`
 		Cwd     string           `json:"cwd"`
 		Root    string           `json:"root"`
@@ -793,7 +828,7 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpRestart {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Name, r.Cwd, r.Root = OpRestart, wire.Name, wire.Cwd, wire.Root
+	r.Op, r.Scope, r.Name, r.Cwd, r.Root = OpRestart, wire.Scope, wire.Name, wire.Cwd, wire.Root
 	r.Update, r.Argv, r.Env, r.Source, r.Ready = wire.Update, wire.Argv, wire.Env, wire.Source, wire.Ready
 	r.TTY, r.TTYSize, r.Restart = wire.TTY, wire.TTYSize, wire.Restart
 	return nil
@@ -804,6 +839,7 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 // first launch; arbitrary bytes never appear in this request.
 type InputAttachRequest struct {
 	Op      Operation        `json:"op"`
+	Scope   string           `json:"scope,omitempty"`
 	Name    string           `json:"name"`
 	Cwd     string           `json:"cwd"`
 	Root    string           `json:"root,omitempty"`
@@ -987,7 +1023,7 @@ type Process struct {
 	Name         string     `json:"name"`
 	Source       string     `json:"source,omitempty"`
 	Scope        string     `json:"scope"`
-	Root         string     `json:"project_root"`
+	Root         string     `json:"project_root,omitempty"`
 	TTY          bool       `json:"tty"`
 	PID          int        `json:"pid"`
 	PGID         int        `json:"pgid"`

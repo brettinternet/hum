@@ -11,6 +11,36 @@ import (
 	"hum/internal/process"
 )
 
+func TestGlobalScopeWireValidation(t *testing.T) {
+	legacy := wireRequest{Op: "get", Name: "proxy", Cwd: "/project"}
+	if err := normalizeWireScope(&legacy); err != nil || legacy.Scope != app.ScopeProject {
+		t.Fatalf("legacy scope = %q err=%v", legacy.Scope, err)
+	}
+	for _, request := range []wireRequest{
+		{Op: "get", Scope: "machine", Name: "proxy"},
+		{Op: "start", Scope: app.ScopeGlobal, Root: "/project", Name: "proxy"},
+		{Op: "list", Scope: app.ScopeGlobal, All: true},
+	} {
+		if err := normalizeWireScope(&request); err == nil {
+			t.Fatalf("invalid global request accepted: %+v", request)
+		}
+	}
+	server := testServer(t, Config{RuntimeDir: shortRuntimeDir(t)})
+	root := t.TempDir()
+	for _, request := range []app.StartRequest{
+		{Name: "proxy", Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}},
+		{Scope: app.ScopeGlobal, Name: "proxy", Cwd: t.TempDir(), Argv: []string{"/bin/sh", "-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}},
+	} {
+		if _, err := server.supervisor.Start(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := server.listProcessesScoped(root, app.ScopeProject, true, true)
+	if err != nil || len(items) != 2 || items[0].Scope == items[1].Scope {
+		t.Fatalf("all-scope list = %+v err=%v", items, err)
+	}
+}
+
 func TestSignalExitWireStreamRoundTrip(t *testing.T) {
 	exitedAt := time.Date(2026, time.September, 6, 12, 34, 56, 0, time.UTC)
 	event := protocolStreamEventFromOutput("signal", output.Event{Exit: &output.Exit{

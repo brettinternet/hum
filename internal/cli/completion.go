@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"hum/internal/daemon"
+	"hum/internal/project"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -329,9 +330,12 @@ func completionProcessNames(ctx context.Context, command *urfavecli.Command) []s
 	if err != nil {
 		return nil
 	}
-	manifest, err := loadManifestOrEmpty(selection.cwd)
-	if err != nil {
-		return nil
+	manifest := manifestState{byName: make(map[string]project.Definition)}
+	if selection.scope != "global" {
+		manifest, err = loadManifestOrEmpty(selection.cwd)
+		if err != nil {
+			return nil
+		}
 	}
 
 	cfg, err := cliConfig(command, "", "")
@@ -352,7 +356,7 @@ func completionProcessNames(ctx context.Context, command *urfavecli.Command) []s
 	}
 	defer client.Close()
 
-	processes, err := client.List(completionCtx, daemon.ListRequest{Cwd: selection.cwd, IncludeCompleted: true})
+	processes, err := client.List(completionCtx, daemon.ListRequest{Scope: selection.scope, Cwd: selection.cwd, IncludeCompleted: true})
 	if err != nil {
 		return nil
 	}
@@ -364,7 +368,7 @@ func completionProcessNames(ctx context.Context, command *urfavecli.Command) []s
 		}
 	}
 	for _, process := range processes {
-		if process.Root == manifest.root && process.Name != "" {
+		if (selection.scope == "global" && process.Scope == "global" || selection.scope != "global" && process.Root == manifest.root) && process.Name != "" {
 			names[process.Name] = struct{}{}
 		}
 	}

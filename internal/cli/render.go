@@ -262,7 +262,7 @@ type listProcessJSON struct {
 	Source       string           `json:"source"`
 	Scope        string           `json:"scope"`
 	Root         string           `json:"root"`
-	ProjectRoot  string           `json:"project_root"`
+	ProjectRoot  string           `json:"project_root,omitempty"`
 	TTY          bool             `json:"tty"`
 	PID          int              `json:"pid"`
 	PGID         int              `json:"pgid"`
@@ -291,7 +291,7 @@ type statusJSON struct {
 	Name         string                    `json:"name"`
 	Source       string                    `json:"source,omitempty"`
 	Scope        string                    `json:"scope"`
-	ProjectRoot  string                    `json:"project_root"`
+	ProjectRoot  string                    `json:"project_root,omitempty"`
 	TTY          bool                      `json:"tty"`
 	PID          int                       `json:"pid"`
 	PGID         int                       `json:"pgid"`
@@ -767,7 +767,11 @@ func renderListHumanWithPolicy(w io.Writer, processes []app.Process, all bool, p
 					return err
 				}
 			}
-			if _, err := fmt.Fprintf(w, "Project: %s (hum --project %s)\n", root, shellEscape(root)); err != nil {
+			if root == "" {
+				if _, err := fmt.Fprintln(w, "Global: (hum --global)"); err != nil {
+					return err
+				}
+			} else if _, err := fmt.Fprintf(w, "Project: %s (hum --project %s)\n", root, shellEscape(root)); err != nil {
 				return err
 			}
 			if err := writeLifecycleTable(w, buildListTable(groups[root], false), policy); err != nil {

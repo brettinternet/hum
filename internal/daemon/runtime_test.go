@@ -388,6 +388,64 @@ func mustProcessIdentity(t *testing.T, pid int) string {
 	return identity
 }
 
+func TestRuntimeStateGlobalScope(t *testing.T) {
+	dir := t.TempDir()
+	projectRoot := t.TempDir()
+	statePath := filepath.Join(dir, "hum.state")
+	state := RuntimeState{Version: RuntimeStateVersion, Daemon: RuntimeIdentity{PID: os.Getpid(), StartIdentity: "daemon"}, Groups: []RuntimeGroup{
+		{Scope: app.ScopeProject, ProjectRoot: projectRoot, Name: "proxy", LeaderPID: 1, PGID: 1, StartIdentity: "project"},
+		{Scope: app.ScopeGlobal, Name: "proxy", LeaderPID: 2, PGID: 2, StartIdentity: "global"},
+	}}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, exists, err := readRuntimeState(statePath)
+	if err != nil || !exists {
+		t.Fatalf("read global runtime state: exists=%v err=%v", exists, err)
+	}
+	if len(got.Groups) != 2 || got.Groups[0].ProjectRoot == "" || got.Groups[1].Scope != app.ScopeGlobal || got.Groups[1].ProjectRoot != "" {
+		t.Fatalf("global/project runtime groups = %+v", got.Groups)
+	}
+
+	state.Groups[1].Scope = "machine"
+	data, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readRuntimeState(statePath); err == nil || !strings.Contains(err.Error(), "remove the file") {
+		t.Fatalf("incompatible scope error = %v", err)
+	}
+
+	cmd, done := startRuntimeTestGroup(t, false)
+	runtimeDir := filepath.Join(shortRuntimeDir(t), "global-scope-recovery")
+	writePriorRuntimeState(t, runtimeDir, RuntimeGroup{
+		Scope: app.ScopeGlobal, Name: "proxy", LeaderPID: cmd.Process.Pid, PGID: cmd.Process.Pid,
+		StartIdentity: mustProcessIdentity(t, cmd.Process.Pid) + "-different",
+	})
+	server := testServer(t, Config{RuntimeDir: runtimeDir, StopGrace: 20 * time.Millisecond})
+	warnings := server.StartupWarnings()
+	if len(warnings) != 1 || warnings[0].Outcome != "unresolved" {
+		t.Fatalf("global recovery warnings = %+v", warnings)
+	}
+	items, err := server.listProcessesScoped(t.TempDir(), app.ScopeGlobal, false, true)
+	if err != nil || len(items) != 1 || items[0].Scope != app.ScopeGlobal || items[0].Root != "" || items[0].Name != "proxy" {
+		t.Fatalf("recovered global snapshot = %+v err=%v", items, err)
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("global recovery test process was not reaped")
+	}
+}
+
 func TestRuntimeStateScopeIdentity(t *testing.T) {
 	dir := t.TempDir()
 	root := filepath.Join(dir, "main")

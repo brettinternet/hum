@@ -98,6 +98,7 @@ const (
 type StartRequest struct {
 	Name     string
 	Source   string
+	Scope    string
 	Root     string
 	Cwd      string
 	Argv     []string
@@ -188,6 +189,7 @@ type WaitResult struct {
 type RestartOptions struct {
 	Update  bool
 	Source  string
+	Scope   string
 	Root    string
 	Cwd     string
 	Argv    []string
@@ -635,7 +637,7 @@ func (e *DuplicateError) Unwrap() error { return ErrNameInUse }
 // NotFoundError identifies a project/name lookup that failed.
 type ScopeMatch struct {
 	Scope       string `json:"scope"`
-	ProjectRoot string `json:"project_root"`
+	ProjectRoot string `json:"project_root,omitempty"`
 }
 
 type NotFoundError struct {
@@ -767,6 +769,7 @@ func (t *readinessTracker) close() {
 type record struct {
 	key    string
 	name   string
+	scope  string
 	root   string
 	cwd    string
 	source string
@@ -1010,7 +1013,25 @@ func absoluteClean(path string) (string, error) {
 
 func canonicalProjectRoot(path string) (string, error) { return projectpkg.CanonicalPath(path) }
 
+const (
+	ScopeProject = "project"
+	ScopeGlobal  = "global"
+)
+
+func normalizedScope(scope string) string {
+	if scope == ScopeGlobal {
+		return ScopeGlobal
+	}
+	return ScopeProject
+}
+
 func keyFor(root, name string) string { return root + "\x00" + name }
+func scopedKey(scope, root, name string) string {
+	if normalizedScope(scope) == ScopeGlobal {
+		return "global\x00" + name
+	}
+	return keyFor(root, name)
+}
 
 func (s *Supervisor) trackStore(key string, store *output.Store) {
 	store.SetIdleCallback(func() {
@@ -1205,17 +1226,30 @@ func (s *Supervisor) markUnresolved(rec *record) {
 }
 
 func (s *Supervisor) AddUnresolved(root, name string, pid, pgid int, startIdentity string) error {
+	return s.AddUnresolvedScoped(ScopeProject, root, name, pid, pgid, startIdentity)
+}
+
+func (s *Supervisor) AddUnresolvedScoped(scope, root, name string, pid, pgid int, startIdentity string) error {
+	scope = normalizedScope(scope)
 	if err := ValidateName(name); err != nil {
 		return err
 	}
-	canonicalRoot, err := canonicalProjectRoot(root)
-	if err != nil {
-		return err
+	canonicalRoot := ""
+	var err error
+	if scope == ScopeGlobal {
+		if root != "" {
+			return fmt.Errorf("%w: global scope cannot include a project root", ErrInvalidRequest)
+		}
+	} else {
+		canonicalRoot, err = canonicalProjectRoot(root)
+		if err != nil {
+			return err
+		}
 	}
 	if pid <= 0 || pgid <= 0 || startIdentity == "" {
 		return fmt.Errorf("%w: unresolved process identity is incomplete", ErrInvalidRequest)
 	}
-	key := keyFor(canonicalRoot, name)
+	key := scopedKey(scope, canonicalRoot, name)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -1232,7 +1266,7 @@ func (s *Supervisor) AddUnresolved(root, name string, pid, pgid int, startIdenti
 		return fmt.Errorf("output store: %w", err)
 	}
 	rec := &record{
-		key: key, name: name, root: canonicalRoot, cwd: canonicalRoot,
+		key: key, name: name, scope: scope, root: canonicalRoot, cwd: canonicalRoot,
 		pid: pid, pgid: pgid, startIdentity: startIdentity, store: store,
 		state: StateUnresolved, done: make(chan struct{}), terminal: false,
 		unresolved: true,
@@ -1246,11 +1280,20 @@ func (s *Supervisor) AddUnresolved(root, name string, pid, pgid int, startIdenti
 // ClearUnresolved removes a blocker after an external identity check proves
 // its recorded process group is gone.
 func (s *Supervisor) ClearUnresolved(root, name string) error {
-	canonicalRoot, err := canonicalProjectRoot(root)
+	return s.ClearUnresolvedScoped(ScopeProject, root, name)
+}
+
+func (s *Supervisor) ClearUnresolvedScoped(scope, root, name string) error {
+	scope = normalizedScope(scope)
+	canonicalRoot := root
+	var err error
+	if scope == ScopeProject {
+		canonicalRoot, err = canonicalProjectRoot(root)
+	}
 	if err != nil {
 		return err
 	}
-	key := keyFor(canonicalRoot, name)
+	key := scopedKey(scope, canonicalRoot, name)
 	s.mu.Lock()
 	rec := s.records[key]
 	if rec == nil || !rec.unresolved {
@@ -1290,6 +1333,7 @@ func (s *Supervisor) UnresolvedProcesses() []Process {
 }
 
 func (s *Supervisor) Start(req StartRequest) (Process, error) {
+	req.Scope = normalizedScope(req.Scope)
 	if err := ValidateName(req.Name); err != nil {
 		return Process{}, err
 	}
@@ -1302,7 +1346,11 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		return Process{}, err
 	}
 	root := ""
-	if req.Root != "" {
+	if req.Scope == ScopeGlobal {
+		if req.Root != "" {
+			return Process{}, fmt.Errorf("%w: global scope cannot include a project root", ErrInvalidRequest)
+		}
+	} else if req.Root != "" {
 		root, err = canonicalProjectRoot(req.Root)
 	} else {
 		root, err = DiscoverProjectRoot(requestCwd)
@@ -1310,7 +1358,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if err != nil {
 		return Process{}, err
 	}
-	key := keyFor(root, req.Name)
+	key := scopedKey(req.Scope, root, req.Name)
 
 	// Explicit launches serialize with stop/down/restart for an existing
 	// retained record. This makes the name reservation the control-operation
@@ -1389,7 +1437,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		}
 		done := make(chan struct{})
 		close(done)
-		rec = &record{key: key, name: req.Name, root: root, store: store, state: StateExited, terminal: true, done: done, doneClosed: true, restart: restartPolicyForSource(req.Source, req.Restart)}
+		rec = &record{key: key, name: req.Name, scope: req.Scope, root: root, store: store, state: StateExited, terminal: true, done: done, doneClosed: true, restart: restartPolicyForSource(req.Source, req.Restart)}
 		if !automatic && explicitRecord == nil {
 			rec.stopMu.Lock()
 			explicitRecord = rec
@@ -1609,6 +1657,11 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 // specification. The process name and output sequence remain reserved for the
 // entire operation.
 func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...RestartOptions) (Process, error) {
+	return s.RestartScoped(ctx, ScopeProject, cwd, name, options...)
+}
+
+func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string, options ...RestartOptions) (Process, error) {
+	scope = normalizedScope(scope)
 	if len(options) > 1 {
 		return Process{}, fmt.Errorf("%w: restart accepts at most one options value", ErrInvalidRequest)
 	}
@@ -1622,7 +1675,7 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	rec, err := s.lookupRoot(cwd, name, update.Root)
+	rec, err := s.lookupScoped(scope, cwd, name, update.Root)
 	if err != nil {
 		return Process{}, err
 	}
@@ -1654,7 +1707,12 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 			return Process{}, err
 		}
 		updatedRoot := update.Root
-		if updatedRoot != "" {
+		if scope == ScopeGlobal {
+			if updatedRoot != "" {
+				return Process{}, fmt.Errorf("%w: global scope cannot include a project root", ErrInvalidRequest)
+			}
+			updatedRoot = ""
+		} else if updatedRoot != "" {
 			updatedRoot, err = canonicalProjectRoot(updatedRoot)
 		} else {
 			updatedRoot, err = DiscoverProjectRoot(updatedCwd)
@@ -1662,7 +1720,7 @@ func (s *Supervisor) Restart(ctx context.Context, cwd, name string, options ...R
 		if err != nil {
 			return Process{}, err
 		}
-		if updatedRoot != rec.root {
+		if updatedRoot != rec.root || normalizedScope(rec.scope) != scope {
 			return Process{}, fmt.Errorf("%w: restart root %q does not match project %q", ErrInvalidRequest, updatedRoot, rec.root)
 		}
 		updatedEnv = append([]string(nil), update.Env...)
@@ -2093,16 +2151,19 @@ func (s *Supervisor) evictLocked() {
 }
 
 func (s *Supervisor) lookup(cwd, name string) (*record, error) {
-	return s.lookupRoot(cwd, name, "")
+	return s.lookupScoped(ScopeProject, cwd, name, "")
 }
 
-func (s *Supervisor) lookupRoot(cwd, name, rootHint string) (*record, error) {
+func (s *Supervisor) lookupScoped(scope, cwd, name, rootHint string) (*record, error) {
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
+	scope = normalizedScope(scope)
 	root := rootHint
 	var err error
-	if root == "" {
+	if scope == ScopeGlobal {
+		root = ""
+	} else if root == "" {
 		root, err = DiscoverProjectRoot(cwd)
 	} else {
 		root, err = canonicalProjectRoot(root)
@@ -2110,20 +2171,27 @@ func (s *Supervisor) lookupRoot(cwd, name, rootHint string) (*record, error) {
 	if err != nil {
 		return nil, err
 	}
-	key := keyFor(root, name)
+	key := scopedKey(scope, root, name)
 	s.mu.RLock()
 	rec := s.records[key]
 	var otherScopes []ScopeMatch
 	if rec == nil {
 		for _, candidate := range s.records {
-			if candidate.name == name && candidate.root != root {
-				otherScopes = append(otherScopes, ScopeMatch{Scope: "project", ProjectRoot: candidate.root})
+			if candidate.name != name || normalizedScope(candidate.scope) == scope && (scope == ScopeGlobal || candidate.root == root) {
+				continue
 			}
+			match := ScopeMatch{Scope: normalizedScope(candidate.scope), ProjectRoot: candidate.root}
+			otherScopes = append(otherScopes, match)
 		}
 	}
 	s.mu.RUnlock()
 	if rec == nil {
-		sort.Slice(otherScopes, func(i, j int) bool { return otherScopes[i].ProjectRoot < otherScopes[j].ProjectRoot })
+		sort.Slice(otherScopes, func(i, j int) bool {
+			if otherScopes[i].Scope != otherScopes[j].Scope {
+				return otherScopes[i].Scope < otherScopes[j].Scope
+			}
+			return otherScopes[i].ProjectRoot < otherScopes[j].ProjectRoot
+		})
 		return nil, &NotFoundError{Root: root, Name: name, OtherScopes: otherScopes}
 	}
 	return rec, nil
@@ -2132,7 +2200,11 @@ func (s *Supervisor) lookupRoot(cwd, name, rootHint string) (*record, error) {
 // Get returns a snapshot for a project-scoped name, including retained
 // terminal records.
 func (s *Supervisor) Get(cwd, name string) (Process, error) {
-	rec, err := s.lookup(cwd, name)
+	return s.GetScoped(ScopeProject, cwd, name)
+}
+
+func (s *Supervisor) GetScoped(scope, cwd, name string) (Process, error) {
+	rec, err := s.lookupScoped(scope, cwd, name, "")
 	if err != nil {
 		return Process{}, err
 	}
@@ -2149,14 +2221,23 @@ func (s *Supervisor) Get(cwd, name string) (Process, error) {
 // work or exhausted retries remains visible so operators can inspect or reset
 // it. includeCompleted includes all retained terminals.
 func (s *Supervisor) List(cwd string, includeCompleted bool) ([]Process, error) {
-	root, err := DiscoverProjectRoot(cwd)
-	if err != nil {
-		return nil, err
+	return s.ListScoped(ScopeProject, cwd, includeCompleted)
+}
+
+func (s *Supervisor) ListScoped(scope, cwd string, includeCompleted bool) ([]Process, error) {
+	scope = normalizedScope(scope)
+	root := ""
+	var err error
+	if scope == ScopeProject {
+		root, err = DiscoverProjectRoot(cwd)
+		if err != nil {
+			return nil, err
+		}
 	}
 	s.mu.RLock()
 	items := make([]Process, 0)
 	for _, rec := range s.records {
-		if rec.root != root {
+		if normalizedScope(rec.scope) != scope || rec.root != root {
 			continue
 		}
 		_, starting := s.starting[rec.key]
@@ -2180,7 +2261,11 @@ func (s *Supervisor) List(cwd string, includeCompleted bool) ([]Process, error) 
 // terminal record is evicted, future Output calls fail and the supervisor no
 // longer retains its store.
 func (s *Supervisor) Output(cwd, name string) (*output.Store, error) {
-	rec, err := s.lookup(cwd, name)
+	return s.OutputScoped(ScopeProject, cwd, name)
+}
+
+func (s *Supervisor) OutputScoped(scope, cwd, name string) (*output.Store, error) {
+	rec, err := s.lookupScoped(scope, cwd, name, "")
 	if err != nil {
 		return nil, err
 	}
@@ -2195,14 +2280,23 @@ func (s *Supervisor) Output(cwd, name string) (*output.Store, error) {
 // ensureSession returns the durable project/name record, creating an empty
 // pre-launch session when necessary. The caller may attach before any launch.
 func (s *Supervisor) ensureSession(cwd, name string) (*record, error) {
+	return s.ensureSessionScoped(ScopeProject, cwd, name)
+}
+
+func (s *Supervisor) ensureSessionScoped(scope, cwd, name string) (*record, error) {
+	scope = normalizedScope(scope)
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
-	root, err := DiscoverProjectRoot(cwd)
-	if err != nil {
-		return nil, err
+	root := ""
+	var err error
+	if scope == ScopeProject {
+		root, err = DiscoverProjectRoot(cwd)
+		if err != nil {
+			return nil, err
+		}
 	}
-	key := keyFor(root, name)
+	key := scopedKey(scope, root, name)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -2217,7 +2311,7 @@ func (s *Supervisor) ensureSession(cwd, name string) (*record, error) {
 	}
 	done := make(chan struct{})
 	close(done)
-	rec := &record{key: key, name: name, root: root, cwd: root, store: store, state: StateExited, terminal: true, done: done, restart: RestartNever}
+	rec := &record{key: key, name: name, scope: scope, root: root, cwd: root, store: store, state: StateExited, terminal: true, done: done, restart: RestartNever}
 	s.trackStore(key, store)
 	s.records[key] = rec
 	return rec, nil
@@ -2230,6 +2324,11 @@ func (s *Supervisor) ensureSession(cwd, name string) (*record, error) {
 // used by an attached client so input ownership can be acquired before the
 // child exists without reserving unresolved names.
 func (s *Supervisor) PrepareTTY(req StartRequest) error {
+	return s.PrepareTTYScoped(req.Scope, req)
+}
+
+func (s *Supervisor) PrepareTTYScoped(scope string, req StartRequest) error {
+	scope = normalizedScope(scope)
 	if !req.TTY {
 		return ErrInputNotTTY
 	}
@@ -2241,7 +2340,12 @@ func (s *Supervisor) PrepareTTY(req StartRequest) error {
 		return err
 	}
 	root := req.Root
-	if root == "" {
+	if scope == ScopeGlobal {
+		if root != "" {
+			return fmt.Errorf("%w: global scope cannot include a project root", ErrInvalidRequest)
+		}
+		root = ""
+	} else if root == "" {
 		root, err = DiscoverProjectRoot(requestCwd)
 	} else {
 		root, err = canonicalProjectRoot(root)
@@ -2249,7 +2353,7 @@ func (s *Supervisor) PrepareTTY(req StartRequest) error {
 	if err != nil {
 		return err
 	}
-	key := keyFor(root, req.Name)
+	key := scopedKey(scope, root, req.Name)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -2263,7 +2367,7 @@ func (s *Supervisor) PrepareTTY(req StartRequest) error {
 		}
 		done := make(chan struct{})
 		close(done)
-		rec = &record{key: key, name: req.Name, root: root, cwd: requestCwd, store: store, state: StateExited, terminal: true, done: done, doneClosed: true, restart: RestartNever}
+		rec = &record{key: key, name: req.Name, scope: scope, root: root, cwd: requestCwd, store: store, state: StateExited, terminal: true, done: done, doneClosed: true, restart: RestartNever}
 		s.trackStore(key, store)
 		s.records[key] = rec
 	}
@@ -2310,21 +2414,31 @@ func (s *Supervisor) AcquireInput(args ...any) (*InputLease, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.acquireInput("", cwd, name, requestedTTY, ttySet, size)
+	return s.acquireInputScoped(ScopeProject, "", cwd, name, requestedTTY, ttySet, size)
 }
 
 // AcquireInputAt is the explicit-root form used by daemon requests whose
 // child working directory differs from the project root.
 func (s *Supervisor) AcquireInputAt(root, cwd, name string, requestedTTY bool, size *TTYSize) (*InputLease, error) {
-	return s.acquireInput(root, cwd, name, requestedTTY, true, size)
+	return s.AcquireInputAtScoped(ScopeProject, root, cwd, name, requestedTTY, size)
 }
 
-func (s *Supervisor) acquireInput(rootHint, cwd, name string, requestedTTY, ttySet bool, size *TTYSize) (*InputLease, error) {
+func (s *Supervisor) AcquireInputAtScoped(scope, root, cwd, name string, requestedTTY bool, size *TTYSize) (*InputLease, error) {
+	return s.acquireInputScoped(scope, root, cwd, name, requestedTTY, true, size)
+}
+
+func (s *Supervisor) acquireInputScoped(scope, rootHint, cwd, name string, requestedTTY, ttySet bool, size *TTYSize) (*InputLease, error) {
 	if cwd == "" || name == "" {
 		return nil, fmt.Errorf("%w: input name and cwd are required", ErrInvalidRequest)
 	}
+	scope = normalizedScope(scope)
 	var err error
-	if rootHint == "" {
+	if scope == ScopeGlobal {
+		if rootHint != "" {
+			return nil, fmt.Errorf("%w: global scope cannot include a project root", ErrInvalidRequest)
+		}
+		rootHint = ""
+	} else if rootHint == "" {
 		rootHint, err = DiscoverProjectRoot(cwd)
 	} else {
 		rootHint, err = canonicalProjectRoot(rootHint)
@@ -2332,7 +2446,7 @@ func (s *Supervisor) acquireInput(rootHint, cwd, name string, requestedTTY, ttyS
 	if err != nil {
 		return nil, err
 	}
-	key := keyFor(rootHint, name)
+	key := scopedKey(scope, rootHint, name)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -2772,7 +2886,11 @@ func (s *Supervisor) resizeInput(ctx context.Context, lease *InputLease, cursor 
 }
 
 func (s *Supervisor) Subscribe(cwd, name string, opts output.ReadOptions) (*Follower, error) {
-	rec, err := s.ensureSession(cwd, name)
+	return s.SubscribeScoped(ScopeProject, cwd, name, opts)
+}
+
+func (s *Supervisor) SubscribeScoped(scope, cwd, name string, opts output.ReadOptions) (*Follower, error) {
+	rec, err := s.ensureSessionScoped(scope, cwd, name)
 	if err != nil {
 		return nil, err
 	}
@@ -2834,16 +2952,20 @@ func (s *Supervisor) waitProcessObserved(rec *record, initialObservation uint64)
 // A nil Match waits for process exit after draining output through its exit
 // watermark.
 func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOptions) (WaitResult, error) {
+	return s.WaitScoped(ctx, ScopeProject, cwd, name, opts)
+}
+
+func (s *Supervisor) WaitScoped(ctx context.Context, scope, cwd, name string, opts WaitOptions) (WaitResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	rec, err := s.lookup(cwd, name)
+	rec, err := s.lookupScoped(scope, cwd, name, "")
 	if err != nil {
 		if opts.After != nil || !errors.Is(err, ErrProcessNotFound) {
 			return WaitResult{}, err
 		}
-		rec, err = s.ensureSession(cwd, name)
+		rec, err = s.ensureSessionScoped(scope, cwd, name)
 		if err != nil {
 			return WaitResult{}, err
 		}
@@ -2925,10 +3047,14 @@ func (s *Supervisor) Wait(ctx context.Context, cwd, name string, opts WaitOption
 // cancel a pending automatic relaunch. Stop, down, and restart are the
 // lifecycle-control paths.
 func (s *Supervisor) Signal(cwd, name string, sig os.Signal) error {
+	return s.SignalScoped(ScopeProject, cwd, name, sig)
+}
+
+func (s *Supervisor) SignalScoped(scope, cwd, name string, sig os.Signal) error {
 	if sig == nil {
 		return ErrInvalidSignal
 	}
-	rec, err := s.lookup(cwd, name)
+	rec, err := s.lookupScoped(scope, cwd, name, "")
 	if err != nil {
 		return err
 	}
@@ -2959,10 +3085,14 @@ func (s *Supervisor) Signal(cwd, name string, sig os.Signal) error {
 // SignalControl forwards a signal as operator intent. Unlike Signal, this
 // suppresses an on-failure successor for the resulting incarnation.
 func (s *Supervisor) SignalControl(cwd, name string, sig os.Signal) error {
+	return s.SignalControlScoped(ScopeProject, cwd, name, sig)
+}
+
+func (s *Supervisor) SignalControlScoped(scope, cwd, name string, sig os.Signal) error {
 	if sig == nil {
 		return ErrInvalidSignal
 	}
-	rec, err := s.lookup(cwd, name)
+	rec, err := s.lookupScoped(scope, cwd, name, "")
 	if err != nil {
 		return err
 	}
@@ -2993,14 +3123,22 @@ func (s *Supervisor) SignalObservational(cwd, name string, sig os.Signal) error 
 	return s.Signal(cwd, name, sig)
 }
 
+func (s *Supervisor) SignalObservationalScoped(scope, cwd, name string, sig os.Signal) error {
+	return s.SignalScoped(scope, cwd, name, sig)
+}
+
 // Stop sends SIGTERM to one group, waits at most StopGrace, then sends
 // SIGKILL only if the group is still active. It always waits for the
 // supervisor's terminal reconciliation after a successful stop sequence.
 func (s *Supervisor) Stop(ctx context.Context, cwd, name string) error {
+	return s.StopScoped(ctx, ScopeProject, cwd, name)
+}
+
+func (s *Supervisor) StopScoped(ctx context.Context, scope, cwd, name string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	rec, err := s.lookup(cwd, name)
+	rec, err := s.lookupScoped(scope, cwd, name, "")
 	if err != nil {
 		return err
 	}
@@ -3120,10 +3258,14 @@ func (s *Supervisor) waitForDone(ctx context.Context, rec *record, duration time
 // Remove stops and permanently discards one supervision session. Followers
 // are closed cleanly; configuration outside runtime state is never touched.
 func (s *Supervisor) Remove(ctx context.Context, cwd, name string) error {
+	return s.RemoveScoped(ctx, ScopeProject, cwd, name)
+}
+
+func (s *Supervisor) RemoveScoped(ctx context.Context, scope, cwd, name string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	rec, err := s.lookup(cwd, name)
+	rec, err := s.lookupScoped(scope, cwd, name, "")
 	if err != nil {
 		return err
 	}
@@ -3290,7 +3432,7 @@ func (r *record) snapshotLocked() Process {
 	model := Process{
 		Name:          r.name,
 		Source:        r.source,
-		Scope:         "project",
+		Scope:         normalizedScope(r.scope),
 		Root:          r.root,
 		TTY:           r.tty,
 		PID:           r.pid,

@@ -59,6 +59,71 @@ func startShell(s *Supervisor, root, name, script string) (Process, error) {
 	})
 }
 
+func TestSupervisorGlobalScope(t *testing.T) {
+	first, second, missing := makeProject(t, false), makeProject(t, true), makeProject(t, false)
+	s := testSupervisor(t, Options{})
+	one, err := startShell(s, first, "proxy", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := startShell(s, second, "proxy", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := t.TempDir()
+	global, err := s.Start(StartRequest{Scope: ScopeGlobal, Name: "proxy", Cwd: invocation, Argv: []string{"/bin/sh", "-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.Root == two.Root || one.Scope != ScopeProject || two.Scope != ScopeProject || global.Scope != ScopeGlobal || global.Root != "" || global.Cwd != invocation {
+		t.Fatalf("scoped records = %+v %+v %+v", one, two, global)
+	}
+	for _, check := range []struct {
+		scope, cwd string
+		wantRoot   string
+	}{{ScopeProject, first, one.Root}, {ScopeProject, second, two.Root}, {ScopeGlobal, t.TempDir(), ""}} {
+		items, listErr := s.ListScoped(check.scope, check.cwd, true)
+		if listErr != nil || len(items) != 1 || items[0].Root != check.wantRoot || items[0].Scope != check.scope {
+			t.Fatalf("list %s/%s = %+v err=%v", check.scope, check.cwd, items, listErr)
+		}
+		if _, outputErr := s.OutputScoped(check.scope, check.cwd, "proxy"); outputErr != nil {
+			t.Fatalf("output %s/%s: %v", check.scope, check.cwd, outputErr)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if _, err := s.WaitScoped(ctx, ScopeGlobal, t.TempDir(), "proxy", WaitOptions{}); err != nil {
+		t.Fatalf("global wait from unrelated cwd: %v", err)
+	}
+	_, err = s.Get(missing, "proxy")
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("project miss = %v", err)
+	}
+	foundGlobal := false
+	for _, match := range notFound.OtherScopes {
+		foundGlobal = foundGlobal || match.Scope == ScopeGlobal && match.ProjectRoot == ""
+	}
+	if !foundGlobal {
+		t.Fatalf("project miss other scopes = %+v", notFound.OtherScopes)
+	}
+	if err := s.StopScoped(context.Background(), ScopeGlobal, t.TempDir(), "proxy"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get(first, "proxy"); err != nil || !IsActiveState(got.State) {
+		t.Fatalf("global stop affected project: %+v err=%v", got, err)
+	}
+	if err := s.RemoveScoped(context.Background(), ScopeGlobal, t.TempDir(), "proxy"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetScoped(ScopeGlobal, first, "proxy"); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("removed global get = %v", err)
+	}
+	if _, err := s.Get(second, "proxy"); err != nil {
+		t.Fatalf("global remove affected project: %v", err)
+	}
+}
+
 func TestSupervisorProjectScopes(t *testing.T) {
 	first := makeProject(t, false)
 	second := makeProject(t, true)

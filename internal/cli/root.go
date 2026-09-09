@@ -378,7 +378,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		Name:      "hum",
 		Usage:     "A local development process supervisor",
 		UsageText: "hum [global options] [command [command options]]",
-		Description: "Project scope is selected automatically from the invocation directory and canonicalized physically (symlink aliases share a scope; linked worktrees remain separate); use --project PATH or -C PATH for explicit cross-worktree access; observation may target a removed known worktree, launch requires an existing directory, and list --all discovers every scope; JSON process records include scope project and canonical project_root; manifest projects use hum start NAME; hum run starts a detached daemon and stays attached by default; hum serve --daemon runs detached. " +
+		Description: "Project scope is selected automatically from the invocation directory and canonicalized physically (symlink aliases share a scope; linked worktrees remain separate); use --project PATH or -C PATH for explicit cross-worktree access; use --global or -g for the machine-wide ad-hoc namespace; observation may target a removed known worktree, launch requires an existing directory, and list --all discovers every scope; JSON process records include scope project and canonical project_root; manifest projects use hum start NAME; hum run starts a detached daemon and stays attached by default; hum serve --daemon runs detached. " +
 			"Bounded controls, including logs without --follow, do not start an empty daemon; logs --follow and wait start one to observe future launches; stopping processes and daemon shutdown are separate. " +
 			"restart: on-failure retries spawn failures at 1s, 2s, 4s, 8s, and 16s five times; a 30-second survivor resets recovery, so inspect retained failing output.\n\n" +
 			"Examples:\n" +
@@ -393,6 +393,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		ExitErrHandler:                  func(context.Context, *urfavecli.Command, error) {},
 		Flags: []urfavecli.Flag{
 			&urfavecli.StringFlag{Name: "project", Aliases: []string{"C"}, Usage: "project directory; omit for the current directory; ad-hoc run uses it as cwd, manifest cwd stays project-relative"},
+			&urfavecli.BoolFlag{Name: "global", Aliases: []string{"g"}, DefaultText: "false", Local: true, Hidden: true, Usage: "use the explicit machine-wide global process namespace (ad-hoc run only)"},
 			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon [$HUM_RUNTIME_DIR, then $XDG_RUNTIME_DIR/hum]", DefaultText: "$TMPDIR/hum-UID"},
 			&urfavecli.StringFlag{Name: "stop-grace", Usage: "grace period between SIGTERM and SIGKILL when stopping a process [$HUM_STOP_GRACE]", DefaultText: config.DefaultStopGrace.String()},
 			&urfavecli.StringFlag{Name: "output-bytes", Usage: "charged retained output bytes per process (text + 128 bytes per entry; read byte limits count text only), at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
@@ -421,6 +422,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 type projectSelection struct {
 	cwd      string
 	root     string
+	scope    string
 	selector string
 }
 
@@ -432,12 +434,23 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 	if err != nil {
 		return projectSelection{}, fmt.Errorf("current directory: %w", err)
 	}
+	global := cmd.Bool("global") || cmd.IsSet("global") || rawScopeFlag(cmd, "global", "g")
+	projectSet := cmd.IsSet("project") || rawScopeFlag(cmd, "project", "C")
+	if global && projectSet {
+		return projectSelection{}, errors.New("--global conflicts with --project/-C; choose one scope")
+	}
+	if global {
+		if cmd.Name == "list" && cmd.Bool("all") {
+			return projectSelection{}, errors.New("--global conflicts with --all; --all already spans every scope")
+		}
+		return projectSelection{cwd: invocationCwd, scope: "global", selector: "--global"}, nil
+	}
 	if !cmd.IsSet("project") {
 		root, err := project.DiscoverProjectRoot(invocationCwd)
 		if err != nil {
 			return projectSelection{}, err
 		}
-		return projectSelection{cwd: invocationCwd, root: root}, nil
+		return projectSelection{cwd: invocationCwd, root: root, scope: "project"}, nil
 	}
 
 	value := cmd.String("project")
@@ -465,14 +478,42 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 	if rootErr != nil {
 		return projectSelection{}, fmt.Errorf("--project path %q: %w", selected, rootErr)
 	}
-	return projectSelection{cwd: selected, root: root, selector: "--project " + shellEscape(root)}, nil
+	return projectSelection{cwd: selected, root: root, scope: "project", selector: "--project " + shellEscape(root)}, nil
+}
+
+func rawScopeFlag(cmd *urfavecli.Command, long, short string) bool {
+	if cmd == nil {
+		return false
+	}
+	tokens := []string(nil)
+	if root := cmd.Root(); root != nil && root.Args() != nil {
+		tokens = root.Args().Slice()
+	}
+	if root := cmd.Root(); root != nil && root.Metadata != nil {
+		if state, ok := root.Metadata[jsonErrorStateMetadataKey].(*jsonErrorState); ok && state != nil {
+			state.mu.Lock()
+			if len(state.invocationArgs) > 0 {
+				tokens = append([]string(nil), state.invocationArgs...)
+			}
+			state.mu.Unlock()
+		}
+	}
+	for _, token := range tokens {
+		if token == "--" {
+			return false
+		}
+		if token == "--"+long || token == "--"+long+"=true" || token == "-"+short {
+			return true
+		}
+	}
+	return false
 }
 
 func rejectProjectOverride(cmd *urfavecli.Command, commandName string) error {
-	if !cmd.IsSet("project") {
-		return nil
+	if cmd.IsSet("project") || cmd.Bool("global") || rawScopeFlag(cmd, "project", "C") || rawScopeFlag(cmd, "global", "g") {
+		return fmt.Errorf("hum %s does not accept --project/-C or --global", commandName)
 	}
-	return fmt.Errorf("hum %s does not accept --project/-C", commandName)
+	return nil
 }
 
 // projectCommand returns the canonical follow-up command. An explicit
