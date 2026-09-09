@@ -825,6 +825,34 @@ func TestVersionMismatch(t *testing.T) {
 }
 
 func TestAttachedRunOneIncarnation(t *testing.T) {
+	t.Run("first entry of a silent record's successor is not swallowed", func(t *testing.T) {
+		runtimeDir := cliServeRunRuntimeDir(t)
+		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+		cliServeRunStartDaemon(t, runtimeDir)
+		clientDir := t.TempDir()
+		marker := filepath.Join(clientDir, "marker")
+		// Cursors are zero-based and the follow window is exclusive, so a record
+		// that retained nothing must not start the successor's window at zero.
+		script := fmt.Sprintf("if [ -f %q ]; then echo FIRST-LINE; echo SECOND-LINE; else : > %q; fi", marker, marker)
+		for attempt := 0; attempt < 2; attempt++ {
+			client := cliServeRunStartClientInDir(t, clientDir, "run", "silent", "--", "/bin/sh", "-c", script)
+			if err := client.wait(10 * time.Second); err != nil {
+				t.Fatalf("attempt %d: %v; stdout=%q stderr=%q", attempt, err, client.stdout(), client.stderr())
+			}
+			if attempt == 0 {
+				if got := client.stdout(); got != "" {
+					t.Fatalf("silent incarnation stdout = %q, want empty", got)
+				}
+				continue
+			}
+			for _, want := range []string{"FIRST-LINE", "SECOND-LINE"} {
+				if !strings.Contains(client.stdout(), want) {
+					t.Fatalf("successor stdout = %q, want %q", client.stdout(), want)
+				}
+			}
+		}
+	})
+
 	t.Run("argv cwd environment streams and exit", func(t *testing.T) {
 		runtimeDir := cliServeRunRuntimeDir(t)
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)

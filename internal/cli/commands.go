@@ -640,14 +640,13 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return errors.New("--json is supported only with --detach")
 	}
 	var after *protocol.Cursor
-	if getErr == nil {
-		// After is the last consumed cursor; NextCursor is the next cursor the
-		// launch may assign. Start immediately before it to avoid retained replay
-		// without asking the daemon for a cursor that is still in the future.
-		value := protocol.Cursor(current.NextCursor)
-		if value > 0 {
-			value--
-		}
+	// After is the last consumed cursor; NextCursor is the next cursor the launch
+	// may assign. Start immediately before it to avoid retained replay without
+	// asking the daemon for a cursor that is still in the future. Cursors are
+	// zero-based and After is exclusive, so a record that retained nothing must
+	// stay nil: after=0 would swallow the new incarnation's first entry.
+	if getErr == nil && current.NextCursor > 0 {
+		value := protocol.Cursor(current.NextCursor - 1)
 		after = &value
 	}
 	follower, err := client.Follow(context.Background(), daemon.FollowRequest{Name: name, Scope: selection.scope, Cwd: manifest.root, After: after, UntilExit: true, Stream: protocol.StreamBoth, MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes)})
@@ -696,21 +695,25 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return err
 	}
 	// The top-level command context is also canceled by the process signal
-	// bridge. Give the signal channel first chance to classify SIGTERM/SIGHUP
-	// as operator intent, while still detaching on an independent cancellation.
+	// bridge, so only an independent cancellation may detach. Observe those
+	// signals on a dedicated channel instead of waiting for the follow loop to
+	// classify one: the loop can be blocked writing child output to a stalled
+	// consumer, and a SIGTERM that lost that race would exit 0 with a detach
+	// notice while the child kept running.
 	followCtx, cancelFollow := context.WithCancel(context.Background())
 	defer cancelFollow()
-	signalHandled := make(chan struct{}, 1)
-	contextDetached := make(chan struct{})
+	bridgedSignals := make(chan os.Signal, 4)
+	signal.Notify(bridgedSignals, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(bridgedSignals)
 	go func() {
 		select {
 		case <-ctx.Done():
 			timer := time.NewTimer(25 * time.Millisecond)
 			defer timer.Stop()
 			select {
-			case <-signalHandled:
+			case <-bridgedSignals:
+			case <-followCtx.Done():
 			case <-timer.C:
-				close(contextDetached)
 				cancelFollow()
 			}
 		case <-followCtx.Done():
@@ -718,7 +721,17 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	}()
 	terminal, detached := errors.New("attached run terminal"), errors.New("attached run detached")
 	var exit *output.Exit
-	interrupted := false
+	interrupted, noticed := false, false
+	// Every path that gives up the stream while the child keeps running says so
+	// exactly once, including transport loss: a bare exit 0 is indistinguishable
+	// from the child having finished successfully.
+	notifyDetached := func() {
+		if noticed {
+			return
+		}
+		noticed = true
+		_, _ = fmt.Fprintf(errWriter, "detached from %s; it keeps running (%s)\n", name, projectCommand(selection.selector, "attach "+name))
+	}
 	_, _, loopErr := followLoop(followCtx, follower, signals, func(event output.Event) error {
 		if event.Exit != nil {
 			exit = event.Exit
@@ -729,19 +742,15 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		}
 		for _, entry := range event.Read.Entries {
 			if err := writeAttachedEntry(writer, errWriter, entry); err != nil {
-				_, _ = fmt.Fprintf(errWriter, "detached from %s; it keeps running (%s)\n", name, projectCommand(selection.selector, "attach "+name))
+				notifyDetached()
 				return detached
 			}
 		}
 		return nil
 	}, func(sig os.Signal) (bool, error) {
-		select {
-		case signalHandled <- struct{}{}:
-		default:
-		}
 		switch sig {
 		case syscall.SIGHUP:
-			_, _ = fmt.Fprintf(errWriter, "detached from %s; it keeps running (%s)\n", name, projectCommand(selection.selector, "attach "+name))
+			notifyDetached()
 			return true, nil
 		case os.Interrupt:
 			if !interrupted {
@@ -764,11 +773,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	}
 	if exit == nil && !errors.Is(loopErr, terminal) {
 		if loopErr == nil {
-			select {
-			case <-contextDetached:
-				_, _ = fmt.Fprintf(errWriter, "detached from %s; it keeps running (%s)\n", name, projectCommand(selection.selector, "attach "+name))
-			default:
-			}
+			notifyDetached()
 			return nil
 		}
 		return loopErr
@@ -781,8 +786,23 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		status = 128 + exit.SignalNumber
 		_, _ = fmt.Fprintf(errWriter, "%s exited with code %d\n", name, status)
 	}
-	if process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root}); getErr == nil && process.NextLaunchAt != nil {
-		_, _ = fmt.Fprintf(errWriter, "%s exited with code %d; on-failure restart scheduled, follow it with %s\n", name, status, projectCommand(selection.selector, "attach "+name))
+	// The child publishes its exit before the daemon records a successor, so a
+	// single read always loses that race. Poll briefly, and only while a
+	// scheduled successor is still possible, so a clean exit is never delayed.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
+		if getErr != nil || process.Restart != app.RestartOnFailure || status == 0 {
+			break
+		}
+		if process.NextLaunchAt != nil {
+			_, _ = fmt.Fprintf(errWriter, "%s exited with code %d; on-failure restart scheduled, follow it with %s\n", name, status, projectCommand(selection.selector, "attach "+name))
+			break
+		}
+		if app.IsActiveState(process.State) || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if status == 0 {
 		return nil
@@ -2635,7 +2655,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 		return err
 	}
 	if selection.scope == "global" {
-		return errors.New("hum --global up is not supported; use hum --global run NAME -- COMMAND")
+		return newCLIUsageError(errors.New("hum --global up is not supported; use hum --global run NAME -- COMMAND"))
 	}
 	cwd := selection.cwd
 	// A genuinely empty hum.yaml stays inert (HUM-033). No hum.yaml and no

@@ -3,9 +3,11 @@
 package integration
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,6 +64,63 @@ type runitListResponse struct {
 var runitHumanRunPattern = regexp.MustCompile(`^started ([A-Za-z0-9._-]+) \(PID ([0-9]+), cursor ([0-9]+)\)$`)
 
 func TestAttachedRunForegroundLifecycle(t *testing.T) {
+	t.Run("SIGTERM stops the child even when the output consumer stalls", func(t *testing.T) {
+		scenario := runitNewScenario(t)
+		name := "attached-backpressure"
+		runitCleanup(t, scenario, name)
+
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = reader.Close() }()
+		command := exec.Command(scenario.hum, "run", name, "--",
+			"/bin/sh", "-c", "while :; do echo attached-backpressure-line-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; done")
+		command.Dir, command.Env, command.Stdout = scenario.cwd, scenario.env, writer
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		_ = writer.Close()
+
+		// Drain enough to prove the run is streaming, then stall: the pipe fills
+		// and hum blocks inside its stdout write. An operator's SIGTERM must
+		// still stop the child instead of detaching and reporting success.
+		buffer := make([]byte, 4096)
+		drained, deadline := 0, time.Now().Add(runitWaitTimeout)
+		for drained < 128*1024 && time.Now().Before(deadline) {
+			read, readErr := reader.Read(buffer)
+			drained += read
+			if readErr != nil {
+				break
+			}
+		}
+		if drained == 0 {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			t.Fatal("attached run produced no output to stall on")
+		}
+		time.Sleep(400 * time.Millisecond)
+		if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(300 * time.Millisecond)
+		go func() { _, _ = io.Copy(io.Discard, reader) }()
+
+		waitErr := command.Wait()
+		var exitErr *exec.ExitError
+		if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() == 0 {
+			t.Fatalf("SIGTERM under output backpressure = %v, want a non-zero stop status; stderr=%q", waitErr, stderr.String())
+		}
+		if strings.Contains(stderr.String(), "detached from") {
+			t.Fatalf("SIGTERM detached instead of stopping: stderr=%q", stderr.String())
+		}
+		if process := runitListProcess(t, scenario, name); process.State == "running" {
+			t.Fatalf("child still running after SIGTERM: %+v", process)
+		}
+	})
+
 	t.Run("argv cwd environment and raw streams", func(t *testing.T) {
 		scenario := runitNewScenario(t)
 		name := "attached-inspect"
@@ -195,12 +254,39 @@ func TestAttachedRunForegroundLifecycle(t *testing.T) {
 		if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 7 || strings.Count(client.Stdout(), "first") != 1 {
 			t.Fatalf("first incarnation = %v stdout %q stderr %q", waitErr, client.Stdout(), client.Stderr())
 		}
+		if !strings.Contains(client.Stderr(), "on-failure restart scheduled") {
+			t.Fatalf("foreground run gave no hint that a successor was scheduled: stderr=%q", client.Stderr())
+		}
 		time.Sleep(1200 * time.Millisecond)
 		managed := runitListProcess(t, scenario, "recovering")
 		if managed.State != "running" {
 			t.Fatalf("scheduled successor = %+v", managed)
 		}
 		_ = testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, "stop", "recovering")
+	})
+
+	t.Run("transport loss detaches with the attach notice", func(t *testing.T) {
+		scenario := runitNewScenario(t)
+		marker := filepath.Join(t.TempDir(), "transport-loss")
+		client := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, "run", "transported", "--", scenario.fixture, "stream", marker)
+		testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
+		runitWaitForOutput(t, client, false, "stdout:live")
+
+		// Losing the daemon must not look like the child having finished: a bare
+		// exit 0 with no notice is indistinguishable from success.
+		daemonPID := runitReadPID(filepath.Join(scenario.runtimeDir, "hum.pid"))
+		if daemonPID <= 0 {
+			t.Fatalf("daemon pid = %d", daemonPID)
+		}
+		if err := syscall.Kill(daemonPID, syscall.SIGKILL); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Wait(runitWaitTimeout); err != nil {
+			t.Fatalf("transport loss = %v, want exit 0; stderr=%q", err, client.Stderr())
+		}
+		if !strings.Contains(client.Stderr(), "detached from transported") {
+			t.Fatalf("transport loss notice = %q", client.Stderr())
+		}
 	})
 
 	t.Run("detached launch and attach observer keep daemon ownership", func(t *testing.T) {
