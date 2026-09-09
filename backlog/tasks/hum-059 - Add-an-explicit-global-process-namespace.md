@@ -1,9 +1,10 @@
 ---
 id: HUM-059
 title: Add an explicit --global process namespace
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-09 16:18'
+updated_date: '2026-09-09 20:28'
 labels:
   - cli
   - daemon
@@ -80,21 +81,41 @@ ordinal: 36700
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/app -run '^TestSupervisorGlobalScope$' -count=1 -v` exits 0 and prints PASS, proving equal names coexist across two projects and global, project list/get/output/wait/stop/remove cannot see a global record and global operations cannot see project records, global operations work independently of caller cwd, and a project not-found result for a name present globally carries a `global` `other_scopes` match.
-- [ ] #2 `go test ./internal/cli -run '^TestGlobalScopeSelection$' -count=1 -v` exits 0 and prints PASS, proving `--global` and `-g` work before or after run, start, down, list, status, attach, logs, wait, input, signal, restart, stop, and remove, and before or after NAME for run; a global ad-hoc run records the lexical invocation directory as cwd; `--global list` and nameless `--global status` show only global sessions; `--global` name completion lists only global names; `--global` with `--project`/`-C`, with `list --all`, with init, or with up fails before daemon contact with actionable guidance; `--global start`/`restart` on an unknown name reports not-found without reading a manifest; and `--global down` stops only global sessions.
-- [ ] #3 `go test ./internal/cli -run '^TestGlobalScopeDiscovery$' -count=1 -v` exits 0 and prints PASS, proving a global session is hidden from default project list and status, appears in `list --all` under a `global` heading with the `hum --global` selector prefix and JSON `scope` `global` without `project_root`, and a missing project name that exists globally yields `not_found` with a copyable `hum --global ...` command and no mutation.
-- [ ] #4 `go test ./internal/protocol ./internal/daemon ./internal/mcp -run GlobalScope -count=1 -v` exits 0 and prints PASS, proving the wire protocol carries explicit scope with a project-scoped legacy default; global requests carry no project identity; all-scope listing includes global records; MCP accepts `scope`, requires `project_root` for project and rejects it for global, and includes global records in `list` `all`; and conflicting selectors are rejected.
-- [ ] #5 `go test ./internal/daemon -run '^TestRuntimeStateGlobalScope$' -count=1 -v` exits 0 and prints PASS, proving global sessions survive daemon crash recovery under the global key, never collide with a project record of the same name, and incompatible prior state produces the established actionable upgrade failure.
-- [ ] #6 `go test ./internal/cli ./internal/mcp ./internal/skill -run 'GlobalScopeDocs|HelpContract|FlagAliases' -count=1 -v` exits 0 and prints PASS, proving CLI help, README.md, docs/design.md, docs/coding-agents.md, MCP descriptions, and the embedded skill document `--global` and `-g`, placement and conflicts, global ad-hoc limits, global not-found guidance, and the `scope` `global` JSON value with copyable examples, and that generated output uses the long `--global` flag.
-- [ ] #7 `task ci` exits 0.
+- [x] #1 `go test ./internal/app -run '^TestSupervisorGlobalScope$' -count=1 -v` exits 0 and prints PASS, proving equal names coexist across two projects and global, project list/get/output/wait/stop/remove cannot see a global record and global operations cannot see project records, global operations work independently of caller cwd, and a project not-found result for a name present globally carries a `global` `other_scopes` match.
+- [x] #2 `go test ./internal/cli -run '^TestGlobalScopeSelection$' -count=1 -v` exits 0 and prints PASS, proving `--global` and `-g` work before or after run, start, down, list, status, attach, logs, wait, input, signal, restart, stop, and remove, and before or after NAME for run; a global ad-hoc run records the lexical invocation directory as cwd; `--global list` and nameless `--global status` show only global sessions; `--global` name completion lists only global names; `--global` with `--project`/`-C`, with `list --all`, with init, or with up fails before daemon contact with actionable guidance; `--global start`/`restart` on an unknown name reports not-found without reading a manifest; and `--global down` stops only global sessions.
+- [x] #3 `go test ./internal/cli -run '^TestGlobalScopeDiscovery$' -count=1 -v` exits 0 and prints PASS, proving a global session is hidden from default project list and status, appears in `list --all` under a `global` heading with the `hum --global` selector prefix and JSON `scope` `global` without `project_root`, and a missing project name that exists globally yields `not_found` with a copyable `hum --global ...` command and no mutation.
+- [x] #4 `go test ./internal/protocol ./internal/daemon ./internal/mcp -run GlobalScope -count=1 -v` exits 0 and prints PASS, proving the wire protocol carries explicit scope with a project-scoped legacy default; global requests carry no project identity; all-scope listing includes global records; MCP accepts `scope`, requires `project_root` for project and rejects it for global, and includes global records in `list` `all`; and conflicting selectors are rejected.
+- [x] #5 `go test ./internal/daemon -run '^TestRuntimeStateGlobalScope$' -count=1 -v` exits 0 and prints PASS, proving global sessions survive daemon crash recovery under the global key, never collide with a project record of the same name, and incompatible prior state produces the established actionable upgrade failure.
+- [x] #6 `go test ./internal/cli ./internal/mcp ./internal/skill -run 'GlobalScopeDocs|HelpContract|FlagAliases' -count=1 -v` exits 0 and prints PASS, proving CLI help, README.md, docs/design.md, docs/coding-agents.md, MCP descriptions, and the embedded skill document `--global` and `-g`, placement and conflicts, global ad-hoc limits, global not-found guidance, and the `scope` `global` JSON value with copyable examples, and that generated output uses the long `--global` flag.
+- [x] #7 `task ci` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC#1 — PASS: go test ./internal/app -run ^TestSupervisorGlobalScope$ -count=1 -v exited 0 and printed PASS.
+AC#2 — PASS: go test ./internal/cli -run ^TestGlobalScopeSelection$ -count=1 -v exited 0 and printed PASS.
+AC#3 — PASS: go test ./internal/cli -run ^TestGlobalScopeDiscovery$ -count=1 -v exited 0 and printed PASS.
+AC#4 — PASS: go test ./internal/protocol ./internal/daemon ./internal/mcp -run GlobalScope -count=1 -v exited 0 and printed PASS in all packages.
+AC#5 — PASS: go test ./internal/daemon -run ^TestRuntimeStateGlobalScope$ -count=1 -v exited 0 and printed PASS.
+AC#6 — PASS: go test ./internal/cli ./internal/mcp ./internal/skill -run GlobalScopeDocs|HelpContract|FlagAliases -count=1 -v exited 0 and printed PASS.
+AC#7 — PASS: task ci exited 0 on rebased final implementation commit ae4e461 after checks, full tests, race tests, build, and smoke coverage.
+Review — Independent reviewer findings were fixed. Final independent verifier returned PASS for AC#1–#7 and DoD#1–#6 before integration; post-rebase task ci also passed.
+Modified-file deviations: internal/cli/init.go rejects global init before daemon contact; internal/cli/input.go routes global input without reading a manifest; internal/cli/mcp.go forwards scope through the CLI MCP adapter and documents it; internal/cli/flag_alias_test.go verifies -g on every command; internal/protocol/restart_policy_test.go updates the frozen protocol version to 17 after integration with HUM-060. These are direct HUM-059 surfaces omitted from the declared list. No tests were deleted, skipped, or weakened; no protected gate file changed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented explicit global process scope across CLI, daemon protocol/runtime recovery, supervisor, MCP, completion, rendering, guidance, and documentation. Added focused global-scope coverage and bumped the integrated private protocol to version 17. Implementation ae4e461 merged to main as d77e02c. task ci and independent verification passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
