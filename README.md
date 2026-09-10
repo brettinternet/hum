@@ -179,7 +179,18 @@ codex plugin marketplace add .
 codex plugin add hum@hum
 ```
 
-`hum mcp` exposes project processes, bounded output, and one-shot TTY input over MCP.
+`hum mcp` exposes project processes, bounded output, and one-shot TTY input over MCP. Agents can run separate worktrees in parallel:
+
+```sh
+cd .worktrees/agent-a
+hum up --detach
+
+cd .worktrees/agent-b
+hum up --detach
+
+hum list --all
+hum --project .worktrees/agent-a down
+```
 
 See [coding-agent setup](docs/coding-agents.md) for Claude Code, Cursor, MCP, and the shell-only skill.
 
