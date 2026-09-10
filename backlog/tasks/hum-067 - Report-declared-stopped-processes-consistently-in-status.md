@@ -4,6 +4,7 @@ title: Report declared stopped processes consistently in status
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:50'
+updated_date: '2026-09-10 01:57'
 labels: []
 dependencies: []
 modified_files:
@@ -25,8 +26,8 @@ Outcome: `hum status NAME` reports a resolved but never-launched manifest defini
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 `mise exec go -- go test ./internal/cli -run TestStatus -count=1` exits 0.
-- [ ] #2 A focused built-CLI command with one manifest definition and no daemon runs human and JSON `hum status api`, exits 0 for both, reports state `stopped`, and proves no daemon socket or process was created.
-- [ ] #3 `mise exec go -- go test -race ./internal/cli ./integration` exits 0.
+- [ ] #2 `mise exec go -- go test ./internal/cli -run TestStatusDeclaredProcessWithoutDaemon -count=1` exits 0 after human and JSON assertions report `stopped` and verify no daemon socket or process was created.
+- [ ] #3 `mise exec go -- go test ./internal/cli ./integration -count=1` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done

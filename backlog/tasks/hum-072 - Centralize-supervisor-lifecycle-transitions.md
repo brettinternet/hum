@@ -4,6 +4,7 @@ title: Centralize supervisor lifecycle transitions
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:52'
+updated_date: '2026-09-10 01:59'
 labels: []
 dependencies: []
 modified_files:
@@ -26,8 +27,8 @@ Outcome: Start, restart, automatic relaunch, exit publication, and failure recov
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 `mise exec go -- go test -race ./internal/app -count=1` exits 0.
-- [ ] #2 Table-driven invariant tests for start, explicit restart, automatic relaunch, persistence failure, stop, remove, and TTY preparation exit 0 and assert the legal state/terminal/done/readiness/exit combinations after each transition.
-- [ ] #3 `rg -n "doneClosed" internal/app` exits 1 with no matches, and duplicated running-state initialization is replaced by one locked transition helper used by Start and Restart.
+- [ ] #2 `mise exec go -- go test ./internal/app -run TestLifecycleTransitionInvariants -count=1` exits 0 after covering start, explicit restart, automatic relaunch, persistence failure, stop, remove, and TTY preparation legal state combinations.
+- [ ] #3 `rg -n "doneClosed" internal/app` exits 1, and `mise exec go -- go test ./internal/app -run TestRunningTransitionSharedByStartAndRestart -count=1` exits 0.
 - [ ] #4 `task ci` exits 0.
 <!-- AC:END -->
 

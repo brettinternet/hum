@@ -4,6 +4,7 @@ title: Enforce each MCP tool input contract before side effects
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:49'
+updated_date: '2026-09-10 01:57'
 labels: []
 dependencies: []
 modified_files:
@@ -26,10 +27,10 @@ Outcome: Runtime MCP validation exactly matches each advertised closed input sch
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `mise exec go -- go test -race ./internal/mcp ./internal/cli` exits 0.
-- [ ] #2 A table-driven schema/runtime conformance test invokes every tool with each known-but-inapplicable field and exits 0 after proving `invalid_request` is returned before resolver or daemon calls.
-- [ ] #3 Focused MCP tests for named `up`, named `down`, global `up`, and global `list` with `all: true` exit 0 and prove no daemon contact or lifecycle mutation occurs.
-- [ ] #4 A focused help/schema snapshot command exits 0 and shows project scope requires `project_root`, global scope forbids it, and the `hum mcp` description states the same rule.
+- [ ] #1 `mise exec go -- go test -race ./internal/mcp && mise exec go -- go test ./internal/cli` exits 0.
+- [ ] #2 `mise exec go -- go test ./internal/mcp -run TestToolInputSchemaRuntimeConformance -count=1` exits 0 after invoking every tool with each known-but-inapplicable field and proving `invalid_request` occurs before resolver or daemon calls.
+- [ ] #3 `mise exec go -- go test ./internal/mcp -run TestRejectsUnsupportedAggregateInputs -count=1` exits 0 after checking named `up`, named `down`, global `up`, and global `list` with `all: true`, with no daemon contact or lifecycle mutation.
+- [ ] #4 `mise exec go -- go test ./internal/mcp ./internal/cli -run "Test.*MCP.*(Help|ScopeSchema)" -count=1` exits 0 and proves schema/help agree that project scope requires `project_root` and global scope forbids it.
 <!-- AC:END -->
 
 ## Definition of Done

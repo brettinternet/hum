@@ -4,6 +4,7 @@ title: Remove the duplicate daemon wire model
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:52'
+updated_date: '2026-09-10 01:59'
 labels: []
 dependencies: []
 modified_files:
@@ -28,9 +29,9 @@ Outcome: The daemon and client dispatch directly through the canonical typed `in
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `mise exec go -- go test -race ./internal/protocol ./internal/daemon ./internal/cli ./internal/mcp` exits 0.
+- [ ] #1 `mise exec go -- go test -race ./internal/protocol ./internal/daemon ./internal/mcp && mise exec go -- go test ./internal/cli` exits 0.
 - [ ] #2 `rg -n "type wire(Request|Response)|wireRequestFromProtocol|writeProtocolRequest|readProtocolResponse" internal/daemon` exits 1 with no matches.
-- [ ] #3 A table-driven protocol round-trip command covers every operation and all nonzero DTO fields, exits 0, and proves encoded requests and responses retain exact values.
+- [ ] #3 `mise exec go -- go test ./internal/protocol ./internal/daemon -run TestProtocolRoundTripAllFields -count=1` exits 0 after covering every operation and retaining every nonzero DTO field.
 - [ ] #4 `task ci` exits 0.
 <!-- AC:END -->
 

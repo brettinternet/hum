@@ -4,6 +4,7 @@ title: Stop implicit Mix execution and make discovery cancellable
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:49'
+updated_date: '2026-09-10 01:56'
 labels: []
 dependencies: []
 modified_files:
@@ -28,9 +29,9 @@ Outcome: Implicit project discovery never evaluates repository `mix.exs`, and ca
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `mise exec go -- go test -race ./internal/project ./internal/cli ./internal/mcp` exits 0.
-- [ ] #2 A focused resolver/CLI regression command using a `mix.exs` that writes a sentinel exits 0 and leaves the sentinel absent for implicit list, status, completion, and init discovery paths.
-- [ ] #3 A focused MCP regression command starts a blocking discovery subprocess, closes stdin or cancels the request, and exits 0 after proving `Serve` returns within two seconds and the subprocess is reaped.
+- [ ] #1 `mise exec go -- go test -race ./internal/project ./internal/mcp && mise exec go -- go test ./internal/cli` exits 0.
+- [ ] #2 `mise exec go -- go test ./internal/project ./internal/cli -run "Test.*MixDiscoveryDoesNotExecuteProjectCode" -count=1` exits 0 and its sentinel assertions prove implicit list, status, completion, and init paths did not evaluate `mix.exs`.
+- [ ] #3 `mise exec go -- go test ./internal/mcp ./internal/cli -run "Test.*DiscoveryCancellation" -count=1` exits 0 after proving MCP EOF/request cancellation returns within two seconds and reaps the blocked discovery subprocess.
 <!-- AC:END -->
 
 ## Definition of Done

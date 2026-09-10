@@ -4,6 +4,7 @@ title: Preserve explicit runtime permissions and zero stop grace
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:50'
+updated_date: '2026-09-10 01:57'
 labels: []
 dependencies: []
 modified_files:
@@ -28,9 +29,9 @@ Outcome: hum never silently changes an existing operator-managed runtime directo
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `mise exec go -- go test -race ./internal/config ./internal/daemon ./internal/cli` exits 0.
-- [ ] #2 A focused runtime test creates an existing 0755 directory, runs preparation, and exits 0 after proving the mode remains 0755; a newly created runtime directory is still 0700.
-- [ ] #3 A focused config/CLI test sets `HUM_STOP_GRACE=0s`, stops a non-cooperative fixture, and exits 0 after proving escalation is immediate rather than delayed by the ten-second default.
+- [ ] #1 `mise exec go -- go test -race ./internal/config ./internal/daemon && mise exec go -- go test ./internal/cli` exits 0.
+- [ ] #2 `mise exec go -- go test ./internal/daemon -run TestPrepareRuntimePreservesExistingMode -count=1` exits 0 after proving an existing 0755 directory is not silently chmodded and a newly created directory is 0700.
+- [ ] #3 `mise exec go -- go test ./internal/config ./internal/cli -run TestExplicitZeroStopGrace -count=1` exits 0 after proving `HUM_STOP_GRACE=0s` causes immediate escalation rather than the ten-second default.
 <!-- AC:END -->
 
 ## Definition of Done

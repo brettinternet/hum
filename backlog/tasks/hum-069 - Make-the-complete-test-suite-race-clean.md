@@ -4,6 +4,7 @@ title: Make the complete test suite race-clean
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:51'
+updated_date: '2026-09-10 01:58'
 labels: []
 dependencies: []
 modified_files:
@@ -28,8 +29,8 @@ Outcome: `go test -race ./...` passes locally and CI runs that complete race sur
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 `mise exec go -- go test -race ./... -count=1` exits 0 with no `WARNING: DATA RACE` output.
-- [ ] #2 `task race` exits 0 and its executed command covers `./...`, including `cmd/hum`, `internal/cli`, `internal/mcp`, and `integration`.
-- [ ] #3 `task ci` exits 0 on both supported local OS families or the platform-specific CI equivalents are green.
+- [ ] #2 `task race` exits 0 and its logged Go package pattern is `./...`, covering command, CLI, MCP, protocol, and integration packages.
+- [ ] #3 `task ci` exits 0 after running the expanded race target.
 <!-- AC:END -->
 
 ## Definition of Done

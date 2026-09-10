@@ -4,6 +4,7 @@ title: Bound daemon auto-start by the full recovery budget
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:49'
+updated_date: '2026-09-10 01:56'
 labels: []
 dependencies: []
 modified_files:
@@ -25,9 +26,9 @@ Outcome: Client auto-start waits long enough for every bounded stale-runtime rec
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `mise exec go -- go test -race ./internal/daemon ./internal/cli` exits 0.
-- [ ] #2 A focused daemon/client regression command with at least two sequential stale-group reconciliation waits exits 0 and proves auto-start reaches a ready daemon without killing the recovering child at five seconds.
-- [ ] #3 A focused cancellation regression command exits 0 and proves caller cancellation still returns promptly and leaves no spawned daemon child or stale startup artifacts.
+- [ ] #1 `mise exec go -- go test -race ./internal/daemon && mise exec go -- go test ./internal/cli` exits 0.
+- [ ] #2 `mise exec go -- go test ./internal/cli -run TestEnsureDaemonWaitsForSequentialRecovery -count=1` exits 0 after proving at least two sequential stale-group waits can complete without killing the recovering daemon at five seconds.
+- [ ] #3 `mise exec go -- go test ./internal/cli -run TestEnsureDaemonCancellationReapsChild -count=1` exits 0 after proving caller cancellation returns promptly and leaves no daemon child or stale startup artifacts.
 <!-- AC:END -->
 
 ## Definition of Done

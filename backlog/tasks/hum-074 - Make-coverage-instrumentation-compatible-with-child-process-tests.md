@@ -4,6 +4,7 @@ title: Make coverage instrumentation compatible with child-process tests
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:55'
+updated_date: '2026-09-10 01:59'
 labels: []
 dependencies: []
 modified_files:
@@ -25,8 +26,8 @@ Outcome: Repository-wide Go coverage collection passes without helper-process co
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A shell command that creates a temporary owned coverage directory, runs `mise exec go -- go test ./... -coverprofile=<temp>/coverage.out`, and cleans it exits 0 with no `GOCOVERDIR` warning.
-- [ ] #2 `task coverage` exits 0, produces a usable function report, and leaves no tracked or untracked coverage artifacts in the repository.
+- [ ] #1 `mise exec go -- go test ./... -coverprofile=/tmp/hum-coverage.out` exits 0 with no `GOCOVERDIR` warning.
+- [ ] #2 `task coverage` exits 0, prints a function coverage report, and `git status --short` shows no generated coverage artifact in the repository.
 - [ ] #3 `mise exec go -- go test -race ./internal/process -count=1` exits 0 with all exact output assertions intact.
 <!-- AC:END -->
 

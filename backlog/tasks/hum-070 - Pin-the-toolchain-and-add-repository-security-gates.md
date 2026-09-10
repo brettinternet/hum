@@ -4,6 +4,7 @@ title: Pin the toolchain and add repository security gates
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:51'
+updated_date: '2026-09-10 01:58'
 labels: []
 dependencies: []
 modified_files:
@@ -29,10 +30,10 @@ Outcome: Developer tools and GitHub Actions resolve reproducibly, and pull-reque
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `mise install --yes && mise current` exits 0 and reports no `latest` selectors for committed project tools.
-- [ ] #2 `task security` exits 0 after running full-repository gitleaks and `govulncheck ./...`, with no leaked secrets or reachable vulnerabilities.
-- [ ] #3 A locally executable workflow lint/grep test exits 0 after proving every `uses:` reference in CI and release workflows is pinned to a full commit SHA with a version comment.
-- [ ] #4 `task ci` exits 0 and the pull-request workflow includes the security gate.
+- [ ] #1 `mise install --yes && mise current` exits 0 and its output contains no `latest` selector for a committed project tool.
+- [ ] #2 `task security` exits 0 after full-repository gitleaks and `govulncheck ./...` report no leaked secrets or reachable vulnerabilities.
+- [ ] #3 `rg -n "uses: [^ ]+@[0-9a-f]{40} +# v" .github/workflows/*.yaml` exits 0 and `rg -n "uses: .*@(v[0-9]+|main|master|latest)" .github/workflows` exits 1, proving workflow actions use immutable SHA refs with version comments.
+- [ ] #4 `task ci` exits 0 and its log includes the repository security gate.
 <!-- AC:END -->
 
 ## Definition of Done

@@ -4,6 +4,7 @@ title: Make CLI help concise and truthful
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:51'
+updated_date: '2026-09-10 01:57'
 labels: []
 dependencies:
   - HUM-064
@@ -29,8 +30,8 @@ Outcome: Root and subcommand help lead with task-oriented usage, show only selec
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 `mise exec go -- go test ./internal/cli -run "Test.*(Help|Surface|Scope)" -count=1` exits 0.
-- [ ] #2 A locally executable help-size test exits 0 after proving root help is at most 250 words and every subcommand help is at most 200 words.
-- [ ] #3 A table-driven help test exits 0 after proving `serve`, `init`, `mcp`, `skill`, and `shutdown` advertise no inapplicable project/global selector, while project lifecycle commands retain only supported selectors.
+- [ ] #2 `mise exec go -- go test ./internal/cli -run TestHelpWordBudgets -count=1` exits 0 after proving root help is at most 250 words and every subcommand help is at most 200 words.
+- [ ] #3 `mise exec go -- go test ./internal/cli -run TestHelpAdvertisesOnlySupportedScopeFlags -count=1` exits 0 after proving scope-neutral commands show no selectors and lifecycle commands show only supported selectors.
 - [ ] #4 `mise exec go -- go test ./...` exits 0.
 <!-- AC:END -->
 

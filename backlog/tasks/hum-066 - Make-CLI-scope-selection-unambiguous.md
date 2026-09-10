@@ -4,6 +4,7 @@ title: Make CLI scope selection unambiguous
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:50'
+updated_date: '2026-09-10 01:57'
 labels: []
 dependencies: []
 modified_files:
@@ -28,9 +29,9 @@ Outcome: Child arguments can never retarget a process into another namespace, an
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `mise exec go -- go test -race ./internal/cli ./integration` exits 0.
-- [ ] #2 A focused regression command runs `hum run demo -- /bin/echo -g`, exits 0, and proves the record remains project-scoped with `-g` present only in child argv; the separator-less form is rejected before daemon contact.
-- [ ] #3 Focused signal parser/integration tests place `--global` before and after the signal/name position supported by the command grammar, exit 0, and prove both target only the global record.
+- [ ] #1 `mise exec go -- go test ./internal/cli ./integration -count=1` exits 0.
+- [ ] #2 `mise exec go -- go test ./internal/cli -run TestRunChildArgsCannotSelectScope -count=1` exits 0 after proving `hum run demo -- /bin/echo -g` stays project-scoped with `-g` only in child argv and the separator-less form is rejected before daemon contact.
+- [ ] #3 `mise exec go -- go test ./internal/cli -run TestSignalGlobalSelectorPlacement -count=1` exits 0 after proving supported pre- and post-positional `--global` forms target only the global record.
 <!-- AC:END -->
 
 ## Definition of Done

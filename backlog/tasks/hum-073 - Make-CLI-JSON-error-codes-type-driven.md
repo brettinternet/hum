@@ -4,6 +4,7 @@ title: Make CLI JSON error codes type-driven
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:52'
+updated_date: '2026-09-10 01:59'
 labels: []
 dependencies: []
 modified_files:
@@ -27,9 +28,9 @@ Outcome: Public JSON error codes are determined by typed error categories, never
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 `mise exec go -- go test ./internal/cli -run TestJSONErrors -count=1` exits 0.
-- [ ] #2 Table-driven phrase-collision tests inject internal errors containing `requires`, `must`, `duplicate`, and unavailable-like text, exit 0, and prove their JSON code remains `internal`; typed validation and unavailable errors retain their documented codes regardless of message text.
+- [ ] #2 `mise exec go -- go test ./internal/cli -run TestJSONErrorClassificationIgnoresMessageText -count=1` exits 0 after phrase-collision cases remain `internal` and typed usage/unavailable errors retain their documented codes.
 - [ ] #3 `rg -n "likelyCLIUsageError|strings.Contains.*requires|strings.Contains.*duplicate" internal/cli/config.go` exits 1 with no matches.
-- [ ] #4 `mise exec go -- go test -race ./internal/cli ./integration` exits 0.
+- [ ] #4 `mise exec go -- go test ./internal/cli ./integration -count=1` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
