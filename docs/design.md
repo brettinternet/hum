@@ -192,7 +192,7 @@ Human `hum up` has an attached interactive mode and bounded startup progress.
   diagnostic fields such as launch and readiness cursors and the readiness matcher remain
   available in `up --json` rather than expanding human output.
 - Progress follows temporal transition completion rather than lexical declaration order, is
-  serialized as complete lines, and is bounded to a maximum of two lines per declaration: one
+  serialized as complete lines, and uses at most two lines per declaration: one
   launch, observation, error, or dependency-blocked line and, only for a declaration that
   entered `starting`, one ready, early-exit, or timeout line. Child output is a separate prefixed
   stdout stream and does not count against that progress bound.

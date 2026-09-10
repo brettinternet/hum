@@ -52,10 +52,8 @@ func TestTerminalControlDocs(t *testing.T) {
 		t.Fatal(err)
 	}
 	help := strings.ToLower(stdout.String())
-	for _, phrase := range []string{"terminal-control-stripped", "system entries remain raw", "raw esc bytes", "a ^ anchor now matches colourised", "stored bytes, cursors, and limit accounting remain raw", "control-only bounded child entries remain present with empty text", "follow --match", "attached run output is also raw", "selected entries are emitted raw", "per entry", "split sequences", "carriage-return redraw", "no --raw flag"} {
-		if !strings.Contains(help, phrase) {
-			t.Errorf("CLI logs help missing %q: %q", phrase, stdout.String())
-		}
+	if !strings.Contains(help, "docs/design.md") {
+		t.Errorf("CLI logs help does not point to terminal-control details: %q", stdout.String())
 	}
 	for _, command := range root.Commands {
 		for _, flag := range command.Flags {

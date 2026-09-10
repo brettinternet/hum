@@ -361,6 +361,42 @@ func rawRunJSONRequested(args []string, root, command *urfavecli.Command, alias 
 	return requested
 }
 
+const scopeNeutralCommandHelpTemplate = `NAME:
+   {{template "helpNameTemplate" .}}
+
+USAGE:
+   {{template "usageTemplate" .}}{{if .Description}}
+
+DESCRIPTION:
+   {{template "descriptionTemplate" .}}{{end}}{{if .VisibleFlagCategories}}
+
+OPTIONS:{{template "visibleFlagCategoryTemplate" .}}{{else if .VisibleFlags}}
+
+OPTIONS:{{template "visibleFlagTemplate" .}}{{end}}{{if .VisiblePersistentFlags}}
+
+GLOBAL OPTIONS:{{range $e := .VisiblePersistentFlags}}{{if ne (index $e.Names 0) "project"}}
+   {{wrap $e.String 6}}{{end}}{{end}}{{end}}
+`
+
+const scopeNeutralSubcommandHelpTemplate = `NAME:
+   {{template "helpNameTemplate" .}}
+
+USAGE:
+   {{template "usageTemplate" .}}{{if .Description}}
+
+DESCRIPTION:
+   {{template "descriptionTemplate" .}}{{end}}{{if .VisibleCommands}}
+
+COMMANDS:{{template "visibleCommandTemplate" .}}{{end}}{{if .VisibleFlagCategories}}
+
+OPTIONS:{{template "visibleFlagCategoryTemplate" .}}{{else if .VisibleFlags}}
+
+OPTIONS:{{template "visibleFlagTemplate" .}}{{end}}{{if .VisiblePersistentFlags}}
+
+GLOBAL OPTIONS:{{range $e := .VisiblePersistentFlags}}{{if ne (index $e.Names 0) "project"}}
+   {{wrap $e.String 6}}{{end}}{{end}}{{end}}
+`
+
 // NewRootCommand builds the hum command with the supplied build metadata
 // and output writers.
 func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urfavecli.Command {
@@ -378,9 +414,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		Name:      "hum",
 		Usage:     "A local development process supervisor",
 		UsageText: "hum [global options] [command [command options]]",
-		Description: "Project scope is selected automatically from the invocation directory and canonicalized physically (symlink aliases share a scope; linked worktrees remain separate); use --project PATH or -C PATH for explicit cross-worktree access; use --global or -g for the machine-wide ad-hoc namespace; observation may target a removed known worktree, launch requires an existing directory, and list --all discovers every scope; JSON process records include scope project and canonical project_root; manifest projects use hum start NAME; hum run starts a detached daemon and stays attached by default; hum serve --daemon runs detached. " +
-			"Bounded controls, including logs without --follow, do not start an empty daemon; logs --follow and wait start one to observe future launches; stopping processes and daemon shutdown are separate. " +
-			"restart: on-failure retries spawn failures at 1s, 2s, 4s, 8s, and 16s five times; a 30-second survivor resets recovery, so inspect retained failing output.\n\n" +
+		Description: "Supervise local development processes. Start hum.yaml with hum up or ad-hoc work with hum run; inspect with hum logs. Use --project for another project or --global for the machine-wide scope; see docs/design.md.\n\n" +
 			"Examples:\n" +
 			"  hum up",
 		Version:                         version + " (built " + buildTime + ")",
@@ -392,12 +426,12 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		Metadata:                        map[string]any{jsonErrorStateMetadataKey: state},
 		ExitErrHandler:                  func(context.Context, *urfavecli.Command, error) {},
 		Flags: []urfavecli.Flag{
-			&urfavecli.StringFlag{Name: "project", Aliases: []string{"C"}, Usage: "project directory; omit for the current directory; ad-hoc run uses it as cwd, manifest cwd stays project-relative"},
+			projectFlag(),
 			&urfavecli.BoolFlag{Name: "global", Aliases: []string{"g"}, DefaultText: "false", Local: true, Hidden: true, Usage: "use the explicit machine-wide global process namespace (ad-hoc run only)"},
-			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "runtime directory for the hum daemon [$HUM_RUNTIME_DIR, then $XDG_RUNTIME_DIR/hum]", DefaultText: "$TMPDIR/hum-UID"},
-			&urfavecli.StringFlag{Name: "stop-grace", Usage: "grace period between SIGTERM and SIGKILL when stopping a process [$HUM_STOP_GRACE]", DefaultText: config.DefaultStopGrace.String()},
-			&urfavecli.StringFlag{Name: "output-bytes", Usage: "charged retained output bytes per process (text + 128 bytes per entry; read byte limits count text only), at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
-			&urfavecli.StringFlag{Name: "completed-records", Usage: "completed process records to retain [$HUM_COMPLETED_RECORDS]", DefaultText: strconv.Itoa(config.DefaultCompletedRecords)},
+			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "daemon runtime directory [$HUM_RUNTIME_DIR or $XDG_RUNTIME_DIR/hum]", DefaultText: "$TMPDIR/hum-UID"},
+			&urfavecli.StringFlag{Name: "stop-grace", Usage: "process stop grace period [$HUM_STOP_GRACE]", DefaultText: config.DefaultStopGrace.String()},
+			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained bytes per process, at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
+			&urfavecli.StringFlag{Name: "completed-records", Usage: "completed records retained [$HUM_COMPLETED_RECORDS]", DefaultText: strconv.Itoa(config.DefaultCompletedRecords)},
 		},
 		Commands:     newCLICommands(version, buildTime, outputTracker, errWriter),
 		OnUsageError: onUsageError,
@@ -417,6 +451,14 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		panic(err)
 	}
 	return root
+}
+
+func projectFlag() *urfavecli.StringFlag {
+	return &urfavecli.StringFlag{
+		Name:    "project",
+		Aliases: []string{"C"},
+		Usage:   "use project directory; default is current project",
+	}
 }
 
 type projectSelection struct {
@@ -523,12 +565,11 @@ func rawScopeFlag(cmd *urfavecli.Command, long, short string) bool {
 			skipNext = false
 			continue
 		}
-		if _, ok := valueFlags[token]; ok {
-			skipNext = true
-			continue
-		}
 		if token == "--"+long || token == "--"+long+"=true" || token == "-"+short {
 			return true
+		}
+		if _, ok := valueFlags[token]; ok {
+			skipNext = true
 		}
 	}
 	return false

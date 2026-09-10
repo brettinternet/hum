@@ -139,9 +139,9 @@ func TestUpRecoveryDocs(t *testing.T) {
 		t.Fatal(err)
 	}
 	help := strings.ToLower(strings.Join(strings.Fields(stdout.String()), " "))
-	for _, phrase := range []string{"recovery_pending", "recovery_exhausted", "bounded", "automatic successor", "start request", "exit 3", "not running", "targeted start name", "restart name"} {
+	for _, phrase := range []string{"recovery", "exit 3", "docs/design.md"} {
 		if !strings.Contains(help, phrase) {
-			t.Errorf("CLI up help missing %q: %q", phrase, stdout.String())
+			t.Errorf("CLI up help missing concise recovery guidance %q: %q", phrase, stdout.String())
 		}
 	}
 	if stderr.Len() != 0 {

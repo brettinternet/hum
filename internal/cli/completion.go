@@ -33,6 +33,7 @@ func configureCompletionCommand(command *urfavecli.Command) {
 	command.Hidden = false
 	command.Usage = "Output shell completion script for bash, zsh, or fish"
 	command.Description = completionDescription
+	command.CustomHelpTemplate = scopeNeutralSubcommandHelpTemplate
 
 	appName := command.Root().Name
 	children := make([]*urfavecli.Command, 0, len(command.Commands))

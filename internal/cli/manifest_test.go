@@ -2156,9 +2156,9 @@ func TestUpDriftDocs(t *testing.T) {
 		t.Fatal(err)
 	}
 	help := strings.ToLower(stdout.String())
-	for _, phrase := range []string{"definition_drift", "removed_definition", "changed_fields", "hum restart", "hum stop", "hum remove", "exit 1"} {
+	for _, phrase := range []string{"definition drift", "exit 1", "docs/design.md"} {
 		if !strings.Contains(help, phrase) {
-			t.Errorf("CLI up help missing drift guidance %q", phrase)
+			t.Errorf("CLI up help missing concise drift guidance %q", phrase)
 		}
 	}
 	if stderr.Len() != 0 {

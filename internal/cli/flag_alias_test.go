@@ -71,6 +71,9 @@ func TestFlagAliases(t *testing.T) {
 
 	for command, flags := range expected {
 		for name, aliases := range flags {
+			if name == "global" && (command == "init" || command == "up") {
+				continue
+			}
 			for _, alias := range aliases {
 				flagAliasesAssertHelpPair(t, command, name, alias)
 			}

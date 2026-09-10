@@ -22,7 +22,11 @@ func TestAfterDocs(t *testing.T) {
 		documents["docs/design.md"], documents["docs/coding-agents.md"],
 		documents["internal/skill/SKILL.md"], documents["plugins/hum/skills/hum/SKILL.md"],
 	}, "\n"))
-	for _, phrase := range []string{"after", "readiness", "timeout", "skipped", "blocked_by", "lexical", "no-wait", "explicit", "concurrent", "rerun", "on-failure"} {
+	all = strings.ReplaceAll(all, "`", "")
+	for _, phrase := range []string{
+		"after", "readiness", "timeout", "skipped", "blocked_by", "lexical", "no-wait", "explicit", "concurrent", "rerun", "on-failure",
+		"rejected before daemon creation/contact", "automatic successor", "rerun up after recovery", "targeted hum start name", "hum restart name",
+	} {
 		if !strings.Contains(all, phrase) {
 			t.Errorf("after documentation missing %q", phrase)
 		}
@@ -40,7 +44,7 @@ func TestAfterDocs(t *testing.T) {
 		t.Fatal(err)
 	}
 	help := strings.ToLower(stdout.String())
-	for _, phrase := range []string{"after", "readiness", "concurrently", "skipped", "--no-wait", "daemon contact", "one invocation", "automatic prerequisite successor", "rerun hum up after recovery"} {
+	for _, phrase := range []string{"readiness", "concurrently", "--no-wait", "recovery", "docs/design.md"} {
 		if !strings.Contains(help, phrase) {
 			t.Errorf("up help missing %q: %q", phrase, stdout.String())
 		}

@@ -410,10 +410,8 @@ func TestWaitObservedDocs(t *testing.T) {
 	if err := command.Run(context.Background(), []string{"hum", "wait", "--help"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"process_observed", "without an extra round trip", "no-process guidance"} {
-		if !strings.Contains(strings.ToLower(help.String()), want) {
-			t.Errorf("wait help missing %q: %q", want, help.String())
-		}
+	if !strings.Contains(strings.ToLower(help.String()), "docs/design.md") {
+		t.Errorf("wait help does not point to result details: %q", help.String())
 	}
 }
 

@@ -96,10 +96,8 @@ func TestLogsStripTerminalControl(t *testing.T) {
 		t.Fatalf("logs help: %v", err)
 	}
 	lowerHelp := strings.ToLower(help.String())
-	for _, want := range []string{"terminal-control-stripped", "system entries remain raw", "follow --match", "selected entries are emitted raw", "per entry", "no --raw flag"} {
-		if !strings.Contains(lowerHelp, want) {
-			t.Errorf("logs help missing %q: %q", want, help.String())
-		}
+	if !strings.Contains(lowerHelp, "docs/design.md") {
+		t.Errorf("logs help does not point to rendering details: %q", help.String())
 	}
 	for _, command := range root.Commands {
 		for _, flag := range command.Flags {

@@ -42,10 +42,8 @@ func TestRestartPolicyDocs(t *testing.T) {
 		t.Fatal(err)
 	}
 	help := strings.ToLower(stdout.String())
-	for _, phrase := range []string{"restart: on-failure", "1s", "2s", "4s", "8s", "16s", "five times", "spawn failures", "30-second", "retained failing output"} {
-		if !strings.Contains(help, phrase) {
-			t.Errorf("CLI help missing %q: %q", phrase, stdout.String())
-		}
+	if !strings.Contains(help, "docs/design.md") {
+		t.Errorf("CLI help does not point to detailed lifecycle documentation: %q", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("CLI help stderr = %q", stderr.String())

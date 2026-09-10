@@ -208,7 +208,16 @@ func commandAtPath(root *urfavecli.Command, path []string) *urfavecli.Command {
 
 func helpContractFlags(command *urfavecli.Command) []urfavecli.Flag {
 	flags := append([]urfavecli.Flag(nil), command.VisibleFlags()...)
-	return append(flags, command.VisiblePersistentFlags()...)
+	persistent := command.VisiblePersistentFlags()
+	if command.CustomHelpTemplate == scopeNeutralCommandHelpTemplate || command.CustomHelpTemplate == scopeNeutralSubcommandHelpTemplate {
+		for _, flag := range persistent {
+			if len(flag.Names()) > 0 && flag.Names()[0] != "project" {
+				flags = append(flags, flag)
+			}
+		}
+		return flags
+	}
+	return append(flags, persistent...)
 }
 
 func helpDescription(description string) string {

@@ -207,9 +207,8 @@ func TestLogsAndWaitFlagsHideDefault(t *testing.T) {
 		t.Fatalf("logs help still advertises a misleading default: %s", logsHelp)
 	}
 	for _, want := range []string{
+		"omit for default",
 		"omit for the newest default window",
-		"without it, use the newest default window",
-		"omit for the default read limit",
 	} {
 		if !strings.Contains(logsHelp, want) {
 			t.Fatalf("logs help missing %q:\n%s", want, logsHelp)
@@ -228,7 +227,7 @@ func TestLogsAndWaitFlagsHideDefault(t *testing.T) {
 			t.Fatalf("wait help still advertises a default for after-cursor: %q", line)
 		}
 	}
-	if !strings.Contains(waitHelp, "omit to evaluate from the current or next launch cursor") {
+	if !strings.Contains(waitHelp, "omit for current launch") {
 		t.Fatalf("wait help missing omitted-cursor wording:\n%s", waitHelp)
 	}
 }

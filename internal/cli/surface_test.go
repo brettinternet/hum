@@ -144,6 +144,105 @@ func TestStatusAndWaitSurface(t *testing.T) {
 	}
 }
 
+func TestHelpWordBudgets(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit int
+	}{
+		{name: "", limit: 250},
+		{name: "serve", limit: 200},
+		{name: "init", limit: 200},
+		{name: "mcp", limit: 200},
+		{name: "skill", limit: 200},
+		{name: "run", limit: 200},
+		{name: "start", limit: 200},
+		{name: "up", limit: 200},
+		{name: "down", limit: 200},
+		{name: "list", limit: 200},
+		{name: "status", limit: 200},
+		{name: "attach", limit: 200},
+		{name: "logs", limit: 200},
+		{name: "wait", limit: 200},
+		{name: "input", limit: 200},
+		{name: "restart", limit: 200},
+		{name: "signal", limit: 200},
+		{name: "stop", limit: 200},
+		{name: "remove", limit: 200},
+		{name: "shutdown", limit: 200},
+		{name: "completion", limit: 200},
+	}
+	for _, tt := range tests {
+		label := tt.name
+		if label == "" {
+			label = "root"
+		}
+		t.Run(label, func(t *testing.T) {
+			help := renderHelp(t, tt.name)
+			if words := len(strings.Fields(help)); words > tt.limit {
+				t.Errorf("%s help has %d words, want at most %d\n%s", label, words, tt.limit, help)
+			}
+		})
+	}
+}
+
+func TestHelpAdvertisesOnlySupportedScopeFlags(t *testing.T) {
+	tests := []struct {
+		name        string
+		wantProject bool
+		wantGlobal  bool
+	}{
+		{name: "serve"},
+		{name: "mcp"},
+		{name: "skill"},
+		{name: "shutdown"},
+		{name: "completion"},
+		{name: "init", wantProject: true},
+		{name: "up", wantProject: true},
+		{name: "run", wantProject: true, wantGlobal: true},
+		{name: "start", wantProject: true, wantGlobal: true},
+		{name: "down", wantProject: true, wantGlobal: true},
+		{name: "list", wantProject: true, wantGlobal: true},
+		{name: "status", wantProject: true, wantGlobal: true},
+		{name: "attach", wantProject: true, wantGlobal: true},
+		{name: "logs", wantProject: true, wantGlobal: true},
+		{name: "wait", wantProject: true, wantGlobal: true},
+		{name: "input", wantProject: true, wantGlobal: true},
+		{name: "restart", wantProject: true, wantGlobal: true},
+		{name: "signal", wantProject: true, wantGlobal: true},
+		{name: "stop", wantProject: true, wantGlobal: true},
+		{name: "remove", wantProject: true, wantGlobal: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			help := renderHelp(t, tt.name)
+			if got := strings.Contains(help, "--project"); got != tt.wantProject {
+				t.Errorf("--project advertised = %t, want %t\n%s", got, tt.wantProject, help)
+			}
+			if got := strings.Contains(help, "--global"); got != tt.wantGlobal {
+				t.Errorf("--global advertised = %t, want %t\n%s", got, tt.wantGlobal, help)
+			}
+		})
+	}
+}
+
+func renderHelp(t *testing.T, command string) string {
+	t.Helper()
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+	args := []string{"hum"}
+	if command != "" {
+		args = append(args, command)
+	}
+	args = append(args, "--help")
+	if err := root.Run(context.Background(), args); err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	if errorOutput.Len() != 0 {
+		t.Fatalf("help stderr = %q", errorOutput.String())
+	}
+	return output.String()
+}
+
 func TestAttachSurface(t *testing.T) {
 	var output, errorOutput bytes.Buffer
 	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
@@ -333,7 +432,7 @@ func TestWaitHelpDescribesExitAndReadiness(t *testing.T) {
 		t.Fatalf("wait help: %v", err)
 	}
 	help := strings.ToLower(output.String())
-	for _, want := range []string{"without --match", "process incarnation exits", "stopped or never-launched session", "next launch", "starts a daemon when needed", "--after-cursor", "omit to evaluate from the current or next launch cursor", "--match", "--timeout", "--json"} {
+	for _, want := range []string{"without --match", "process incarnation to exit", "stopped sessions", "next launch", "starting a daemon if needed", "--after-cursor", "--match", "--timeout", "--json", "exit codes"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("wait help missing %q: %q", want, output.String())
 		}
@@ -349,22 +448,12 @@ func TestLogsAggregateDocs(t *testing.T) {
 	help := strings.ToLower(output.String())
 	for _, want := range []string{
 		"[name...]",
-		"one or more names",
-		"command-line order",
-		"no names",
-		"lexical order",
-		"no ad-hoc sessions",
-		"duplicate names",
+		"named processes",
+		"per process",
 		"--after-cursor",
-		"independently",
-		"named ndjson",
-		"atomic [name] prefix",
-		"one follower",
-		"per-session errors",
-		"daemon loss",
-		"output failure",
-		"closes all followers",
-		"never signals",
+		"--follow",
+		"without signaling",
+		"docs/design.md",
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf("logs aggregate help missing %q: %q", want, output.String())
@@ -375,7 +464,7 @@ func TestLogsAggregateDocs(t *testing.T) {
 	}
 	for path, want := range map[string][]string{
 		"../../README.md":      {"hum up", "hum logs --follow", "docs/design.md"},
-		"../../docs/design.md": {"hum up", "hum logs --follow", "single explicit", "unchanged"},
+		"../../docs/design.md": {"hum up", "hum logs --follow", "single explicit", "unchanged", "named ndjson", "one follower", "per-session", "daemon loss"},
 	} {
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -401,16 +490,11 @@ func TestLifecycleHelp(t *testing.T) {
 			name: "root",
 			args: []string{"hum", "--help"},
 			want: []string{
-				"hum run starts a detached daemon",
-				"stays attached by default",
-				"serve --daemon runs detached",
-				"manifest projects use hum start",
-				"bounded controls",
-				"logs without --follow",
-				"do not start an empty daemon",
-				"logs --follow and wait start one",
-				"observe future launches",
-				"stopping processes and daemon shutdown are separate",
+				"supervise local development processes",
+				"hum up",
+				"hum run",
+				"hum logs",
+				"docs/design.md",
 			},
 		},
 		{
@@ -429,13 +513,12 @@ func TestLifecycleHelp(t *testing.T) {
 			name: "init",
 			args: []string{"hum", "init", "--help"},
 			want: []string{
-				"create a hum.yaml manifest",
+				"create hum.yaml",
 				"strict project discovery",
 				"without starting a daemon",
 				"single candidate",
 				"commented template",
-				"absolute path",
-				"next command hum up",
+				"--force",
 				"--json",
 			},
 		},
@@ -443,15 +526,14 @@ func TestLifecycleHelp(t *testing.T) {
 			name: "run",
 			args: []string{"hum", "run", "--help"},
 			want: []string{
-				"automatically starts a detached daemon",
+				"automatically starting a detached daemon",
 				"without --detach",
-				"named session across process exits and launches",
-				"ctrl+c detaches",
+				"stream raw child output",
+				"ctrl+c stops it",
 				"with --detach",
-				"returns immediately",
+				"return immediately",
 				"daemon keeps owning it",
-				"stable json for detached runs",
-				"attached runs stream raw child output",
+				"ad-hoc commands require --",
 			},
 		},
 		{
@@ -459,26 +541,27 @@ func TestLifecycleHelp(t *testing.T) {
 			args: []string{"hum", "start", "--help"},
 			want: []string{
 				"named sessions",
-				"idempotent",
-				"retained stopped sessions",
+				"idempotently",
 				"hum.yaml or conventional discovery",
+				"never pulls in prerequisites",
 				"--no-wait",
 				"--timeout",
 				"--json",
-				"readiness",
+				"docs/design.md",
 			},
 		},
 		{
 			name: "up",
 			args: []string{"hum", "up", "--help"},
 			want: []string{
-				"processes lexically",
+				"manifest processes",
 				"independent roots concurrently",
 				"gate dependents on readiness",
 				"continue after failures",
 				"--no-wait",
 				"--timeout",
 				"--json",
+				"docs/design.md",
 			},
 		},
 		{
@@ -528,12 +611,12 @@ func TestLifecycleHelp(t *testing.T) {
 			args: []string{"hum", "logs", "--help"},
 			want: []string{
 				"bounded retained output",
+				"named processes",
+				"filters and limits apply per process",
 				"--follow",
-				"read-only",
-				"cancels only the follower",
-				"never signals the managed process",
-				"attach before the first launch",
-				"exit, wait, and launch boundaries",
+				"cancels reading",
+				"without signaling processes",
+				"docs/design.md",
 			},
 		},
 		{
@@ -542,15 +625,11 @@ func TestLifecycleHelp(t *testing.T) {
 			want: []string{
 				"without --match",
 				"one process incarnation",
-				"stopped or never-launched session",
+				"stopped sessions",
 				"next launch",
-				"starts a daemon when needed",
-				"omit to evaluate from the current or next launch cursor",
+				"starting a daemon if needed",
 				"30s",
 				"exit codes: 0 for a match or unfiltered exit",
-				"exit 2 for timeout",
-				"exit 3 when process exit precedes --match",
-				"non-empty regular expression",
 			},
 			notWant: []string{"(default: 0)"},
 		},
@@ -558,13 +637,12 @@ func TestLifecycleHelp(t *testing.T) {
 			name: "restart",
 			args: []string{"hum", "restart", "--help"},
 			want: []string{
-				"by name",
-				"graceful stop",
-				"names are attempted in order",
-				"first error stops the remaining restarts",
-				"only successful attempts",
-				"new pid",
-				"not the daemon",
+				"graceful stop and relaunch by name",
+				"restart is not the daemon",
+				"--no-wait skips readiness",
+				"later names continue",
+				"errors stop the remaining restarts",
+				"exit codes: 0 success",
 			},
 		},
 		{
@@ -627,7 +705,7 @@ func TestOutputByteDocs(t *testing.T) {
 		t.Fatalf("root help: %v", err)
 	}
 	help := strings.ToLower(output.String())
-	for _, want := range []string{"output-bytes", "charged retained output bytes per process", "text + 128 bytes per entry", "read byte limits count text only"} {
+	for _, want := range []string{"output-bytes", "retained bytes per process", "docs/design.md"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("root help missing %q: %q", want, output.String())
 		}

@@ -32,7 +32,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 	signalStopOnNthArg := 1
 	mcpCommand := mcpCLICommand(version, buildTime, writer)
 	mcpCommand.Usage = "serve MCP lifecycle tools over stdio"
-	mcpCommand.Description = "Run a stdio Model Context Protocol server for one-time coding-agent registration; project scope requires an absolute existing project_root, which is canonicalized without weakening validation, while global scope forbids project_root; up supports project scope only, and list all is available only from project scope; list supports all project scopes and process snapshots include scope project and canonical project_root; start and up differ: start targets only named sessions without pulling prerequisites, while up resolves manifest readiness dependencies; resolved records and ad_hoc sessions handed off by hum run remain available until daemon shutdown or replacement; requests with IDs run concurrently up to 64 in flight, a 65th request returns -32001 without starting, duplicate in-flight IDs return -32600, notifications/cancelled returns -32800, responses are serialized, and EOF or parent cancellation cancels handlers and joins the response writer. Bounded output uses terminal-control-stripped text with no raw opt-out and explicit definitions use deterministic argv-based environment activation. The twelve tools are start, up, down, list, status, logs, wait, input, restart, stop, remove, and signal; run, serve, and shutdown are not MCP tools.\n\nExamples:\n  hum mcp"
+	mcpCommand.Description = "Run the one-time stdio MCP server for coding agents. Its twelve tools are start, up, down, list, status, logs, wait, input, restart, stop, remove, and signal; start and up use resolved definitions, ad_hoc records from hum run persist until daemon shutdown or replacement, run, serve, and shutdown are not MCP tools, and explicit definitions use argv-based environment activation. Project scope requires an absolute existing project_root, global scope forbids project_root, up supports project scope only, and list all is available only from project scope; requests run concurrently up to 64, overflow returns -32001, duplicate IDs return -32600, notifications/cancelled return -32800, responses are serialized, and parent cancellation stops handlers; see docs/coding-agents.md.\n\nExamples:\n  hum mcp"
 	commands := []*urfavecli.Command{
 		{
 			Name:        "serve",
@@ -53,7 +53,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:       "create hum.yaml from discovery",
 			UsageText:   "hum init [--force] [--json]",
 			ArgsUsage:   "",
-			Description: "Create a hum.yaml manifest from strict project discovery without starting a daemon. A single candidate is generated; no candidate or ambiguity produces a commented template, and output reports the absolute path and next command hum up; --force atomically replaces an existing regular hum.yaml and reports outcome replaced; without --force, an existing manifest is preserved and refused; --json emits stable JSON.\n\nExamples:\n  hum init\n  hum init --force\n  hum init --json",
+			Description: "Create hum.yaml from strict project discovery without starting a daemon. A single candidate is generated; otherwise a commented template is written. Existing manifests require --force.\n\nExamples:\n  hum init",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "force", DefaultText: "false", Usage: "atomically replace an existing regular hum.yaml"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write stable JSON; default is human-readable output"},
@@ -82,11 +82,11 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			ArgsUsage:     "NAME [-- COMMAND [ARGS...]]",
 			StopOnNthArg:  &runStopOnNthArg,
 			ShellComplete: completeProcessNames,
-			Description:   "Run in the automatically selected canonical project scope; symlink aliases share records and separate worktrees remain separate; use --project PATH or -C PATH for explicit access; child cwd stays lexical; ad-hoc commands require -- before child argv, and scope selectors must precede it. Without --detach, foreground run automatically starts a detached daemon, launches exactly one incarnation, streams raw child output, returns its exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP; the named session across process exits and launches remains readable through logs; with --detach it returns immediately and the daemon keeps owning it; stable JSON for detached runs is available, while attached runs stream raw child output; durable observers use hum attach or hum logs --follow, where Ctrl+C detaches; up and start remain daemon-owned. Add --tty for an ad-hoc pseudo-terminal; TTY input forwards terminal bytes and Ctrl-] releases input, after which Ctrl+C follows the stop rules.\n\nExamples:\n  hum run api -- bun run api\n  hum run api --detach -- bun run api\n  hum attach api",
+			Description:   "Run a named process, automatically starting a detached daemon; without --detach, stream raw child output and return its exit status, while Ctrl+C stops it. With --detach, return immediately while the daemon keeps owning it. Ad-hoc commands require -- before child argv; use attach or logs --follow for durable observation.\n\nExamples:\n  hum run api -- bun run api",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "return without attaching; default is attached"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON for detached runs; default is raw attached output"},
-				&urfavecli.BoolFlag{Name: "tty", DefaultText: "false", Usage: "use a pseudo-terminal for an ad-hoc command; omit to preserve declared or retained TTY mode"},
+				&urfavecli.BoolFlag{Name: "tty", DefaultText: "false", Usage: "use a pseudo-terminal for an ad-hoc command; Ctrl-] releases input"},
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -99,7 +99,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum start NAME... [--no-wait] [--timeout DURATION] [--json]",
 			ArgsUsage:     "NAME...",
 			ShellComplete: completeProcessNames,
-			Description:   "Ensure each named session is running idempotently, relaunching retained stopped sessions from hum.yaml or conventional discovery; start never pulls in after prerequisites. It waits for readiness unless --no-wait and reports definition drift without adopting edits. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.\n\nExamples:\n  hum start api\n  hum start api --no-wait\n  hum start api --json",
+			Description:   "Idempotently ensure named sessions are running from hum.yaml or conventional discovery; start never pulls in prerequisites and waits for readiness unless --no-wait. See docs/design.md for outcome details. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.\n\nExamples:\n  hum start api",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn; default waits for readiness"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "readiness limit; omit for the manifest timeout"},
@@ -115,7 +115,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:       "ensure manifest processes are running",
 			UsageText:   "hum up [--detach] [--no-wait] [--timeout DURATION] [--json]",
 			ArgsUsage:   "",
-			Description: "Resolve processes lexically; launch independent roots concurrently, gate dependents on readiness, and continue after failures; in an interactive terminal, stream prefixed output and keep following after startup, while Ctrl+C detaches, --detach waits and returns, --no-wait returns after spawn, and JSON or non-terminal output remains bounded. Report skipped blockers and definition_drift changed_fields with hum restart guidance; removed_definition suggests hum stop NAME or hum remove NAME; progress uses at most two lines; see hum logs NAME; reject --no-wait before daemon contact when after is present; bounded recovery reports recovery_pending or recovery_exhausted as not running without start request; targeted start NAME or restart NAME cancels it; one invocation never follows an automatic successor (automatic prerequisite successor), so rerun hum up after recovery. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C interrupts startup.\n\nExamples:\n  hum up\n  hum up --detach",
+			Description: "Resolve manifest processes, launch independent roots concurrently, gate dependents on readiness, and continue after failures; --detach waits then returns, while --no-wait returns after spawn. See docs/design.md for recovery details. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C interrupts startup.\n\nExamples:\n  hum up",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "wait for readiness and return instead of following process output"},
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn without following output; default waits for readiness"},
@@ -179,7 +179,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			ShellComplete: completeProcessNames,
 			Description:   "Join one currently running session without starting or restarting it; retained output is replayed before live output, --tail N selects the final N entries, and --tail 0 starts with live output only. Raw input is available for the exclusive TTY owner; hum run launches foreground work, while hum logs --follow is a read-only observer. Attach and logs --follow are durable observers: Ctrl+C, SIGTERM, and SIGHUP detach without stopping managed work.\n\nExamples:\n  hum attach console\n  hum attach console --tail 50",
 			Flags: []urfavecli.Flag{
-				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "replay final N retained entries; omit for the configured default or use 0 for live output only"},
+				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "replay final N entries; omit for configured default, 0 starts live"},
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -192,16 +192,16 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum logs [NAME...] [--since DURATION] [--follow] [--json]",
 			ArgsUsage:     "[NAME...]",
 			ShellComplete: completeProcessNames,
-			Description:   "Read bounded retained output for one or more names in command-line order; no names uses lexical order with no ad-hoc sessions, duplicate names are rejected, and --after-cursor requires one explicit name; --since keeps entries at or after one request cutoff shared across selected names, computed from the positive duration, and composes after cursor, stream, match, tail, and bounds. Aggregate filters and limits apply independently, human entries use an atomic [NAME] prefix, and JSON is named NDJSON; --follow can attach before the first launch and crosses exit, wait, and launch boundaries with one follower per name, isolated per-session errors, and cancellation on daemon loss or output failure; following is read-only: Ctrl+C cancels only the follower, closes all followers in an aggregate, and never signals the managed process. Child output is terminal-control-stripped per entry while system entries remain raw: raw ESC bytes do not match, a ^ anchor now matches colourised output, stored bytes, cursors, and limit accounting remain raw, control-only bounded child entries remain present with empty text, follow --match selects stripped text and selected entries are emitted raw, attached run output is also raw, no --raw flag exists, and split sequences and carriage-return redraw frames remain separate.\n\nExamples:\n  hum logs api\n  hum logs api --since 5m\n  hum logs api --follow",
+			Description:   "Read bounded retained output for named processes. Filters and limits apply per process. --follow observes future launches; Ctrl+C cancels reading without signaling processes; see docs/design.md.\n\nExamples:\n  hum logs api --follow",
 			Flags: []urfavecli.Flag{
-				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "select stdout, stderr, or both"},
-				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "select final N entries; omit for the newest default window"},
-				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "read after this cursor; without it, use the newest default window"},
-				&urfavecli.StringFlag{Name: "since", HideDefault: true, Usage: "include entries from the request-time cutoff; omit for no time filter; positive duration, for example 5m"},
-				&urfavecli.IntFlag{Name: "limit-bytes", Aliases: []string{"b"}, HideDefault: true, Usage: "limit output bytes; omit for the default read limit"},
-				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "filter by regex; omit to include every entry"},
-				&urfavecli.BoolFlag{Name: "follow", Aliases: []string{"f"}, DefaultText: "false", Usage: "follow launches; default is a bounded read"},
-				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
+				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "stdout, stderr, or both"},
+				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "final N entries; omit for default"},
+				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "after cursor N; omit for the newest default window"},
+				&urfavecli.StringFlag{Name: "since", HideDefault: true, Usage: "newer than DURATION; omit for all"},
+				&urfavecli.IntFlag{Name: "limit-bytes", Aliases: []string{"b"}, HideDefault: true, Usage: "maximum bytes; omit for default"},
+				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "filter by REGEX; omit for all"},
+				&urfavecli.BoolFlag{Name: "follow", Aliases: []string{"f"}, DefaultText: "false", Usage: "follow future output"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON"},
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -214,10 +214,10 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum wait NAME [--match REGEX] [--timeout DURATION] [--json]",
 			ArgsUsage:     "NAME",
 			ShellComplete: completeProcessNames,
-			Description:   "Without --match, wait returns when one process incarnation exits; with --match, it returns when output matches or that incarnation exits. Without --after-cursor, a stopped or never-launched session waits for its next launch; it starts a daemon when needed and waits 30s by default unless --timeout is set; timeout results include process_observed from the same daemon wait request without an extra round trip; false adds no-process guidance while true means a runtime record existed initially or appeared during the wait. Exit codes: 0 for a match or unfiltered exit; exit 1 for a request or usage error; exit 2 for timeout; exit 3 when process exit precedes --match.\n\nExamples:\n  hum wait api\n  hum wait api --match ready\n  hum wait api --timeout 10s",
+			Description:   "Without --match, wait for one process incarnation to exit; with --match, wait for matching output or exit. Stopped sessions wait for the next launch, starting a daemon if needed; see docs/design.md. Exit codes: 0 for a match or unfiltered exit; exit 1 for a request or usage error; exit 2 for timeout; exit 3 when process exit precedes --match.\n\nExamples:\n  hum wait api --match ready",
 			Flags: []urfavecli.Flag{
-				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "search after this cursor; omit to evaluate from the current or next launch cursor"},
-				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "wait for matching non-empty regular expression; omit to wait only for exit"},
+				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "after cursor N; omit for current launch"},
+				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "matching REGEX; omit to wait for exit"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, DefaultText: "30s", Usage: "maximum wait duration"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
 			},
@@ -232,11 +232,11 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum input NAME (--text TEXT | --base64 VALUE) [--json]",
 			ArgsUsage:     "NAME",
 			ShellComplete: completeProcessNames,
-			Description:   "Write one payload to the initial running TTY incarnation at its launch cursor and return after acknowledgement; input is at-most-once and never starts, waits, queues, retries, retains, or echoes bytes. Use exactly one of --text or --base64: text is exact bytes without appending a newline, while base64 is strict padded base64 without whitespace; Observe with logs or wait --match, answer with input, then confirm using the launch cursor, and an ownership conflict fails immediately.\n\nExamples:\n  hum input console --text \"yes\"\n  hum input console --base64 eWVz\n  hum input console --text \"yes\" --json",
+			Description:   "Write one payload to a running TTY and return after acknowledgement. Input is at-most-once: it never starts, waits, retries, retains, or echoes bytes. Use --text without appending a newline or strict padded base64 without whitespace; Observe, answer, then confirm by launch cursor; an ownership conflict fails.\n\nExamples:\n  hum input console --text \"yes\"",
 			Flags: []urfavecli.Flag{
-				&urfavecli.StringFlag{Name: "text", Usage: "write exact bytes; omit when using --base64"},
-				&urfavecli.StringFlag{Name: "base64", Usage: "write padded base64 bytes; omit when using --text"},
-				&urfavecli.BoolFlag{Name: "json", DefaultText: "false", Usage: "write JSON; default is human-readable output"},
+				&urfavecli.StringFlag{Name: "text", Usage: "exact bytes; omit when using --base64"},
+				&urfavecli.StringFlag{Name: "base64", Usage: "padded base64; omit when using --text"},
+				&urfavecli.BoolFlag{Name: "json", DefaultText: "false", Usage: "write JSON"},
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -249,7 +249,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum restart NAME... [--no-wait] [--timeout DURATION] [--json]",
 			ArgsUsage:     "NAME...",
 			ShellComplete: completeProcessNames,
-			Description:   "Apply a graceful stop and relaunch to named processes by name with their recorded launch details; restart does not restart the daemon and is not the daemon itself; by default, wait for each replacement incarnation to become ready or running_unverified when no matcher exists. --timeout sets a positive per-name readiness limit measured from that name's launch; --no-wait returns after spawn; names are attempted in order, readiness failures are reported and later names continue, but the first error stops the remaining restarts for request or validation errors; only successful attempts are reported with a new PID. Exit codes: 0 success; exit 1 for request or validation error; exit 2 for readiness timeout; exit 3 for exited before readiness.\n\nExamples:\n  hum restart api\n  hum restart api web --timeout 10s --json",
+			Description:   "Apply a graceful stop and relaunch by name; restart is not the daemon. A positive --timeout is per-name and --no-wait skips readiness; readiness failures let later names continue, but request or validation errors stop the remaining restarts; only successful attempts report a new PID. Exit codes: 0 success; exit 1 for request or validation error; exit 2 for readiness timeout; exit 3 for exited before readiness.\n\nExamples:\n  hum restart api",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn; default waits for readiness"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "readiness limit; omit for the manifest timeout"},
@@ -324,11 +324,19 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 	}
 	for _, command := range commands {
-		if command != nil {
-			command.ShellComplete = completeProcessNames
-			if command.Name != "serve" && command.Name != "shutdown" && command.Name != "mcp" && command.Name != "skill" {
-				command.Flags = append(command.Flags, &urfavecli.BoolFlag{Name: "global", Aliases: []string{"g"}, DefaultText: "false", Usage: "use the explicit machine-wide global process namespace"})
+		if command == nil {
+			continue
+		}
+		command.ShellComplete = completeProcessNames
+		switch command.Name {
+		case "serve", "shutdown", "mcp", "skill":
+			command.CustomHelpTemplate = scopeNeutralCommandHelpTemplate
+		default:
+			globalFlag := &urfavecli.BoolFlag{Name: "global", Aliases: []string{"g"}, DefaultText: "false", Usage: "use the machine-wide global process namespace"}
+			if command.Name == "init" || command.Name == "up" {
+				globalFlag.Hidden = true
 			}
+			command.Flags = append(command.Flags, globalFlag)
 		}
 	}
 	return commands
