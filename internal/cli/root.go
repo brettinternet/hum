@@ -190,7 +190,7 @@ func (s *jsonErrorState) handle(cmd *urfavecli.Command, err error) error {
 		return err
 	}
 
-	wire := classifyJSONError(err, isCLIUsageError(err))
+	wire := classifyJSONError(err)
 	if !s.output.hasOutput() {
 		_ = writeJSONError(s.output, wire)
 	} else if stream && !s.output.hasTerminalError() {
@@ -215,11 +215,6 @@ func (s *jsonErrorState) noteCommand(cmd *urfavecli.Command) {
 			s.streamName = args[0]
 		}
 	}
-}
-
-func isCLIUsageError(err error) bool {
-	var usageErr cliUsageError
-	return errors.As(err, &usageErr)
 }
 
 func commandSupportsJSON(command *urfavecli.Command) (bool, bool) {
@@ -497,7 +492,7 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 
 	value := cmd.String("project")
 	if value == "" {
-		return projectSelection{}, errors.New("--project requires a non-empty directory")
+		return projectSelection{}, newCLIUsageError(errors.New("--project requires a non-empty directory"))
 	}
 	selected := value
 	if !filepath.IsAbs(selected) {
@@ -511,10 +506,14 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 		allowMissing = true
 	}
 	if err != nil && !allowMissing {
-		return projectSelection{}, fmt.Errorf("--project directory %q: %w", selected, err)
+		pathErr := fmt.Errorf("--project directory %q: %w", selected, err)
+		if os.IsNotExist(err) {
+			return projectSelection{}, newCLIUsageError(pathErr)
+		}
+		return projectSelection{}, pathErr
 	}
 	if err == nil && !info.IsDir() {
-		return projectSelection{}, fmt.Errorf("--project path %q is not a directory", selected)
+		return projectSelection{}, newCLIUsageError(fmt.Errorf("--project path %q is not a directory", selected))
 	}
 	// An existing directory's scope is its project root, not the directory
 	// itself: canonicalizing the selector as given would name a subdirectory as
@@ -606,7 +605,7 @@ func valueFlagTokens(cmd *urfavecli.Command) map[string]struct{} {
 
 func rejectProjectOverride(cmd *urfavecli.Command, commandName string) error {
 	if cmd.IsSet("project") || cmd.Bool("global") || rawScopeFlag(cmd, "project", "C") || rawScopeFlag(cmd, "global", "g") {
-		return fmt.Errorf("hum %s does not accept --project/-C or --global", commandName)
+		return newCLIUsageError(fmt.Errorf("hum %s does not accept --project/-C or --global", commandName))
 	}
 	return nil
 }

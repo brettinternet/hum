@@ -65,6 +65,27 @@ func newCLIUsageError(cause error) error {
 	return cliUsageError{cause: cause}
 }
 
+// cliUnavailableError marks a user-facing no-daemon result. Its message is
+// deliberately opaque to JSON classification: only this type, not wording,
+// determines the public error code.
+type cliUnavailableError struct{ cause error }
+
+func (e cliUnavailableError) Error() string {
+	if e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e cliUnavailableError) Unwrap() error { return e.cause }
+
+func newCLIUnavailableError(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return cliUnavailableError{cause: cause}
+}
+
 // jsonHandledError carries the original error and exit code after the root
 // boundary has emitted its JSON representation. Keeping the cause in the
 // chain preserves errors.As/errors.Is for callers and tests.
@@ -118,7 +139,7 @@ const (
 // classifyJSONError maps local CLI failures to the deliberately small public
 // error vocabulary. A daemon-provided WireError is checked first so its
 // protocol code is never replaced by a CLI classification.
-func classifyJSONError(err error, usage bool) *protocol.WireError {
+func classifyJSONError(err error) *protocol.WireError {
 	if err == nil {
 		return protocol.NewWireError(jsonErrorInternal, "command failed", nil)
 	}
@@ -137,10 +158,15 @@ func classifyJSONError(err error, usage bool) *protocol.WireError {
 	if errors.Is(err, project.ErrConfiguration) || errors.Is(err, project.ErrAmbiguous) || errors.Is(err, project.ErrIntrospection) {
 		return protocol.NewWireError(jsonErrorManifestInvalid, err.Error(), nil)
 	}
-	if usage || likelyCLIUsageError(err) {
+	var cliUnavailable cliUnavailableError
+	if errors.As(err, &cliUnavailable) {
+		return protocol.NewWireError(jsonErrorDaemonUnavailable, err.Error(), nil)
+	}
+	var usageErr cliUsageError
+	if errors.As(err, &usageErr) {
 		return protocol.NewWireError(jsonErrorUsage, err.Error(), nil)
 	}
-	if daemonUnavailable(err) || errors.Is(err, io.EOF) || likelyDaemonUnavailableMessage(err) {
+	if daemonUnavailable(err) || errors.Is(err, io.EOF) {
 		return protocol.NewWireError(jsonErrorDaemonUnavailable, err.Error(), nil)
 	}
 	message := err.Error()
@@ -148,47 +174,6 @@ func classifyJSONError(err error, usage bool) *protocol.WireError {
 		message = "command failed"
 	}
 	return protocol.NewWireError(jsonErrorInternal, message, nil)
-}
-
-// likelyCLIUsageError covers action-level validation that runs after flag
-// parsing. Parse failures carry cliUsageError; this conservative fallback
-// keeps existing command implementations unchanged while classifying their
-// user-input diagnostics consistently.
-func likelyDaemonUnavailableMessage(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	for _, marker := range []string{
-		"no hum daemon is running",
-		"nothing is running",
-	} {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func likelyCLIUsageError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var usageErr cliUsageError
-	if errors.As(err, &usageErr) {
-		return true
-	}
-	message := strings.ToLower(err.Error())
-	for _, marker := range []string{
-		" requires ", " accepts ", " must ", " only supported ", " does not accept ",
-		"unknown option", "duplicate", "regular expression", "valid duration", "negative",
-		"--project requires", "--project directory", "--project path", "--tty requires", "before the command",
-	} {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 // cliConfig resolves the command-edge values once. The config package remains
@@ -206,7 +191,11 @@ func cliConfig(cmd *urfavecli.Command, version, buildTime string) (config.Config
 		EnvOutputBytes:       lookupEnv(env, "HUM_OUTPUT_BYTES"),
 		EnvCompletedRecords:  lookupEnv(env, "HUM_COMPLETED_RECORDS"),
 	}
-	return config.New(config.BuildOpts{Version: version, BuildTime: buildTime}, input)
+	cfg, err := config.New(config.BuildOpts{Version: version, BuildTime: buildTime}, input)
+	if err != nil {
+		return config.Config{}, newCLIUsageError(err)
+	}
+	return cfg, nil
 }
 
 func lookupEnv(env []string, name string) string {

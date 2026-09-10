@@ -78,6 +78,11 @@ func TestJSONErrorsBeforeOutput(t *testing.T) {
 			args: []string{"input", "api", "--text", "x", "--project", "PROJECT", "--json"},
 			code: string(jsonErrorDaemonUnavailable),
 		},
+		{
+			name: "invalid CLI config",
+			args: []string{"--global", "--output-bytes", "1", "stop", "api", "--json"},
+			code: string(jsonErrorUsage),
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -170,6 +175,55 @@ func TestJSONErrorsBeforeOutput(t *testing.T) {
 			t.Fatalf("error code = %q, want %q", got.Code, jsonErrorInternal)
 		}
 	})
+}
+
+func TestJSONErrorClassificationIgnoresMessageText(t *testing.T) {
+	for _, message := range []string{
+		"runtime requires a process name",
+		"runtime must retain state",
+		"internal duplicate record",
+		"Nothing is running. Start a process with hum run <name> -- <command>.",
+		"No hum daemon is running. Start it with hum serve --daemon.",
+	} {
+		t.Run(message, func(t *testing.T) {
+			if got := classifyJSONError(errors.New(message)); got.Code != jsonErrorInternal {
+				t.Fatalf("message-only error code = %q, want %q", got.Code, jsonErrorInternal)
+			}
+		})
+	}
+	if got := classifyJSONError(newCLIUsageError(errors.New("opaque validation failure"))); got.Code != jsonErrorUsage {
+		t.Fatalf("typed usage error code = %q, want %q", got.Code, jsonErrorUsage)
+	}
+	if got := classifyJSONError(newCLIUnavailableError(errors.New("opaque unavailable failure"))); got.Code != jsonErrorDaemonUnavailable {
+		t.Fatalf("typed unavailable error code = %q, want %q", got.Code, jsonErrorDaemonUnavailable)
+	}
+}
+
+func TestJSONCommandValidationClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "status argument count", args: []string{"status", "one", "two", "--json"}},
+		{name: "logs stream", args: []string{"logs", "one", "--stream", "invalid", "--json"}},
+		{name: "logs duplicate", args: []string{"logs", "one", "one", "--json"}},
+		{name: "wait regex", args: []string{"wait", "one", "--match", "[", "--json"}},
+		{name: "signal argument count", args: []string{"signal", "one", "--json"}},
+		{name: "stop missing name", args: []string{"stop", "--json"}},
+		{name: "remove missing selector", args: []string{"remove", "--json"}},
+		{name: "restart missing name", args: []string{"restart", "--json"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stdout, stderr, err := jsonErrorTestRun(t, test.args...)
+			if err == nil || stderr != "" {
+				t.Fatalf("validation error = %v, stdout=%q stderr=%q", err, stdout, stderr)
+			}
+			if got := decodeJSONErrorObject(t, stdout); got.Code != string(jsonErrorUsage) {
+				t.Fatalf("validation code = %q, want %q (stdout=%q)", got.Code, jsonErrorUsage, stdout)
+			}
+		})
+	}
 }
 
 func TestJSONStreamingErrors(t *testing.T) {
@@ -313,6 +367,15 @@ func TestHumanErrorsUnchanged(t *testing.T) {
 		}
 		if stdout.String() != "" || stderr.String() != "" {
 			t.Fatalf("human usage output = stdout %q stderr %q", stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("init validation order", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		root := NewRootCommand("test", "test", &stdout, &stderr)
+		err := root.Run(context.Background(), []string{"hum", "init", "--global", "extra"})
+		if err == nil || err.Error() != "init accepts no positional arguments" {
+			t.Fatalf("combined init usage error = %v", err)
 		}
 	})
 

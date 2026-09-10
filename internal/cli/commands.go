@@ -60,7 +60,11 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
-				return initCommand(ctx, cmd, writer)
+				err := initCommand(ctx, cmd, writer)
+				if err != nil && cmd.NArg() == 0 && nonNilContext(ctx).Err() == nil && (cmd.Bool("global") || rawScopeFlag(cmd, "global", "g")) {
+					return newCLIUsageError(err)
+				}
+				return err
 			},
 		},
 		mcpCommand,
@@ -419,7 +423,7 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 	// binary always supplies raw arguments and enforces the boundary below.
 	args := cmd.Args().Slice()
 	if len(args) == 0 {
-		return "", nil, errors.New("run requires a process name")
+		return "", nil, newCLIUsageError(errors.New("run requires a process name"))
 	}
 	separator := -1
 	for index, arg := range args {
@@ -436,19 +440,19 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 			return "", nil, err
 		}
 		if cmd.Bool("tty") {
-			return "", nil, errors.New("--tty requires an ad-hoc command after --")
+			return "", nil, newCLIUsageError(errors.New("--tty requires an ad-hoc command after --"))
 		}
 		return args[0], nil, nil
 	}
 	if separator < 1 {
-		return "", nil, errors.New("run requires a process name before --")
+		return "", nil, newCLIUsageError(errors.New("run requires a process name before --"))
 	}
 	if err := applyRunOptions(cmd, args[1:separator], true); err != nil {
 		return "", nil, err
 	}
 	argv := append([]string(nil), args[separator+1:]...)
 	if len(argv) == 0 || argv[0] == "" {
-		return "", nil, errors.New("run requires a non-empty command after --")
+		return "", nil, newCLIUsageError(errors.New("run requires a non-empty command after --"))
 	}
 	return args[0], argv, nil
 }
@@ -483,22 +487,22 @@ func parseRawRunArgs(cmd *urfavecli.Command, args []string) (string, []string, e
 	}
 	if name == "" {
 		if separator >= 0 {
-			return "", nil, errors.New("run requires a process name before --")
+			return "", nil, newCLIUsageError(errors.New("run requires a process name before --"))
 		}
-		return "", nil, errors.New("run requires a process name")
+		return "", nil, newCLIUsageError(errors.New("run requires a process name"))
 	}
 	if err := applyRunOptions(cmd, options, separator >= 0); err != nil {
 		return "", nil, err
 	}
 	if separator < 0 {
 		if cmd.Bool("tty") {
-			return "", nil, errors.New("--tty requires an ad-hoc command after --")
+			return "", nil, newCLIUsageError(errors.New("--tty requires an ad-hoc command after --"))
 		}
 		return name, nil, nil
 	}
 	argv := append([]string(nil), args[separator+1:]...)
 	if len(argv) == 0 || argv[0] == "" {
-		return "", nil, errors.New("run requires a non-empty command after --")
+		return "", nil, newCLIUsageError(errors.New("run requires a non-empty command after --"))
 	}
 	return name, argv, nil
 }
@@ -556,21 +560,21 @@ func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool
 		switch name {
 		case "detach", "json", "tty", "global":
 			if hasValue {
-				return fmt.Errorf("--%s does not take a value", name)
+				return newCLIUsageError(fmt.Errorf("--%s does not take a value", name))
 			}
 			if err := cmd.Set(name, "true"); err != nil {
-				return err
+				return newCLIUsageError(err)
 			}
 		case "runtime-dir", "stop-grace", "output-bytes", "completed-records", "project":
 			if !hasValue {
 				i++
 				if i >= len(options) {
-					return fmt.Errorf("--%s requires a value", name)
+					return newCLIUsageError(fmt.Errorf("--%s requires a value", name))
 				}
 				value = options[i]
 			}
 			if err := cmd.Set(name, value); err != nil {
-				return err
+				return newCLIUsageError(err)
 			}
 		default:
 			if !hasSeparator && !strings.HasPrefix(flag, "-") {
@@ -582,9 +586,9 @@ func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool
 					}
 					selector = selection.selector
 				}
-				return newUserFacingError(fmt.Sprintf("run requires -- before the command: %s", projectCommand(selector, "run NAME [options] -- "+flag+" ...")))
+				return newCLIUsageError(newUserFacingError(fmt.Sprintf("run requires -- before the command: %s", projectCommand(selector, "run NAME [options] -- "+flag+" ..."))))
 			}
-			return fmt.Errorf("unknown run option %q", flag)
+			return newCLIUsageError(fmt.Errorf("unknown run option %q", flag))
 		}
 	}
 	return nil
@@ -618,10 +622,10 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	manifest.selector = selection.selector
 	definition, declared := manifest.byName[name]
 	if (cmd.Bool("tty") || cmd.IsSet("tty")) && len(argv) == 0 {
-		return errors.New("--tty requires an ad-hoc command after --")
+		return newCLIUsageError(errors.New("--tty requires an ad-hoc command after --"))
 	}
 	if len(argv) != 0 && declared {
-		return fmt.Errorf("process %q is declared in hum.yaml; use %s (foreground) or %s (background)", name, projectCommand(selection.selector, "run "+name), projectCommand(selection.selector, "start "+name))
+		return newCLIUsageError(fmt.Errorf("process %q is declared in hum.yaml; use %s (foreground) or %s (background)", name, projectCommand(selection.selector, "run "+name), projectCommand(selection.selector, "start "+name)))
 	}
 	client, err := runDaemonClient(ctx, cfg)
 	if err != nil {
@@ -633,7 +637,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return fmt.Errorf("%s is already running; join it with %s or stop it with %s", name, projectCommand(selection.selector, "attach "+name), projectCommand(selection.selector, "stop "+name))
 	}
 	if len(argv) == 0 && !declared && (getErr != nil || len(current.Argv) == 0) {
-		return errors.New("run " + name + " requires a command after --")
+		return newCLIUsageError(errors.New("run " + name + " requires a command after --"))
 	}
 	launch := func(attached bool) (app.Process, error) {
 		if len(argv) != 0 {
@@ -672,7 +676,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return err
 	}
 	if cmd.Bool("json") {
-		return errors.New("--json is supported only with --detach")
+		return newCLIUsageError(errors.New("--json is supported only with --detach"))
 	}
 	var after *protocol.Cursor
 	// After is the last consumed cursor; NextCursor is the next cursor the launch
@@ -926,7 +930,7 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	args := cmd.Args().Slice()
 	if len(args) > 1 {
-		return errors.New("status accepts at most one process name")
+		return newCLIUsageError(errors.New("status accepts at most one process name"))
 	}
 	if len(args) == 0 {
 		processes, warnings, err := projectProcessList(ctx, cmd, version, buildTime, false)
@@ -979,7 +983,7 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 				}
 				return renderStatusHuman(writer, process)
 			}
-			return newUserFacingError(logsUnavailableMessageFor(manifest.selector))
+			return newCLIUnavailableError(newUserFacingError(logsUnavailableMessageFor(manifest.selector)))
 		}
 		return err
 	}
@@ -1032,14 +1036,14 @@ func logReadBounds(after *protocol.Cursor, tail, defaultEntries int, tailSet, fo
 func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
 	args := cmd.Args().Slice()
 	if len(args) == 0 {
-		return errors.New("attach requires a process name")
+		return newCLIUsageError(errors.New("attach requires a process name"))
 	}
 	if len(args) != 1 {
-		return errors.New("attach accepts exactly one process name")
+		return newCLIUsageError(errors.New("attach accepts exactly one process name"))
 	}
 	tail := cmd.Int("tail")
 	if tail < 0 {
-		return errors.New("tail must not be negative")
+		return newCLIUsageError(errors.New("tail must not be negative"))
 	}
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
@@ -1064,7 +1068,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	client, err := daemonClient(ctx, cfg)
 	if err != nil {
 		if daemonUnavailable(err) {
-			return newUserFacingError(runUnavailableMessage)
+			return newCLIUnavailableError(newUserFacingError(runUnavailableMessage))
 		}
 		return err
 	}
@@ -1287,15 +1291,15 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	stream := cmd.String("stream")
 	if stream != "stdout" && stream != "stderr" && stream != "both" {
-		return fmt.Errorf("stream must be one of stdout, stderr, or both: %q", stream)
+		return newCLIUsageError(fmt.Errorf("stream must be one of stdout, stderr, or both: %q", stream))
 	}
 	tail := cmd.Int("tail")
 	if tail < 0 {
-		return errors.New("tail must not be negative")
+		return newCLIUsageError(errors.New("tail must not be negative"))
 	}
 	limitBytes := cmd.Int("limit-bytes")
 	if limitBytes < 0 {
-		return errors.New("limit-bytes must not be negative")
+		return newCLIUsageError(errors.New("limit-bytes must not be negative"))
 	}
 	sinceCutoff, err := logsSinceCutoff(cmd)
 	if err != nil {
@@ -1329,9 +1333,9 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err != nil {
 		if daemonUnavailable(err) {
 			if definition, ok := manifest.byName[name]; ok {
-				return manifestUnavailableMessage(definition, manifest.selector)
+				return newCLIUnavailableError(manifestUnavailableMessage(definition, manifest.selector))
 			}
-			return newUserFacingError(logsUnavailableMessageFor(manifest.selector))
+			return newCLIUnavailableError(newUserFacingError(logsUnavailableMessageFor(manifest.selector)))
 		}
 		return err
 	}
@@ -1410,15 +1414,15 @@ type aggregateLogFollowerResult struct {
 func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer, args []string) error {
 	stream := cmd.String("stream")
 	if stream != "stdout" && stream != "stderr" && stream != "both" {
-		return fmt.Errorf("stream must be one of stdout, stderr, or both: %q", stream)
+		return newCLIUsageError(fmt.Errorf("stream must be one of stdout, stderr, or both: %q", stream))
 	}
 	tail := cmd.Int("tail")
 	if tail < 0 {
-		return errors.New("tail must not be negative")
+		return newCLIUsageError(errors.New("tail must not be negative"))
 	}
 	limitBytes := cmd.Int("limit-bytes")
 	if limitBytes < 0 {
-		return errors.New("limit-bytes must not be negative")
+		return newCLIUsageError(errors.New("limit-bytes must not be negative"))
 	}
 	sinceCutoff, err := logsSinceCutoff(cmd)
 	if err != nil {
@@ -1431,11 +1435,11 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 	}
 	if len(args) > 0 {
 		if duplicate := duplicateLogName(args); duplicate != "" {
-			return fmt.Errorf("logs contains duplicate process name %q", duplicate)
+			return newCLIUsageError(fmt.Errorf("logs contains duplicate process name %q", duplicate))
 		}
 	}
 	if cmd.IsSet("after-cursor") {
-		return errors.New("logs --after-cursor is only supported for one explicit process name")
+		return newCLIUsageError(errors.New("logs --after-cursor is only supported for one explicit process name"))
 	}
 	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
@@ -1465,7 +1469,7 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 		}
 	}
 	if len(names) == 0 {
-		return newUserFacingError(fmt.Sprintf("No process declarations resolve for logs. Define processes in hum.yaml or run %s.", projectCommand(selection.selector, "init")))
+		return newCLIUsageError(newUserFacingError(fmt.Sprintf("No process declarations resolve for logs. Define processes in hum.yaml or run %s.", projectCommand(selection.selector, "init"))))
 	}
 
 	cfg, err := cliConfig(cmd, version, buildTime)
@@ -1525,9 +1529,9 @@ func renderAggregateLogsUnavailable(writer, errWriter io.Writer, jsonOutput bool
 	renderer := newAggregateLogRenderer(writer, errWriter, jsonOutput)
 	var firstErr error
 	for _, name := range names {
-		nameErr := newUserFacingError(logsUnavailableMessageFor(manifest.selector))
+		nameErr := newCLIUnavailableError(newUserFacingError(logsUnavailableMessageFor(manifest.selector)))
 		if definition, ok := manifest.byName[name]; ok {
-			nameErr = manifestUnavailableMessage(definition, manifest.selector)
+			nameErr = newCLIUnavailableError(manifestUnavailableMessage(definition, manifest.selector))
 		}
 		if firstErr == nil {
 			firstErr = aggregateLogNamedError(name, nameErr)
@@ -1817,6 +1821,10 @@ func aggregateLogWireError(err error) *protocol.WireError {
 		copy := *wire
 		return &copy
 	}
+	var unavailable cliUnavailableError
+	if errors.As(err, &unavailable) {
+		return protocol.NewWireError(jsonErrorDaemonUnavailable, err.Error(), nil)
+	}
 	message := "aggregate logs failed"
 	if err != nil {
 		message = err.Error()
@@ -1829,10 +1837,10 @@ const defaultWaitTimeout = 30 * time.Second
 func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
 	args := cmd.Args().Slice()
 	if len(args) == 0 {
-		return errors.New("wait requires a process name")
+		return newCLIUsageError(errors.New("wait requires a process name"))
 	}
 	if len(args) != 1 {
-		return errors.New("wait accepts exactly one process name")
+		return newCLIUsageError(errors.New("wait accepts exactly one process name"))
 	}
 	name := args[0]
 
@@ -1845,10 +1853,10 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	match := cmd.String("match")
 	if cmd.IsSet("match") {
 		if match == "" {
-			return errors.New("match must not be empty")
+			return newCLIUsageError(errors.New("match must not be empty"))
 		}
 		if _, err := regexp.Compile(match); err != nil {
-			return fmt.Errorf("match must be a valid regular expression: %w", err)
+			return newCLIUsageError(fmt.Errorf("match must be a valid regular expression: %w", err))
 		}
 	}
 
@@ -1856,16 +1864,16 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if cmd.IsSet("timeout") {
 		parsed, err := time.ParseDuration(cmd.String("timeout"))
 		if err != nil {
-			return fmt.Errorf("timeout must be a valid duration: %w", err)
+			return newCLIUsageError(fmt.Errorf("timeout must be a valid duration: %w", err))
 		}
 		if parsed <= 0 {
-			return errors.New("timeout must be positive")
+			return newCLIUsageError(errors.New("timeout must be positive"))
 		}
 		timeout = parsed
 	}
 	timeoutMS := int64(timeout / time.Millisecond)
 	if timeoutMS <= 0 {
-		return errors.New("timeout must be at least 1ms")
+		return newCLIUsageError(errors.New("timeout must be at least 1ms"))
 	}
 
 	ctx = nonNilContext(ctx)
@@ -1930,7 +1938,7 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 
 func parseSignalArgs(cmd *urfavecli.Command) ([]string, error) {
 	if cmd == nil || cmd.Args() == nil {
-		return nil, errors.New("signal accepts exactly one process name and one signal")
+		return nil, newCLIUsageError(errors.New("signal accepts exactly one process name and one signal"))
 	}
 	var positional []string
 	args := cmd.Args().Slice()
@@ -1946,47 +1954,47 @@ func parseSignalArgs(cmd *urfavecli.Command) ([]string, error) {
 			switch name {
 			case "--json", "-j":
 				if name == "-j" && hasValue {
-					return nil, errors.New("-j does not take a value")
+					return nil, newCLIUsageError(errors.New("-j does not take a value"))
 				}
 				if err := cmd.Set("json", valueOrTrue(value, hasValue)); err != nil {
-					return nil, err
+					return nil, newCLIUsageError(err)
 				}
 				continue
 			case "--project", "-C":
 				if !hasValue {
 					index++
 					if index >= len(args) {
-						return nil, fmt.Errorf("%s requires a value", name)
+						return nil, newCLIUsageError(fmt.Errorf("%s requires a value", name))
 					}
 					value = args[index]
 				}
 				if err := cmd.Set("project", value); err != nil {
-					return nil, err
+					return nil, newCLIUsageError(err)
 				}
 				continue
 			case "--global", "-g":
 				if name == "-g" && hasValue {
-					return nil, errors.New("-g does not take a value")
+					return nil, newCLIUsageError(errors.New("-g does not take a value"))
 				}
 				if err := cmd.Set("global", valueOrTrue(value, hasValue)); err != nil {
-					return nil, err
+					return nil, newCLIUsageError(err)
 				}
 				continue
 			case "--runtime-dir", "--stop-grace", "--output-bytes", "--completed-records":
 				if !hasValue {
 					index++
 					if index >= len(args) {
-						return nil, fmt.Errorf("%s requires a value", name)
+						return nil, newCLIUsageError(fmt.Errorf("%s requires a value", name))
 					}
 					value = args[index]
 				}
 				if err := cmd.Set(strings.TrimPrefix(name, "--"), value); err != nil {
-					return nil, err
+					return nil, newCLIUsageError(err)
 				}
 				continue
 			}
 			if strings.HasPrefix(arg, "--") || arg == "-C" {
-				return nil, fmt.Errorf("unknown signal option %q", arg)
+				return nil, newCLIUsageError(fmt.Errorf("unknown signal option %q", arg))
 			}
 		}
 		positional = append(positional, arg)
@@ -2008,10 +2016,10 @@ func valueOrTrue(value string, hasValue bool) string {
 func signalUnavailableMessage(selection projectSelection, name string) error {
 	if manifest, err := loadManifestOrEmpty(selection.cwd); err == nil {
 		if definition, ok := manifest.byName[name]; ok {
-			return manifestUnavailableMessage(definition, selection.selector)
+			return newCLIUnavailableError(manifestUnavailableMessage(definition, selection.selector))
 		}
 	}
-	return newUserFacingError(logsUnavailableMessageFor(selection.selector))
+	return newCLIUnavailableError(newUserFacingError(logsUnavailableMessageFor(selection.selector)))
 }
 
 func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
@@ -2020,7 +2028,7 @@ func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return err
 	}
 	if len(args) != 2 {
-		return errors.New("signal accepts exactly one process name and one signal")
+		return newCLIUsageError(errors.New("signal accepts exactly one process name and one signal"))
 	}
 	name, specification := args[0], args[1]
 	parsed, err := sharedsignals.Parse(specification)
@@ -2073,7 +2081,7 @@ func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
 	names := cmd.Args().Slice()
 	if len(names) == 0 {
-		return errors.New("stop requires at least one process name")
+		return newCLIUsageError(errors.New("stop requires at least one process name"))
 	}
 	ctx = nonNilContext(ctx)
 	selection, err := selectedProjectDirectory(cmd)
@@ -2162,7 +2170,7 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	names := cmd.Args().Slice()
 	all := cmd.Bool("all")
 	if len(names) == 0 && !all {
-		return errors.New("remove requires at least one process name or --all")
+		return newCLIUsageError(errors.New("remove requires at least one process name or --all"))
 	}
 	if len(names) != 0 && all {
 		return newCLIUsageError(errors.New("remove accepts process names or --all, not both"))
@@ -2523,12 +2531,12 @@ func aggregateRestartExit(results []restartOutputResult) error {
 func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
 	names := cmd.Args().Slice()
 	if len(names) == 0 {
-		return errors.New("restart requires at least one process name")
+		return newCLIUsageError(errors.New("restart requires at least one process name"))
 	}
 	ctx = nonNilContext(ctx)
 	timeoutOverride, err := manifestTimeoutOverride(cmd)
 	if err != nil {
-		return err
+		return newCLIUsageError(err)
 	}
 	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
@@ -2552,10 +2560,10 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		if daemonUnavailable(err) {
 			for _, name := range names {
 				if definition, ok := manifest.byName[name]; ok {
-					return manifestUnavailableMessage(definition, manifest.selector)
+					return newCLIUnavailableError(manifestUnavailableMessage(definition, manifest.selector))
 				}
 			}
-			return newUserFacingError(logsUnavailableMessageFor(manifest.selector))
+			return newCLIUnavailableError(newUserFacingError(logsUnavailableMessageFor(manifest.selector)))
 		}
 		return err
 	}
@@ -2710,7 +2718,7 @@ func shutdownCommand(ctx context.Context, cmd *urfavecli.Command, version, build
 func startCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
 	names := cmd.Args().Slice()
 	if len(names) == 0 {
-		return errors.New("start requires at least one process name")
+		return newCLIUsageError(errors.New("start requires at least one process name"))
 	}
 	return manifestLaunchCommand(ctx, cmd, version, buildTime, writer, names)
 }
@@ -2751,7 +2759,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	}
 	manifest.selector = selection.selector
 	if cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
-		return errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies")
+		return newCLIUsageError(errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies"))
 	}
 	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, true, true, errWriter, noCandidateErr, followSince)
 }
@@ -2945,11 +2953,11 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		manifest.selector = selection.selector
 	}
 	if ordered && cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
-		return errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies")
+		return newCLIUsageError(errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies"))
 	}
 	timeoutOverride, err := manifestTimeoutOverride(cmd)
 	if err != nil {
-		return err
+		return newCLIUsageError(err)
 	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
@@ -3477,7 +3485,7 @@ func skillCommand(_ context.Context, cmd *urfavecli.Command, writer io.Writer) e
 
 func requireNoArgs(cmd *urfavecli.Command, name string) error {
 	if cmd.NArg() != 0 {
-		return fmt.Errorf("%s accepts no positional arguments", name)
+		return newCLIUsageError(fmt.Errorf("%s accepts no positional arguments", name))
 	}
 	return nil
 }
