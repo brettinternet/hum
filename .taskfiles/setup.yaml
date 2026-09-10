@@ -18,6 +18,10 @@ tasks:
       - sh: command -v mise
         msg: Mise is not installed
 
+  upgrade:
+    desc: Upgrade pinned project tools and rewrite mise.toml
+    cmd: mise upgrade --bump --local
+
   lefthook:
     desc: Synchronize Lefthook hooks
     cmds:

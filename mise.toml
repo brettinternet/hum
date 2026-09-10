@@ -1,9 +1,10 @@
 [tools]
 go = "1.27.1"
-gitleaks = "latest"
-lefthook = "latest"
-task = "latest"
+gitleaks = "8.30.1"
+lefthook = "2.1.12"
+task = "3.53.1"
 staticcheck = "2026.2.1"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.8.0"
 
 # Backlog.md is the committed work queue.
-"github:MrLesk/Backlog.md" = { version = "latest", bin = "backlog" }
+"github:MrLesk/Backlog.md" = { version = "1.51.0", bin = "backlog" }

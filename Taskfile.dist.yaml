@@ -23,10 +23,17 @@ tasks:
   ci:
     desc: The gate. Everything that must pass before a backlog task is Done.
     cmds:
+      - task: security
       - task: check
       - task: test
       - task: race
       - task: smoke
+
+  security:
+    desc: Scan repository history for secrets and Go code for reachable vulnerabilities
+    cmds:
+      - mise exec gitleaks -- gitleaks git --redact --verbose --no-banner
+      - mise exec go:golang.org/x/vuln/cmd/govulncheck -- govulncheck ./...
 
   check:
     desc: Run all project checks

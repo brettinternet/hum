@@ -1,10 +1,10 @@
 ---
 id: HUM-070
 title: Pin the toolchain and add repository security gates
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-10 01:51'
-updated_date: '2026-09-10 06:01'
+updated_date: '2026-09-10 10:30'
 labels:
   - tooling
 dependencies:
@@ -32,21 +32,34 @@ Outcome: Developer tools and GitHub Actions resolve reproducibly, and pull-reque
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `mise install --yes && mise current` exits 0 and its output contains no `latest` selector for a committed project tool.
-- [ ] #2 `task security` exits 0 after full-repository gitleaks and `govulncheck ./...` report no leaked secrets or reachable vulnerabilities.
-- [ ] #3 `rg -n "uses: [^ ]+@[0-9a-f]{40} +# v" .github/workflows/*.yaml` exits 0 and `rg -n "uses: .*@(v[0-9]+|main|master|latest)" .github/workflows` exits 1, proving workflow actions use immutable SHA refs with version comments.
-- [ ] #4 `task ci` exits 0 and its log includes the repository security gate.
+- [x] #1 `mise install --yes && mise current` exits 0 and its output contains no `latest` selector for a committed project tool.
+- [x] #2 `task security` exits 0 after full-repository gitleaks and `govulncheck ./...` report no leaked secrets or reachable vulnerabilities.
+- [x] #3 `rg -n "uses: [^ ]+@[0-9a-f]{40} +# v" .github/workflows/*.yaml` exits 0 and `rg -n "uses: .*@(v[0-9]+|main|master|latest)" .github/workflows` exits 1, proving workflow actions use immutable SHA refs with version comments.
+- [x] #4 `task ci` exits 0 and its log includes the repository security gate.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC#1 PASS — `mise install --yes && mise current` exited 0; `mise ls --local` confirmed every committed project tool uses an exact version and no local selector is `latest`.
+AC#2 PASS — `task security` exited 0; gitleaks scanned 272 commits with no leaks and govulncheck reported 0 reachable vulnerabilities.
+AC#3 PASS — `rg -n "uses: [^ ]+@[0-9a-f]{40} +# v" .github/workflows/*.yaml` exited 0 with six immutable action matches; `rg -n "uses: .*@(v[0-9]+|main|master|latest)" .github/workflows` exited 1 with no mutable refs.
+AC#4 PASS — `task ci` exited 0 and began by logging both repository security scans before checks, tests, race, and smoke.
+Minimum-Go evidence — `task check:go-min` exited 0 with x/sys v0.30.0 and x/term v0.29.0, the newest releases before their modules raise the Go directive above 1.22.
+Independent verifier — PASS for AC#1, AC#2, AC#3, and AC#4; confirmed action tags, Go 1.22 dependency compatibility, unchanged tests, and tooling-label authorization.
+Modified-file deviation — the authoritative HUM-070 task file changed only to record the provider claim, acceptance evidence, completion, and release required by repository workflow.
+Review — traced full-history checkout into both CI consumers, exact tool resolution, security gate ordering and exit policy, dependency floor compatibility, and update paths; no item-scoped defects remain.
+<!-- SECTION:NOTES:END -->
 
 ## Comments
 
@@ -56,3 +69,9 @@ created: 2026-09-10 06:01
 Refinement 2026-09-10: confirmed all evidence; added the Go 1.22 floor constraint on dependency updates, made govulncheck pinning explicit (the shim currently has no version), and added a dependency on HUM-069 because both edit Taskfile.dist.yaml and ci.yaml. `mise install --yes` in AC#1 is a valid flag.
 ---
 <!-- COMMENTS:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Pin project tools and workflow actions, add weekly dependency updates and an explicit tool upgrade path, run full-history secret and reachable-vulnerability scans in CI, and safely update Go dependencies while preserving Go 1.22 support.
+<!-- SECTION:FINAL_SUMMARY:END -->

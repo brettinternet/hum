@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Install [mise](https://mise.jdx.dev/) and make it available on your `PATH`. Project-managed versions of Go, Staticcheck, Task, Lefthook, gitleaks, and Backlog.md are declared in `mise.toml`.
+Install [mise](https://mise.jdx.dev/) and make it available on your `PATH`. Project-managed versions of Go, Staticcheck, Task, Lefthook, gitleaks, govulncheck, and Backlog.md are declared in `mise.toml`.
 
 ## Setup
 
@@ -21,15 +21,12 @@ task init
 | --- | --- | --- |
 | Development Go | 1.27.1 | `mise.toml` |
 | Staticcheck | 2026.2.1 | `mise.toml` |
+| govulncheck | 1.8.0 | `mise.toml` |
 | Minimum supported Go | 1.22 | `go.mod` |
 
 `task ci` uses the development pins. `task check:go-min` compiles and tests with Go 1.22.
 
-To upgrade a development tool:
-
-1. Change its exact version in `mise.toml`.
-2. Run `mise install`.
-3. Run `task ci`.
+Dependabot proposes weekly Go module and GitHub Actions updates. Workflow actions remain pinned to immutable commit SHAs with their major version in a comment. To upgrade project tools, run `task setup:upgrade`, review the exact version changes in `mise.toml`, and run `task ci`.
 
 Go and Staticcheck can be upgraded separately. Raise the minimum Go version only when the support policy changes. Update `go.mod`, `task check:go-min`, and this table together. Then run both `task check:go-min` and `task ci`.
 
@@ -73,6 +70,7 @@ task check:staged
 task check
 task check:go-min
 task test
+task security
 task ci
 ```
 
@@ -81,7 +79,8 @@ task ci
 - `task check` verifies Go formatting and runs `go vet ./...` and Staticcheck with the pinned development toolchain.
 - `task check:go-min` compiles and tests the source with the Go 1.22 minimum.
 - `task test` runs `go test ./...`.
-- `task ci` independently runs checks, tests, race-sensitive package tests, and the built-binary smoke test with Go 1.27.1 and Staticcheck 2026.2.1.
+- `task security` scans the full Git history with gitleaks and runs `govulncheck ./...`; govulncheck fails only for vulnerabilities reachable from project code.
+- `task ci` independently runs the security gate, checks, tests, race-sensitive package tests, and the built-binary smoke test with Go 1.27.1 and Staticcheck 2026.2.1.
 
 ## Commit messages
 
