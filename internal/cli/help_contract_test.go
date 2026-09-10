@@ -120,6 +120,23 @@ func TestHelpContract(t *testing.T) {
 	}
 }
 
+func TestLogsSystemStreamHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	root := NewRootCommand("test", "test", &stdout, &stderr)
+	if err := root.Run(context.Background(), []string{"hum", "logs", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("logs help stderr = %q", stderr.String())
+	}
+	help := stdout.String()
+	for _, phrase := range []string{"stdout", "stderr", "system", "both", "both includes all three"} {
+		if !strings.Contains(help, phrase) {
+			t.Fatalf("logs help missing %q: %q", phrase, help)
+		}
+	}
+}
+
 func TestRestartReadinessDocs(t *testing.T) {
 	var output, errorOutput bytes.Buffer
 	root := NewRootCommand("dev", "unknown", &output, &errorOutput)

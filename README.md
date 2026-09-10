@@ -151,7 +151,7 @@ hum logs web worker --tail 50
 hum logs web --stream stdout --match Listening
 ```
 
-Without names, logs selects declared processes lexically and excludes ad-hoc sessions. Without `--after-cursor`, it uses the newest default window; with it and no tail, paging starts at the oldest retained entry. Ctrl+C closes followers without stopping processes.
+No names selects declarations, excluding ad-hoc. `--stream system` selects supervision; default `both` includes stdout, stderr, and system. Without `--after-cursor`, logs uses the newest default window; otherwise paging starts at the oldest retained entry. Ctrl+C closes followers only.
 
 Human output is prefixed with `[NAME]`; JSON output uses named NDJSON events. Logs `next` is the consumed cursor; process `next_cursor` is the next cursor to assign.
 

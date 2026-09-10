@@ -35,7 +35,7 @@ hum run [--project DIR|-C DIR] <name> [--detach] [--tty] [--json] [-- <command> 
 hum [--project DIR|-C DIR] list [--all] [--json]
 hum [--project DIR|-C DIR] status [<name>] [--json]
 hum [--project DIR|-C DIR] attach <name> [--tail N]
-hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|both] [--tail N] [--after-cursor N]
+hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|system|both] [--tail N] [--after-cursor N]
            [--since DURATION] [--limit-bytes N] [--match REGEX] [--follow] [--json]
 hum [--project DIR|-C DIR] wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
@@ -154,6 +154,8 @@ identity, readiness, cursors, and errors when applicable.
 - Attached `run --json` still streams raw child output; `logs --json --follow` emits bounded
   NDJSON events.
 - `logs` accepts optional, repeatable names in selection order.
+- `--stream system` selects only hum-generated supervision entries. The default `both` includes
+  stdout, stderr, and system for bounded and follow reads.
 - With no names, it resolves the current declaration set once in lexical order, without adding
   ad-hoc sessions; duplicate names are rejected.
 - Bounded logs without `--after-cursor` select the newest configured entry window, equivalent to
@@ -684,8 +686,11 @@ Requests with IDs run concurrently up to 64 in-flight requests.
 
 The tools share CLI definition, readiness, cursor, collision, and aggregate semantics.
 
-- Bounded MCP `logs` without `after` selects the newest default entry window, while explicit
-  `after` without `tail` keeps forward paging from the oldest eligible retained entry.
+- Bounded MCP `logs` accepts `stream` values `stdout`, `stderr`, `system`, and `both`; `system`
+  selects hum-generated supervision entries only, while omitted or explicit `both` includes
+  stdout, stderr, and system.
+- Without `after`, it selects the newest default entry window, while explicit `after` without
+  `tail` keeps forward paging from the oldest eligible retained entry.
 - MCP `logs` accepts a positive `since_ms` duration and captures one immutable inclusive
   request-time cutoff before applying the same cursor, since, tail, and entry/byte ordering;
   invalid, zero, negative, or overflowing values are rejected without daemon contact.

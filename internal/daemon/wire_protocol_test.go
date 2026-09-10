@@ -36,6 +36,74 @@ func TestGlobalScopeWireValidation(t *testing.T) {
 	}
 }
 
+func TestSystemStreamSelection(t *testing.T) {
+	store, err := output.NewStore(output.Limits{RetainedBytes: 4096, DefaultReadEntries: 100, DefaultReadBytes: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, time.September, 10, 12, 0, 0, 0, time.UTC)
+	entries := []struct {
+		stream output.Stream
+		text   string
+	}{
+		{output.Stdout, "child-out\n"},
+		{output.System, "api launched\n"},
+		{output.Stderr, "child-err\n"},
+		{output.System, "api restarted\n"},
+		{output.Stdout, "child-later\n"},
+	}
+	for index, entry := range entries {
+		if _, appendErr := store.Append(entry.stream, at.Add(time.Duration(index)*time.Second), entry.text); appendErr != nil {
+			t.Fatal(appendErr)
+		}
+	}
+
+	for _, test := range []struct {
+		stream protocol.Stream
+		mask   output.StreamMask
+	}{{protocol.StreamStdout, output.StdoutMask}, {protocol.StreamStderr, output.StderrMask}, {protocol.StreamSystem, output.SystemMask}, {protocol.StreamBoth, output.AllStreams}} {
+		options, optionsErr := readOptionsFromProtocol(protocol.OutputRequest{Stream: test.stream})
+		if optionsErr != nil || options.Streams != test.mask {
+			t.Fatalf("stream %q options = %#v, err=%v; want mask %v", test.stream, options, optionsErr, test.mask)
+		}
+		follow, followErr := readOptionsFromFollow(protocol.FollowRequest{Stream: test.stream})
+		if followErr != nil || follow.Streams != test.mask {
+			t.Fatalf("follow stream %q options = %#v, err=%v; want mask %v", test.stream, follow, followErr, test.mask)
+		}
+	}
+
+	after := protocol.Cursor(0)
+	options, err := readOptionsFromProtocol(protocol.OutputRequest{
+		After: &after, SinceUnixNano: at.Add(time.Second).UnixNano(), Tail: 1,
+		Stream: protocol.StreamSystem, Match: "launched|restarted", MaxEntries: 1, MaxBytes: 64,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.Read(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != 1 || result.Entries[0].Stream != output.System || result.Entries[0].Text != "api restarted\n" {
+		t.Fatalf("system result = %#v, want only newest matching supervision entry", result)
+	}
+	if result.Next == nil || result.Oldest == nil || result.Latest == nil {
+		t.Fatalf("system result metadata = %#v, want unchanged cursor bounds", result)
+	}
+
+	bothOptions, err := readOptionsFromProtocol(protocol.OutputRequest{Stream: protocol.StreamBoth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	both, err := store.Read(bothOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(both.Entries) != len(entries) {
+		t.Fatalf("both entries = %#v, want all stdout, stderr, and system entries", both.Entries)
+	}
+}
+
 func TestSignalExitWireStreamRoundTrip(t *testing.T) {
 	exitedAt := time.Date(2026, time.September, 6, 12, 34, 56, 0, time.UTC)
 	event := protocolStreamEventFromOutput("signal", output.Event{Exit: &output.Exit{

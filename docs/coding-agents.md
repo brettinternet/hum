@@ -96,6 +96,8 @@ Each tool rejects fields outside its advertised closed input schema before proje
   `logs`.
 - Bounded `logs` reads the newest default window; `tail`, `after`, and `since_ms` (CLI `--since
   DURATION`) narrow it to an exact tail, a cursor continuation, or a recent time window.
+- Set `stream: "system"` (CLI `--stream system`) for hum-generated supervision entries without
+  child noise. Omitted or explicit `both` includes stdout, stderr, and system.
 - For restart-with-work, use `stop`, run the intermediate command, then `start`: the durable
   session preserves terminal followers.
 - `remove` is different from `stop`: it discards retained runtime state and output but never

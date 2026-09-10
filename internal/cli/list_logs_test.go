@@ -383,6 +383,85 @@ processes:
 	}
 }
 
+func TestLogsSystemStream(t *testing.T) {
+	validationRuntime := hum006ListLogsTempDir(t, "system-validation-runtime")
+	t.Setenv("HUM_RUNTIME_DIR", validationRuntime)
+	project := hum006ListLogsProject(t, "system-project")
+	if _, _, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "first", "--stream", "invalid"); err == nil || !strings.Contains(err.Error(), "stdout, stderr, system, or both") {
+		t.Fatalf("invalid stream error = %v, want four-value validation", err)
+	}
+	if _, err := os.Stat(filepath.Join(validationRuntime, "hum.sock")); !os.IsNotExist(err) {
+		t.Fatalf("invalid stream contacted daemon: %v", err)
+	}
+
+	hum006ListLogsStartDaemon(t, validationRuntime, 4096)
+	for _, name := range []string{"first", "second"} {
+		script := fmt.Sprintf("printf '%s-out\\n'; printf '%s-err\\n' >&2; sleep 30", name, name)
+		if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", name, "--detach", "--", "/bin/sh", "-c", script); err != nil {
+			t.Fatalf("start %s: %v (stdout=%q stderr=%q)", name, err, stdout, stderr)
+		}
+		hum006ListLogsWaitForText(t, project, name, name+"-out\n")
+		if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "restart", name, "--no-wait"); err != nil {
+			t.Fatalf("restart %s: %v (stdout=%q stderr=%q)", name, err, stdout, stderr)
+		}
+		hum006ListLogsWaitForText(t, project, name, name+" restarted\n")
+	}
+
+	assertSystem := func(label, raw string, names ...string) {
+		t.Helper()
+		objects := hum006ListLogsDecodeJSONLines(t, raw)
+		if len(objects) != len(names) {
+			t.Fatalf("%s objects = %#v, want %d", label, objects, len(names))
+		}
+		for index, object := range objects {
+			entries := hum006ListLogsEntries(t, object)
+			if len(entries) == 0 {
+				t.Fatalf("%s %s has no system entries: %#v", label, names[index], object)
+			}
+			for _, entry := range entries {
+				if entry["stream"] != "system" {
+					t.Fatalf("%s entry = %#v, want system only", label, entry)
+				}
+				text, _ := entry["text"].(string)
+				if strings.Contains(text, "-out") || strings.Contains(text, "-err") {
+					t.Fatalf("%s leaked child output: %#v", label, entry)
+				}
+			}
+		}
+	}
+
+	single, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "first", "--json", "--stream", "system")
+	if err != nil || stderr != "" {
+		t.Fatalf("single system logs: err=%v stderr=%q", err, stderr)
+	}
+	assertSystem("single", single, "first")
+	aggregate, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "first", "second", "--json", "--stream", "system")
+	if err != nil || stderr != "" {
+		t.Fatalf("aggregate system logs: err=%v stderr=%q", err, stderr)
+	}
+	assertSystem("aggregate", aggregate, "first", "second")
+
+	omitted, _, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "first", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitBoth, _, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "first", "--json", "--stream", "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(hum006ListLogsEntries(t, hum006ListLogsDecodeJSONLines(t, omitted)[0]), hum006ListLogsEntries(t, hum006ListLogsDecodeJSONLines(t, explicitBoth)[0])) {
+		t.Fatalf("omitted stream and explicit both differ: omitted=%q both=%q", omitted, explicitBoth)
+	}
+
+	base := daemon.OutputRequest{Stream: protocol.StreamSystem}
+	if got := aggregateLogsRequest(base, "first"); got.Stream != protocol.StreamSystem {
+		t.Fatalf("aggregate bounded request stream = %q", got.Stream)
+	}
+	if got := aggregateLogsFollowRequest(base, "first"); got.Stream != protocol.StreamSystem {
+		t.Fatalf("aggregate follow request stream = %q", got.Stream)
+	}
+}
+
 func TestLogsDefaultNewestWindow(t *testing.T) {
 	runtimeDir := hum006ListLogsTempDir(t, "default-window-runtime")
 	hum006ListLogsStartDaemon(t, runtimeDir, 1<<16)

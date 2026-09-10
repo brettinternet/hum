@@ -1459,6 +1459,65 @@ func TestObservationTools(t *testing.T) {
 	}
 }
 
+func TestLogsSystemStream(t *testing.T) {
+	var logsDefinition toolDefinition
+	for _, definition := range NewServer(Options{}).toolDefinitions() {
+		if definition.Name == "logs" {
+			logsDefinition = definition
+			break
+		}
+	}
+	streamProperty, ok := logsDefinition.InputSchema["properties"].(map[string]any)["stream"].(map[string]any)
+	if !ok {
+		t.Fatalf("logs stream schema missing: %#v", logsDefinition.InputSchema)
+	}
+	wantEnum := []string{string(protocol.StreamStdout), string(protocol.StreamStderr), string(protocol.StreamSystem), string(protocol.StreamBoth)}
+	if !reflect.DeepEqual(streamProperty["enum"], wantEnum) || streamProperty["default"] != protocol.StreamBoth {
+		t.Fatalf("logs stream schema = %#v, want enum %#v and both default", streamProperty, wantEnum)
+	}
+	if !strings.Contains(logsDefinition.Description, "supervision-only system") || !strings.Contains(logsDefinition.Description, "both includes all three") {
+		t.Fatalf("logs description does not explain system/both: %q", logsDefinition.Description)
+	}
+
+	next := protocol.Cursor(9)
+	oldest := protocol.Cursor(2)
+	latest := protocol.Cursor(12)
+	client := &fakeClient{
+		processes: map[string]protocol.Process{"raw": {Name: "raw", State: "running"}},
+		output: protocol.OutputResult{
+			Entries: []protocol.OutputEntry{{Cursor: 8, Stream: protocol.StreamSystem, Text: "raw supervision entry\n"}},
+			Next:    &next, Oldest: &oldest, Latest: &latest, Truncated: true, More: true,
+		},
+	}
+	server, root, _ := newTestServer(t, nil, client)
+
+	value, err := server.callTool(context.Background(), "logs", args(root, "name", "raw", "stream", "system", "tail", 1, "max_entries", 1, "max_bytes", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.outputs) != 1 || client.outputs[0].Stream != protocol.StreamSystem {
+		t.Fatalf("system output requests = %#v", client.outputs)
+	}
+	result := value.(protocol.OutputResult)
+	if len(result.Entries) != 1 || result.Entries[0].Stream != protocol.StreamSystem || result.Next == nil || *result.Next != next || result.Oldest == nil || *result.Oldest != oldest || result.Latest == nil || *result.Latest != latest || !result.Truncated || !result.More {
+		t.Fatalf("system logs result = %#v, want unchanged bounded metadata", result)
+	}
+
+	if _, err := server.callTool(context.Background(), "logs", args(root, "name", "raw")); err != nil {
+		t.Fatal(err)
+	}
+	if client.outputs[1].Stream != protocol.StreamBoth {
+		t.Fatalf("omitted stream request = %#v, want both", client.outputs[1])
+	}
+	before := len(client.outputs)
+	if _, err := server.callTool(context.Background(), "logs", args(root, "name", "raw", "stream", "invalid")); mapError(err).Code != "invalid_request" {
+		t.Fatalf("invalid stream error = %v", err)
+	}
+	if len(client.outputs) != before {
+		t.Fatalf("invalid stream contacted daemon: %#v", client.outputs[before:])
+	}
+}
+
 func TestLogsDefaultNewestWindow(t *testing.T) {
 	newest := protocol.Cursor(201)
 	client := &fakeClient{

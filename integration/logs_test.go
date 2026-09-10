@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -207,6 +208,63 @@ func TestLogFollowers(t *testing.T) {
 		t.Fatalf("stop canceled process: code=%d stdout=%q stderr=%q err=%v", stopped.Code, stopped.Stdout, stopped.Stderr, stopped.Err)
 	}
 	testutil.WaitForFile(t, cancelMarker+".terminated", logsitWaitTimeout)
+}
+
+func TestLogsSystemStream(t *testing.T) {
+	harness := logsitNewHarness(t)
+	manifest := fmt.Sprintf("version: 1\nprocesses:\n  lifecycle:\n    argv: [%q, %q, %q]\n", "/bin/sh", "-c", "printf 'child-stdout\\n'; printf 'child-stderr\\n' >&2; sleep 30")
+	if err := os.WriteFile(filepath.Join(harness.project, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	follower := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "lifecycle", "--follow", "--json", "--stream", "system")
+	logsitWaitFollowerText(t, follower, "waiting for first launch")
+	started := testutil.Run(t, harness.hum, harness.project, harness.env, "start", "lifecycle", "--no-wait")
+	if started.Code != 0 {
+		t.Fatalf("start: code=%d stdout=%q stderr=%q err=%v", started.Code, started.Stdout, started.Stderr, started.Err)
+	}
+	logsitWaitFollowerText(t, follower, `lifecycle launched\n`)
+	logsitWaitOutput(t, harness, "lifecycle", []string{"--json"}, func(lines []logsitJSONLine) bool {
+		return len(lines) == 1 && logsitHasEntryText(lines[0].Event.Entries, "child-stdout\n") && logsitHasEntryText(lines[0].Event.Entries, "child-stderr\n")
+	})
+	restarted := testutil.Run(t, harness.hum, harness.project, harness.env, "restart", "lifecycle", "--no-wait")
+	if restarted.Code != 0 {
+		t.Fatalf("restart: code=%d stdout=%q stderr=%q err=%v", restarted.Code, restarted.Stdout, restarted.Stderr, restarted.Err)
+	}
+	logsitWaitFollowerText(t, follower, `lifecycle restarted\n`)
+
+	bounded := logsitRunLogs(t, harness, "lifecycle", "--json", "--stream", "system")
+	lines := logsitDecodeJSONLines(t, bounded.Stdout)
+	if len(lines) != 1 || !logsitHasEntryText(lines[0].Event.Entries, "lifecycle launched\n") || !logsitHasEntryText(lines[0].Event.Entries, "lifecycle restarted\n") {
+		t.Fatalf("bounded system logs = %q, want retained launch and restart boundaries", bounded.Stdout)
+	}
+	for _, entry := range lines[0].Event.Entries {
+		if entry.Stream != "system" || strings.Contains(entry.Text, "child-stdout") || strings.Contains(entry.Text, "child-stderr") {
+			t.Fatalf("bounded system entry = %#v, want supervision only", entry)
+		}
+	}
+
+	if err := follower.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := follower.Wait(logsitFollowerTimeout); err != nil {
+		t.Fatalf("system follower wait: %v; stdout=%q stderr=%q", err, follower.Stdout(), follower.Stderr())
+	}
+	for _, line := range logsitDecodeJSONLines(t, follower.Stdout()) {
+		for _, entry := range line.Event.Entries {
+			if entry.Stream != "system" || strings.Contains(entry.Text, "child-stdout") || strings.Contains(entry.Text, "child-stderr") {
+				t.Fatalf("system follow entry = %#v, want supervision only", entry)
+			}
+		}
+	}
+
+	omitted := logsitRunLogs(t, harness, "lifecycle", "--json")
+	explicitBoth := logsitRunLogs(t, harness, "lifecycle", "--json", "--stream", "both")
+	omittedLines := logsitDecodeJSONLines(t, omitted.Stdout)
+	bothLines := logsitDecodeJSONLines(t, explicitBoth.Stdout)
+	if len(omittedLines) != 1 || len(bothLines) != 1 || !reflect.DeepEqual(omittedLines[0].Event.Entries, bothLines[0].Event.Entries) {
+		t.Fatalf("omitted stream and both differ: omitted=%q both=%q", omitted.Stdout, explicitBoth.Stdout)
+	}
 }
 
 func TestLogsFollowMultipleProcesses(t *testing.T) {

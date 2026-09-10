@@ -194,7 +194,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			ShellComplete: completeProcessNames,
 			Description:   "Read bounded retained output for named processes. Filters and limits apply per process. --follow observes future launches; Ctrl+C cancels reading without signaling processes; see docs/design.md.\n\nExamples:\n  hum logs api --follow",
 			Flags: []urfavecli.Flag{
-				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "stdout, stderr, or both"},
+				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "stdout, stderr, system, or both; both includes all three"},
 				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "final N entries; omit for default"},
 				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "after cursor N; omit for the newest default window"},
 				&urfavecli.StringFlag{Name: "since", HideDefault: true, Usage: "newer than DURATION; omit for all"},
@@ -1288,8 +1288,8 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return aggregateLogsCommand(ctx, cmd, version, buildTime, writer, errWriter, args)
 	}
 	stream := cmd.String("stream")
-	if stream != "stdout" && stream != "stderr" && stream != "both" {
-		return newCLIUsageError(fmt.Errorf("stream must be one of stdout, stderr, or both: %q", stream))
+	if stream != "stdout" && stream != "stderr" && stream != "system" && stream != "both" {
+		return newCLIUsageError(fmt.Errorf("stream must be one of stdout, stderr, system, or both: %q", stream))
 	}
 	tail := cmd.Int("tail")
 	if tail < 0 {
@@ -1411,8 +1411,8 @@ type aggregateLogFollowerResult struct {
 
 func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer, args []string) error {
 	stream := cmd.String("stream")
-	if stream != "stdout" && stream != "stderr" && stream != "both" {
-		return newCLIUsageError(fmt.Errorf("stream must be one of stdout, stderr, or both: %q", stream))
+	if stream != "stdout" && stream != "stderr" && stream != "system" && stream != "both" {
+		return newCLIUsageError(fmt.Errorf("stream must be one of stdout, stderr, system, or both: %q", stream))
 	}
 	tail := cmd.Int("tail")
 	if tail < 0 {
