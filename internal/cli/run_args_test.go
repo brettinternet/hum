@@ -94,6 +94,54 @@ func TestParseRunArgsAcceptsOptionsAfterName(t *testing.T) {
 	}
 }
 
+func TestRunChildArgsCannotSelectScope(t *testing.T) {
+	runtimeDir := cliServeRunRuntimeDir(t)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	paths := daemon.NewRuntimePaths(runtimeDir)
+	invoke := func(args ...string) (string, string, error) {
+		var stdout, stderr strings.Builder
+		root := NewRootCommand("test", "test", &stdout, &stderr)
+		root.ExitErrHandler = func(context.Context, *urfavecli.Command, error) {}
+		argv := append([]string{"hum"}, args...)
+		SetInvocationArgs(root, argv)
+		err := root.Run(context.Background(), argv)
+		return stdout.String(), stderr.String(), err
+	}
+
+	_, _, err := invoke("run", "demo", "/bin/echo", "-g")
+	if err == nil || !strings.Contains(err.Error(), "run requires -- before the command") {
+		t.Fatalf("separator-less run error = %v, want command-boundary guidance", err)
+	}
+	if _, statErr := os.Stat(paths.Socket); !os.IsNotExist(statErr) {
+		t.Fatalf("separator-less run contacted or started daemon: socket stat error = %v", statErr)
+	}
+
+	cliServeRunStartDaemon(t, runtimeDir)
+	stdout, stderr, err := invoke("run", "demo", "--", "/bin/echo", "-g")
+	if err != nil || stderr != "" || stdout != "-g\n" {
+		t.Fatalf("explicit-boundary run: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	client, err := daemon.Dial(context.Background(), paths.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := client.Get(context.Background(), daemon.GetRequest{Name: "demo", Scope: "project", Cwd: cwd})
+	if err != nil {
+		t.Fatalf("project-scoped demo record: %v", err)
+	}
+	if got := strings.Join(process.Argv, " "); got != "/bin/echo -g" {
+		t.Fatalf("child argv = %q, want %q", got, "/bin/echo -g")
+	}
+	if _, err := client.Get(context.Background(), daemon.GetRequest{Name: "demo", Scope: "global", Cwd: cwd}); !isNotFound(err) {
+		t.Fatalf("global demo lookup = %v, want not found", err)
+	}
+}
+
 func TestRunSelectionSemantics(t *testing.T) {
 	runtimeDir := cliServeRunRuntimeDir(t)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)

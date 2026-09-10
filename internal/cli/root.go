@@ -509,9 +509,10 @@ func rawScopeFlag(cmd *urfavecli.Command, long, short string) bool {
 			state.mu.Unlock()
 		}
 	}
-	// A selector token only counts when the parser did not consume it as
-	// another flag's value. Without this, `hum wait api --match -g` would
-	// silently retarget the global scope instead of matching the text "-g".
+	// A selector token only counts before the explicit child-command boundary
+	// and when the parser did not consume it as another flag's value. Without
+	// this, child argv or `hum wait api --match -g` could silently retarget the
+	// global scope.
 	valueFlags := valueFlagTokens(cmd)
 	skipNext := false
 	for _, token := range tokens {

@@ -392,6 +392,29 @@ func TestDetachedRun(t *testing.T) {
 	})
 }
 
+func TestRunRequiresExplicitCommandBoundary(t *testing.T) {
+	scenario := runitNewScenario(t)
+	name := "command-boundary"
+	runitCleanup(t, scenario, name)
+
+	missingBoundary := testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, "run", name, "/bin/echo", "-g")
+	if missingBoundary.Code == 0 || !strings.Contains(missingBoundary.Stderr, "run requires -- before the command") {
+		t.Fatalf("separator-less run = %#v, want usage failure", missingBoundary)
+	}
+	if _, err := os.Stat(filepath.Join(scenario.runtimeDir, "hum.sock")); !os.IsNotExist(err) {
+		t.Fatalf("separator-less run started daemon: socket stat error = %v", err)
+	}
+
+	explicitBoundary := testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, "run", name, "--", "/bin/echo", "-g")
+	if explicitBoundary.Code != 0 || explicitBoundary.Stdout != "-g\n" || explicitBoundary.Stderr != "" {
+		t.Fatalf("explicit-boundary run = %#v", explicitBoundary)
+	}
+	process := runitListProcess(t, scenario, name)
+	if !reflect.DeepEqual(process.Argv, []string{"/bin/echo", "-g"}) {
+		t.Fatalf("retained child argv = %#v, want /bin/echo -g", process.Argv)
+	}
+}
+
 func TestReconnect(t *testing.T) {
 	scenario := runitNewScenario(t)
 	name := "reconnect"

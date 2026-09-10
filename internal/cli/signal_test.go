@@ -1,13 +1,17 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"hum/internal/daemon"
 	"hum/internal/protocol"
 )
 
@@ -45,6 +49,65 @@ func TestSignalCommand(t *testing.T) {
 	}
 	if result.Name != "signal-json" || result.Signal.Name != "SIGHUP" || result.Signal.Number != 1 || result.Status != "sent" {
 		t.Fatalf("signal JSON = %#v", result)
+	}
+}
+
+func TestSignalGlobalSelectorPlacement(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+
+	globalMarker := filepath.Join(t.TempDir(), "global-signal")
+	projectMarker := filepath.Join(t.TempDir(), "project-signal")
+	start := func(scope, marker string) int {
+		client, err := daemon.Dial(context.Background(), server.Paths().Socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		script := fmt.Sprintf("trap 'printf hit > %s' HUP; : > %s.ready; while :; do sleep 1; done", shellEscape(marker), shellEscape(marker))
+		process, err := client.Start(context.Background(), daemon.StartRequest{
+			Scope: scope,
+			Name:  "scoped-signal",
+			Cwd:   projectRoot,
+			Argv:  []string{"/bin/sh", "-c", script},
+			Env:   os.Environ(),
+		})
+		if err != nil {
+			t.Fatalf("start %s process: %v", scope, err)
+		}
+		return process.PGID
+	}
+	projectPGID := start("project", projectMarker)
+	globalPGID := start("global", globalMarker)
+	t.Cleanup(func() {
+		_ = syscall.Kill(-projectPGID, syscall.SIGKILL)
+		_ = syscall.Kill(-globalPGID, syscall.SIGKILL)
+	})
+	if err := cliServeRunWaitForFile(projectMarker + ".ready"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cliServeRunWaitForFile(globalMarker + ".ready"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"signal", "--global", "scoped-signal", "HUP"},
+		{"signal", "scoped-signal", "HUP", "--global"},
+	} {
+		if err := os.WriteFile(globalMarker, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, stderr, err := stopShutdownRun(t, args...)
+		if err != nil || stderr != "" {
+			t.Fatalf("signal placement %v: err=%v stderr=%q", args, err, stderr)
+		}
+		if err := cliServeRunWaitForText(globalMarker, "hit"); err != nil {
+			t.Fatalf("signal placement %v did not target global process: %v", args, err)
+		}
+	}
+	if _, err := os.Stat(projectMarker); !os.IsNotExist(err) {
+		t.Fatalf("project process received global signal: marker stat error = %v", err)
 	}
 }
 

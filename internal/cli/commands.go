@@ -82,7 +82,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			ArgsUsage:     "NAME [-- COMMAND [ARGS...]]",
 			StopOnNthArg:  &runStopOnNthArg,
 			ShellComplete: completeProcessNames,
-			Description:   "Run in the automatically selected canonical project scope; symlink aliases share records and separate worktrees remain separate; use --project PATH or -C PATH for explicit access; child cwd stays lexical. Without --detach, foreground run automatically starts a detached daemon, launches exactly one incarnation, streams raw child output, returns its exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP; the named session across process exits and launches remains readable through logs; with --detach it returns immediately and the daemon keeps owning it; stable JSON for detached runs is available, while attached runs stream raw child output; durable observers use hum attach or hum logs --follow, where Ctrl+C detaches; up and start remain daemon-owned. Add --tty for an ad-hoc pseudo-terminal; TTY input forwards terminal bytes and Ctrl-] releases input, after which Ctrl+C follows the stop rules.\n\nExamples:\n  hum run api -- bun run api\n  hum run api --detach -- bun run api\n  hum attach api",
+			Description:   "Run in the automatically selected canonical project scope; symlink aliases share records and separate worktrees remain separate; use --project PATH or -C PATH for explicit access; child cwd stays lexical; ad-hoc commands require -- before child argv, and scope selectors must precede it. Without --detach, foreground run automatically starts a detached daemon, launches exactly one incarnation, streams raw child output, returns its exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP; the named session across process exits and launches remains readable through logs; with --detach it returns immediately and the daemon keeps owning it; stable JSON for detached runs is available, while attached runs stream raw child output; durable observers use hum attach or hum logs --follow, where Ctrl+C detaches; up and start remain daemon-owned. Add --tty for an ad-hoc pseudo-terminal; TTY input forwards terminal bytes and Ctrl-] releases input, after which Ctrl+C follows the stop rules.\n\nExamples:\n  hum run api -- bun run api\n  hum run api --detach -- bun run api\n  hum attach api",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "return without attaching; default is attached"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON for detached runs; default is raw attached output"},
@@ -402,30 +402,28 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 	if rawScopeFlag(cmd, "global", "g") {
 		_ = cmd.Set("global", "true")
 	}
-	if rawRunMissingNameBeforeSeparator(cmd) {
-		return "", nil, errors.New("run requires a process name before --")
+	if args, ok := rawRunInvocationArgs(cmd); ok {
+		return parseRawRunArgs(cmd, args)
 	}
+
+	// Direct NewRootCommand users do not provide the raw invocation, and
+	// urfave removes -- before exposing Args. Preserve that API fallback; the
+	// binary always supplies raw arguments and enforces the boundary below.
 	args := cmd.Args().Slice()
 	if len(args) == 0 {
 		return "", nil, errors.New("run requires a process name")
 	}
 	separator := -1
-	for i, arg := range args {
+	for index, arg := range args {
 		if arg == "--" {
-			separator = i
+			separator = index
 			break
 		}
 	}
 	if separator < 0 && len(args) >= 2 && !strings.HasPrefix(args[1], "-") {
-		argv := append([]string(nil), args[1:]...)
-		if argv[0] == "" {
-			return "", nil, errors.New("run requires a non-empty command after --")
-		}
-		return args[0], argv, nil
+		return args[0], append([]string(nil), args[1:]...), nil
 	}
 	if separator < 0 {
-		// Flag parsing stops at NAME, so options written after it arrive here as
-		// positional arguments: hum run NAME --detach is the documented grammar.
 		if err := applyRunOptions(cmd, args[1:], false); err != nil {
 			return "", nil, err
 		}
@@ -434,8 +432,8 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 		}
 		return args[0], nil, nil
 	}
-	if separator < 2 {
-		return "", nil, errors.New("run accepts exactly one process name before --")
+	if separator < 1 {
+		return "", nil, errors.New("run requires a process name before --")
 	}
 	if err := applyRunOptions(cmd, args[1:separator], true); err != nil {
 		return "", nil, err
@@ -447,29 +445,73 @@ func parseRunArgs(cmd *urfavecli.Command) (string, []string, error) {
 	return args[0], argv, nil
 }
 
-func rawRunMissingNameBeforeSeparator(cmd *urfavecli.Command) bool {
+func parseRawRunArgs(cmd *urfavecli.Command, args []string) (string, []string, error) {
+	separator := -1
+	for index, arg := range args {
+		if arg == "--" {
+			separator = index
+			break
+		}
+	}
+	before := args
+	if separator >= 0 {
+		before = args[:separator]
+	}
+	valueFlags := invocationFlagValues(cmd.Root(), cmd)
+	name := ""
+	options := make([]string, 0, len(before))
+	for index := 0; index < len(before); index++ {
+		token := before[index]
+		if name == "" && (!strings.HasPrefix(token, "-") || token == "-") {
+			name = token
+			continue
+		}
+		options = append(options, token)
+		flagName, _, hasValue := strings.Cut(strings.TrimLeft(token, "-"), "=")
+		if strings.HasPrefix(token, "-") && token != "-" && !hasValue && valueFlags[flagName] && index+1 < len(before) {
+			index++
+			options = append(options, before[index])
+		}
+	}
+	if name == "" {
+		if separator >= 0 {
+			return "", nil, errors.New("run requires a process name before --")
+		}
+		return "", nil, errors.New("run requires a process name")
+	}
+	if err := applyRunOptions(cmd, options, separator >= 0); err != nil {
+		return "", nil, err
+	}
+	if separator < 0 {
+		if cmd.Bool("tty") {
+			return "", nil, errors.New("--tty requires an ad-hoc command after --")
+		}
+		return name, nil, nil
+	}
+	argv := append([]string(nil), args[separator+1:]...)
+	if len(argv) == 0 || argv[0] == "" {
+		return "", nil, errors.New("run requires a non-empty command after --")
+	}
+	return name, argv, nil
+}
+
+func rawRunInvocationArgs(cmd *urfavecli.Command) ([]string, bool) {
 	root := cmd.Root()
 	if root == nil || root.Metadata == nil {
-		return false
+		return nil, false
 	}
 	state, ok := root.Metadata[jsonErrorStateMetadataKey].(*jsonErrorState)
 	if !ok || state == nil {
-		return false
+		return nil, false
 	}
 	state.mu.Lock()
 	args := append([]string(nil), state.invocationArgs...)
 	state.mu.Unlock()
-	if len(args) == 0 {
-		return false
-	}
-
 	values := invocationFlagValues(root, cmd)
-	runIndex := -1
 	for index := 1; index < len(args); index++ {
 		token := args[index]
 		if token == "run" {
-			runIndex = index
-			break
+			return append([]string(nil), args[index+1:]...), true
 		}
 		if strings.HasPrefix(token, "-") && token != "-" {
 			name, _, hasValue := strings.Cut(strings.TrimLeft(token, "-"), "=")
@@ -478,23 +520,7 @@ func rawRunMissingNameBeforeSeparator(cmd *urfavecli.Command) bool {
 			}
 		}
 	}
-	if runIndex < 0 {
-		return false
-	}
-	for index := runIndex + 1; index < len(args); index++ {
-		token := args[index]
-		if token == "--" {
-			return true
-		}
-		if !strings.HasPrefix(token, "-") || token == "-" {
-			return false
-		}
-		name, _, hasValue := strings.Cut(strings.TrimLeft(token, "-"), "=")
-		if !hasValue && values[name] && index+1 < len(args) {
-			index++
-		}
-	}
-	return false
+	return nil, false
 }
 
 // applyRunOptions applies run and global options that appear after NAME,
@@ -1923,6 +1949,14 @@ func parseSignalArgs(cmd *urfavecli.Command) ([]string, error) {
 					value = args[index]
 				}
 				if err := cmd.Set("project", value); err != nil {
+					return nil, err
+				}
+				continue
+			case "--global", "-g":
+				if name == "-g" && hasValue {
+					return nil, errors.New("-g does not take a value")
+				}
+				if err := cmd.Set("global", valueOrTrue(value, hasValue)); err != nil {
 					return nil, err
 				}
 				continue

@@ -100,7 +100,8 @@ Each tool rejects fields outside its advertised closed input schema before proje
   session preserves terminal followers.
 - `remove` is different from `stop`: it discards retained runtime state and output but never
   edits `hum.yaml`.
-- The CLI form is `hum signal NAME SIGNAL [--json]`; the observational `signal` tool delivers
+- The CLI form is `hum signal NAME SIGNAL [--json]`; scope selectors may appear before or after
+  those positional arguments. The observational `signal` tool delivers
   one supported named or positive decimal signal to a running process group and returns
   `{"name":"NAME","signal":{"name":"SIGHUP","number":1},"status":"sent"}` with its canonical
   SIG-prefixed name and number; it never sets stop intent or cancels automatic relaunch,
@@ -174,8 +175,10 @@ independently per entry to each stdout/stderr stream.
 
 ### Interactive sessions
 
-Foreground `hum run NAME -- COMMAND` owns exactly one incarnation, streams raw output, propagates its
-exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. Use `hum run NAME --detach -- COMMAND`
+Ad-hoc commands require the explicit boundary in `hum run NAME [options] -- COMMAND`; scope selectors
+must appear before it, and all later tokens are child argv. Foreground `hum run NAME -- COMMAND` owns
+exactly one incarnation, streams raw output, propagates its exit status, stops on Ctrl+C or SIGTERM,
+and detaches on SIGHUP. Use `hum run NAME --detach -- COMMAND`
 for daemon ownership, and `hum attach NAME` or `hum logs NAME --follow` for durable observation.
 
 Leave `tty` off unless a tool genuinely requires a controlling terminal; prefer its
@@ -203,4 +206,4 @@ The same loop works with bounded `logs` instead of the first `wait`.
 
 ## Canonical project scopes
 
-hum selects project scope automatically from the invocation directory. symlink aliases share a canonical scope while separate worktrees do not. Use `hum --project /path/to/main` for explicit cross-worktree access. Use `hum --global` (`-g`) only for machine-wide ad-hoc retained sessions; it works around commands and `run` NAME, conflicts with `--project` and `list --all`, and `init`/`up` reject it. Global `start`/`restart` reuse retained launch specifications and never read the caller's manifest; child cwd remains the lexical run directory. `hum remove --all` removes every runtime session only in the selected project or global scope; it never spans scopes or targets unlaunched declarations. Use `hum --global logs proxy` for a global match reported by project not-found guidance, or `hum list --all` to discover all scopes. JSON `scope` is `project` or `global`; global records omit `project_root`.
+hum selects project scope automatically from the invocation directory. symlink aliases share a canonical scope while separate worktrees do not. Use `hum --project /path/to/main` for explicit cross-worktree access. Use `hum --global` (`-g`) only for machine-wide ad-hoc retained sessions; it works before or after ordinary positional arguments and before `run`'s required `--` child boundary, conflicts with `--project` and `list --all`, and `init`/`up` reject it. Global `start`/`restart` reuse retained launch specifications and never read the caller's manifest; child cwd remains the lexical run directory. `hum remove --all` removes every runtime session only in the selected project or global scope; it never spans scopes or targets unlaunched declarations. Use `hum --global logs proxy` for a global match reported by project not-found guidance, or `hum list --all` to discover all scopes. JSON `scope` is `project` or `global`; global records omit `project_root`.

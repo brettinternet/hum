@@ -122,7 +122,7 @@ hum stop preview
 hum remove preview
 ```
 
-Named sessions are durable. Foreground `hum run NAME -- COMMAND` owns one incarnation, streams raw output, propagates exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. `--detach`, `up`, and `start` hand ownership to the daemon. `hum attach NAME` and `hum logs NAME --follow` are durable observers; their signals never stop work. `hum status` summarizes the project; `stop` preserves state; `remove` discards one session or, with `--all`, the selected scope. Use `--tail 0` for live observer output only.
+Ad-hoc child argv requires `hum run NAME [options] -- COMMAND`; scope selectors precede `--`. Foreground run streams output, propagates status, stops on Ctrl+C/SIGTERM, and detaches on SIGHUP. `--detach`, `up`, and `start` leave ownership to the daemon. `hum attach NAME` and `logs --follow` are observers. Use `--tail 0` for live-only output. `stop` preserves state; `remove` discards one session or, with `--all`, the selected scope.
 
 ## Restart on failure
 
@@ -205,7 +205,7 @@ A TTY has one input owner and sends exact text or strict padded base64 once; it 
 
 ## Project scopes
 
-hum scopes names by the invocation directory's nearest Git root, or that directory outside Git. Roots are canonical: symlink aliases share a record, separate worktrees do not. `--project PATH` or `-C PATH` reaches another scope, including a removed worktree. `hum --global` (`-g`) is a machine-wide ad-hoc namespace, as in `hum -g run proxy -- caddy run`; it conflicts with `--project` and `list --all`, and `init` and `up` reject it. Lookups never fall back across scopes. JSON `scope` is `project` or `global`; global records omit `project_root`.
+hum scopes names by the invocation directory's nearest Git root, or that directory outside Git. Roots are canonical: symlink aliases share a record, separate worktrees do not. `--project PATH` or `-C PATH` reaches another scope, including a removed worktree. `hum --global` (`-g`) is a machine-wide ad-hoc namespace, as in `hum -g run proxy -- caddy run`; selectors can surround ordinary positionals (`hum signal proxy HUP --global`) but must precede `run`'s child `--`. It conflicts with `--project` and `list --all`, and `init` and `up` reject it. Lookups never fall back across scopes. JSON `scope` is `project` or `global`; global records omit `project_root`.
 
 ## License
 
