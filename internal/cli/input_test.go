@@ -80,26 +80,29 @@ func TestInputCommand(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldCwd) })
 
-	if _, err := control.Start(context.Background(), daemon.StartRequest{
+	prompt, err := control.Start(context.Background(), daemon.StartRequest{
 		Name: "prompt", Root: root, Cwd: root, TTY: true,
 		Argv: []string{"/bin/sh", "-c", "read -r line; printf 'got:%s' \"$line\""},
 		Env:  []string{"PATH=/bin:/usr/bin"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	output, _, err := runInputCLI(t, runtimeDir, "input", "prompt", "--text", "hello\n")
 	if err != nil || output != "wrote 6 bytes to prompt at launch cursor 0\n" {
 		t.Fatalf("human input output=%q err=%v", output, err)
 	}
-	if wait, err := control.Wait(context.Background(), daemon.WaitRequest{Name: "prompt", Cwd: root, TimeoutMS: 4000}); err != nil || string(wait.Outcome) != string(protocol.WaitExited) {
+	promptAfter := protocol.Cursor(prompt.LaunchCursor)
+	if wait, err := control.Wait(context.Background(), daemon.WaitRequest{Name: "prompt", Cwd: root, After: &promptAfter, TimeoutMS: 4000}); err != nil || string(wait.Outcome) != string(protocol.WaitExited) {
 		t.Fatalf("prompt wait=%+v err=%v", wait, err)
 	}
 
-	if _, err := control.Start(context.Background(), daemon.StartRequest{
+	jsonPrompt, err := control.Start(context.Background(), daemon.StartRequest{
 		Name: "json-prompt", Root: root, Cwd: root, TTY: true,
 		Argv: []string{"/bin/sh", "-c", "read -r line; printf 'got:%s' \"$line\""},
 		Env:  []string{"PATH=/bin:/usr/bin"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	output, _, err = runInputCLI(t, runtimeDir, "input", "json-prompt", "--base64", "eWVzCg==", "--json")
@@ -114,7 +117,8 @@ func TestInputCommand(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &success); err != nil || success.Name != "json-prompt" || success.Bytes != 4 || success.LaunchCursor != 0 {
 		t.Fatalf("json input output=%q err=%v", output, err)
 	}
-	if wait, err := control.Wait(context.Background(), daemon.WaitRequest{Name: "json-prompt", Cwd: root, TimeoutMS: 4000}); err != nil || string(wait.Outcome) != string(protocol.WaitExited) {
+	jsonPromptAfter := protocol.Cursor(jsonPrompt.LaunchCursor)
+	if wait, err := control.Wait(context.Background(), daemon.WaitRequest{Name: "json-prompt", Cwd: root, After: &jsonPromptAfter, TimeoutMS: 4000}); err != nil || string(wait.Outcome) != string(protocol.WaitExited) {
 		t.Fatalf("json prompt wait=%+v err=%v", wait, err)
 	}
 

@@ -1881,11 +1881,10 @@ func TestControlSignalSurvivorResumesOnFailureRestart(t *testing.T) {
 	}
 	relaunchTimer <- time.Now()
 	waitSubscriptionSignal(t, successorStarted, "survivor successor launch")
-	model, err = s.Get(root, "survivor")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if model.State != StateRunning || model.Relaunches != 1 || model.NextLaunchAt != nil {
+	model = waitForRelaunch(t, s, root, "survivor", func(model Process) bool {
+		return model.State == StateRunning
+	})
+	if model.Relaunches != 1 || model.NextLaunchAt != nil {
 		t.Fatalf("survivor successor = %+v, want running first relaunch", model)
 	}
 }
