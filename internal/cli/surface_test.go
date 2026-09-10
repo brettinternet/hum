@@ -80,6 +80,28 @@ func TestMarkdownH2PositionsIgnoresFences(t *testing.T) {
 	}
 }
 
+func TestMCPHelpScopeSchema(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
+	if err := root.Run(context.Background(), []string{"hum", "mcp", "--help"}); err != nil {
+		t.Fatalf("mcp help: %v", err)
+	}
+	help := strings.Join(strings.Fields(strings.ToLower(output.String())), " ")
+	for _, want := range []string{
+		"project scope requires an absolute existing project_root",
+		"global scope forbids project_root",
+		"up supports project scope only",
+		"list all is available only from project scope",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("mcp help missing %q: %q", want, output.String())
+		}
+	}
+	if errorOutput.Len() != 0 {
+		t.Fatalf("mcp help stderr = %q", errorOutput.String())
+	}
+}
+
 func TestStatusAndWaitSurface(t *testing.T) {
 	var output, errorOutput bytes.Buffer
 	root := NewRootCommand("dev", "unknown", &output, &errorOutput)

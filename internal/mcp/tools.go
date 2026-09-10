@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -359,11 +360,25 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		return objectSchema(map[string]any{"results": map[string]any{"type": "array", "items": items}, "warnings": startupWarningsSchema}, "results")
 	}
 	collectionProcesses := objectSchema(map[string]any{"processes": map[string]any{"type": "array", "items": process}, "warnings": startupWarningsSchema}, "processes")
+	upSchema := objectSchema(waitProps, "project_root")
+	upSchema["required"] = []string{"project_root"}
+	delete(upSchema, "allOf")
+	upSchema["properties"].(map[string]any)["scope"] = map[string]any{"type": "string", "const": protocol.ScopeProject, "default": protocol.ScopeProject, "description": "Process namespace; up supports project scope only."}
+	listSchema := objectSchema(map[string]any{"project_root": root, "all": map[string]any{"type": "boolean", "description": "Include every project scope from project scope; default is false."}}, "project_root")
+	listSchema["allOf"] = append(listSchema["allOf"].([]any), map[string]any{
+		"not": map[string]any{
+			"required": []string{"scope", "all"},
+			"properties": map[string]any{
+				"scope": map[string]any{"const": protocol.ScopeGlobal},
+				"all":   map[string]any{"const": true},
+			},
+		},
+	})
 	definitions := []toolDefinition{
 		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; it never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
-		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(waitProps, "project_root"), OutputSchema: collectionResults(launch)},
-		{Name: "down", Description: "Stop every running runtime record in the project and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
-		{Name: "list", Description: "Merge resolved definitions with daemon runtime records in the project, including ad_hoc records; use all to discover every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: objectSchema(map[string]any{"project_root": root, "all": map[string]any{"type": "boolean", "description": "Include every project scope; default is false."}}, "project_root"), OutputSchema: collectionProcesses},
+		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
+		{Name: "down", Description: "Stop every running runtime record in the selected scope and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
+		{Name: "list", Description: "Merge resolved definitions with daemon runtime records in the selected scope, including ad_hoc records; use all from project scope to discover every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
 		{Name: "logs", Description: "Read a bounded cursor-based output window for an existing declared or ad_hoc runtime record. since_ms uses one request-time cutoff and includes entries at or after it; it composes with the cursor, tail, and entry/byte bounds. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to read from; omitting it selects the newest default window."}, "since_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Positive duration in milliseconds from the request time; entries at or after the computed cutoff are included."}, "tail": map[string]any{"type": "integer", "minimum": 0, "description": "Return at most this many of the most recent entries; omitting it uses the newest default window."}, "max_entries": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of entries to return in this window."}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum total text bytes to return across this window's entries."}}, "project_root", "name"), OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms. Timeout results include process_observed from the same daemon wait request without an extra round trip; false means no runtime record for NAME was observed and includes actionable guidance.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
@@ -373,9 +388,11 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "remove", Description: "Stop and discard one named runtime supervision session, or every runtime session in the selected scope when all is true. Bulk removal is lexical, never spans scopes, and does not target unlaunched declarations.", InputSchema: removeSchema, OutputSchema: map[string]any{"type": "object", "oneOf": []any{stop, collectionResults(stop)}}},
 		{Name: "signal", Description: "Send one observational signal to a running declared or ad_hoc process group without changing stop intent or automatic relaunch policy. Signal names are case-insensitive with an optional SIG prefix, and positive decimal values are accepted only when they map to the supported named signal table; the result is canonical and reports sent.", InputSchema: signalSchema, OutputSchema: signalResult},
 	}
-	const scopeDescription = " Scope is project by default or global for machine-wide ad-hoc retained sessions; project_root is required for project scope and forbidden for global scope. List all includes global records, whose scope is global and project_root is omitted."
+	const scopeDescription = " Scope is project by default or global for machine-wide ad-hoc retained sessions; project_root is required for project scope and forbidden for global scope."
 	for index := range definitions {
-		definitions[index].Description += scopeDescription
+		if definitions[index].Name != "up" {
+			definitions[index].Description += scopeDescription
+		}
 	}
 	return definitions
 }
@@ -426,6 +443,9 @@ func decodeInput(raw json.RawMessage) (commonInput, error) {
 	input.fields = fields
 	_, input.textSet = fields["text"]
 	_, input.base64Set = fields["base64"]
+	if _, scopeSet := fields["scope"]; scopeSet && input.Scope == "" {
+		return input, &ToolError{Code: "invalid_request", Message: "scope must be project or global"}
+	}
 	if input.Scope == "" {
 		input.Scope = protocol.ScopeProject
 	}
@@ -679,17 +699,167 @@ func readinessTimeout(override int64, definition Definition) (int64, error) {
 	return mcpTimeoutMilliseconds(resolved)
 }
 
-func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage) (any, error) {
-	known := false
-	for _, definition := range s.toolDefinitions() {
-		known = known || definition.Name == name
+func validateToolInputFields(definition toolDefinition, raw json.RawMessage) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return &ToolError{Code: "invalid_request", Message: "invalid tool arguments: " + err.Error()}
 	}
-	if !known {
+	invalid := func(message string) error {
+		return &ToolError{Code: "invalid_request", Message: message}
+	}
+	properties := definition.InputSchema["properties"].(map[string]any)
+	for field, encoded := range fields {
+		property, ok := properties[field].(map[string]any)
+		if !ok {
+			return invalid(fmt.Sprintf("field %q is not valid for the %s tool", field, definition.Name))
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+		decoder.UseNumber()
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			return invalid("invalid tool arguments: " + err.Error())
+		}
+		switch property["type"] {
+		case "string":
+			text, ok := value.(string)
+			if !ok {
+				return invalid(fmt.Sprintf("field %q must be a string", field))
+			}
+			length := len([]rune(text))
+			if minimum, ok := property["minLength"].(int); ok && length < minimum {
+				return invalid(fmt.Sprintf("field %q is too short", field))
+			}
+			if maximum, ok := property["maxLength"].(int); ok && length > maximum {
+				return invalid(fmt.Sprintf("field %q is too long", field))
+			}
+			if pattern, ok := property["pattern"].(string); ok {
+				matched, err := regexp.MatchString(pattern, text)
+				if err != nil || !matched {
+					return invalid(fmt.Sprintf("field %q has an invalid format", field))
+				}
+			}
+		case "boolean":
+			if _, ok := value.(bool); !ok {
+				return invalid(fmt.Sprintf("field %q must be a boolean", field))
+			}
+		case "integer":
+			number, ok := value.(json.Number)
+			if !ok {
+				return invalid(fmt.Sprintf("field %q must be an integer", field))
+			}
+			integer, err := number.Int64()
+			if err != nil {
+				return invalid(fmt.Sprintf("field %q must be an integer", field))
+			}
+			if minimum, ok := schemaInteger(property["minimum"]); ok && integer < minimum {
+				if minimum == 1 {
+					return invalid(fmt.Sprintf("%s must be positive", field))
+				}
+				return invalid(fmt.Sprintf("field %q must be at least %d", field, minimum))
+			}
+			if maximum, ok := schemaInteger(property["maximum"]); ok && integer > maximum {
+				return invalid(fmt.Sprintf("field %q must be at most %d", field, maximum))
+			}
+		}
+		if expected, ok := property["const"]; ok && !reflect.DeepEqual(value, expected) {
+			return invalid(fmt.Sprintf("field %q has an unsupported value", field))
+		}
+		if values, ok := property["enum"].([]string); ok {
+			text, _ := value.(string)
+			if !containsString(values, text) {
+				return invalid(fmt.Sprintf("field %q has an unsupported value", field))
+			}
+		}
+	}
+	for _, required := range definition.InputSchema["required"].([]string) {
+		if _, present := fields[required]; !present {
+			return invalid(fmt.Sprintf("field %q is required", required))
+		}
+	}
+	scope := protocol.ScopeProject
+	if encoded, present := fields["scope"]; present {
+		_ = json.Unmarshal(encoded, &scope)
+	}
+	_, rootSet := fields["project_root"]
+	if scope == protocol.ScopeProject && !rootSet {
+		return invalid("project_root is required for project scope")
+	}
+	if scope == protocol.ScopeGlobal && rootSet {
+		return invalid("project_root is not allowed for global scope")
+	}
+	if definition.Name == "list" && scope == protocol.ScopeGlobal {
+		if encoded, present := fields["all"]; present {
+			var all bool
+			_ = json.Unmarshal(encoded, &all)
+			if all {
+				return invalid("list with all: true is not valid for global scope")
+			}
+		}
+	}
+	if definition.Name == "input" {
+		_, textSet := fields["text"]
+		_, base64Set := fields["base64"]
+		if textSet == base64Set {
+			return invalid("input requires exactly one of text or base64")
+		}
+	}
+	if definition.Name == "remove" {
+		_, nameSet := fields["name"]
+		encodedAll, allSet := fields["all"]
+		var all bool
+		if allSet {
+			_ = json.Unmarshal(encodedAll, &all)
+		}
+		if nameSet == allSet || allSet && !all {
+			return invalid("remove requires exactly one of name or all: true")
+		}
+	}
+	return nil
+}
+
+func schemaInteger(value any) (int64, bool) {
+	switch number := value.(type) {
+	case int:
+		return int64(number), true
+	case int64:
+		return number, true
+	default:
+		return 0, false
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage) (any, error) {
+	var selected toolDefinition
+	for _, definition := range s.toolDefinitions() {
+		if definition.Name == name {
+			selected = definition
+			break
+		}
+	}
+	if selected.Name == "" {
 		return nil, &ToolError{Code: "not_found", Message: fmt.Sprintf("unknown tool %q", name)}
+	}
+	if err := validateToolInputFields(selected, raw); err != nil {
+		return nil, err
 	}
 	input, err := decodeInput(raw)
 	if err != nil {
 		return nil, err
+	}
+	if name == "up" && input.Scope != protocol.ScopeProject {
+		return nil, &ToolError{Code: "invalid_request", Message: "up supports project scope only"}
+	}
+	if name == "list" && input.Scope == protocol.ScopeGlobal && input.All {
+		return nil, &ToolError{Code: "invalid_request", Message: "list with all: true is not valid for global scope"}
 	}
 	if name == "logs" {
 		input.SinceUnixNano, err = captureSinceCutoff(input)
@@ -698,31 +868,10 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		}
 	}
 	if name == "input" {
-		for field := range input.fields {
-			switch field {
-			case "scope", "project_root", "name", "text", "base64":
-			default:
-				return nil, &ToolError{Code: "invalid_request", Message: fmt.Sprintf("unknown input field %q", field)}
-			}
-		}
 		input.Data, err = decodeInputPayload(input)
 		if err != nil {
 			return nil, err
 		}
-	} else if input.textSet || input.base64Set {
-		return nil, &ToolError{Code: "invalid_request", Message: "text and base64 are only valid for the input tool"}
-	}
-	if name != "signal" {
-		if _, present := input.fields["signal"]; present {
-			return nil, &ToolError{Code: "invalid_request", Message: "signal is only valid for the signal tool"}
-		}
-	}
-	if name == "input" && strings.TrimSpace(input.Name) == "" {
-		return nil, &ToolError{Code: "invalid_request", Message: "name is required"}
-	}
-	resolution, err := s.resolve(ctx, input.ProjectRoot)
-	if err != nil {
-		return nil, mapError(err)
 	}
 	if name == "remove" {
 		_, allSet := input.fields["all"]
@@ -732,6 +881,10 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		}
 	} else if name != "up" && name != "down" && name != "list" && strings.TrimSpace(input.Name) == "" {
 		return nil, &ToolError{Code: "invalid_request", Message: "name is required"}
+	}
+	resolution, err := s.resolve(ctx, input.ProjectRoot)
+	if err != nil {
+		return nil, mapError(err)
 	}
 	switch name {
 	case "start":

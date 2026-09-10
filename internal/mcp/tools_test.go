@@ -60,6 +60,16 @@ func (f fakeResolver) Resolve(context.Context, string) (Resolution, error) {
 	return f.resolution, f.err
 }
 
+type countingResolver struct {
+	calls      int
+	resolution Resolution
+}
+
+func (r *countingResolver) Resolve(context.Context, string) (Resolution, error) {
+	r.calls++
+	return r.resolution, nil
+}
+
 type blockingResolver struct {
 	resolution Resolution
 	entered    chan struct{}
@@ -270,7 +280,11 @@ func TestSignalExitSnapshots(t *testing.T) {
 	}
 	call := func(t *testing.T, server *Server, name, root string) callToolResult {
 		t.Helper()
-		params, err := json.Marshal(callToolParams{Name: name, Arguments: args(root, "name", "signal")})
+		arguments := args(root, "name", "signal")
+		if name == "list" || name == "up" {
+			arguments = args(root)
+		}
+		params, err := json.Marshal(callToolParams{Name: name, Arguments: arguments})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -358,6 +372,12 @@ func TestGlobalScopeTools(t *testing.T) {
 		t.Fatal("global and project list keys collide")
 	}
 	for _, definition := range NewServer(Options{}).toolDefinitions() {
+		if definition.Name == "up" {
+			if !strings.Contains(definition.Description, "project scope only") || !strings.Contains(definition.Description, "project_root") {
+				t.Fatalf("up description omits project-only scope contract")
+			}
+			continue
+		}
 		if !strings.Contains(definition.Description, "global") || !strings.Contains(definition.Description, "project_root") {
 			t.Fatalf("%s description omits global scope contract", definition.Name)
 		}
@@ -371,11 +391,25 @@ func TestToolSchemas(t *testing.T) {
 	for _, d := range defs {
 		names = append(names, d.Name)
 		req := d.InputSchema["required"].([]string)
-		if contains(req, "project_root") {
-			t.Errorf("%s unconditionally requires project_root", d.Name)
-		}
-		if rules, ok := d.InputSchema["allOf"].([]any); !ok || len(rules) != 2 {
-			t.Errorf("%s lacks conditional project/global root rules", d.Name)
+		if d.Name == "up" {
+			if !contains(req, "project_root") {
+				t.Errorf("up does not require project_root")
+			}
+			if _, ok := d.InputSchema["allOf"]; ok {
+				t.Errorf("up advertises unsupported global scope rules")
+			}
+		} else {
+			if contains(req, "project_root") {
+				t.Errorf("%s unconditionally requires project_root", d.Name)
+			}
+			rules, ok := d.InputSchema["allOf"].([]any)
+			wantRules := 2
+			if d.Name == "list" {
+				wantRules = 3
+			}
+			if !ok || len(rules) != wantRules {
+				t.Errorf("%s scope rules = %#v, want %d", d.Name, d.InputSchema["allOf"], wantRules)
+			}
 		}
 		props := d.InputSchema["properties"].(map[string]any)
 		if _, ok := props["project_root"]; !ok {
@@ -814,6 +848,120 @@ func TestWaitTimeoutExplainsNeverObserved(t *testing.T) {
 				t.Fatalf("wait round trips = waits=%d gets=%d, want one wait and no get", len(client.waits), len(client.gets))
 			}
 		})
+	}
+}
+
+func TestToolInputSchemaRuntimeConformance(t *testing.T) {
+	root := t.TempDir()
+	knownFields := map[string]any{
+		"scope": protocol.ScopeProject, "project_root": root, "all": true, "name": "alpha",
+		"no_wait": true, "timeout_ms": 1, "after": 1, "since_ms": 1, "tail": 1,
+		"max_entries": 1, "max_bytes": 1, "match": "ready", "text": "x",
+		"base64": "eA==", "signal": "TERM",
+	}
+	base := map[string]map[string]any{
+		"start": {"name": "alpha"}, "up": {}, "down": {}, "list": {},
+		"status": {"name": "alpha"}, "logs": {"name": "alpha"},
+		"wait": {"name": "alpha"}, "input": {"name": "alpha", "text": "x"},
+		"restart": {"name": "alpha"}, "stop": {"name": "alpha"},
+		"remove": {"name": "alpha"}, "signal": {"name": "alpha", "signal": "TERM"},
+	}
+
+	for _, definition := range NewServer(Options{}).toolDefinitions() {
+		properties := definition.InputSchema["properties"].(map[string]any)
+		for field, value := range knownFields {
+			if _, applicable := properties[field]; applicable {
+				continue
+			}
+			t.Run(definition.Name+"/rejects_"+field, func(t *testing.T) {
+				resolver := &countingResolver{resolution: Resolution{Root: root}}
+				clientCalls := 0
+				server := NewServer(Options{
+					Resolver: resolver,
+					ClientFactory: func(context.Context, bool) (Client, error) {
+						clientCalls++
+						return &fakeClient{}, nil
+					},
+				})
+				arguments := map[string]any{"project_root": root}
+				for key, item := range base[definition.Name] {
+					arguments[key] = item
+				}
+				arguments[field] = value
+				raw, err := json.Marshal(arguments)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, callErr := server.callTool(context.Background(), definition.Name, raw)
+				if mapped := mapError(callErr); mapped.Code != "invalid_request" {
+					t.Fatalf("error = %v, want invalid_request", callErr)
+				}
+				if resolver.calls != 0 || clientCalls != 0 {
+					t.Fatalf("rejected input reached resolver/client: %d/%d", resolver.calls, clientCalls)
+				}
+			})
+		}
+	}
+}
+
+func TestRejectsUnsupportedAggregateInputs(t *testing.T) {
+	root := t.TempDir()
+	resolver := &countingResolver{resolution: Resolution{Root: root}}
+	client := &fakeClient{processes: map[string]protocol.Process{"alpha": {Name: "alpha", State: protocol.StateRunning}}}
+	clientCalls := 0
+	server := NewServer(Options{
+		Resolver: resolver,
+		ClientFactory: func(context.Context, bool) (Client, error) {
+			clientCalls++
+			return client, nil
+		},
+	})
+	cases := []struct {
+		name string
+		tool string
+		raw  json.RawMessage
+	}{
+		{name: "named up", tool: "up", raw: args(root, "name", "alpha")},
+		{name: "named down", tool: "down", raw: args(root, "name", "alpha")},
+		{name: "global up", tool: "up", raw: json.RawMessage(`{"scope":"global"}`)},
+		{name: "global list all", tool: "list", raw: json.RawMessage(`{"scope":"global","all":true}`)},
+		{name: "empty scope down", tool: "down", raw: args(root, "scope", "")},
+		{name: "ambiguous remove", tool: "remove", raw: args(root, "name", "", "all", true)},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := server.callTool(context.Background(), test.tool, test.raw)
+			if mapped := mapError(err); mapped.Code != "invalid_request" {
+				t.Fatalf("error = %v, want invalid_request", err)
+			}
+		})
+	}
+	if resolver.calls != 0 || clientCalls != 0 {
+		t.Fatalf("rejected aggregate input reached resolver/client: %d/%d", resolver.calls, clientCalls)
+	}
+	if len(client.starts) != 0 || len(client.stops) != 0 || len(client.lists) != 0 {
+		t.Fatalf("rejected aggregate input mutated lifecycle: starts=%#v stops=%#v lists=%#v", client.starts, client.stops, client.lists)
+	}
+}
+
+func TestMCPScopeSchema(t *testing.T) {
+	definitions := NewServer(Options{}).toolDefinitions()
+	for _, definition := range definitions {
+		properties := definition.InputSchema["properties"].(map[string]any)
+		scope := properties["scope"].(map[string]any)
+		if definition.Name == "up" {
+			if scope["const"] != protocol.ScopeProject || !contains(definition.InputSchema["required"].([]string), "project_root") {
+				t.Fatalf("up scope schema = %#v", definition.InputSchema)
+			}
+			continue
+		}
+		if _, ok := scope["enum"]; !ok {
+			t.Errorf("%s scope schema does not advertise project/global", definition.Name)
+		}
+		rules, ok := definition.InputSchema["allOf"].([]any)
+		if !ok || len(rules) < 2 {
+			t.Errorf("%s schema lacks conditional project_root rules", definition.Name)
+		}
 	}
 }
 

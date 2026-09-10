@@ -60,7 +60,9 @@ Cursor and other clients that accept an `mcpServers` configuration:
 }
 ```
 
-Tool calls accept `scope`: omit it for project scope and provide the absolute `project_root`; use `scope: "global"` without `project_root` for retained global sessions.
+Tool calls accept `scope`: omit it for project scope and provide the absolute `project_root`; use `scope: "global"` without `project_root` for retained global sessions. `up` supports project scope only. Use `list` with `all: true` only from project scope; it includes global records.
+
+Each tool rejects fields outside its advertised closed input schema before project resolution or daemon contact. Aggregate `up` and `down` do not accept `name`.
 
 - Prefer `up` over sequencing `start` calls when `hum.yaml` declares `after`: independent roots
   launch concurrently, each dependency waits for readiness, and each process timeout starts at
