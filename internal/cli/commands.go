@@ -60,11 +60,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
-				err := initCommand(ctx, cmd, writer)
-				if err != nil && cmd.NArg() == 0 && nonNilContext(ctx).Err() == nil && (cmd.Bool("global") || rawScopeFlag(cmd, "global", "g")) {
-					return newCLIUsageError(err)
-				}
-				return err
+				return initCommand(ctx, cmd, writer)
 			},
 		},
 		mcpCommand,

@@ -38,7 +38,7 @@ func initCommand(ctx context.Context, cmd *urfavecli.Command, writer io.Writer) 
 		return err
 	}
 	if cmd.Bool("global") || rawScopeFlag(cmd, "global", "g") {
-		return errors.New("hum init does not accept --global; use hum --global run NAME -- COMMAND")
+		return newCLIUsageError(errors.New("hum init does not accept --global; use hum --global run NAME -- COMMAND"))
 	}
 	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
