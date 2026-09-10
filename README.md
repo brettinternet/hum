@@ -206,3 +206,7 @@ A TTY has one input owner and sends exact text or strict padded base64 once; it 
 ## Project scopes
 
 hum scopes names by the invocation directory's nearest Git root, or that directory outside Git. Roots are canonical: symlink aliases share a record, separate worktrees do not. `--project PATH` or `-C PATH` reaches another scope, including a removed worktree. `hum --global` (`-g`) is a machine-wide ad-hoc namespace, as in `hum -g run proxy -- caddy run`; it conflicts with `--project` and `list --all`, and `init` and `up` reject it. Lookups never fall back across scopes. JSON `scope` is `project` or `global`; global records omit `project_root`.
+
+## License
+
+[MIT](LICENSE)
