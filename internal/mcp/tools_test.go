@@ -2082,9 +2082,10 @@ func testMCPLogsSinceLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	start := protocol.NewStartRequest("api", []string{"/bin/sh", "-c", "printf 'old-mcp\\n'; sleep 2; printf 'new-mcp\\n'; sleep 2"}, root, nil)
+	start := protocol.NewStartRequest("api", []string{"/bin/sh", "-c", "printf 'old-mcp\\n'; sleep 2; printf 'new-mcp\\n'"}, root, nil)
 	start.Root, start.Source = root, "ad_hoc"
-	if _, err := client.Start(context.Background(), start); err != nil {
+	started, err := client.Start(context.Background(), start)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -2138,6 +2139,11 @@ func testMCPLogsSinceLive(t *testing.T) {
 	result = value.(protocol.OutputResult)
 	if len(result.Entries) != 0 || result.Next == nil || *result.Next != newCursor {
 		t.Fatalf("live MCP after/since result = %#v, want empty result at cursor boundary", result)
+	}
+	launchCursor := protocol.Cursor(started.LaunchCursor)
+	wait, err := client.Wait(context.Background(), daemon.WaitRequest{Name: "api", Cwd: root, After: &launchCursor, TimeoutMS: 4000})
+	if err != nil || string(wait.Outcome) != string(protocol.WaitExited) {
+		t.Fatalf("live MCP process wait = %+v, err=%v", wait, err)
 	}
 }
 
