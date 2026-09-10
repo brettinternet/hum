@@ -22,13 +22,14 @@ task init
 | Development Go | 1.27.1 | `mise.toml` |
 | Staticcheck | 2026.2.1 | `mise.toml` |
 | govulncheck | 1.8.0 | `mise.toml` |
-| Minimum supported Go | 1.22 | `go.mod` |
 
-`task ci` uses the development pins. `task check:go-min` compiles and tests with Go 1.22.
+`task ci` uses the development pins. hum ships as prebuilt release binaries and its module path is
+not importable, so the only supported build toolchain is the pinned one: the `go.mod` directive
+tracks the pinned Go minor and there is no separate minimum supported Go version.
 
 Dependabot proposes weekly Go module and GitHub Actions updates. Workflow actions remain pinned to immutable commit SHAs with their major version in a comment. To upgrade project tools, run `task setup:upgrade`, review the exact version changes in `mise.toml`, and run `task ci`.
 
-Go and Staticcheck can be upgraded separately. Raise the minimum Go version only when the support policy changes. Update `go.mod`, `task check:go-min`, and this table together. Then run both `task check:go-min` and `task ci`.
+Go and Staticcheck can be upgraded separately. When raising the Go pin to a new minor, update the `go.mod` directive and this table together, then run `task ci`.
 
 ## Build
 
@@ -68,7 +69,6 @@ mise exec go -- go build \
 task fix:staged
 task check:staged
 task check
-task check:go-min
 task test
 task coverage
 task security
@@ -78,7 +78,6 @@ task ci
 - `task fix:staged` formats staged Go files and re-stages the fixes.
 - `task check:staged` runs the pre-commit formatter and staged secret scan.
 - `task check` verifies Go formatting and runs `go vet ./...` and Staticcheck with the pinned development toolchain.
-- `task check:go-min` compiles and tests the source with the Go 1.22 minimum.
 - `task test` runs `go test ./...`.
 - `task coverage` runs all tests with repository-wide coverage and prints the per-function report. Its coverage profile is written outside the repository at `/tmp/hum-coverage.out`.
 - `task security` scans the full Git history with gitleaks and runs `govulncheck ./...`; govulncheck fails only for vulnerabilities reachable from project code.

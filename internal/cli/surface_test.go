@@ -756,8 +756,10 @@ func TestPinnedToolchainDocs(t *testing.T) {
 			break
 		}
 	}
-	if goDirective != "go 1.22" {
-		t.Errorf("go.mod directive = %q, want %q", goDirective, "go 1.22")
+	// The directive tracks the pinned toolchain minor; there is no separate
+	// minimum supported Go version because hum ships only as release binaries.
+	if goDirective != "go 1.27" {
+		t.Errorf("go.mod directive = %q, want %q", goDirective, "go 1.27")
 	}
 
 	docsContent, err := os.ReadFile("../../docs/development.md")
@@ -769,9 +771,7 @@ func TestPinnedToolchainDocs(t *testing.T) {
 		"toolchain policy",
 		"go 1.27.1",
 		"staticcheck 2026.2.1",
-		"go 1.22",
-		"minimum supported",
-		"task check:go-min",
+		"no separate minimum supported go version",
 		"task ci",
 		"upgrade",
 	} {

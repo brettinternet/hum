@@ -1,9 +1,10 @@
 ---
 id: HUM-075
 title: Enforce the Go 1.22 floor in the CI gate
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-10 17:54'
+updated_date: '2026-09-10 18:29'
 labels:
   - tooling
 dependencies: []
@@ -38,3 +39,15 @@ Outcome: A go.mod `go` directive or dependency bump that raises the minimum supp
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Superseded 2026-09-10: the owner decided to drop the Go 1.22 floor rather than gate it. hum ships only as prebuilt release binaries built with the pinned toolchain and its module path `hum` is not importable, so no one builds it with an older Go. The go.mod directive now tracks the pinned Go minor (1.27), `task check:go-min` and its docs were removed, and x/sys, x/term, and testify were updated to their latest releases. No CI floor gate is needed because `task ci` already runs with the pinned toolchain.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed without a CI gate: the Go 1.22 floor was dropped in favour of tracking the pinned toolchain, removing the need for a separate floor check.
+<!-- SECTION:FINAL_SUMMARY:END -->
