@@ -56,7 +56,7 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	selector := selection.selector
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(cwd)
+		manifest, err = loadManifestOrEmpty(ctx, cwd)
 		if err != nil {
 			return inputCommandError(cmd, writer, name, err)
 		}

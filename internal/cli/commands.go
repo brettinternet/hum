@@ -610,7 +610,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	}
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(cwd)
+		manifest, err = loadManifestOrEmpty(ctx, cwd)
 		if err != nil {
 			return err
 		}
@@ -882,7 +882,7 @@ func projectProcessList(ctx context.Context, cmd *urfavecli.Command, version, bu
 	}
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(selection.cwd)
+		manifest, err = loadManifestOrEmpty(ctx, selection.cwd)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -956,7 +956,7 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	cwd := selection.cwd
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(cwd)
+		manifest, err = loadManifestOrEmpty(ctx, cwd)
 		if err != nil {
 			return err
 		}
@@ -1051,7 +1051,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(selection.cwd)
+		manifest, err = loadManifestOrEmpty(ctx, selection.cwd)
 		if err != nil {
 			return err
 		}
@@ -1310,7 +1310,7 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	cwd := selection.cwd
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(cwd)
+		manifest, err = loadManifestOrEmpty(ctx, cwd)
 		if err != nil {
 			return err
 		}
@@ -1448,9 +1448,9 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 		if len(args) == 0 {
 			// The no-name form is intentionally strict: it has the same definition
 			// set as up, rather than falling back to an ad-hoc session.
-			manifest, err = loadManifest(cwd)
+			manifest, err = loadManifest(ctx, cwd)
 		} else {
-			manifest, err = loadManifestOrEmpty(cwd)
+			manifest, err = loadManifestOrEmpty(ctx, cwd)
 		}
 	}
 	if err != nil {
@@ -1882,7 +1882,7 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	cwd := selection.cwd
 	if selection.scope != "global" {
-		if _, err := loadManifestOrEmpty(cwd); err != nil {
+		if _, err := loadManifestOrEmpty(ctx, cwd); err != nil {
 			return err
 		}
 	}
@@ -2009,8 +2009,8 @@ func valueOrTrue(value string, hasValue bool) string {
 // other project-scoped commands rather than surfacing the socket path. The
 // manifest is read only on this path, so a malformed manifest cannot block
 // signalling a process that is actually running.
-func signalUnavailableMessage(selection projectSelection, name string) error {
-	if manifest, err := loadManifestOrEmpty(selection.cwd); err == nil {
+func signalUnavailableMessage(ctx context.Context, selection projectSelection, name string) error {
+	if manifest, err := loadManifestOrEmpty(ctx, selection.cwd); err == nil {
 		if definition, ok := manifest.byName[name]; ok {
 			return newCLIUnavailableError(manifestUnavailableMessage(definition, selection.selector))
 		}
@@ -2043,7 +2043,7 @@ func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	client, err := daemonClient(ctx, cfg)
 	if err != nil {
 		if daemonUnavailable(err) {
-			return signalUnavailableMessage(selection, name)
+			return signalUnavailableMessage(ctx, selection, name)
 		}
 		return err
 	}
@@ -2271,7 +2271,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(cwd)
+		manifest, err = loadManifestOrEmpty(ctx, cwd)
 		if err != nil {
 			return err
 		}
@@ -2541,7 +2541,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 	cwd := selection.cwd
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(cwd)
+		manifest, err = loadManifestOrEmpty(ctx, cwd)
 		if err != nil {
 			return err
 		}
@@ -2736,7 +2736,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	// discovered convention is an error when there is nothing to report: the
 	// error is deferred so an existing daemon can still surface removed manifest
 	// sessions, and it replaces the empty-manifest message otherwise.
-	manifest, err := loadManifest(cwd)
+	manifest, err := loadManifest(ctx, cwd)
 	var noCandidateErr error
 	if err != nil {
 		var noCandidate *project.NoCandidateError
@@ -2744,7 +2744,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 			return err
 		}
 		noCandidateErr = err
-		manifest, err = loadManifestOrEmpty(cwd)
+		manifest, err = loadManifestOrEmpty(ctx, cwd)
 		if err != nil {
 			return err
 		}
@@ -2898,7 +2898,7 @@ func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version,
 	if selection.scope == "global" {
 		return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifestState{byName: make(map[string]project.Definition), selector: selection.selector}, names, false)
 	}
-	manifest, err := loadManifest(cwd)
+	manifest, err := loadManifest(ctx, cwd)
 	if err != nil {
 		var noCandidate *project.NoCandidateError
 		if !errors.As(err, &noCandidate) {
@@ -2915,7 +2915,7 @@ func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version,
 		if dialErr != nil {
 			return projectGuidanceError(err, selection.selector)
 		}
-		manifest, err = loadManifestOrEmpty(cwd)
+		manifest, err = loadManifestOrEmpty(ctx, cwd)
 		if err != nil {
 			return err
 		}

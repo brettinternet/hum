@@ -28,11 +28,9 @@ type manifestState struct {
 	selector string
 }
 
-func loadManifest(cwd string) (manifestState, error) {
-	return loadManifestContext(context.Background(), cwd)
-}
-
-func loadManifestContext(ctx context.Context, cwd string) (manifestState, error) {
+// loadManifest resolves the project manifest for cwd. Command-backed
+// discovery honours ctx so caller cancellation reaps a hung probe.
+func loadManifest(ctx context.Context, cwd string) (manifestState, error) {
 	root, err := app.DiscoverProjectRoot(cwd)
 	if err != nil {
 		return manifestState{}, err
@@ -56,12 +54,8 @@ func loadManifestContext(ctx context.Context, cwd string) (manifestState, error)
 // loadManifestOrEmpty preserves the ad-hoc command path when no conventional
 // or explicit definition exists. Any other resolution failure remains
 // authoritative and is returned before a daemon is contacted.
-func loadManifestOrEmpty(cwd string) (manifestState, error) {
-	return loadManifestOrEmptyContext(context.Background(), cwd)
-}
-
-func loadManifestOrEmptyContext(ctx context.Context, cwd string) (manifestState, error) {
-	manifest, err := loadManifestContext(ctx, cwd)
+func loadManifestOrEmpty(ctx context.Context, cwd string) (manifestState, error) {
+	manifest, err := loadManifest(ctx, cwd)
 	if err == nil {
 		return manifest, nil
 	}

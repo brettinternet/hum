@@ -136,7 +136,14 @@ func (e *IntrospectionError) Error() string {
 	return fmt.Sprintf("%s: %s: %v", ErrIntrospection, location, e.Err)
 }
 
-func (e *IntrospectionError) Unwrap() error { return ErrIntrospection }
+// Unwrap exposes both the introspection category and the underlying cause so
+// callers can still recognise cancellation with errors.Is.
+func (e *IntrospectionError) Unwrap() []error {
+	if e.Err == nil {
+		return []error{ErrIntrospection}
+	}
+	return []error{ErrIntrospection, e.Err}
+}
 
 var supportedDiscoveryConventions = []string{
 	"mise task dev",
@@ -299,6 +306,11 @@ func commandOutput(ctx context.Context, root, source, path string, skipEmptyFail
 		run = runDiscoveryCommand
 	}
 	output, err := run(ctx, root, argv...)
+	if ctx != nil && ctx.Err() != nil {
+		// Caller cancellation is neither a missing tool nor a failed
+		// introspection; the empty-output shortcut below must not hide it.
+		return nil, false, ctx.Err()
+	}
 	if err != nil {
 		// Mise and Task commonly report that their declaration file is
 		// absent with an empty failure. Task reserves exit code 100 for a

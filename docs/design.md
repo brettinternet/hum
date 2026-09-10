@@ -453,7 +453,10 @@ to `dev`, rooted at the project, with no inferred readiness:
 | bin/dev | executable file | `./bin/dev` |
 | Mix | literal `{:phoenix, ...}` dependency in `mix.exs` | `mix phx.server` |
 
-Implicit discovery never evaluates repository code. Mix detection reads `mix.exs` as text,
+Implicit discovery never evaluates repository code itself; the Task, Just, and mise probes run
+those tools' own listing commands, and mise additionally honours its trust prompt for the
+repository's configuration. Discovery probes honour cancellation from both the CLI command
+context and `hum mcp`, so an interrupted command reaps a hung probe. Mix detection reads `mix.exs` as text,
 ignores comments and quoted values, and recognizes only a literal Phoenix dependency tuple;
 dynamic declarations fail closed and require an explicit `hum.yaml`. This static check may
 identify the launch command, but `mix.exs` is evaluated only if the user later starts it.
@@ -627,7 +630,8 @@ project, name, leader PID, PGID, and OS process-start identity.
   KILL only after PID, group leadership, and process-start identity all match. An explicit zero
   grace escalates immediately, both during startup reclamation and ordinary stop operations.
 - Auto-start allows two configured grace periods per recorded group, processed sequentially, plus
-  five seconds for setup and the readiness handshake. Caller cancellation still bounds that wait.
+  five seconds for setup and the readiness handshake. Caller cancellation still bounds that wait,
+  and a child that exits before publishing readiness fails the start immediately.
 - Dead groups are discarded; mismatched or unverifiable identities are never signaled and remain
   unresolved blockers for the same project and name.
 - The startup reconciliation summary remains visible for the daemon lifetime through human

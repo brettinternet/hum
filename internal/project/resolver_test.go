@@ -812,3 +812,28 @@ func TestRunDiscoveryCommandTimesOut(t *testing.T) {
 		t.Fatalf("runDiscoveryCommand took %s, want prompt timeout", elapsed)
 	}
 }
+
+func TestIntrospectionErrorExposesItsCause(t *testing.T) {
+	err := &IntrospectionError{Source: "just", Err: context.Canceled}
+	if !errors.Is(err, ErrIntrospection) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("introspection error hides its category or cause: %v", err)
+	}
+	if !errors.Is(&IntrospectionError{Source: "just"}, ErrIntrospection) {
+		t.Fatal("introspection error without a cause lost its category")
+	}
+}
+
+func TestCommandOutputSurfacesCancellation(t *testing.T) {
+	installDiscoveryStubs(t, map[string]discoveryStub{"mise": {}})
+	discoveryCommand = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		return nil, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// The empty-output shortcut treats a missing declaration file as "no
+	// candidate"; a cancelled probe must not be mistaken for one.
+	_, found, err := commandOutput(ctx, t.TempDir(), "mise", "", true, "mise", "tasks", "--local", "--json")
+	if found || !errors.Is(err, context.Canceled) {
+		t.Fatalf("commandOutput = found %v err %v, want context.Canceled", found, err)
+	}
+}

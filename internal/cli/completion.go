@@ -333,7 +333,7 @@ func completionProcessNames(ctx context.Context, command *urfavecli.Command) []s
 	}
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(selection.cwd)
+		manifest, err = loadManifestOrEmpty(ctx, selection.cwd)
 		if err != nil {
 			return nil
 		}
