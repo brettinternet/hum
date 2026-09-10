@@ -43,9 +43,9 @@ jobs:
           path: |
             ${{ steps.go-cache.outputs.build }}
             ${{ steps.go-cache.outputs.modules }}
-          key: ${{ runner.os }}-go-${{ steps.go-cache.outputs.version }}-${{ hashFiles('go.sum') }}
+          key: ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-${{ hashFiles('go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-${{ steps.go-cache.outputs.version }}-
+            ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-
 
       - name: Run CI
         run: task security check test smoke
@@ -78,9 +78,9 @@ jobs:
           path: |
             ${{ steps.go-cache.outputs.build }}
             ${{ steps.go-cache.outputs.modules }}
-          key: ${{ runner.os }}-go-${{ steps.go-cache.outputs.version }}-${{ hashFiles('go.sum') }}
+          key: ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-${{ hashFiles('go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-${{ steps.go-cache.outputs.version }}-
+            ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-
 
       - name: Run race tests
         run: task race
@@ -113,9 +113,9 @@ jobs:
           path: |
             ${{ steps.go-cache.outputs.build }}
             ${{ steps.go-cache.outputs.modules }}
-          key: ${{ runner.os }}-go-${{ steps.go-cache.outputs.version }}-${{ hashFiles('go.sum') }}
+          key: ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-${{ hashFiles('go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-${{ steps.go-cache.outputs.version }}-
+            ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-
 
       - name: Run CI
         run: task security check test smoke
@@ -148,9 +148,9 @@ jobs:
           path: |
             ${{ steps.go-cache.outputs.build }}
             ${{ steps.go-cache.outputs.modules }}
-          key: ${{ runner.os }}-go-${{ steps.go-cache.outputs.version }}-${{ hashFiles('go.sum') }}
+          key: ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-${{ hashFiles('go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-${{ steps.go-cache.outputs.version }}-
+            ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-
 
       - name: Run race tests
         run: task race
