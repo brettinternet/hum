@@ -4,18 +4,15 @@ title: Run normal and race CI gates concurrently
 status: To Do
 assignee: []
 created_date: '2026-09-10 20:08'
-updated_date: '2026-09-10 20:20'
+updated_date: '2026-09-10 20:35'
 labels:
   - tooling
-dependencies:
-  - HUM-076
+dependencies: []
 references:
   - .github/workflows/ci.yaml
-  - Taskfile.dist.yaml
 modified_files:
   - .github/workflows/ci.yaml
-  - Taskfile.dist.yaml
-  - .github/scripts/
+  - docs/development.md
 priority: high
 type: enhancement
 ordinal: 53700
@@ -24,21 +21,26 @@ ordinal: 53700
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-GitHub Actions CI run 34522958965 for v0.8.0 completed in 4m43s wall-clock. Excluding queue time, its Linux job took 3m52s and its macOS job took 4m37s. Each job ran every `task ci` phase serially: normal tests consumed 65–81s, followed by full race tests consuming 127–146s.
+GitHub Actions CI run 34522958965 for v0.8.0 completed in 4m43s wall-clock. Excluding queue time, its Linux job took 3m52s and its macOS job took 4m37s. Each job ran every `task ci` phase serially. Linux phase durations from the run log: security 4s, check (gofmt, vet, staticcheck) 20s, normal tests 68s, race tests 127s, build plus smoke 2s. The race phase is 55% of the job, and the normal and race gates share no state.
 
-Outcome: pull-request and main-branch CI preserve the same Linux and macOS coverage while independent normal and race gates overlap, reducing the successful-run critical path.
+Outcome: pull-request and main-branch CI keep identical Linux and macOS coverage while the normal and race gates run as separate jobs per OS, so the critical path becomes the race job (about 140s Linux, 160s macOS) instead of the serial sum.
 
-Scope: CI job topology, stable job/check names, cancellation of superseded branch or pull-request runs, workflow-policy coverage, and narrow task entry points needed to allocate existing phases without changing local `task ci`. HUM-076 supplies the workflow-policy gate this task extends.
+Design (ci.yaml only; no Taskfile change):
+- Jobs `test-linux` and `test-macos` run `task security check test smoke`; jobs `race-linux` and `race-macos` run `task race`. Taskfile v3 accepts several targets in one invocation, so no new task entry points are needed and local `task ci` is untouched.
+- Every job gets `timeout-minutes: 15`. The suite supervises real processes; a hung test today runs until the 6-hour default.
+- `concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: ${{ github.event_name == 'pull_request' }} }` cancels superseded pull-request pushes but lets main-branch runs finish. HUM-076 selects the newest CI run for the tagged commit and fails closed on a cancelled run, so main runs must never be cancelled.
+- Keep the workflow filename ci.yaml and stable job names; HUM-076 filters runs by workflow file.
+- Keep security and check on both operating systems: 13 files carry `//go:build` constraints, so vet and staticcheck results are OS-dependent.
 
-Non-goals: dropping an operating system, normal or race package coverage, security, formatting, vet, staticcheck, build, or smoke checks; optimizing individual tests; changing release verification semantics; changing branch protection; or weakening local `task ci`.
+Non-goals: dropping an OS or any phase, optimizing individual tests (HUM-078, HUM-079), caching (HUM-081), changing release verification (HUM-076), adding workflow-lint tooling, or weakening local `task ci`.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `task ci` exits 0; its log shows security, formatting, vet, staticcheck, normal tests, race tests, build, and smoke still execute successfully in the local serial gate.
-- [ ] #2 `task check:workflows` exits 0 only when Linux and macOS each retain full normal and race coverage, no job serially executes both suites, all other existing quality phases remain assigned on both operating systems, job names are stable, and superseded runs in the same pull-request or branch concurrency group are cancelled.
-- [ ] #3 For a representative pushed revision, `gh run watch RUN_ID --exit-status` exits 0, proving every required job completed successfully.
-- [ ] #4 `task check:ci-timing RUN_ID=RUN_ID BASELINE_SECONDS=277` exits 0, reports overlapping normal/race execution intervals for both Linux and macOS, and reports a maximum required-job duration no greater than 207 seconds (at least 25% below the 277-second v0.8.0 macOS baseline), using each job’s `startedAt`/`completedAt` interval so runner queue time is excluded.
+- [ ] #1 `task ci` exits 0; its log still shows security, formatting, vet, staticcheck, normal tests, race tests, build, and smoke executing in the local serial gate.
+- [ ] #2 `rg -n 'runs-on|run: task|timeout-minutes|cancel-in-progress|group:' .github/workflows/ci.yaml` shows four jobs (two `ubuntu-latest`, two `macos-latest`); per OS exactly one job runs `task security check test smoke` and one runs `task race`; every job has `timeout-minutes`; `cancel-in-progress` is the expression `github.event_name == 'pull_request'`.
+- [ ] #3 For the first main push after the change, `gh run watch RUN_ID --exit-status` exits 0 with all four jobs successful.
+- [ ] #4 `gh run view RUN_ID --json jobs --jq '.jobs[] | "\(.name) \(.startedAt) \(.completedAt) \((.completedAt|fromdate) - (.startedAt|fromdate))s"'` reports every job at or below 207s (25% under the 277s v0.8.0 macOS job baseline, queue time excluded), and for each OS the test and race jobs' start/complete intervals overlap.
 <!-- AC:END -->
 
 ## Definition of Done
