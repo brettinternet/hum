@@ -37,6 +37,14 @@ func TestStartupBudgetIncludesEveryRecordedGroup(t *testing.T) {
 	if want := 17 * time.Second; got != want {
 		t.Fatalf("StartupBudget() = %s, want %s", got, want)
 	}
+
+	got, err = StartupBudget(paths, 0, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 5 * time.Second; got != want {
+		t.Fatalf("StartupBudget() with zero grace = %s, want %s", got, want)
+	}
 }
 
 func TestStartupBudgetWithoutStateIsDialSlack(t *testing.T) {

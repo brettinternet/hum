@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"hum/internal/app"
+	"hum/internal/config"
 	"hum/internal/daemon"
 )
 
@@ -80,6 +81,36 @@ func TestStop(t *testing.T) {
 			t.Fatalf("active processes after JSON stop = %#v, want none", active)
 		}
 	})
+}
+
+func TestExplicitZeroStopGrace(t *testing.T) {
+	t.Setenv("HUM_STOP_GRACE", "0s")
+	cfg, err := config.New(config.BuildOpts{}, config.Input{EnvStopGrace: os.Getenv("HUM_STOP_GRACE")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StopGrace != 0 {
+		t.Fatalf("resolved stop grace = %s, want 0", cfg.StopGrace)
+	}
+
+	projectRoot := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, cfg.StopGrace)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	readyPath := filepath.Join(projectRoot, "zero-grace-ready")
+	managed := stopShutdownStartProcess(t, server, projectRoot, "zero-grace", []string{
+		"/bin/sh", "-c", `trap '' TERM; printf ready > "$1"; while :; do sleep 1; done`, "hum-test", readyPath,
+	})
+	stopShutdownWaitForFile(t, readyPath, 3*time.Second)
+
+	startedAt := time.Now()
+	stdout, stderr, err := stopShutdownRun(t, "stop", "zero-grace")
+	if err != nil || stderr != "" {
+		t.Fatalf("zero-grace stop: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if elapsed := time.Since(startedAt); elapsed >= 3*time.Second {
+		t.Fatalf("zero-grace stop took %s, want immediate escalation", elapsed)
+	}
+	stopShutdownWaitForProcessGroupGone(t, managed.PGID, time.Second)
 }
 
 func TestRemove(t *testing.T) {

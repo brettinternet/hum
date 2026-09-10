@@ -41,7 +41,13 @@ Build the CLI with:
 task cli:build
 ```
 
-The build writes `bin/hum`. The current executable supports:
+The build writes `bin/hum`. Runtime configuration is resolved by the CLI before the daemon is
+started. In particular, `HUM_STOP_GRACE=0s` is an explicit immediate-escalation setting rather
+than a request for the ten-second default. Hum-created runtime directories are mode 0700;
+pre-existing directories retain their operator-managed mode and are rejected only when writable
+by group or other users.
+
+The current executable supports:
 
 ```sh
 ./bin/hum --help

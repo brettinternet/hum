@@ -91,9 +91,6 @@ func NewServer(cfg Config) (*Server, error) {
 		maxLine = 64 * 1024
 	}
 	stopGrace := cfg.StopGrace
-	if stopGrace == 0 {
-		stopGrace = 10 * time.Second
-	}
 	var supervisor *app.Supervisor
 	if cfg.Supervisor != nil {
 		supervisor = cfg.Supervisor

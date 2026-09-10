@@ -110,9 +110,6 @@ func DialDefault(ctx context.Context) (*Client, error) {
 // wait once after TERM and once after KILL for each group; dialSlack covers the
 // remaining setup and readiness handshake. Missing state has no recovery work.
 func StartupBudget(paths RuntimePaths, stopGrace, dialSlack time.Duration) (time.Duration, error) {
-	if stopGrace == 0 {
-		stopGrace = 10 * time.Second
-	}
 	if stopGrace < 0 || dialSlack < 0 {
 		return 0, errors.New("daemon startup budget durations must not be negative")
 	}

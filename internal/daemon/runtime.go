@@ -148,9 +148,10 @@ func ResolveRuntimeDir(explicit string) string { return resolveRuntimeDir(explic
 // DefaultRuntimeDir resolves the process environment without an override.
 func DefaultRuntimeDir() string { return resolveRuntimeDir("") }
 
-// Config controls a Server. The zero value is usable and picks conservative
-// defaults. Supervisor, when non-nil, is owned by the server for its complete
-// lifetime and is shut down before runtime artifacts are removed.
+// Config controls a Server. StopGrace is exact, including zero for immediate
+// escalation; command callers supply the configured default. Supervisor, when
+// non-nil, is owned by the server for its complete lifetime and is shut down
+// before runtime artifacts are removed.
 type Config struct {
 	RuntimeDir string
 	// WireVersion overrides the advertised protocol version. It exists for
@@ -383,19 +384,27 @@ func ensurePrivateDir(dir string) error {
 	if dir == "" {
 		return errors.New("runtime directory is empty")
 	}
-	info, err := os.Lstat(dir)
-	if err == nil {
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("runtime path is not a directory: %s", dir)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect runtime directory: %w", err)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return fmt.Errorf("create runtime directory parent: %w", err)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.Mkdir(dir, 0o700); err == nil {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("secure runtime directory: %w", err)
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("create runtime directory: %w", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return fmt.Errorf("secure runtime directory: %w", err)
+
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect runtime directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("runtime path is not a directory: %s", dir)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("runtime directory mode %04o permits group or other writes: %s", info.Mode().Perm(), dir)
 	}
 	return nil
 }
@@ -614,9 +623,6 @@ func (r *runtimeOwner) reconcileStartup(supervisor *app.Supervisor, grace time.D
 	}
 	if grace < 0 {
 		grace = 0
-	}
-	if grace == 0 {
-		grace = 10 * time.Second
 	}
 	oldGroups := append([]RuntimeGroup(nil), r.state.Groups...)
 	sortRuntimeGroups(oldGroups)

@@ -17,6 +17,62 @@ import (
 	processpkg "hum/internal/process"
 )
 
+func TestPrepareRuntimePreservesExistingMode(t *testing.T) {
+	t.Run("existing", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "runtime")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := ensurePrivateDir(dir); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o755 {
+			t.Fatalf("existing runtime directory mode = %04o, want 0755", got)
+		}
+	})
+
+	t.Run("created", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "nested", "runtime")
+		if err := ensurePrivateDir(dir); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Fatalf("created runtime directory mode = %04o, want 0700", got)
+		}
+	})
+
+	t.Run("unsafe existing", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "runtime")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		if err := ensurePrivateDir(dir); err == nil || !strings.Contains(err.Error(), "permits group or other writes") {
+			t.Fatalf("unsafe runtime directory error = %v", err)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o775 {
+			t.Fatalf("unsafe runtime directory mode = %04o, want unchanged 0775", got)
+		}
+	})
+}
+
 func TestRuntimeStateFile(t *testing.T) {
 	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
 	server := testServer(t, Config{RuntimeDir: runtimeDir, StopGrace: 50 * time.Millisecond})
@@ -149,6 +205,33 @@ func (c *stuckRuntimeChild) Wait() processpkg.Result {
 	return processpkg.Result{}
 }
 func (c *stuckRuntimeChild) Signal(os.Signal) error { return nil }
+
+func TestExplicitZeroStopGrace(t *testing.T) {
+	cmd, done := startRuntimeTestGroup(t, true)
+	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
+	writePriorRuntimeState(t, runtimeDir, RuntimeGroup{
+		ProjectRoot: t.TempDir(), Name: "zero-grace", LeaderPID: cmd.Process.Pid,
+		PGID: cmd.Process.Pid, StartIdentity: mustProcessIdentity(t, cmd.Process.Pid),
+	})
+
+	startedAt := time.Now()
+	server, err := NewServer(Config{RuntimeDir: runtimeDir, StopGrace: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	if elapsed := time.Since(startedAt); elapsed >= 3*time.Second {
+		t.Fatalf("zero-grace startup reclamation took %s, want immediate escalation", elapsed)
+	}
+	if warnings := server.StartupWarnings(); len(warnings) != 1 {
+		t.Fatalf("startup warnings = %+v, want one reconciled group", warnings)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("zero-grace startup group was not reaped")
+	}
+}
 
 func TestStartupReclaimsRecordedGroups(t *testing.T) {
 	for _, tc := range []struct {

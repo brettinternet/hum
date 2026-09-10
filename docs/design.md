@@ -609,7 +609,9 @@ not reread the manifest.
 
 ## Daemon and environments
 
-One daemon serves each private runtime directory at `hum.sock`.
+One daemon serves each runtime directory at `hum.sock`. Directories created by hum use mode
+0700. A pre-existing operator-managed directory keeps its mode; hum accepts read/execute access
+for group or other users but refuses a directory they can write.
 
 - `serve --daemon`, `run`, `start`, `up`, CLI `logs --follow`, and CLI `wait` use a startup lock
   and readiness handshake.
@@ -621,7 +623,8 @@ project, name, leader PID, PGID, and OS process-start identity.
 
 - A launch is not reported successful until that identity is durable.
 - On startup, a dead daemon's groups are reclaimed with TERM, the configured grace period, and
-  KILL only after PID, group leadership, and process-start identity all match.
+  KILL only after PID, group leadership, and process-start identity all match. An explicit zero
+  grace escalates immediately, both during startup reclamation and ordinary stop operations.
 - Auto-start allows two configured grace periods per recorded group, processed sequentially, plus
   five seconds for setup and the readiness handshake. Caller cancellation still bounds that wait.
 - Dead groups are discarded; mismatched or unverifiable identities are never signaled and remain
