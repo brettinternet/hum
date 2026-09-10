@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -181,4 +183,31 @@ func waitCLIPath(t *testing.T, path string, timeout time.Duration) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", path)
+}
+
+func TestEnsureDaemonFailsFastWhenChildExitsEarly(t *testing.T) {
+	runtimeDir := cliServeRunRuntimeDir(t)
+	groups := []daemon.RuntimeGroup{
+		{ProjectRoot: "/project", Name: "one", LeaderPID: 2147483644, PGID: 2147483644, StartIdentity: "dead:one"},
+		{ProjectRoot: "/project", Name: "two", LeaderPID: 2147483645, PGID: 2147483645, StartIdentity: "dead:two"},
+	}
+	paths := writeCLIStaleState(t, runtimeDir, groups)
+	// A live process recorded as the daemon owner makes the child refuse the
+	// runtime immediately; the recorded groups only inflate the budget.
+	if err := os.WriteFile(paths.PID, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cliDaemonTestConfig(runtimeDir, 3*time.Second)
+
+	startedAt := time.Now()
+	_, err := ensureDaemon(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("ensure daemon succeeded although the runtime is owned by a live process")
+	}
+	if !strings.Contains(err.Error(), "exited before readiness") {
+		t.Fatalf("ensure daemon error = %v, want the child's early exit", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed >= 2*time.Second {
+		t.Fatalf("early child exit was reported after %s, want well under the %s recovery budget", elapsed, 2*2*cfg.StopGrace+daemonStartupTimeout)
+	}
 }

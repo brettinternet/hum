@@ -126,40 +126,82 @@ func waitForDaemon(ctx context.Context, paths daemon.RuntimePaths, child *exec.C
 	defer cancel()
 	ticker := time.NewTicker(daemonStartupPoll)
 	defer ticker.Stop()
+	exited := reapDetachedChild(child)
 
 	for {
 		if pid, err := probeDaemon(waitCtx, paths); err == nil {
-			if child != nil && child.Process != nil {
-				if pid != child.Process.Pid {
-					// A concurrent starter may have won the runtime lock while
-					// this child was still initializing. Retire and reap the
-					// loser before returning so it cannot resurrect after the
-					// winner later shuts down.
-					terminateDetachedChild(child)
-				} else {
-					// The child owns the ready daemon. Reap it only after
-					// readiness so its PID cannot be reused during startup.
-					go func() { _ = child.Wait() }()
-				}
+			if child != nil && child.Process != nil && pid != child.Process.Pid {
+				// A concurrent starter may have won the runtime lock while
+				// this child was still initializing. Retire the loser before
+				// returning so it cannot resurrect after the winner later
+				// shuts down.
+				terminateDetachedChild(child, exited)
 			}
 			return pid, nil
 		} else if isVersionMismatch(err) {
-			terminateDetachedChild(child)
+			terminateDetachedChild(child, exited)
 			return 0, err
 		}
 
 		select {
+		case <-exited.done:
+			// The child gave up before publishing readiness, for example
+			// because a live process owns the runtime or the runtime directory
+			// was rejected. Waiting out the recovery budget would only delay
+			// the same failure. A racing starter may still have won, so probe
+			// once more before reporting the child's exit.
+			if pid, err := probeDaemon(waitCtx, paths); err == nil {
+				return pid, nil
+			}
+			return 0, daemonStartupError(paths, fmt.Errorf("detached daemon exited before readiness: %w", exited.status()))
 		case <-waitCtx.Done():
 			if err := ctx.Err(); err != nil {
-				cancelDetachedChild(child)
+				cancelDetachedChild(child, exited)
 				return 0, err
 			}
-			terminateDetachedChild(child)
-			if err := waitCtx.Err(); err != nil {
-				return 0, daemonStartupError(paths, err)
-			}
+			terminateDetachedChild(child, exited)
+			return 0, daemonStartupError(paths, waitCtx.Err())
 		case <-ticker.C:
 		}
+	}
+}
+
+// reapedChild reports when the detached child exits. Reaping starts at launch
+// so an early failure is observed immediately rather than after the complete
+// startup budget, which scales with the number of recorded stale groups.
+type reapedChild struct {
+	done chan struct{}
+	err  error
+}
+
+func reapDetachedChild(child *exec.Cmd) *reapedChild {
+	reaped := &reapedChild{}
+	if child == nil || child.Process == nil {
+		// A nil channel never fires; callers only wait on it.
+		return reaped
+	}
+	reaped.done = make(chan struct{})
+	go func() {
+		reaped.err = child.Wait()
+		close(reaped.done)
+	}()
+	return reaped
+}
+
+// status is valid only after done is closed.
+func (r *reapedChild) status() error {
+	if r.err == nil {
+		return errors.New("exit status 0")
+	}
+	return r.err
+}
+
+func (r *reapedChild) exited() bool {
+	select {
+	case <-r.done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -200,39 +242,33 @@ func isVersionMismatch(err error) bool {
 
 // cancelDetachedChild preserves prompt caller cancellation while allowing the
 // daemon to finish its bounded reconciliation and then observe SIGTERM through
-// its serve context. The waiter eventually reaps the cleanly exiting child.
-func cancelDetachedChild(child *exec.Cmd) {
-	if child == nil || child.Process == nil || child.Process.Pid <= 0 {
+// its serve context. The launch-time reaper collects the cleanly exiting child.
+func cancelDetachedChild(child *exec.Cmd, reaped *reapedChild) {
+	if child == nil || child.Process == nil || child.Process.Pid <= 0 || reaped.exited() {
 		return
 	}
 	_ = syscall.Kill(-child.Process.Pid, syscall.SIGTERM)
-	go func() { _ = child.Wait() }()
 }
 
-func terminateDetachedChild(child *exec.Cmd) {
-	if child == nil || child.Process == nil {
+func terminateDetachedChild(child *exec.Cmd, reaped *reapedChild) {
+	if child == nil || child.Process == nil || child.Process.Pid <= 0 {
+		return
+	}
+	// The child was reaped on exit, so its process group may already belong
+	// to an unrelated process; never signal a group whose leader is gone.
+	if reaped.exited() {
 		return
 	}
 	pid := child.Process.Pid
-	if pid <= 0 {
-		return
-	}
 	// Setsid makes the child both a session leader and process-group leader.
 	// TERM lets a daemon that reached its signal-aware serve path remove its
-	// ownership artifacts. Fall back to KILL if startup itself is wedged. The
-	// child stays unreaped until this point, preventing PID reuse.
+	// ownership artifacts. Fall back to KILL if startup itself is wedged.
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	waited := make(chan struct{})
-	go func() {
-		_ = child.Wait()
-		close(waited)
-	}()
 	select {
-	case <-waited:
-		return
+	case <-reaped.done:
 	case <-time.After(daemonTerminationGrace):
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		<-waited
+		<-reaped.done
 	}
 }
 
