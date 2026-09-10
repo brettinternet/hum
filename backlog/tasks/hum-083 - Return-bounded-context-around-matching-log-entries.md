@@ -4,7 +4,7 @@ title: Return bounded context around matching log entries
 status: To Do
 assignee: []
 created_date: '2026-09-10 20:36'
-updated_date: '2026-09-10 20:38'
+updated_date: '2026-09-10 20:45'
 labels:
   - output
   - protocol
@@ -44,18 +44,20 @@ Outcome: bounded log reads can include a requested number of retained entries be
 
 Context: hum currently filters to matching entries only. That often removes the stack frames or causal lines adjacent to an error and forces agents to issue wider follow-up reads. Context windows should be selected from the same immutable retained snapshot, merged when they overlap, and returned in source cursor order.
 
-Scope: add one symmetric context-entry count to bounded single-process and aggregate reads; define its position in the existing filter order; deduplicate overlapping windows; preserve consumed-cursor, truncation, eviction, entry-limit, and byte-limit semantics; expose it through CLI, JSON, MCP, help, and docs.
+Code map: output.ReadOptions (internal/output/types.go) carries Match; ring.go read applies cursor, stream, regexp, tail, then entry and byte bounds, and for match reads advances Next past consumed non-matching entries up to the first match that could not be returned. protocol.OutputRequest and readOptionsFromValues in internal/daemon/wire_protocol.go carry match but no context. The CLI logs command already accepts --match for single and aggregate reads. The MCP logs tool accepts no match field today; the wait tool already reads commonInput.Match, so MCP match support must be added alongside context.
 
-Non-goals: multiline regex matching, time-based context, changing retained-log capacity, relevance ranking, or buffering delayed after-context for live followers. Reject context with follow rather than introducing unbounded follower state.
+Scope: add one symmetric context-entry count (CLI --context N, JSON and MCP field context) to bounded single-process and aggregate reads. Matches and their context entries are chosen from the same cursor- and stream-filtered range, overlapping windows are merged, entries are returned in cursor order, and tail plus entry and byte bounds apply to the merged result. Next stops before the first selected entry (match or context) that could not be returned. Add match and context to the MCP logs tool input schema. Preserve consumed-cursor, truncation, eviction, entry-limit, and byte-limit semantics. Expose through CLI, JSON, MCP, help, and docs.
+
+Non-goals: MCP aggregate reads (the tool requires a name today), multiline regex matching, time-based context, changing retained-log capacity, relevance ranking, or buffering delayed after-context for live followers. Reject context with follow rather than introducing unbounded follower state.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 go test ./internal/output -run "^TestReadMatchContext$" -count=1 -v exits 0 and prints PASS for before/after selection, boundary clipping, overlapping-window deduplication, source order, multiple matches, and no-match results.
-- [ ] #2 go test ./internal/output ./internal/daemon -run "MatchContext" -count=1 -v exits 0 and prints PASS, proving context remains subject to entry and byte limits and reports stable next, more, truncated, oldest, latest, and evicted-through metadata.
-- [ ] #3 go test ./internal/cli ./internal/mcp -run "MatchContext" -count=1 -v exits 0 and prints PASS for CLI/MCP parity, aggregate per-process bounds, non-negative validation, context-without-match rejection, and context-with-follow rejection.
+- [ ] #1 go test ./internal/output -run "^TestReadMatchContext$" -count=1 -v exits 0 and prints PASS for before/after selection, boundary clipping, overlapping-window merging, cursor order, multiple matches, and no-match results.
+- [ ] #2 go test ./internal/output ./internal/protocol ./internal/daemon -run "MatchContext" -count=1 -v exits 0 and prints PASS, proving context round-trips through the wire protocol, remains subject to tail, entry, and byte limits, and reports stable next, more, truncated, oldest, latest, and evicted-through metadata, with next stopping before the first unreturned selected entry.
+- [ ] #3 go test ./internal/cli ./internal/mcp -run "MatchContext" -count=1 -v exits 0 and prints PASS for CLI --context on single and aggregate reads with per-process bounds, MCP logs accepting match and context with results equal to CLI JSON for the same process, non-negative validation, context-without-match rejection, and context-with-follow rejection.
 - [ ] #4 go test ./integration -run "^TestLogsMatchContext$" -count=1 -v exits 0 and prints PASS for hum logs api --match ERROR --context 2 returning only the merged bounded context windows.
-- [ ] #5 task ci exits 0 after CLI help, MCP descriptions, docs/design.md, and docs/coding-agents.md document context filtering and its bounded-read-only restriction.
+- [ ] #5 task ci exits 0 after CLI help, MCP tool descriptions, docs/design.md, and docs/coding-agents.md document context filtering and its bounded-read-only restriction.
 <!-- AC:END -->
 
 ## Definition of Done
