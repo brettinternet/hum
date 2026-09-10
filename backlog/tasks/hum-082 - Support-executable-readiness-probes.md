@@ -1,10 +1,10 @@
 ---
 id: HUM-082
 title: Support executable readiness probes
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-10 20:35'
-updated_date: '2026-09-10 20:50'
+updated_date: '2026-09-10 20:56'
 labels:
   - config
   - process
@@ -86,3 +86,9 @@ Non-goals: continuous liveness monitoring, restart-on-unhealthy behavior, built-
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation started in isolated worktree; claimed with worklease after selection by task backlog:next.
+<!-- SECTION:NOTES:END -->

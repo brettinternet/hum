@@ -1,10 +1,10 @@
 ---
 id: HUM-085
 title: Configure stop grace per manifest process
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-10 20:36'
-updated_date: '2026-09-10 20:51'
+updated_date: '2026-09-10 23:53'
 labels:
   - config
   - process
@@ -71,19 +71,37 @@ Non-goals: custom stop commands, lifecycle hooks, per-invocation overrides, conf
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/project -run '^TestStopGraceManifest$' -count=1 -v` exits 0 and prints PASS for omitted/inherited, positive, sub-second, and explicit `0s` values plus bare-zero, malformed, negative, wrong-type, and unknown-field rejection.
-- [ ] #2 `go test ./internal/app -run 'ProcessStopGrace' -count=1 -v` exits 0 and prints PASS with deterministic timers, proving independent record values govern stop, restart, remove, shutdown, replacement cleanup, control-signal intent, and automatic-relaunch cancellation; explicit zero is preserved, in-flight lifecycle operations retain their admitted value, and unconfigured records use the Supervisor default.
-- [ ] #3 `go test ./internal/protocol ./internal/daemon ./internal/orchestrate ./internal/cli ./internal/mcp -run 'ProcessStopGrace' -count=1 -v` exits 0 and prints PASS for the bumped launch/restart/snapshot wire contract, effective duration plus inherited marker, inheritance-aware `stop_grace` drift, restart adoption, canonical human status and CLI JSON list/status output, MCP process-result parity, and unchanged daemon-default behavior.
-- [ ] #4 `go test ./integration -run '^TestPerProcessStopGrace$' -count=1 -v` exits 0 and prints PASS with two manifest processes running the hum-fixture tree ignore-term mode, one explicit `0s` and one nonzero grace, proving independent TERM-to-KILL windows under `hum stop` and the reported snapshot values.
-- [ ] #5 `task ci` exits 0 after hum.schema.json, hum.example.yaml, README.md, docs/design.md, and docs/coding-agents.md document inheritance, explicit-zero behavior, restart/relaunch retention, user-visible snapshot fields, and orphan-reclaim use of the daemon default.
+- [x] #1 `go test ./internal/project -run '^TestStopGraceManifest$' -count=1 -v` exits 0 and prints PASS for omitted/inherited, positive, sub-second, and explicit `0s` values plus bare-zero, malformed, negative, wrong-type, and unknown-field rejection.
+- [x] #2 `go test ./internal/app -run 'ProcessStopGrace' -count=1 -v` exits 0 and prints PASS with deterministic timers, proving independent record values govern stop, restart, remove, shutdown, replacement cleanup, control-signal intent, and automatic-relaunch cancellation; explicit zero is preserved, in-flight lifecycle operations retain their admitted value, and unconfigured records use the Supervisor default.
+- [x] #3 `go test ./internal/protocol ./internal/daemon ./internal/orchestrate ./internal/cli ./internal/mcp -run 'ProcessStopGrace' -count=1 -v` exits 0 and prints PASS for the bumped launch/restart/snapshot wire contract, effective duration plus inherited marker, inheritance-aware `stop_grace` drift, restart adoption, canonical human status and CLI JSON list/status output, MCP process-result parity, and unchanged daemon-default behavior.
+- [x] #4 `go test ./integration -run '^TestPerProcessStopGrace$' -count=1 -v` exits 0 and prints PASS with two manifest processes running the hum-fixture tree ignore-term mode, one explicit `0s` and one nonzero grace, proving independent TERM-to-KILL windows under `hum stop` and the reported snapshot values.
+- [x] #5 `task ci` exits 0 after hum.schema.json, hum.example.yaml, README.md, docs/design.md, and docs/coding-agents.md document inheritance, explicit-zero behavior, restart/relaunch retention, user-visible snapshot fields, and orphan-reclaim use of the daemon default.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+- [x] Add manifest/protocol/runtime stop-grace fields with inheritance-aware admission, lifecycle, drift, and restart behavior. - [x] Update CLI/MCP snapshots and renderers, schema, examples, and documentation. - [x] Add focused unit and integration coverage for every lifecycle and presentation path. - [x] Run all acceptance commands and task ci, obtain independent verification, then commit and integrate.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC#1 PASS — go test ./internal/project -run TestStopGraceManifest -count=1 -v exited 0 after final rebase. AC#2 PASS — go test ./internal/app -run ProcessStopGrace -count=1 -v exited 0 and exercised every required lifecycle path with deterministic timers. AC#3 PASS — go test ./internal/protocol ./internal/daemon ./internal/orchestrate ./internal/cli ./internal/mcp -run ProcessStopGrace -count=1 -v exited 0 after final rebase. AC#4 PASS — go test ./integration -run TestPerProcessStopGrace -count=1 -v exited 0 and observed distinct 0s and 500ms stop windows. AC#5 PASS — task ci exited 0 on final commit e23ad7a after one unrelated intermittent TestSupervisorGlobalScope race failure passed on focused rerun and the complete rerun. Independent verifier PASS — all AC1–AC5 passed with substantive coverage; no tests were deleted, skipped, or weakened. Modified-file deviation: internal/protocol/codec_test.go and internal/protocol/restart_policy_test.go were necessarily updated because adding request/snapshot fields and advancing the private protocol to v19 invalidated their all-fields fixture and version assertion.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented per-process stop_grace inheritance and explicit-zero semantics across manifest admission, all lifecycle paths, protocol v19, drift/restart behavior, CLI/MCP snapshots, schema, examples, and docs. Verified every focused acceptance command, independent verifier PASS, and task ci on commit e23ad7a; fast-forward merged to main.
+<!-- SECTION:FINAL_SUMMARY:END -->

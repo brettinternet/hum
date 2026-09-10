@@ -1,10 +1,10 @@
 ---
 id: HUM-084
 title: Allow logs to select daemon system entries
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-10 20:36'
-updated_date: '2026-09-10 20:51'
+updated_date: '2026-09-10 21:55'
 labels:
   - output
   - protocol
@@ -46,19 +46,43 @@ Non-goals: a separate event store or events command, changing lifecycle emission
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/daemon -run 'SystemStream' -count=1 -v` exits 0 and prints PASS, proving the existing daemon selector returns only retained system entries while stdout, stderr, both, cursors, since, match, and bounds remain unchanged.
-- [ ] #2 `go test ./internal/cli -run 'SystemStream' -count=1 -v` exits 0 and prints PASS for single and aggregate bounded reads, single and aggregate follow requests, JSON rendering with `stream: "system"`, help listing all four values, omitted/both compatibility, and invalid-stream rejection before daemon contact.
-- [ ] #3 `go test ./internal/mcp -run 'SystemStream' -count=1 -v` exits 0 and prints PASS, proving the logs schema advertises the four-value stream enum, omission sends `both`, `system` returns only system entries with unchanged bounded metadata, and an invalid value is rejected before daemon contact.
-- [ ] #4 `go test ./integration -run '^TestLogsSystemStream$' -count=1 -v` exits 0 and prints PASS, proving `--stream system` returns retained launch/restart boundaries and excludes child stdout/stderr for bounded and follow reads while omitted and explicit `--stream both` remain equivalent.
-- [ ] #5 `task ci` exits 0 after README.md, docs/design.md, docs/coding-agents.md, CLI help, and MCP tool descriptions document system as the supervision-only stream and state that both still includes all three concrete streams.
+- [x] #1 `go test ./internal/daemon -run 'SystemStream' -count=1 -v` exits 0 and prints PASS, proving the existing daemon selector returns only retained system entries while stdout, stderr, both, cursors, since, match, and bounds remain unchanged.
+- [x] #2 `go test ./internal/cli -run 'SystemStream' -count=1 -v` exits 0 and prints PASS for single and aggregate bounded reads, single and aggregate follow requests, JSON rendering with `stream: "system"`, help listing all four values, omitted/both compatibility, and invalid-stream rejection before daemon contact.
+- [x] #3 `go test ./internal/mcp -run 'SystemStream' -count=1 -v` exits 0 and prints PASS, proving the logs schema advertises the four-value stream enum, omission sends `both`, `system` returns only system entries with unchanged bounded metadata, and an invalid value is rejected before daemon contact.
+- [x] #4 `go test ./integration -run '^TestLogsSystemStream$' -count=1 -v` exits 0 and prints PASS, proving `--stream system` returns retained launch/restart boundaries and excludes child stdout/stderr for bounded and follow reads while omitted and explicit `--stream both` remain equivalent.
+- [x] #5 `task ci` exits 0 after README.md, docs/design.md, docs/coding-agents.md, CLI help, and MCP tool descriptions document system as the supervision-only stream and state that both still includes all three concrete streams.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in 3faf4be (merged fast-forward to main).
+
+AC#1: go test ./internal/daemon -run SystemStream -count=1 -v passed.
+
+AC#2: go test ./internal/cli -run SystemStream -count=1 -v passed.
+
+AC#3: go test ./internal/mcp -run SystemStream -count=1 -v passed.
+
+AC#4: go test ./integration -run ^TestLogsSystemStream$ -count=1 -v passed.
+
+AC#5: task ci passed on final commit 3faf4be.
+
+Independent verifier: PASS for AC#1-AC#5; confirmed exactly the 10 declared paths changed, tests were additive, and no protected gate file changed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added CLI and MCP system-stream selection with validation, schema/help/docs coverage, and daemon, CLI, MCP, and integration tests. Merged commit 3faf4be to main.
+<!-- SECTION:FINAL_SUMMARY:END -->
