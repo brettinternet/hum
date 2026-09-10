@@ -54,6 +54,10 @@ The current executable supports:
 
 `--help` displays the current command usage. The default development build reports `hum version dev (built unknown)`; release builds inject version and build-time metadata through Go linker flags.
 
+## Release
+
+Push the release commit to `main` and wait for its CI workflow to start, then tag that exact commit and push the tag. The release workflow waits for the newest `main` push CI run for the tagged commit and publishes only when it succeeds. If CI fails or no matching run exists, push a fix and create a new tag for the fixed commit.
+
 For a release or locally labelled build:
 
 ```sh
