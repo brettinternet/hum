@@ -105,6 +105,43 @@ func DialDefault(ctx context.Context) (*Client, error) {
 	return Dial(ctx, NewRuntimePaths("").Socket)
 }
 
+// StartupBudget returns the maximum time a new daemon may need before it can
+// accept connections. Startup reclaims recorded groups sequentially and may
+// wait once after TERM and once after KILL for each group; dialSlack covers the
+// remaining setup and readiness handshake. Missing state has no recovery work.
+func StartupBudget(paths RuntimePaths, stopGrace, dialSlack time.Duration) (time.Duration, error) {
+	if stopGrace == 0 {
+		stopGrace = 10 * time.Second
+	}
+	if stopGrace < 0 || dialSlack < 0 {
+		return 0, errors.New("daemon startup budget durations must not be negative")
+	}
+	paths = paths.normalized()
+	state, exists, err := readRuntimeState(paths.State)
+	if err != nil {
+		return 0, err
+	}
+	if !exists || len(state.Groups) == 0 {
+		return dialSlack, nil
+	}
+	const maxDuration = time.Duration(1<<63 - 1)
+	if stopGrace > maxDuration/2 {
+		return maxDuration, nil
+	}
+	perGroup := 2 * stopGrace
+	groupBudget := time.Duration(0)
+	for range state.Groups {
+		if groupBudget > maxDuration-perGroup {
+			return maxDuration, nil
+		}
+		groupBudget += perGroup
+	}
+	if groupBudget > maxDuration-dialSlack {
+		return maxDuration, nil
+	}
+	return groupBudget + dialSlack, nil
+}
+
 // NewClient wraps an already-connected Unix connection. The caller must call
 // Hello before operations; Dial is preferred when a socket path is available.
 func NewClient(conn net.Conn) *Client { return newClient(conn, "") }

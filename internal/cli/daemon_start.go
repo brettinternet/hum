@@ -16,11 +16,14 @@ import (
 )
 
 const (
-	daemonChildEnv       = "HUM_DAEMON_CHILD"
-	daemonChildEnvValue  = "1"
-	daemonStartupTimeout = 5 * time.Second
-	daemonStartupPoll    = 10 * time.Millisecond
-	daemonDialTimeout    = time.Second
+	daemonChildEnv      = "HUM_DAEMON_CHILD"
+	daemonChildEnvValue = "1"
+	// daemonStartupTimeout is dial/setup slack added after the complete
+	// persisted-group reconciliation budget.
+	daemonStartupTimeout   = 5 * time.Second
+	daemonStartupPoll      = 10 * time.Millisecond
+	daemonDialTimeout      = time.Second
+	daemonTerminationGrace = 2 * time.Second
 )
 
 func isDaemonChild() bool {
@@ -66,6 +69,10 @@ func ensureDaemon(ctx context.Context, cfg config.Config) (int, error) {
 		return 0, err
 	}
 
+	startupBudget, err := daemon.StartupBudget(paths, cfg.StopGrace, daemonStartupTimeout)
+	if err != nil {
+		return 0, daemonStartupError(paths, err)
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return 0, fmt.Errorf("locate hum executable: %w", err)
@@ -82,7 +89,7 @@ func ensureDaemon(ctx context.Context, cfg config.Config) (int, error) {
 		return 0, daemonStartupError(paths, fmt.Errorf("start detached daemon: %w", err))
 	}
 
-	pid, waitErr := waitForDaemon(ctx, paths, child)
+	pid, waitErr := waitForDaemon(ctx, paths, child, startupBudget)
 	if waitErr != nil {
 		return 0, waitErr
 	}
@@ -114,8 +121,8 @@ func replaceEnv(env []string, name, value string) []string {
 	return append(result, prefix+value)
 }
 
-func waitForDaemon(ctx context.Context, paths daemon.RuntimePaths, child *exec.Cmd) (int, error) {
-	waitCtx, cancel := context.WithTimeout(ctx, daemonStartupTimeout)
+func waitForDaemon(ctx context.Context, paths daemon.RuntimePaths, child *exec.Cmd, startupBudget time.Duration) (int, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, startupBudget)
 	defer cancel()
 	ticker := time.NewTicker(daemonStartupPoll)
 	defer ticker.Stop()
@@ -143,12 +150,13 @@ func waitForDaemon(ctx context.Context, paths daemon.RuntimePaths, child *exec.C
 
 		select {
 		case <-waitCtx.Done():
+			if err := ctx.Err(); err != nil {
+				cancelDetachedChild(child)
+				return 0, err
+			}
 			terminateDetachedChild(child)
 			if err := waitCtx.Err(); err != nil {
-				if errors.Is(err, context.DeadlineExceeded) {
-					return 0, daemonStartupError(paths, err)
-				}
-				return 0, err
+				return 0, daemonStartupError(paths, err)
 			}
 		case <-ticker.C:
 		}
@@ -190,6 +198,17 @@ func isVersionMismatch(err error) bool {
 	return errors.As(err, &mismatch)
 }
 
+// cancelDetachedChild preserves prompt caller cancellation while allowing the
+// daemon to finish its bounded reconciliation and then observe SIGTERM through
+// its serve context. The waiter eventually reaps the cleanly exiting child.
+func cancelDetachedChild(child *exec.Cmd) {
+	if child == nil || child.Process == nil || child.Process.Pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(-child.Process.Pid, syscall.SIGTERM)
+	go func() { _ = child.Wait() }()
+}
+
 func terminateDetachedChild(child *exec.Cmd) {
 	if child == nil || child.Process == nil {
 		return
@@ -199,10 +218,22 @@ func terminateDetachedChild(child *exec.Cmd) {
 		return
 	}
 	// Setsid makes the child both a session leader and process-group leader.
-	// Kill the whole group before synchronously reaping the child. Keeping the
-	// child unreaped until this point prevents its PID from being reused.
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	_ = child.Wait()
+	// TERM lets a daemon that reached its signal-aware serve path remove its
+	// ownership artifacts. Fall back to KILL if startup itself is wedged. The
+	// child stays unreaped until this point, preventing PID reuse.
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	waited := make(chan struct{})
+	go func() {
+		_ = child.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+		return
+	case <-time.After(daemonTerminationGrace):
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		<-waited
+	}
 }
 
 func runDaemonClient(ctx context.Context, cfg config.Config) (*daemon.Client, error) {

@@ -622,6 +622,8 @@ project, name, leader PID, PGID, and OS process-start identity.
 - A launch is not reported successful until that identity is durable.
 - On startup, a dead daemon's groups are reclaimed with TERM, the configured grace period, and
   KILL only after PID, group leadership, and process-start identity all match.
+- Auto-start allows two configured grace periods per recorded group, processed sequentially, plus
+  five seconds for setup and the readiness handshake. Caller cancellation still bounds that wait.
 - Dead groups are discarded; mismatched or unverifiable identities are never signaled and remain
   unresolved blockers for the same project and name.
 - The startup reconciliation summary remains visible for the daemon lifetime through human
