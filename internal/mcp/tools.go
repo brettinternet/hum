@@ -855,12 +855,6 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	if name == "up" && input.Scope != protocol.ScopeProject {
-		return nil, &ToolError{Code: "invalid_request", Message: "up supports project scope only"}
-	}
-	if name == "list" && input.Scope == protocol.ScopeGlobal && input.All {
-		return nil, &ToolError{Code: "invalid_request", Message: "list with all: true is not valid for global scope"}
-	}
 	if name == "logs" {
 		input.SinceUnixNano, err = captureSinceCutoff(input)
 		if err != nil {
