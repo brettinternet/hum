@@ -36,7 +36,7 @@ hum [--project DIR|-C DIR] list [--all] [--json]
 hum [--project DIR|-C DIR] status [<name>] [--json]
 hum [--project DIR|-C DIR] attach <name> [--tail N]
 hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|system|both] [--tail N] [--after-cursor N]
-           [--since DURATION] [--limit-bytes N] [--match REGEX] [--follow] [--json]
+           [--since DURATION] [--limit-bytes N] [--match REGEX] [--context N] [--follow] [--json]
 hum [--project DIR|-C DIR] wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
 hum [--project DIR|-C DIR] signal <name> <signal> [--json]
@@ -164,9 +164,17 @@ identity, readiness, cursors, and errors when applicable.
 - `--after-cursor` is rejected before daemon startup for an aggregate invocation.
 - `--since DURATION` requires a positive, valid duration and captures one inclusive request-time cutoff.
 - The cutoff is shared by every selected name.
-- Filters run in this order: after-cursor, since, stream, match, tail, then entry and
-byte bounds.
-- It composes with follow: the cutoff filters the initial retained replay and later entries
+- Selection starts from one immutable retained snapshot: after-cursor, the inclusive since cutoff,
+  and stream choose eligible source entries. Match context then expands every regex match by up to
+  `--context N` eligible entries on each side, merges overlapping or adjacent windows without
+  duplicates in cursor order, applies tail, and finally applies whole-entry and byte bounds.
+- Context never returns entries across the cursor, time, stream, retention, or captured-latest
+  boundaries. It requires a non-empty `--match`; zero preserves match-only behavior, and context is
+  rejected with `--follow` because live reads do not buffer future after-context.
+- A forward bounded page consumes unselected source entries, but `next` stops immediately before
+  the first selected match-or-context entry that did not fit. Passing that `next` back as
+  `--after-cursor` neither loses nor duplicates a selected entry.
+- Since composes with follow: the cutoff filters the initial retained replay and later entries
   naturally pass.
 - Invalid, zero, negative, or overflowing durations are rejected before daemon startup or
   contact.
@@ -292,7 +300,7 @@ session.
 - `logs` with multiple names follows the explicit selection order; its no-name form uses the
   same lexical declarations as `up`, does not include ad-hoc records, and does not change
   membership when declarations or runtime records change.
-- Each aggregate name receives its own filters and bounded limits.
+- Each aggregate name receives its own match-context selection and bounded limits.
 - Human output prefixes each entry with `[NAME]`; JSON bounded output and follow output retain
   the named NDJSON event shape.
 - An aggregate follow owns one follower per selected session, serializes writes, reports

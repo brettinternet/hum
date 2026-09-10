@@ -119,6 +119,158 @@ func TestReadFilters(t *testing.T) {
 	}
 }
 
+func TestReadMatchContext(t *testing.T) {
+	newContextRing := func(t *testing.T) *ring {
+		t.Helper()
+		r, err := newRing(Limits{RetainedBytes: 4096, DefaultReadEntries: 100, DefaultReadBytes: 4096})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range 9 {
+			stream := Stdout
+			if i%2 != 0 {
+				stream = Stderr
+			}
+			if _, err := r.append(stream, time.Unix(int64(i), 0), fmt.Sprintf("line-%d\n", i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return r
+	}
+	cursors := func(entries []Entry) []Cursor {
+		result := make([]Cursor, len(entries))
+		for i, entry := range entries {
+			result[i] = entry.Cursor
+		}
+		return result
+	}
+	read := func(t *testing.T, r *ring, opts ReadOptions, want []Cursor) ReadResult {
+		t.Helper()
+		result, err := r.read(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cursors(result.Entries); !reflect.DeepEqual(got, want) {
+			t.Fatalf("context cursors = %v, want %v (result=%#v)", got, want, result)
+		}
+		return result
+	}
+
+	t.Run("before and after", func(t *testing.T) {
+		read(t, newContextRing(t), ReadOptions{Match: regexp.MustCompile(`line-4`), Context: 2}, []Cursor{2, 3, 4, 5, 6})
+	})
+	t.Run("overlapping adjacent multiple matches", func(t *testing.T) {
+		read(t, newContextRing(t), ReadOptions{Match: regexp.MustCompile(`line-(2|4|7)`), Context: 1}, []Cursor{1, 2, 3, 4, 5, 6, 7, 8})
+	})
+	t.Run("large context is clipped without overflow", func(t *testing.T) {
+		read(t, newContextRing(t), ReadOptions{Match: regexp.MustCompile(`line-4`), Context: int(^uint(0) >> 1)}, []Cursor{0, 1, 2, 3, 4, 5, 6, 7, 8})
+	})
+	t.Run("after clips context", func(t *testing.T) {
+		after := Cursor(3)
+		read(t, newContextRing(t), ReadOptions{After: &after, Match: regexp.MustCompile(`line-5`), Context: 2}, []Cursor{4, 5, 6, 7})
+	})
+	t.Run("since clips context", func(t *testing.T) {
+		read(t, newContextRing(t), ReadOptions{Since: time.Unix(4, 0), Match: regexp.MustCompile(`line-5`), Context: 2}, []Cursor{4, 5, 6, 7})
+	})
+	t.Run("stream counts eligible entries", func(t *testing.T) {
+		read(t, newContextRing(t), ReadOptions{Streams: StdoutMask, Match: regexp.MustCompile(`line-4`), Context: 1}, []Cursor{2, 4, 6})
+	})
+	t.Run("retention clips context and reports stale", func(t *testing.T) {
+		r, err := newRing(Limits{RetainedBytes: 3 * (RetainedEntryOverhead + 2), DefaultReadEntries: 10, DefaultReadBytes: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range 5 {
+			if _, err := r.append(Stdout, time.Time{}, fmt.Sprintf("%d\n", i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		result := read(t, r, ReadOptions{Match: regexp.MustCompile(`3`), Context: 2}, []Cursor{2, 3, 4})
+		if !result.Truncated || result.EvictedThrough == nil || *result.EvictedThrough != 1 {
+			t.Fatalf("retention metadata = %#v, want truncation through 1", result)
+		}
+	})
+	t.Run("snapshot boundary", func(t *testing.T) {
+		store, err := NewStore(Limits{RetainedBytes: 4096, DefaultReadEntries: 10, DefaultReadBytes: 4096})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range 5 {
+			if _, err := store.Append(Stdout, time.Time{}, fmt.Sprintf("line-%d\n", i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		store.mu.Lock()
+		result, err := store.readThroughLocked(ReadOptions{Match: regexp.MustCompile(`line-3`), Context: 2}, 3, true)
+		store.mu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := cursors(result.Entries), []Cursor{1, 2, 3}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("snapshot cursors = %v, want %v", got, want)
+		}
+	})
+	t.Run("zero context and no match", func(t *testing.T) {
+		r := newContextRing(t)
+		read(t, r, ReadOptions{Match: regexp.MustCompile(`line-(2|6)`), Context: 0}, []Cursor{2, 6})
+		result := read(t, r, ReadOptions{Match: regexp.MustCompile(`absent`), Context: 2}, []Cursor{})
+		if result.Next == nil || *result.Next != 8 || result.More {
+			t.Fatalf("no-match metadata = %#v, want next 8 without more", result)
+		}
+	})
+}
+
+func TestReadMatchContextBounds(t *testing.T) {
+	r, err := newRing(Limits{RetainedBytes: 4096, DefaultReadEntries: 10, DefaultReadBytes: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 7 {
+		if _, err := r.append(Stdout, time.Time{}, fmt.Sprintf("line-%d\n", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	match := regexp.MustCompile(`line-3`)
+	first, err := r.read(ReadOptions{Match: match, Context: 2, MaxEntries: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := []Cursor{first.Entries[0].Cursor, first.Entries[1].Cursor}, []Cursor{1, 2}; !reflect.DeepEqual(got, want) || !first.More || first.Next == nil || *first.Next != 2 {
+		t.Fatalf("first bounded context = %#v, cursors %v want %v", first, got, want)
+	}
+	after := *first.Next
+	continued, err := r.read(ReadOptions{After: &after, Match: match, Context: 2, MaxEntries: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := []Cursor{continued.Entries[0].Cursor, continued.Entries[1].Cursor}, []Cursor{3, 4}; !reflect.DeepEqual(got, want) || continued.Next == nil || *continued.Next != 4 {
+		t.Fatalf("continued context = %#v, cursors %v want %v", continued, got, want)
+	}
+	after = *continued.Next
+	last, err := r.read(ReadOptions{After: &after, Match: match, Context: 2, MaxEntries: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := []Cursor{last.Entries[0].Cursor}, []Cursor{5}; !reflect.DeepEqual(got, want) || last.More {
+		t.Fatalf("last context page = %#v, cursors %v want %v", last, got, want)
+	}
+
+	tail, err := r.read(ReadOptions{Match: regexp.MustCompile(`line-(1|5)`), Context: 1, Tail: 3, MaxEntries: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := []Cursor{tail.Entries[0].Cursor, tail.Entries[1].Cursor}, []Cursor{5, 6}; !reflect.DeepEqual(got, want) || !tail.More || tail.Next == nil || *tail.Next != 6 {
+		t.Fatalf("tail context = %#v, cursors %v want %v", tail, got, want)
+	}
+
+	if _, err := r.read(ReadOptions{Context: 1}); !errors.Is(err, ErrMatchRequired) {
+		t.Fatalf("context without match error = %v, want ErrMatchRequired", err)
+	}
+	if _, err := r.read(ReadOptions{Match: match, Context: -1}); !errors.Is(err, ErrReadLimit) {
+		t.Fatalf("negative context error = %v, want ErrReadLimit", err)
+	}
+}
+
 func TestTailResultCapacityHonorsByteLimit(t *testing.T) {
 	r, err := newRing(Limits{RetainedBytes: 8 * (RetainedEntryOverhead + 1), DefaultReadEntries: 32, DefaultReadBytes: 32})
 	if err != nil {

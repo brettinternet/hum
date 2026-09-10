@@ -116,7 +116,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":17}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":18}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -627,6 +627,30 @@ func TestStableFieldNamesAndResponseEnvironmentIsolation(t *testing.T) {
 	}
 }
 
+func TestMatchContextOutputWireContract(t *testing.T) {
+	encoded, err := json.Marshal(OutputRequest{Op: OpOutput, Name: "api", Cwd: "/project", Match: "ERROR", Context: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"match":"ERROR","context":2`) {
+		t.Fatalf("output match context JSON = %s", encoded)
+	}
+	var decoded OutputRequest
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Match != "ERROR" || decoded.Context != 2 {
+		t.Fatalf("decoded match context = %#v", decoded)
+	}
+	follow, err := json.Marshal(FollowRequest{Op: OpFollow, Name: "api", Cwd: "/project", Match: "ERROR"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(follow), `"context"`) {
+		t.Fatalf("follow unexpectedly exposes context: %s", follow)
+	}
+}
+
 func TestOutputAndStreamingEventRoundTrips(t *testing.T) {
 	at := time.Unix(123, 456).UTC()
 	next, oldest, latest, evicted := Cursor(4), Cursor(1), Cursor(9), Cursor(0)
@@ -685,7 +709,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":17}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":18}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError

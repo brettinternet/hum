@@ -374,13 +374,26 @@ func (s *Server) toolDefinitions() []toolDefinition {
 			},
 		},
 	})
+	logsSchema := objectSchema(map[string]any{
+		"project_root": root,
+		"name":         nameExisting,
+		"stream":       map[string]any{"type": "string", "enum": []string{string(protocol.StreamStdout), string(protocol.StreamStderr), string(protocol.StreamSystem), string(protocol.StreamBoth)}, "default": protocol.StreamBoth, "description": "Eligible output stream; system contains supervision entries and both includes all streams."},
+		"after":        map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to read from; omitting it selects the newest default window."},
+		"since_ms":     map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Positive duration in milliseconds from the request time; entries at or after the computed cutoff are included."},
+		"tail":         map[string]any{"type": "integer", "minimum": 0, "description": "Return at most this many of the most recent selected entries; omitting it uses the newest default window."},
+		"match":        map[string]any{"type": "string", "minLength": 1, "description": "Regular expression used to select matching entries."},
+		"context":      map[string]any{"type": "integer", "minimum": 0, "description": "Include up to this many eligible entries before and after each match; requires match."},
+		"max_entries":  map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of whole entries to return after selection and tail."},
+		"max_bytes":    map[string]any{"type": "integer", "minimum": 1, "description": "Maximum total text bytes to return across this window's whole entries."},
+	}, "project_root", "name")
+	logsSchema["dependentRequired"] = map[string]any{"context": []string{"match"}}
 	definitions := []toolDefinition{
 		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; it never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
 		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop every running runtime record in the selected scope and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
 		{Name: "list", Description: "Merge resolved definitions with daemon runtime records in the selected scope, including ad_hoc records; use all from project scope to discover every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
-		{Name: "logs", Description: "Read a bounded cursor-based output window for an existing declared or ad_hoc runtime record. stream selects stdout, stderr, supervision-only system entries, or both; both includes all three concrete streams. since_ms uses one request-time cutoff and includes entries at or after it; it composes with the stream, cursor, tail, and entry/byte bounds. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "stream": map[string]any{"type": "string", "enum": []string{string(protocol.StreamStdout), string(protocol.StreamStderr), string(protocol.StreamSystem), string(protocol.StreamBoth)}, "default": protocol.StreamBoth, "description": "Output stream to select; system contains hum supervision entries only, while both includes stdout, stderr, and system."}, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to read from; omitting it selects the newest default window."}, "since_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Positive duration in milliseconds from the request time; entries at or after the computed cutoff are included."}, "tail": map[string]any{"type": "integer", "minimum": 0, "description": "Return at most this many of the most recent entries; omitting it uses the newest default window."}, "max_entries": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of entries to return in this window."}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum total text bytes to return across this window's entries."}}, "project_root", "name"), OutputSchema: output},
+		{Name: "logs", Description: "Read one immutable bounded cursor-based output snapshot for an existing declared or ad_hoc runtime record. stream selects stdout, stderr, supervision-only system entries, or both; both includes all three streams. match selects entries and context expands each match by eligible entries on both sides; windows merge in cursor order before tail and whole-entry bounds. Context requires match and is unavailable for live following. since_ms uses one request-time cutoff and composes with stream and cursor boundaries. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: logsSchema, OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms. Timeout results include process_observed from the same daemon wait request without an extra round trip; false means no runtime record for NAME was observed and includes actionable guidance.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Write one exact, bounded payload to an already-running TTY incarnation at its initial launch cursor with at-most-once behavior; never starts, waits, queues, retries, resends, retains, or explicitly echoes input and fails immediately on ownership conflict.", InputSchema: inputSchema, OutputSchema: inputResult},
 		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
@@ -419,6 +432,7 @@ type commonInput struct {
 	MaxEntries    int     `json:"max_entries,omitempty"`
 	MaxBytes      int     `json:"max_bytes,omitempty"`
 	Match         string  `json:"match,omitempty"`
+	Context       int     `json:"context,omitempty"`
 	Stream        string  `json:"stream,omitempty"`
 	Text          *string `json:"text,omitempty"`
 	Base64        *string `json:"base64,omitempty"`
@@ -1277,8 +1291,16 @@ func (s *Server) status(ctx context.Context, resolution Resolution, name string)
 }
 
 func (s *Server) logs(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
-	if input.Tail < 0 || input.MaxEntries < 0 || input.MaxBytes < 0 {
+	if input.Tail < 0 || input.MaxEntries < 0 || input.MaxBytes < 0 || input.Context < 0 {
 		return nil, &ToolError{Code: "invalid_request", Message: "log bounds cannot be negative"}
+	}
+	if _, contextSet := input.fields["context"]; contextSet && input.Match == "" {
+		return nil, &ToolError{Code: "invalid_request", Message: "context requires a non-empty match"}
+	}
+	if input.Match != "" {
+		if _, err := regexp.Compile(input.Match); err != nil {
+			return nil, &ToolError{Code: "invalid_request", Message: "match must be a valid regular expression"}
+		}
 	}
 	if err := validateSinceMS(input); err != nil {
 		return nil, err
@@ -1310,7 +1332,7 @@ func (s *Server) logs(ctx context.Context, resolution Resolution, input commonIn
 	if stream == "" {
 		stream = protocol.StreamBoth
 	}
-	request := protocol.OutputRequest{Op: protocol.OpOutput, Name: input.Name, Scope: resolution.Scope, Cwd: resolution.Root, SinceUnixNano: sinceUnixNano, Tail: tail, Stream: stream, MaxEntries: maxEntries, MaxBytes: input.MaxBytes}
+	request := protocol.OutputRequest{Op: protocol.OpOutput, Name: input.Name, Scope: resolution.Scope, Cwd: resolution.Root, SinceUnixNano: sinceUnixNano, Tail: tail, Stream: stream, Match: input.Match, Context: input.Context, MaxEntries: maxEntries, MaxBytes: input.MaxBytes}
 	if input.After != nil {
 		cursor := protocol.Cursor(*input.After)
 		request.After = &cursor

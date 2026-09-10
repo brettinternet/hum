@@ -81,6 +81,9 @@ type ReadOptions struct {
 	Tail    int
 	Streams StreamMask
 	Match   *regexp.Regexp
+	// Context selects up to this many eligible entries before and after every
+	// match. It is valid only when Match is non-nil.
+	Context int
 
 	// Zero values use the configured defaults. Negative values are invalid.
 	MaxEntries int
@@ -120,6 +123,7 @@ var (
 	ErrFutureCursor   = errors.New("output cursor is in the future")
 	ErrEntryTooLarge  = errors.New("output entry exceeds the configured bound")
 	ErrReadLimit      = errors.New("output read limit is invalid")
+	ErrMatchRequired  = errors.New("output match context requires a match expression")
 	ErrInvalidStream  = errors.New("output stream is invalid")
 	ErrEmptyText      = errors.New("output entry text is empty")
 	ErrCursorOverflow = errors.New("output cursor overflow")

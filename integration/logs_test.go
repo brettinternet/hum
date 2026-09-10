@@ -74,6 +74,62 @@ type logsitHarness struct {
 	gates   []string
 }
 
+func TestLogsMatchContext(t *testing.T) {
+	harness := logsitNewHarness(t)
+	gate := filepath.Join(harness.project, "match-context.release")
+	harness.gates = append(harness.gates, gate)
+	logsitStartDetached(t, harness, "api", harness.fixture, "burst", gate, "8")
+	logsitWaitOutput(t, harness, "api", []string{"--json", "--stream", "both"}, func(lines []logsitJSONLine) bool {
+		return len(lines) == 1 && logsitHasEntryText(lines[0].Event.Entries, "stdout:0003\n")
+	})
+	logsitReleaseGate(t, gate)
+	logsitWaitOutput(t, harness, "api", []string{"--json", "--stream", "both"}, func(lines []logsitJSONLine) bool {
+		return len(lines) == 1 && logsitHasEntryText(lines[0].Event.Entries, "stdout:0007\n")
+	})
+
+	window := logsitRunLogs(t, harness, "api", "--json", "--since", "1m", "--stream", "stdout", "--match", `stdout:000[36]`, "--context", "1")
+	lines := logsitDecodeJSONLines(t, window.Stdout)
+	if len(lines) != 1 {
+		t.Fatalf("match-context response = %q, decoded %d lines", window.Stdout, len(lines))
+	}
+	if got, want := logsitEntryTexts(t, lines[0].Event.Entries), []string{"stdout:0002\n", "stdout:0003\n", "stdout:0004\n", "stdout:0005\n", "stdout:0006\n", "stdout:0007\n"}; !logsitEqualStrings(got, want) {
+		t.Fatalf("merged match-context entries = %#v, want %#v", got, want)
+	}
+	for _, entry := range lines[0].Event.Entries {
+		if entry.Stream != "stdout" {
+			t.Fatalf("match-context entry = %#v, want stdout-only eligible context", entry)
+		}
+	}
+
+	first := logsitRunLogs(t, harness, "api", "--json", "--after-cursor", "0", "--since", "1m", "--stream", "stdout", "--match", "stdout:0004", "--context", "2", "--limit-bytes", "24")
+	firstLines := logsitDecodeJSONLines(t, first.Stdout)
+	if len(firstLines) != 1 || firstLines[0].Event.Next == nil || !firstLines[0].Event.More {
+		t.Fatalf("bounded context page = %#v", firstLines)
+	}
+	if got, want := logsitEntryTexts(t, firstLines[0].Event.Entries), []string{"stdout:0002\n", "stdout:0003\n"}; !logsitEqualStrings(got, want) {
+		t.Fatalf("first context page = %#v, want %#v", got, want)
+	}
+	continued := logsitRunLogs(t, harness, "api", "--json", "--after-cursor", strconv.FormatUint(*firstLines[0].Event.Next, 10), "--since", "1m", "--stream", "stdout", "--match", "stdout:0004", "--context", "2", "--limit-bytes", "24")
+	continuedLines := logsitDecodeJSONLines(t, continued.Stdout)
+	if len(continuedLines) != 1 {
+		t.Fatalf("continued context response = %q", continued.Stdout)
+	}
+	if got, want := logsitEntryTexts(t, continuedLines[0].Event.Entries), []string{"stdout:0004\n", "stdout:0005\n"}; !logsitEqualStrings(got, want) {
+		t.Fatalf("continued context page = %#v, want %#v", got, want)
+	}
+	if continuedLines[0].Event.Next == nil {
+		t.Fatalf("continued context next = nil")
+	}
+	last := logsitRunLogs(t, harness, "api", "--json", "--after-cursor", strconv.FormatUint(*continuedLines[0].Event.Next, 10), "--since", "1m", "--stream", "stdout", "--match", "stdout:0004", "--context", "2", "--limit-bytes", "24")
+	lastLines := logsitDecodeJSONLines(t, last.Stdout)
+	if len(lastLines) != 1 {
+		t.Fatalf("last context response = %q", last.Stdout)
+	}
+	if got, want := logsitEntryTexts(t, lastLines[0].Event.Entries), []string{"stdout:0006\n"}; !logsitEqualStrings(got, want) {
+		t.Fatalf("last context page = %#v, want %#v", got, want)
+	}
+}
+
 func TestLogFollowers(t *testing.T) {
 	harness := logsitNewHarness(t)
 

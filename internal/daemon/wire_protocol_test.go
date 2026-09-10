@@ -104,6 +104,25 @@ func TestSystemStreamSelection(t *testing.T) {
 	}
 }
 
+func TestMatchContextWireOptions(t *testing.T) {
+	opts, err := readOptionsFromProtocol(protocol.OutputRequest{Stream: protocol.StreamSystem, Match: "ERROR", Context: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Streams != output.SystemMask || opts.Match == nil || !opts.Match.MatchString("ERROR") || opts.Context != 2 {
+		t.Fatalf("match context options = %#v", opts)
+	}
+	for _, request := range []protocol.OutputRequest{{Context: -1, Match: "ERROR"}, {Context: 1}} {
+		if _, err := readOptionsFromProtocol(request); err == nil || !errors.Is(err, app.ErrInvalidRequest) {
+			t.Fatalf("invalid match context request %#v error = %v, want invalid request", request, err)
+		}
+	}
+	follow, err := readOptionsFromFollow(protocol.FollowRequest{Match: "ERROR"})
+	if err != nil || follow.Context != 0 {
+		t.Fatalf("follow context = %d, err = %v", follow.Context, err)
+	}
+}
+
 func TestSignalExitWireStreamRoundTrip(t *testing.T) {
 	exitedAt := time.Date(2026, time.September, 6, 12, 34, 56, 0, time.UTC)
 	event := protocolStreamEventFromOutput("signal", output.Event{Exit: &output.Exit{

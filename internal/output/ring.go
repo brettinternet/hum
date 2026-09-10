@@ -97,6 +97,12 @@ func (r *ring) read(opts ReadOptions) (ReadResult, error) {
 	if opts.Tail < 0 {
 		return ReadResult{}, &ReadLimitError{Field: "tail", Requested: opts.Tail}
 	}
+	if opts.Context < 0 {
+		return ReadResult{}, &ReadLimitError{Field: "context", Requested: opts.Context}
+	}
+	if opts.Context > 0 && opts.Match == nil {
+		return ReadResult{}, ErrMatchRequired
+	}
 
 	// A cursor equal to the latest assigned cursor is an exact boundary and is
 	// valid. Anything greater is future. With no successful append, cursor zero
@@ -164,6 +170,13 @@ func (r *ring) read(opts ReadOptions) (ReadResult, error) {
 		return result, nil
 	}
 
+	if opts.Context > 0 {
+		selected := r.matchContextSelection(opts, start)
+		if opts.Tail > 0 {
+			return r.readSelectedTail(opts, result, start, selected, maxEntries, maxBytes)
+		}
+		return r.readSelectedBounded(opts, result, start, selected, maxEntries, maxBytes)
+	}
 	if opts.Tail > 0 {
 		return r.readTail(opts, result, start, maxEntries, maxBytes)
 	}
@@ -340,17 +353,163 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 	return result, nil
 }
 
+// matchContextSelection snapshots the eligible sequence, then expands every
+// regex match by Context positions in that sequence. A boolean selection is
+// the merged union of those windows, so source order is preserved without
+// duplicates and ineligible entries never count toward or enter a window.
+func (r *ring) matchContextSelection(opts ReadOptions, start int) []bool {
+	// Include eligible match anchors before start so a continuation cursor can
+	// recover the unreturned trailing edge of a context window. Entries at or
+	// before start are never selected for return, so context still does not cross
+	// the exclusive After boundary.
+	eligible := make([]int, 0, r.count)
+	matches := make([]int, 0)
+	for offset := 0; offset < r.count; offset++ {
+		entry := r.entries[(r.head+offset)%len(r.entries)]
+		if !matchesEligible(entry, opts) {
+			continue
+		}
+		eligible = append(eligible, offset)
+		if opts.Match.MatchString(matchText(entry)) {
+			matches = append(matches, len(eligible)-1)
+		}
+	}
+
+	selected := make([]bool, r.count-start)
+	windowFirst, windowLast := -1, -1
+	markWindow := func() {
+		for index := windowFirst; index <= windowLast; index++ {
+			if eligible[index] >= start {
+				selected[eligible[index]-start] = true
+			}
+		}
+	}
+	for _, match := range matches {
+		first := match - opts.Context
+		if first < 0 {
+			first = 0
+		}
+		last := len(eligible) - 1
+		if opts.Context < len(eligible)-match {
+			last = match + opts.Context
+		}
+		if windowFirst < 0 {
+			windowFirst, windowLast = first, last
+			continue
+		}
+		if first <= windowLast+1 {
+			if last > windowLast {
+				windowLast = last
+			}
+			continue
+		}
+		markWindow()
+		windowFirst, windowLast = first, last
+	}
+	if windowFirst >= 0 {
+		markWindow()
+	}
+	return selected
+}
+
+// readSelectedBounded uses a precomputed match-context selection while keeping
+// the forward cursor contract: unselected source entries are consumed, but the
+// first selected entry blocked by a result bound is not.
+func (r *ring) readSelectedBounded(opts ReadOptions, result ReadResult, start int, selected []bool, maxEntries, maxBytes int) (ReadResult, error) {
+	var entries []Entry
+	usedBytes := 0
+	consumed := false
+	var next Cursor
+
+	for offset := start; offset < r.count; offset++ {
+		entry := r.entries[(r.head+offset)%len(r.entries)]
+		if !selected[offset-start] {
+			consumed = true
+			next = entry.Cursor
+			continue
+		}
+		if len(entries) >= maxEntries {
+			result.More = true
+			break
+		}
+		if len(entry.Text) > maxBytes && len(entries) == 0 {
+			return result, &EntryTooLargeError{Cursor: entry.Cursor, Bytes: len(entry.Text), Size: len(entry.Text), Limit: maxBytes}
+		}
+		if len(entry.Text) > maxBytes-usedBytes {
+			result.More = true
+			break
+		}
+		if entries == nil {
+			capacity := minInt(minInt(maxEntries, maxBytes), len(selected))
+			entries = make([]Entry, 0, capacity)
+		}
+		entries = append(entries, entry)
+		usedBytes += len(entry.Text)
+		consumed = true
+		next = entry.Cursor
+	}
+	if consumed {
+		result.Next = &next
+	} else if opts.After != nil {
+		boundary := *opts.After
+		result.Next = &boundary
+	}
+	result.Entries = entries
+	return result, nil
+}
+
+func (r *ring) readSelectedTail(opts ReadOptions, result ReadResult, start int, selected []bool, maxEntries, maxBytes int) (ReadResult, error) {
+	next := r.entries[(r.head+r.count-1)%len(r.entries)].Cursor
+	selectedOffsets := make([]int, 0, minInt(opts.Tail, len(selected)))
+	for offset := r.count - 1; offset >= start && len(selectedOffsets) < opts.Tail; offset-- {
+		if selected[offset-start] {
+			selectedOffsets = append(selectedOffsets, offset)
+		}
+	}
+	if len(selectedOffsets) == 0 {
+		result.Next = &next
+		return result, nil
+	}
+
+	capacity := minInt(minInt(maxEntries, maxBytes), len(selectedOffsets))
+	entries := make([]Entry, 0, capacity)
+	usedBytes := 0
+	for _, offset := range selectedOffsets {
+		entry := r.entries[(r.head+offset)%len(r.entries)]
+		if len(entries) >= maxEntries {
+			result.More = true
+			break
+		}
+		if len(entry.Text) > maxBytes && len(entries) == 0 {
+			return result, &EntryTooLargeError{Cursor: entry.Cursor, Bytes: len(entry.Text), Size: len(entry.Text), Limit: maxBytes}
+		}
+		if len(entry.Text) > maxBytes-usedBytes {
+			result.More = true
+			break
+		}
+		entries = append(entries, entry)
+		usedBytes += len(entry.Text)
+	}
+	for left, right := 0, len(entries)-1; left < right; left, right = left+1, right-1 {
+		entries[left], entries[right] = entries[right], entries[left]
+	}
+	result.Entries = entries
+	result.Next = &next
+	return result, nil
+}
+
 func matchesRead(entry Entry, opts ReadOptions) bool {
+	if !matchesEligible(entry, opts) {
+		return false
+	}
+	return opts.Match == nil || opts.Match.MatchString(matchText(entry))
+}
+
+func matchesEligible(entry Entry, opts ReadOptions) bool {
 	if !opts.Since.IsZero() && entry.Time.Before(opts.Since) {
 		return false
 	}
-	if opts.Streams != 0 && opts.Streams&streamBit(entry.Stream) == 0 {
-		return false
-	}
-	if opts.Match != nil && !opts.Match.MatchString(matchText(entry)) {
-		return false
-	}
-	return true
+	return opts.Streams == 0 || opts.Streams&streamBit(entry.Stream) != 0
 }
 
 func matchText(entry Entry) string {

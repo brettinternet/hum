@@ -1518,6 +1518,64 @@ func TestLogsSystemStream(t *testing.T) {
 	}
 }
 
+func TestLogsMatchContext(t *testing.T) {
+	cursor := protocol.Cursor(3)
+	client := &fakeClient{
+		processes: map[string]protocol.Process{"api": {Name: "api", State: "running"}},
+		output: protocol.OutputResult{Entries: []protocol.OutputEntry{
+			{Cursor: 1, Stream: protocol.StreamSystem, Text: "before\n"},
+			{Cursor: 2, Stream: protocol.StreamSystem, Text: "ERROR\n"},
+			{Cursor: 3, Stream: protocol.StreamSystem, Text: "after\n"},
+		}, Next: &cursor},
+	}
+	s, root, _ := newTestServer(t, nil, client)
+
+	var logsDefinition toolDefinition
+	for _, definition := range s.toolDefinitions() {
+		if definition.Name == "logs" {
+			logsDefinition = definition
+			break
+		}
+	}
+	properties := logsDefinition.InputSchema["properties"].(map[string]any)
+	if properties["stream"] == nil || properties["match"] == nil || properties["context"] == nil || logsDefinition.InputSchema["dependentRequired"] == nil {
+		t.Fatalf("logs schema = %#v, want stream, match, context, and dependency", logsDefinition.InputSchema)
+	}
+
+	value, err := s.callTool(context.Background(), "logs", args(root, "name", "api", "stream", "system", "match", "ERROR", "context", 1, "max_entries", 3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := client.outputs[len(client.outputs)-1]
+	if request.Stream != protocol.StreamSystem || request.Match != "ERROR" || request.Context != 1 || request.MaxEntries != 3 {
+		t.Fatalf("match context request = %#v", request)
+	}
+	if got := value.(protocol.OutputResult); !reflect.DeepEqual(got, client.output) {
+		t.Fatalf("MCP output = %#v, want protocol/CLI-compatible %#v", got, client.output)
+	}
+
+	before := len(client.outputs)
+	for _, test := range []struct {
+		name string
+		args json.RawMessage
+	}{
+		{"negative", args(root, "name", "api", "match", "ERROR", "context", -1)},
+		{"without match", args(root, "name", "api", "context", 1)},
+		{"zero without match", args(root, "name", "api", "context", 0)},
+		{"invalid match", args(root, "name", "api", "match", "[", "context", 1)},
+	} {
+		if _, err := s.callTool(context.Background(), "logs", test.args); err == nil || mapError(err).Code != "invalid_request" {
+			t.Fatalf("%s error = %v, want invalid_request", test.name, err)
+		}
+	}
+	if len(client.outputs) != before {
+		t.Fatalf("invalid match-context requests contacted daemon: before=%d after=%d", before, len(client.outputs))
+	}
+	if _, err := s.callTool(context.Background(), "logs", args(root, "name", "api", "match", "ERROR", "context", 0)); err != nil {
+		t.Fatalf("zero context with match: %v", err)
+	}
+}
+
 func TestLogsDefaultNewestWindow(t *testing.T) {
 	newest := protocol.Cursor(201)
 	client := &fakeClient{

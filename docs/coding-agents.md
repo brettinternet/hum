@@ -98,6 +98,12 @@ Each tool rejects fields outside its advertised closed input schema before proje
   DURATION`) narrow it to an exact tail, a cursor continuation, or a recent time window.
 - Set `stream: "system"` (CLI `--stream system`) for hum-generated supervision entries without
   child noise. Omitted or explicit `both` includes stdout, stderr, and system.
+- `match` plus `context` (CLI `--match REGEX --context N`) selects symmetric eligible-entry
+  context from one immutable snapshot. Cursor, time, and stream filtering happen first; merged
+  windows stay in cursor order, then tail and whole-entry bounds apply independently per process.
+- Context requires a non-empty match and is bounded-read-only. On a forward clipped page, reuse
+  `next` as `after`; it stops before the first unreturned selected entry, so continuation loses or
+  duplicates nothing.
 - For restart-with-work, use `stop`, run the intermediate command, then `start`: the durable
   session preserves terminal followers.
 - `remove` is different from `stop`: it discards retained runtime state and output but never
@@ -162,8 +168,8 @@ integration.
 Bounded child-output reads and matches use byte-wise terminal-control-stripped text, applied
 independently per entry to each stdout/stderr stream.
 
-- This covers bounded `logs` (including JSON and tail), MCP `logs`, `logs --match`, `wait
-  --match`, and readiness matches.
+- This covers bounded `logs` (including JSON, tail, and match context), MCP `logs`, `logs
+  --match`, `wait --match`, and readiness matches.
 - System entries remain raw; stored bytes remain raw; cursors and `MaxBytes`/entry-limit
   accounting also use raw stored lengths.
 - Patterns containing raw ESC bytes no longer match stripped child text; a `^` anchor now

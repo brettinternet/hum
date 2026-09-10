@@ -22,7 +22,7 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 		StartRequest{Op: OpStart, Scope: ScopeProject, Name: "start", Argv: []string{"tool", "--flag"}, Cwd: "/work", Root: "/project", Env: []string{"A=B"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, Attached: true},
 		ListRequest{Op: OpList, Scope: ScopeGlobal, Cwd: "/work", All: true, IncludeCompleted: true},
 		GetRequest{Op: OpGet, Scope: ScopeProject, Name: "get", Cwd: "/work"},
-		OutputRequest{Op: OpOutput, Scope: ScopeProject, Name: "output", Cwd: "/work", After: &cursor, SinceMS: 11, Tail: 12, Stream: StreamStdout, Match: "needle", MaxEntries: 13, MaxBytes: 14},
+		OutputRequest{Op: OpOutput, Scope: ScopeProject, Name: "output", Cwd: "/work", After: &cursor, SinceMS: 11, Tail: 12, Stream: StreamStdout, Match: "needle", Context: 2, MaxEntries: 13, MaxBytes: 14},
 		OutputRequest{Op: OpOutput, Scope: ScopeProject, Name: "output-absolute", Cwd: "/work", SinceUnixNano: stamp.UnixNano()},
 		FollowRequest{Op: OpFollow, Scope: ScopeProject, Name: "follow", Cwd: "/work", After: &cursor, UntilExit: true, SinceUnixNano: stamp.UnixNano(), Tail: 15, Stream: StreamStderr, Match: "follow", MaxEntries: 16, MaxBytes: 17},
 		FollowRequest{Op: OpFollow, Scope: ScopeProject, Name: "follow-relative", Cwd: "/work", SinceMS: 19},

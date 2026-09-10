@@ -624,6 +624,71 @@ func TestLogsAggregateValidationAndLifecycle(t *testing.T) {
 	hum006ListLogsLeaveDir(t, oldwd)
 }
 
+func TestLogsMatchContext(t *testing.T) {
+	validationRuntime := hum006ListLogsTempDir(t, "match-context-validation-runtime")
+	t.Setenv("HUM_RUNTIME_DIR", validationRuntime)
+	validationProject := hum006ListLogsProject(t, "match-context-validation-project")
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"logs", "api", "--match", "ERROR", "--context", "-1"}, "negative"},
+		{[]string{"logs", "api", "--context", "1"}, "non-empty match"},
+		{[]string{"logs", "api", "--match", "ERROR", "--context", "1", "--follow"}, "bounded reads"},
+	} {
+		if _, _, err := hum006ListLogsRunAt(t, validationProject, context.Background(), test.args...); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("logs %v error = %v, want %q", test.args, err, test.want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(validationRuntime, "hum.sock")); !os.IsNotExist(err) {
+		t.Fatalf("match-context validation socket = %v, want no daemon contact", err)
+	}
+
+	hum006ListLogsStartDaemon(t, validationRuntime, 1<<16)
+	project := hum006ListLogsProject(t, "match-context-project")
+	for _, name := range []string{"alpha", "beta"} {
+		script := fmt.Sprintf("printf '%s-before\\n%s-ERROR\\n%s-after\\n%s-outside\\n'", name, name, name, name)
+		if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", name, "--detach", "--", "/bin/sh", "-c", script); err != nil {
+			t.Fatalf("start %s: %v (stdout=%q stderr=%q)", name, err, stdout, stderr)
+		}
+		hum006ListLogsWaitForText(t, project, name, name+"-outside\n")
+	}
+
+	assertWindow := func(label, raw string, wantObjects int) {
+		t.Helper()
+		objects := hum006ListLogsDecodeJSONLines(t, raw)
+		if len(objects) != wantObjects {
+			t.Fatalf("%s decoded objects = %d, want %d: %q", label, len(objects), wantObjects, raw)
+		}
+		for _, object := range objects {
+			entries := hum006ListLogsEntries(t, object)
+			texts := hum006ListLogsEntryTexts(t, entries)
+			if len(texts) != 3 || !strings.HasSuffix(texts[0], "-before\n") || !strings.HasSuffix(texts[1], "-ERROR\n") || !strings.HasSuffix(texts[2], "-after\n") {
+				t.Fatalf("%s entries = %#v, want bounded context window", label, texts)
+			}
+		}
+	}
+	single, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "alpha", "--json", "--match", "ERROR", "--context", "1")
+	if err != nil {
+		t.Fatalf("single match context: %v (stderr=%q)", err, stderr)
+	}
+	assertWindow("single", single, 1)
+	aggregate, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "alpha", "beta", "--json", "--match", "ERROR", "--context", "1")
+	if err != nil {
+		t.Fatalf("aggregate match context: %v (stderr=%q)", err, stderr)
+	}
+	assertWindow("aggregate", aggregate, 2)
+
+	zero, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "alpha", "--json", "--match", "ERROR", "--context", "0")
+	if err != nil {
+		t.Fatalf("zero match context: %v (stderr=%q)", err, stderr)
+	}
+	zeroObjects := hum006ListLogsDecodeJSONLines(t, zero)
+	if got := hum006ListLogsEntryTexts(t, hum006ListLogsEntries(t, zeroObjects[0])); !hum006ListLogsEqualStrings(got, []string{"alpha-ERROR\n"}) {
+		t.Fatalf("zero context entries = %#v, want match only", got)
+	}
+}
+
 func TestLogsFollow(t *testing.T) {
 	runtimeDir := hum006ListLogsTempDir(t, "runtime")
 	hum006ListLogsStartDaemon(t, runtimeDir, 1024)
@@ -1468,7 +1533,7 @@ func TestLogsSinceDocs(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(design)
-	for _, phrase := range []string{"--since DURATION", "since_ms", "inclusive request-time cutoff", "after-cursor, since, stream, match, tail, then entry and\nbyte bounds", "--since`, `--no-wait"} {
+	for _, phrase := range []string{"--since DURATION", "since_ms", "inclusive request-time cutoff", "Match context then expands every regex match", "--since`, `--no-wait"} {
 		if !strings.Contains(text, phrase) {
 			t.Fatalf("docs/design.md missing since guidance %q", phrase)
 		}

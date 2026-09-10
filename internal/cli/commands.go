@@ -189,7 +189,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		{
 			Name:          "logs",
 			Usage:         "read retained process output",
-			UsageText:     "hum logs [NAME...] [--since DURATION] [--follow] [--json]",
+			UsageText:     "hum logs [NAME...] [OPTIONS]",
 			ArgsUsage:     "[NAME...]",
 			ShellComplete: completeProcessNames,
 			Description:   "Read bounded retained output for named processes. Filters and limits apply per process. --follow observes future launches; Ctrl+C cancels reading without signaling processes; see docs/design.md.\n\nExamples:\n  hum logs api --follow",
@@ -200,6 +200,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 				&urfavecli.StringFlag{Name: "since", HideDefault: true, Usage: "newer than DURATION; omit for all"},
 				&urfavecli.IntFlag{Name: "limit-bytes", Aliases: []string{"b"}, HideDefault: true, Usage: "maximum bytes; omit for default"},
 				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "filter by REGEX; omit for all"},
+				&urfavecli.IntFlag{Name: "context", HideDefault: true, Usage: "N around --match; bounded; omit for 0"},
 				&urfavecli.BoolFlag{Name: "follow", Aliases: []string{"f"}, DefaultText: "false", Usage: "follow future output"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON"},
 			},
@@ -1282,6 +1283,23 @@ func sinceCutoffUnixNano(cutoff time.Time) int64 {
 	return cutoff.UnixNano()
 }
 
+func logsMatchContext(cmd *urfavecli.Command) (int, error) {
+	contextEntries := cmd.Int("context")
+	if contextEntries < 0 {
+		return 0, newCLIUsageError(errors.New("context must not be negative"))
+	}
+	if !cmd.IsSet("context") {
+		return 0, nil
+	}
+	if cmd.String("match") == "" {
+		return 0, newCLIUsageError(errors.New("context requires a non-empty match"))
+	}
+	if cmd.Bool("follow") {
+		return 0, newCLIUsageError(errors.New("context is only supported for bounded reads, not --follow"))
+	}
+	return contextEntries, nil
+}
+
 func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
 	args := cmd.Args().Slice()
 	if len(args) != 1 {
@@ -1298,6 +1316,10 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	limitBytes := cmd.Int("limit-bytes")
 	if limitBytes < 0 {
 		return newCLIUsageError(errors.New("limit-bytes must not be negative"))
+	}
+	contextEntries, err := logsMatchContext(cmd)
+	if err != nil {
+		return err
 	}
 	sinceCutoff, err := logsSinceCutoff(cmd)
 	if err != nil {
@@ -1349,7 +1371,7 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	requestTail, maxEntries := logReadBounds(after, tail, cfg.ReadEntries, cmd.IsSet("tail"), cmd.Bool("follow"))
 	request := daemon.OutputRequest{
-		Name: name, Scope: selection.scope, Cwd: cwd, After: after, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
+		Name: name, Scope: selection.scope, Cwd: cwd, After: after, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"), Context: contextEntries,
 		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 	if cmd.Bool("follow") {
@@ -1422,6 +1444,10 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 	if limitBytes < 0 {
 		return newCLIUsageError(errors.New("limit-bytes must not be negative"))
 	}
+	contextEntries, err := logsMatchContext(cmd)
+	if err != nil {
+		return err
+	}
 	sinceCutoff, err := logsSinceCutoff(cmd)
 	if err != nil {
 		return err
@@ -1480,7 +1506,7 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 	}
 	requestTail, maxEntries := logReadBounds(nil, tail, cfg.ReadEntries, cmd.IsSet("tail"), cmd.Bool("follow"))
 	request := daemon.OutputRequest{
-		Scope: selection.scope, Cwd: cwd, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"),
+		Scope: selection.scope, Cwd: cwd, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"), Context: contextEntries,
 		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 	var client *daemon.Client

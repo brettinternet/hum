@@ -10,11 +10,10 @@ import (
 	"time"
 )
 
-// Version is the current private protocol version. Version 15 added explicit
-// project scope and canonical project_root snapshots; version 16 adds attached-
-// run launch/follow scoping and control-intent signal requests; version 17 adds
-// the explicit global process namespace.
-const Version = 17
+// Version is the current private protocol version. Version 16 added attached-
+// run launch/follow scoping and control-intent signal requests; version 17 added
+// the explicit global process namespace; version 18 adds bounded match context.
+const Version = 18
 
 const (
 	ScopeProject = "project"
@@ -503,6 +502,7 @@ type OutputRequest struct {
 	Tail          int       `json:"tail,omitempty"`
 	Stream        Stream    `json:"stream,omitempty"`
 	Match         string    `json:"match,omitempty"`
+	Context       int       `json:"context,omitempty"`
 	MaxEntries    int       `json:"max_entries,omitempty"`
 	MaxBytes      int       `json:"max_bytes,omitempty"`
 }
@@ -524,9 +524,10 @@ func marshalOutputRequest(op Operation, r OutputRequest) ([]byte, error) {
 		Tail          int       `json:"tail,omitempty"`
 		Stream        Stream    `json:"stream,omitempty"`
 		Match         string    `json:"match,omitempty"`
+		Context       int       `json:"context,omitempty"`
 		MaxEntries    int       `json:"max_entries,omitempty"`
 		MaxBytes      int       `json:"max_bytes,omitempty"`
-	}{Op: op, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
+	}{Op: op, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, Context: r.Context, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
 }
 
 // MarshalJSON writes an output request with its stable operation.
@@ -546,6 +547,7 @@ func unmarshalOutputRequest(data []byte, r *OutputRequest, want Operation) error
 		Tail          int       `json:"tail"`
 		Stream        Stream    `json:"stream"`
 		Match         string    `json:"match"`
+		Context       int       `json:"context"`
 		MaxEntries    int       `json:"max_entries"`
 		MaxBytes      int       `json:"max_bytes"`
 	}
@@ -557,7 +559,7 @@ func unmarshalOutputRequest(data []byte, r *OutputRequest, want Operation) error
 	}
 	r.Op, r.Scope, r.Name, r.Cwd = want, wire.Scope, wire.Name, wire.Cwd
 	r.After, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = wire.After, wire.SinceMS, wire.SinceUnixNano, wire.Tail, wire.Stream, wire.Match
-	r.MaxEntries, r.MaxBytes = wire.MaxEntries, wire.MaxBytes
+	r.Context, r.MaxEntries, r.MaxBytes = wire.Context, wire.MaxEntries, wire.MaxBytes
 	return nil
 }
 

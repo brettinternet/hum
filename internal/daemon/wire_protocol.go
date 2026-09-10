@@ -297,15 +297,21 @@ func streamName(stream output.Stream) string {
 }
 
 func readOptionsFromProtocol(req protocol.OutputRequest) (output.ReadOptions, error) {
-	return readOptionsFromValues(req.After, req.SinceMS, req.SinceUnixNano, req.Tail, req.Stream, req.Match, req.MaxEntries, req.MaxBytes)
+	return readOptionsFromValues(req.After, req.SinceMS, req.SinceUnixNano, req.Tail, req.Stream, req.Match, req.Context, req.MaxEntries, req.MaxBytes)
 }
 
 func readOptionsFromFollow(req protocol.FollowRequest) (output.ReadOptions, error) {
-	return readOptionsFromValues(req.After, req.SinceMS, req.SinceUnixNano, req.Tail, req.Stream, req.Match, req.MaxEntries, req.MaxBytes)
+	return readOptionsFromValues(req.After, req.SinceMS, req.SinceUnixNano, req.Tail, req.Stream, req.Match, 0, req.MaxEntries, req.MaxBytes)
 }
 
-func readOptionsFromValues(after *protocol.Cursor, sinceMS, sinceUnixNano int64, tail int, stream protocol.Stream, matchExpression string, maxEntries, maxBytes int) (output.ReadOptions, error) {
-	options := output.ReadOptions{Tail: tail, MaxEntries: maxEntries, MaxBytes: maxBytes}
+func readOptionsFromValues(after *protocol.Cursor, sinceMS, sinceUnixNano int64, tail int, stream protocol.Stream, matchExpression string, contextEntries, maxEntries, maxBytes int) (output.ReadOptions, error) {
+	options := output.ReadOptions{Tail: tail, Context: contextEntries, MaxEntries: maxEntries, MaxBytes: maxBytes}
+	if contextEntries < 0 {
+		return output.ReadOptions{}, fmt.Errorf("%w: context must not be negative", app.ErrInvalidRequest)
+	}
+	if contextEntries > 0 && matchExpression == "" {
+		return output.ReadOptions{}, fmt.Errorf("%w: context requires match", app.ErrInvalidRequest)
+	}
 	if sinceMS < 0 {
 		return output.ReadOptions{}, fmt.Errorf("%w: since_ms must be positive", app.ErrInvalidRequest)
 	}
