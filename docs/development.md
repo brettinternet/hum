@@ -70,6 +70,7 @@ task check:staged
 task check
 task check:go-min
 task test
+task coverage
 task security
 task ci
 ```
@@ -79,6 +80,7 @@ task ci
 - `task check` verifies Go formatting and runs `go vet ./...` and Staticcheck with the pinned development toolchain.
 - `task check:go-min` compiles and tests the source with the Go 1.22 minimum.
 - `task test` runs `go test ./...`.
+- `task coverage` runs all tests with repository-wide coverage and prints the per-function report. Its coverage profile is written outside the repository at `/tmp/hum-coverage.out`.
 - `task security` scans the full Git history with gitleaks and runs `govulncheck ./...`; govulncheck fails only for vulnerabilities reachable from project code.
 - `task ci` independently runs the security gate, checks, tests, race-sensitive package tests, and the built-binary smoke test with Go 1.27.1 and Staticcheck 2026.2.1.
 

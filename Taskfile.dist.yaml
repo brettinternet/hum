@@ -64,6 +64,12 @@ tasks:
     deps:
       - task: cli:test
 
+  coverage:
+    desc: Run all tests and print function coverage
+    cmds:
+      - mise exec go -- go test ./... -coverprofile=/tmp/hum-coverage.out
+      - mise exec go -- go tool cover -func=/tmp/hum-coverage.out
+
   race:
     desc: Run race-sensitive package tests
     cmd: mise exec go -- go test -race ./...

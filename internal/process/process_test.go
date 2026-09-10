@@ -39,7 +39,30 @@ func TestMain(m *testing.M) {
 		runProcessHelper()
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+
+	var coverageDir string
+	if testing.CoverMode() != "" {
+		var err error
+		coverageDir, err = os.MkdirTemp("", "hum-process-coverage-")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "create helper coverage directory: %v\n", err)
+			os.Exit(1)
+		}
+		if err := os.Setenv("GOCOVERDIR", coverageDir); err != nil {
+			fmt.Fprintf(os.Stderr, "configure helper coverage directory: %v\n", err)
+			_ = os.RemoveAll(coverageDir)
+			os.Exit(1)
+		}
+	}
+
+	code := m.Run()
+	if coverageDir != "" {
+		if err := os.RemoveAll(coverageDir); err != nil {
+			fmt.Fprintf(os.Stderr, "remove helper coverage directory: %v\n", err)
+			code = 1
+		}
+	}
+	os.Exit(code)
 }
 
 // TestProcessHelper is also the executable used by the behavior tests. It is
@@ -168,7 +191,7 @@ func runTTYGroupHelper() {
 	signal.Notify(signals, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	cmd := exec.Command(helperBinary(), "-test.run=TestProcessHelper", "group-child")
-	cmd.Env = []string{helperEnv + "=1", helperMode + "=group-child"}
+	cmd.Env = helperEnvironment("group-child")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		os.Exit(2)
@@ -225,7 +248,7 @@ func runGroupParent() {
 	defer signal.Stop(signals)
 
 	cmd := exec.Command(helperBinary(), "-test.run=TestProcessHelper", "process-group-child")
-	cmd.Env = []string{helperEnv + "=1", helperMode + "=group-child", helperReady + "=" + os.Getenv(helperReady)}
+	cmd.Env = helperEnvironment("group-child", helperReady+"="+os.Getenv(helperReady))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -288,7 +311,7 @@ func runGroupOrphanParent() {
 	}
 
 	cmd := exec.Command(helperBinary(), "-test.run=TestProcessHelper", "process-group-orphan-child")
-	cmd.Env = []string{helperEnv + "=1", helperMode + "=group-orphan-child"}
+	cmd.Env = helperEnvironment("group-orphan-child")
 	cmd.Stdout = devNull
 	cmd.Stderr = devNull
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: parentPGID}
@@ -336,11 +359,7 @@ func runGroupOrphanChild() {
 func runGroupEscapedParent() {
 	ready := os.Getenv(helperReady)
 	cmd := exec.Command(helperBinary(), "-test.run=TestProcessHelper", "process-group-escaped-child")
-	cmd.Env = []string{
-		helperEnv + "=1",
-		helperMode + "=group-escaped-child",
-		helperReady + "=" + ready,
-	}
+	cmd.Env = helperEnvironment("group-escaped-child", helperReady+"="+ready)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -420,12 +439,20 @@ func newStore(t *testing.T) *output.Store {
 	return store
 }
 
+func helperEnvironment(mode string, extra ...string) []string {
+	env := []string{helperEnv + "=1", helperMode + "=" + mode}
+	if coverageDir := os.Getenv("GOCOVERDIR"); coverageDir != "" {
+		env = append(env, "GOCOVERDIR="+coverageDir)
+	}
+	return append(env, extra...)
+}
+
 func helperSpec(store *output.Store, mode string, argv ...string) Spec {
 	args := []string{helperBinary(), "-test.run=TestProcessHelper"}
 	args = append(args, argv...)
 	return Spec{
 		Argv:         args,
-		Env:          []string{helperEnv + "=1", helperMode + "=" + mode},
+		Env:          helperEnvironment(mode),
 		Output:       store,
 		MaxLineBytes: 1024,
 	}
@@ -707,7 +734,7 @@ func TestStartResolvesExecutableFromSuppliedPath(t *testing.T) {
 	store := newStore(t)
 	spec := Spec{
 		Argv:         []string{name, "-test.run=TestProcessHelper"},
-		Env:          []string{helperEnv + "=1", helperMode + "=argv0", "PATH=" + dir},
+		Env:          helperEnvironment("argv0", "PATH="+dir),
 		Output:       store,
 		MaxLineBytes: 1024,
 	}
@@ -748,13 +775,9 @@ func TestStartResolvesRelativeAndEmptyPathComponentsFromSpecDirectory(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			store := newStore(t)
 			child, err := Start(Spec{
-				Dir:  dir,
-				Argv: []string{tc.name, "-test.run=TestProcessHelper"},
-				Env: []string{
-					helperEnv + "=1",
-					helperMode + "=argv0",
-					"PATH=" + tc.path,
-				},
+				Dir:          dir,
+				Argv:         []string{tc.name, "-test.run=TestProcessHelper"},
+				Env:          helperEnvironment("argv0", "PATH="+tc.path),
 				Output:       store,
 				MaxLineBytes: 1024,
 			})
