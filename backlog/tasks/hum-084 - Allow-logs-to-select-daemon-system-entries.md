@@ -4,7 +4,7 @@ title: Allow logs to select daemon system entries
 status: To Do
 assignee: []
 created_date: '2026-09-10 20:36'
-updated_date: '2026-09-10 20:45'
+updated_date: '2026-09-10 20:51'
 labels:
   - output
   - protocol
@@ -31,24 +31,26 @@ ordinal: 58800
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: humans and coding agents can request only hum-generated supervision entries with --stream system or the equivalent MCP field, yielding a bounded lifecycle-oriented view without application stdout or stderr noise.
+Outcome: humans and coding agents can select only hum-generated supervision entries with `--stream system` or MCP `stream: "system"`, yielding a lifecycle-oriented view without child stdout or stderr noise.
 
-Context: hum already stores launch, restart, recovery, and other daemon-generated boundaries in the existing system stream and includes them in ordinary combined reads, but the documented CLI and MCP surfaces only advertise stdout, stderr, and both. Exposing the existing selector provides most of an event-history workflow without another database or command family.
+Context: hum already records launch, restart, recovery, and other daemon boundaries in the existing system stream and includes them in ordinary combined reads. The daemon protocol already supports selecting that stream, but CLI validation and help reject it and the MCP logs tool exposes no stream selector.
 
-Code map: output.System and output.SystemMask exist, protocol.StreamSystem is the string system, and streamMask in internal/daemon/wire_protocol.go already maps system to SystemMask, so no daemon code change is expected. The CLI logs --stream flag is shared by single and aggregate reads in internal/cli/commands.go; both validation sites accept only stdout, stderr, and both, and the flag usage text omits system. The MCP logs tool input schema has no stream field at all. Shell completion (internal/cli/completion.go) completes process names only, so there is no flag-value completion to update.
+Selection contract: CLI logs accepts `stdout`, `stderr`, `system`, or `both` for single-process, aggregate, bounded, and follow forms because they share the same existing selector. MCP logs accepts the same enum for its bounded single-process read. Omission continues to mean `both`; `both` continues to include stdout, stderr, and system. Invalid values fail before daemon contact. Cursor, since, tail, match, entry, byte, truncation, and aggregate per-process behavior are unchanged.
 
-Scope: accept system at both CLI validation sites and in the flag usage text; add an optional stream field (enum stdout, stderr, system, both; default both) to the MCP logs tool; preserve current default and both behavior; support single and aggregate bounded reads; update the help contract, MCP schema, rendering contracts, and human and agent documentation.
+Code map: output.System and output.SystemMask already exist; protocol.StreamSystem and daemon `streamMask` already map `system` to that mask, so no daemon production change or protocol-version bump is expected. CLI logs has two validation sites and one shared flag description in internal/cli/commands.go. MCP commonInput and the logs tool schema/request in internal/mcp/tools.go currently omit stream. Existing renderers already preserve the entry stream name.
 
-Non-goals: a separate event store or events command, changing lifecycle emission, typed lifecycle metadata, selecting multiple arbitrary stream combinations, changing follow/session ownership, flag-value shell completion, or changing the daemon's lenient mapping of unknown stream names to all streams.
+Scope: expose the existing selector through CLI and MCP; cover bounded, aggregate, follow, JSON, schema, help, and documentation behavior. Keep current defaults and raw system-entry rendering.
+
+Non-goals: a separate event store or events command, changing lifecycle emission, typed lifecycle metadata, arbitrary stream combinations, MCP aggregate or follow tools, flag-value shell completion, changing session ownership, or changing the daemon's lenient internal fallback for unknown stream values.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 go test ./internal/daemon -run "SystemStream" -count=1 -v exits 0 and prints PASS, proving system selection returns only retained daemon entries while stdout, stderr, both, cursors, and bounds remain unchanged.
-- [ ] #2 go test ./internal/cli -run "SystemStream" -count=1 -v exits 0 and prints PASS for hum logs NAME --stream system, aggregate hum logs --stream system, JSON rendering, help text listing system, and invalid-stream rejection.
-- [ ] #3 go test ./internal/mcp -run "SystemStream" -count=1 -v exits 0 and prints PASS, proving the logs tool schema advertises stream with system, an omitted stream keeps both behavior, and stream system returns only system entries with unchanged bounded metadata.
-- [ ] #4 go test ./integration -run "^TestLogsSystemStream$" -count=1 -v exits 0 and prints PASS, proving --stream system returns the retained launch or restart boundary and excludes child stdout and stderr while --stream both is unchanged.
-- [ ] #5 task ci exits 0 after README.md, docs/design.md, and docs/coding-agents.md document system as the supervision-only stream and state that both keeps its existing behavior.
+- [ ] #1 `go test ./internal/daemon -run 'SystemStream' -count=1 -v` exits 0 and prints PASS, proving the existing daemon selector returns only retained system entries while stdout, stderr, both, cursors, since, match, and bounds remain unchanged.
+- [ ] #2 `go test ./internal/cli -run 'SystemStream' -count=1 -v` exits 0 and prints PASS for single and aggregate bounded reads, single and aggregate follow requests, JSON rendering with `stream: "system"`, help listing all four values, omitted/both compatibility, and invalid-stream rejection before daemon contact.
+- [ ] #3 `go test ./internal/mcp -run 'SystemStream' -count=1 -v` exits 0 and prints PASS, proving the logs schema advertises the four-value stream enum, omission sends `both`, `system` returns only system entries with unchanged bounded metadata, and an invalid value is rejected before daemon contact.
+- [ ] #4 `go test ./integration -run '^TestLogsSystemStream$' -count=1 -v` exits 0 and prints PASS, proving `--stream system` returns retained launch/restart boundaries and excludes child stdout/stderr for bounded and follow reads while omitted and explicit `--stream both` remain equivalent.
+- [ ] #5 `task ci` exits 0 after README.md, docs/design.md, docs/coding-agents.md, CLI help, and MCP tool descriptions document system as the supervision-only stream and state that both still includes all three concrete streams.
 <!-- AC:END -->
 
 ## Definition of Done
