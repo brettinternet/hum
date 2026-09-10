@@ -4,7 +4,7 @@ title: Persist the Go build cache across CI runs
 status: In Progress
 assignee: []
 created_date: '2026-09-10 20:35'
-updated_date: '2026-09-10 22:59'
+updated_date: '2026-09-10 23:25'
 labels:
   - tooling
 dependencies:
@@ -36,13 +36,13 @@ Non-goals: caching in release.yaml (HUM-076 removes its test run), changing Task
 <!-- AC:BEGIN -->
 - [x] #1 `rg -n 'actions/cache@|GOFLAGS|restore-keys|hashFiles' .github/workflows/ci.yaml` shows the SHA-pinned cache step, `-count=1`, a `go.sum` hash in the key, and a fallback key.
 - [ ] #2 For the second main push after the change (cache populated by the first), `gh run view RUN_ID --log | rg -c 'Cache restored from key'` prints 4, and `gh run view RUN_ID --json jobs --jq '.jobs[] | select(.name|test("race")) | "\(.name) \((.completedAt|fromdate) - (.startedAt|fromdate))s"'` reports each race job at least 15s faster than the same job in the HUM-077 acceptance run.
-- [ ] #3 `task ci` exits 0.
+- [x] #3 `task ci` exits 0.
 - [ ] #4 `gh run view RUN_ID --log | rg '\(cached\)'` finds no match (exit status 1), proving no test result was reused.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
+- [x] #1 task ci passes on the final commit
 - [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
 - [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
 - [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
@@ -54,4 +54,6 @@ Non-goals: caching in release.yaml (HUM-076 removes its test run), changing Task
 
 <!-- SECTION:NOTES:BEGIN -->
 Implementation commit d5dc295 (ci: cache Go build artifacts), fast-forward merged to main. AC#1 evidence: rg -n actions/cache@\|GOFLAGS\|restore-keys\|hashFiles .github/workflows/ci.yaml found GOFLAGS -count=1 plus four SHA-pinned actions/cache v6 steps, four go.sum-hashed keys, and four restore prefixes. Each job resolves GOCACHE, GOMODCACHE, and GOVERSION from the mise-installed Go toolchain before restoring caches. Verification: mise exec actionlint -- actionlint .github/workflows/ci.yaml exited 0; task check:staged exited 0; git diff --check exited 0. Independent verifier passed AC#1, declared-file scope, and no-test-weakening checks. Its initial shellcheck finding was fixed by grouping GITHUB_OUTPUT writes, after which actionlint exited 0. Pending: AC#2 and AC#4 require logs from the second main push, so they remain unchecked. AC#3 remains unchecked because task ci exits 201 on pre-existing TestREADMEQuickstartStructure: README.md has 926 words, maximum 900; the verifier reproduced the identical failure on the branch base. Next step: after a second main push, collect AC#2/#4 cache and timing evidence, rerun task ci once the baseline README gate is repaired, then request a final independent verifier pass.
+
+AC#3 evidence: task ci exited 0 on final cache commit fe770a7 after competing HUM-080 stress processes finished. First unique-cache main run 34541805796 succeeded and populated all four job-specific caches. Cache keys now include github.job because run 34540910748 proved OS-only keys caused normal and race jobs to contend for one immutable cache, preventing race artifacts from being saved. Commit fe770a7 isolates each job while retaining runner OS, mise Go version, and go.sum hash dimensions. The separate user-directed commit b8aff2d removed the README word-count assertion; it is not part of the HUM-081 cache diff. Next push will be the warm-cache acceptance run for AC#2 and AC#4.
 <!-- SECTION:NOTES:END -->
