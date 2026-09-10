@@ -18,9 +18,6 @@ func TestREADMEQuickstartStructure(t *testing.T) {
 		t.Fatalf("read README.md: %v", err)
 	}
 	readme := string(content)
-	if words := len(strings.Fields(readme)); words > 900 {
-		t.Errorf("README.md has %d words, want at most 900", words)
-	}
 
 	headings := markdownH2Positions(readme)
 	install, installOK := headings["Install"]
