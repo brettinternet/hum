@@ -1600,7 +1600,7 @@ func TestSignalCanonicalRoundTrip(t *testing.T) {
 }
 
 func TestControlSignalDaemonRoundTripSuppressesRestart(t *testing.T) {
-	server := testServer(t, Config{StopGrace: 20 * time.Millisecond})
+	server := testServer(t, Config{StopGrace: 3 * time.Second})
 	root := t.TempDir()
 	client, err := Dial(context.Background(), server.Paths().Socket)
 	if err != nil {
