@@ -719,10 +719,15 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		localInput.start()
 		defer localInput.close()
 	}
-	// Register before launch so an interrupt during the start-to-follow handoff
-	// is queued and applied to this incarnation once launch completes.
+	// Register before launch so a signal during the start-to-follow handoff is
+	// queued and applied to this incarnation once launch completes. The bridge
+	// channel must cover the same window or SIGTERM can be mistaken for an
+	// independent context cancellation and detach the client.
 	signals := notifyFollowSignals()
 	defer signal.Stop(signals)
+	bridgedSignals := make(chan os.Signal, 4)
+	signal.Notify(bridgedSignals, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(bridgedSignals)
 	if _, err = launch(true); err != nil {
 		if isNameInUse(err) || errors.Is(err, app.ErrNameInUse) {
 			return fmt.Errorf("%s is already running; join it with %s or stop it with %s", name, projectCommand(selection.selector, "attach "+name), projectCommand(selection.selector, "stop "+name))
@@ -737,9 +742,6 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	// notice while the child kept running.
 	followCtx, cancelFollow := context.WithCancel(context.Background())
 	defer cancelFollow()
-	bridgedSignals := make(chan os.Signal, 4)
-	signal.Notify(bridgedSignals, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(bridgedSignals)
 	go func() {
 		select {
 		case <-ctx.Done():

@@ -299,8 +299,10 @@ func TestNDJSONFollow(t *testing.T) {
 	if run.Code != 0 {
 		t.Fatalf("detached eviction run: code=%d stdout=%q stderr=%q err=%v", run.Code, run.Stdout, run.Stderr, run.Err)
 	}
-	logsitWaitOutput(t, harness, "eviction", []string{"--json", "--stream", "both", "--match", "stdout:3499"}, func(lines []logsitJSONLine) bool {
-		return len(lines) == 1 && logsitHasEntryText(lines[0].Event.Entries, "stdout:3499\n")
+	// The two pipe readers race, so either stream's final first-half line can
+	// be the one retained at the eviction boundary.
+	logsitWaitOutput(t, harness, "eviction", []string{"--json", "--stream", "both", "--match", "(stdout|stderr):3499"}, func(lines []logsitJSONLine) bool {
+		return len(lines) == 1 && (logsitHasEntryText(lines[0].Event.Entries, "stdout:3499\n") || logsitHasEntryText(lines[0].Event.Entries, "stderr:3499\n"))
 	})
 	follower := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "eviction", "--follow", "--json", "--after-cursor", "0", "--stream", "both", "--limit-bytes", "4096")
 	logsitWaitFollowerText(t, follower, `"type":"eviction"`)

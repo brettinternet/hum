@@ -524,9 +524,11 @@ func TestManifestWorkflow(t *testing.T) {
 			Argv: []string{missingCommand},
 		},
 		{
-			Name:  "alpha-ready",
-			Argv:  []string{fixture, "burst", alphaGate, "8"},
-			Ready: &manifestTestReady{Match: `stdout:0006`},
+			Name: "alpha-ready",
+			// Keep the process producing output briefly after the match so exit
+			// cannot win the readiness observation under a loaded CI runner.
+			Argv:  []string{fixture, "burst", alphaGate, "100"},
+			Ready: &manifestTestReady{Match: `stdout:0056`},
 		},
 		{
 			Name: "gamma-retained",
