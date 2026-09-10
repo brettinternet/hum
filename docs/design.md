@@ -450,14 +450,21 @@ to `dev`, rooted at the project, with no inferred readiness:
 | deno.json(c) | task | `deno task dev` |
 | composer.json | script | `composer run-script dev` |
 | bin/dev | executable file | `./bin/dev` |
-| Mix | introspection confirms `phx.server` | `mix phx.server` |
+| Mix | literal `{:phoenix, ...}` dependency in `mix.exs` | `mix phx.server` |
 
-Command-backed sources are skipped when their executable is unavailable.
+Implicit discovery never evaluates repository code. Mix detection reads `mix.exs` as text,
+ignores comments and quoted values, and recognizes only a literal Phoenix dependency tuple;
+dynamic declarations fail closed and require an explicit `hum.yaml`. This static check may
+identify the launch command, but `mix.exs` is evaluated only if the user later starts it.
+Mise, Task, and Just retain their documented metadata commands, which are cancellable and run
+inside the repository trust boundary. Command-backed sources are skipped when their executable
+is unavailable.
 
 - No candidates produce a typed `NoCandidateError`; several produce an `AmbiguityError` listing
   all sources.
 - Malformed configuration and failed or malformed required introspection produce typed
-  `ConfigurationError` and `IntrospectionError`.
+  `ConfigurationError` and `IntrospectionError`; caller cancellation stops command-backed
+  discovery and propagates unchanged.
 - All wrap their sentinel and work with `errors.As`.
 
 For package.json, `packageManager` selects bun, pnpm, yarn, or npm (ignoring an optional version

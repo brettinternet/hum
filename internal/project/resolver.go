@@ -1,7 +1,6 @@
 package project
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,9 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // ErrNoCandidate reports that no supported conventional development entrypoint
@@ -164,7 +163,8 @@ var supportedDiscoverySources = []string{
 }
 
 type discoveryLookPathFunc func(string) (string, error)
-type discoveryCommandFunc func(string, ...string) ([]byte, error)
+type discoveryCommandFunc func(context.Context, string, ...string) ([]byte, error)
+type discoveryDetector func(context.Context, string) (Definition, bool, error)
 
 // These package-private seams keep detector tests deterministic. Production
 // resolution leaves them pointed at exec.LookPath and os/exec.
@@ -176,6 +176,15 @@ var (
 // ResolveDefinitions returns the explicit hum.yaml definitions when that file
 // exists. Only an absent hum.yaml invokes conventional root discovery.
 func ResolveDefinitions(root string) ([]Definition, error) {
+	return ResolveDefinitionsContext(context.Background(), root)
+}
+
+// ResolveDefinitionsContext resolves project definitions while allowing command-backed
+// discovery to be cancelled by the caller.
+func ResolveDefinitionsContext(ctx context.Context, root string) ([]Definition, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	root, err := absoluteClean(root)
 	if err != nil {
 		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: err}
@@ -187,11 +196,15 @@ func ResolveDefinitions(root string) ([]Definition, error) {
 	if present {
 		return definitions, nil
 	}
-	return discoverDefinitions(root)
+	return discoverDefinitionsContext(ctx, root)
 }
 
 func discoverDefinitions(root string) ([]Definition, error) {
-	detectors := []func(string) (Definition, bool, error){
+	return discoverDefinitionsContext(context.Background(), root)
+}
+
+func discoverDefinitionsContext(ctx context.Context, root string) ([]Definition, error) {
+	detectors := []discoveryDetector{
 		detectMise,
 		detectTask,
 		detectJust,
@@ -204,7 +217,10 @@ func discoverDefinitions(root string) ([]Definition, error) {
 	}
 	candidates := make([]Definition, 0, len(detectors))
 	for _, detector := range detectors {
-		candidate, found, err := detector(root)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		candidate, found, err := detector(ctx, root)
 		if err != nil {
 			return nil, err
 		}
@@ -248,23 +264,29 @@ func discoveredDefinition(root, source string, argv ...string) Definition {
 // runner cannot stall CLI resolution or the single-threaded MCP server.
 var discoveryCommandTimeout = 10 * time.Second
 
-func runDiscoveryCommand(root string, argv ...string) ([]byte, error) {
+func runDiscoveryCommand(ctx context.Context, root string, argv ...string) ([]byte, error) {
 	if len(argv) == 0 || argv[0] == "" {
 		return nil, errors.New("empty discovery command")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), discoveryCommandTimeout)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, discoveryCommandTimeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	command := exec.CommandContext(commandCtx, argv[0], argv[1:]...)
 	command.Dir = root
 	command.WaitDelay = time.Second
 	out, err := command.Output()
-	if ctx.Err() == context.DeadlineExceeded {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if commandCtx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("%s did not finish within %s", strings.Join(argv, " "), discoveryCommandTimeout)
 	}
 	return out, err
 }
 
-func commandOutput(root, source, path string, skipEmptyFailure bool, argv ...string) ([]byte, bool, error) {
+func commandOutput(ctx context.Context, root, source, path string, skipEmptyFailure bool, argv ...string) ([]byte, bool, error) {
 	lookup := discoveryLookPath
 	if lookup == nil {
 		lookup = exec.LookPath
@@ -276,7 +298,7 @@ func commandOutput(root, source, path string, skipEmptyFailure bool, argv ...str
 	if run == nil {
 		run = runDiscoveryCommand
 	}
-	output, err := run(root, argv...)
+	output, err := run(ctx, root, argv...)
 	if err != nil {
 		// Mise and Task commonly report that their declaration file is
 		// absent with an empty failure. Task reserves exit code 100 for a
@@ -302,8 +324,8 @@ func commandExitCode(err error) int {
 	return -1
 }
 
-func detectMise(root string) (Definition, bool, error) {
-	output, ran, err := commandOutput(root, "mise", "", true, "mise", "tasks", "--local", "--json")
+func detectMise(ctx context.Context, root string) (Definition, bool, error) {
+	output, ran, err := commandOutput(ctx, root, "mise", "", true, "mise", "tasks", "--local", "--json")
 	if err != nil || !ran {
 		return Definition{}, false, err
 	}
@@ -317,8 +339,8 @@ func detectMise(root string) (Definition, bool, error) {
 	return discoveredDefinition(root, "mise", "mise", "run", "dev"), true, nil
 }
 
-func detectTask(root string) (Definition, bool, error) {
-	output, ran, err := commandOutput(root, "task", "", true, "task", "--dir", root, "--list-all", "--json")
+func detectTask(ctx context.Context, root string) (Definition, bool, error) {
+	output, ran, err := commandOutput(ctx, root, "task", "", true, "task", "--dir", root, "--list-all", "--json")
 	if err != nil || !ran {
 		return Definition{}, false, err
 	}
@@ -423,13 +445,13 @@ func taskEntryNames(value any) (string, []string, error) {
 	}
 }
 
-func detectJust(root string) (Definition, bool, error) {
+func detectJust(ctx context.Context, root string) (Definition, bool, error) {
 	path, present, err := rootFile(root, []string{"justfile", "Justfile", ".justfile"}, "just")
 	if err != nil || !present {
 		return Definition{}, false, err
 	}
 	argv := []string{"just", "--unstable", "--dump", "--dump-format", "json", "--justfile", path}
-	output, ran, err := commandOutput(root, "just", path, false, argv...)
+	output, ran, err := commandOutput(ctx, root, "just", path, false, argv...)
 	if err != nil || !ran {
 		return Definition{}, false, err
 	}
@@ -528,7 +550,7 @@ func justRecipePrivate(recipe map[string]any) (bool, error) {
 	return private, nil
 }
 
-func detectMake(root string) (Definition, bool, error) {
+func detectMake(_ context.Context, root string) (Definition, bool, error) {
 	path, present, err := rootFile(root, []string{"GNUmakefile", "makefile", "Makefile"}, "make")
 	if err != nil || !present {
 		return Definition{}, false, err
@@ -784,7 +806,7 @@ func isMakeSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n'
 }
 
-func detectPackage(root string) (Definition, bool, error) {
+func detectPackage(_ context.Context, root string) (Definition, bool, error) {
 	path, present, err := rootFile(root, []string{"package.json"}, "package_json")
 	if err != nil || !present {
 		return Definition{}, false, err
@@ -895,7 +917,7 @@ func packageRunnerFromLockfiles(root string) (string, error) {
 	return families[0], nil
 }
 
-func detectDeno(root string) (Definition, bool, error) {
+func detectDeno(_ context.Context, root string) (Definition, bool, error) {
 	paths, err := rootFiles(root, []string{"deno.json", "deno.jsonc"}, "deno_json")
 	if err != nil {
 		return Definition{}, false, err
@@ -960,7 +982,7 @@ func validateTaskValue(raw json.RawMessage) error {
 	return errors.New("task must be a string or array of strings")
 }
 
-func detectComposer(root string) (Definition, bool, error) {
+func detectComposer(_ context.Context, root string) (Definition, bool, error) {
 	path, present, err := rootFile(root, []string{"composer.json"}, "composer_json")
 	if err != nil || !present {
 		return Definition{}, false, err
@@ -994,7 +1016,7 @@ func detectComposer(root string) (Definition, bool, error) {
 	return discoveredDefinition(root, "composer_json", "composer", "run-script", "dev"), true, nil
 }
 
-func detectBinDev(root string) (Definition, bool, error) {
+func detectBinDev(_ context.Context, root string) (Definition, bool, error) {
 	path := filepath.Join(root, "bin", "dev")
 	info, err := os.Stat(path)
 	if err != nil {
@@ -1014,68 +1036,82 @@ func detectBinDev(root string) (Definition, bool, error) {
 	return discoveredDefinition(root, "bin_dev", "./bin/dev"), true, nil
 }
 
-func detectMix(root string) (Definition, bool, error) {
+func detectMix(_ context.Context, root string) (Definition, bool, error) {
 	path, present, err := rootFile(root, []string{"mix.exs"}, "mix")
 	if err != nil || !present {
 		return Definition{}, false, err
 	}
-	output, ran, err := commandOutput(root, "mix", path, false, "mix", "help", "--names")
-	if err != nil || !ran {
-		return Definition{}, false, err
-	}
-	found, err := parseMixNames(output)
+	contents, err := os.ReadFile(path)
 	if err != nil {
-		return Definition{}, false, &IntrospectionError{Source: "mix", Path: path, Argv: []string{"mix", "help", "--names"}, Err: err}
+		return Definition{}, false, configurationError("mix", path, err)
 	}
-	if !found {
+	if !mixPhoenixDependency.Match(stripElixirCommentsAndStrings(contents)) {
 		return Definition{}, false, nil
 	}
 	return discoveredDefinition(root, "mix", "mix", "phx.server"), true, nil
 }
 
-func parseMixNames(output []byte) (bool, error) {
-	if !utf8.Valid(output) {
-		return false, errors.New("mix task listing is not valid UTF-8")
-	}
-	scanner := bufio.NewScanner(bytes.NewReader(output))
-	for scanner.Scan() {
-		line := stripANSI(strings.TrimSpace(scanner.Text()))
-		fields := strings.Fields(line)
-		for i, field := range fields {
-			field = strings.Trim(field, "`'\"")
-			if field == "phx.server" {
-				return true, nil
-			}
-			if field == "mix" && i+1 < len(fields) && strings.Trim(fields[i+1], "`'\"") == "phx.server" {
-				return true, nil
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return false, err
-	}
-	return false, nil
-}
+var mixPhoenixDependency = regexp.MustCompile(`\{\s*:phoenix\s*,`)
 
-func stripANSI(value string) string {
-	var builder strings.Builder
-	builder.Grow(len(value))
-	for i := 0; i < len(value); {
-		if value[i] != 0x1b || i+1 >= len(value) || value[i+1] != '[' {
-			builder.WriteByte(value[i])
-			i++
-			continue
-		}
-		i += 2
-		for i < len(value) {
-			c := value[i]
-			i++
-			if c >= '@' && c <= '~' {
-				break
+// stripElixirCommentsAndStrings keeps static Mix detection from accepting a
+// dependency name that appears only in a comment or quoted value. Dynamic
+// dependency declarations deliberately fail closed and require hum.yaml.
+func stripElixirCommentsAndStrings(contents []byte) []byte {
+	cleaned := append([]byte(nil), contents...)
+	for index := 0; index < len(cleaned); {
+		switch cleaned[index] {
+		case '#':
+			for index < len(cleaned) && cleaned[index] != '\n' {
+				cleaned[index] = ' '
+				index++
 			}
+		case '\'', '"':
+			quote := cleaned[index]
+			triple := index+2 < len(cleaned) && cleaned[index+1] == quote && cleaned[index+2] == quote
+			width := 1
+			if triple {
+				width = 3
+			}
+			for count := 0; count < width; count++ {
+				cleaned[index+count] = ' '
+			}
+			index += width
+			for index < len(cleaned) {
+				if cleaned[index] == '\\' && !triple {
+					cleaned[index] = ' '
+					index++
+					if index < len(cleaned) {
+						cleaned[index] = ' '
+						index++
+					}
+					continue
+				}
+				if cleaned[index] == quote {
+					endWidth := 1
+					if triple {
+						if index+2 >= len(cleaned) || cleaned[index+1] != quote || cleaned[index+2] != quote {
+							cleaned[index] = ' '
+							index++
+							continue
+						}
+						endWidth = 3
+					}
+					for count := 0; count < endWidth; count++ {
+						cleaned[index+count] = ' '
+					}
+					index += endWidth
+					break
+				}
+				if cleaned[index] != '\n' {
+					cleaned[index] = ' '
+				}
+				index++
+			}
+		default:
+			index++
 		}
 	}
-	return builder.String()
+	return cleaned
 }
 
 func decodeJSON(data []byte) (any, error) {

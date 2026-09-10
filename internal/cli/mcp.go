@@ -55,8 +55,8 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 
 type mcpResolver struct{}
 
-func (mcpResolver) Resolve(_ context.Context, root string) (mcpserver.Resolution, error) {
-	manifest, err := loadManifestOrEmpty(root)
+func (mcpResolver) Resolve(ctx context.Context, root string) (mcpserver.Resolution, error) {
+	manifest, err := loadManifestOrEmptyContext(ctx, root)
 	if err != nil {
 		return mcpserver.Resolution{}, err
 	}

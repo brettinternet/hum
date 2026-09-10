@@ -3,8 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestMCPHelp(t *testing.T) {
@@ -23,6 +30,114 @@ func TestMCPHelp(t *testing.T) {
 		if !strings.Contains(help, want) {
 			t.Errorf("mcp help missing %q: %q", want, output.String())
 		}
+	}
+}
+
+func TestImplicitMixDiscoveryDoesNotExecuteProjectCode(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*testing.T) error
+	}{
+		{name: "list", run: func(t *testing.T) error {
+			_, _, err := stopShutdownRun(t, "list", "--json")
+			return err
+		}},
+		{name: "status", run: func(t *testing.T) error {
+			_, _, err := stopShutdownRun(t, "status", "--json", "dev")
+			if err == nil {
+				return errors.New("status unexpectedly succeeded without a daemon")
+			}
+			return nil
+		}},
+		{name: "completion", run: func(t *testing.T) error {
+			_, _, err := runCompletionForTest(t, "start", "--generate-shell-completion")
+			return err
+		}},
+		{name: "init", run: func(t *testing.T) error {
+			_, _, err := stopShutdownRun(t, "init", "--json")
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := stopShutdownTestProject(t)
+			runtimeDir := filepath.Join(t.TempDir(), "runtime")
+			t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+			sentinel := filepath.Join(root, "mix-evaluated")
+			mixSource := fmt.Sprintf("defmodule App.MixProject do\n  File.write!(%q, \"evaluated\")\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", sentinel)
+			if err := os.WriteFile(filepath.Join(root, "mix.exs"), []byte(mixSource), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			bin := t.TempDir()
+			mixCommand := fmt.Sprintf("#!/bin/sh\ntouch %s\nexit 99\n", sentinel)
+			if err := os.WriteFile(filepath.Join(bin, "mix"), []byte(mixCommand), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin)
+
+			if err := test.run(t); err != nil {
+				t.Fatalf("%s discovery: %v", test.name, err)
+			}
+			if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s evaluated mix.exs or invoked Mix: %v", test.name, err)
+			}
+		})
+	}
+}
+
+func TestMCPDiscoveryCancellationReapsCommand(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	pidPath := filepath.Join(root, "mise.pid")
+	misePath := filepath.Join(bin, "mise")
+	script := fmt.Sprintf("#!/bin/sh\necho $$ > %s\nexec /bin/sleep 30\n", pidPath)
+	if err := os.WriteFile(misePath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := (mcpResolver{}).Resolve(ctx, root)
+		result <- err
+	}()
+
+	var pid int
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		contents, err := os.ReadFile(pidPath)
+		if err == nil {
+			pid, err = strconv.Atoi(strings.TrimSpace(string(contents)))
+			if err != nil {
+				t.Fatalf("parse discovery pid: %v", err)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pid == 0 {
+		t.Fatal("MCP discovery command did not start")
+	}
+
+	cancelledAt := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("resolver error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("MCP discovery did not cancel within two seconds")
+	}
+	if elapsed := time.Since(cancelledAt); elapsed >= 2*time.Second {
+		t.Fatalf("MCP discovery cancellation took %s", elapsed)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("discovery process %d was not reaped: %v", pid, err)
 	}
 }
 

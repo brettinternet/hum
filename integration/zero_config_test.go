@@ -277,15 +277,11 @@ defmodule ZeroConfig.MixProject do
   use Mix.Project
 
   def project do
-    [app: :zero_config, version: "0.1.0"]
+    [app: :zero_config, version: "0.1.0", deps: [{:phoenix, "~> 1.7"}]]
   end
 end
 `, zeroConfigElixirQuote(bodyMarker)))
-	writeZeroConfigExecutable(t, filepath.Join(shimDir, "mix"), fmt.Sprintf(`if [ "$#" -eq 2 ] && [ "$1" = "help" ] && [ "$2" = "--names" ]; then
-  printf 'mix phx.server\n'
-  exit 0
-fi
-if [ "$#" -eq 1 ] && [ "$1" = "phx.server" ]; then
+	writeZeroConfigExecutable(t, filepath.Join(shimDir, "mix"), fmt.Sprintf(`if [ "$#" -eq 1 ] && [ "$1" = "phx.server" ]; then
   printf 'argv=%%s\n' "$*" >> %s
   exec %s stream %s
 fi

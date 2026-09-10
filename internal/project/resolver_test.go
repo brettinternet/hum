@@ -1,13 +1,16 @@
 package project
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -33,7 +36,7 @@ func installDiscoveryStubs(t *testing.T, stubs map[string]discoveryStub) *[]stri
 		}
 		return "", exec.ErrNotFound
 	}
-	discoveryCommand = func(_ string, argv ...string) ([]byte, error) {
+	discoveryCommand = func(_ context.Context, _ string, argv ...string) ([]byte, error) {
 		if len(argv) == 0 {
 			return nil, errors.New("empty test argv")
 		}
@@ -644,24 +647,47 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 
 	t.Run("confirmed mix phoenix task", func(t *testing.T) {
 		root := t.TempDir()
-		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  # body is never evaluated by resolution\nend\n", 0o600)
-		installDiscoveryStubs(t, map[string]discoveryStub{"mix": {output: []byte("app.start\nphx.server\n")}})
+		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", 0o600)
+		calls := installDiscoveryStubs(t, nil)
 		definitions, err := ResolveDefinitions(root)
 		if err != nil {
 			t.Fatal(err)
 		}
 		wantDiscoveredDefinition(t, definitions, root, "mix", "mix", "phx.server")
+		if len(*calls) != 0 {
+			t.Fatalf("Mix discovery executed commands: %#v", *calls)
+		}
 	})
 
 	t.Run("confirmed mix phoenix task with ANSI output", func(t *testing.T) {
 		root := t.TempDir()
-		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  # body is never evaluated by resolution\nend\n", 0o600)
-		installDiscoveryStubs(t, map[string]discoveryStub{"mix": {output: []byte("\x1b[32mphx.\x1b[0mserver\n")}})
+		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  # \\x1b[32mphx.server\\x1b[0m output is not consulted\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", 0o600)
+		calls := installDiscoveryStubs(t, nil)
 		definitions, err := ResolveDefinitions(root)
 		if err != nil {
 			t.Fatal(err)
 		}
 		wantDiscoveredDefinition(t, definitions, root, "mix", "mix", "phx.server")
+		if len(*calls) != 0 {
+			t.Fatalf("Mix discovery executed commands: %#v", *calls)
+		}
+	})
+
+	t.Run("commented and quoted phoenix dependencies fail closed", func(t *testing.T) {
+		for _, contents := range []string{
+			"# {:phoenix, \"~> 1.7\"}\n",
+			"value = \"{:phoenix, ~> 1.7}\"\n",
+			"value = '''{:phoenix, ~> 1.7}'''\n",
+		} {
+			root := t.TempDir()
+			writeDiscoveryFile(t, root, "mix.exs", contents, 0o600)
+			installDiscoveryStubs(t, nil)
+			_, err := ResolveDefinitions(root)
+			var noCandidate *NoCandidateError
+			if !errors.As(err, &noCandidate) {
+				t.Fatalf("ResolveDefinitions(%q) error = %v, want NoCandidateError", contents, err)
+			}
+		}
 	})
 }
 
@@ -674,12 +700,11 @@ func TestDiscoveryAmbiguity(t *testing.T) {
 		writeDiscoveryFile(t, root, "deno.json", `{"tasks":{"dev":"echo body"}}`, 0o600)
 		writeDiscoveryFile(t, root, "composer.json", `{"scripts":{"dev":"echo body"}}`, 0o600)
 		writeDiscoveryFile(t, root, "bin/dev", "#!/bin/sh\n", 0o700)
-		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do end\n", 0o600)
+		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", 0o600)
 		installDiscoveryStubs(t, map[string]discoveryStub{
 			"mise": {output: []byte(`[{"name":"dev"}]`)},
 			"task": {output: []byte(`{"tasks":[{"name":"dev"}]}`)},
 			"just": {output: []byte(`{"recipes":{"dev":{"private":false}}}`)},
-			"mix":  {output: []byte("phx.server\n")},
 		})
 
 		_, err := ResolveDefinitions(root)
@@ -724,13 +749,62 @@ func TestDiscoveryAmbiguity(t *testing.T) {
 	})
 }
 
+func TestRunDiscoveryCommandDiscoveryCancellation(t *testing.T) {
+	root := t.TempDir()
+	pidPath := filepath.Join(root, "discovery.pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := runDiscoveryCommand(ctx, root, "/bin/sh", "-c", "echo $$ > discovery.pid; exec sleep 30")
+		result <- err
+	}()
+
+	var pid int
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		contents, err := os.ReadFile(pidPath)
+		if err == nil {
+			pid, err = strconv.Atoi(strings.TrimSpace(string(contents)))
+			if err != nil {
+				t.Fatalf("parse discovery pid: %v", err)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pid == 0 {
+		t.Fatal("discovery command did not start")
+	}
+
+	cancelledAt := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("runDiscoveryCommand error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled discovery command did not return within two seconds")
+	}
+	if elapsed := time.Since(cancelledAt); elapsed >= 2*time.Second {
+		t.Fatalf("cancelled discovery command took %s", elapsed)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("discovery process %d was not reaped: %v", pid, err)
+	}
+}
+
 func TestRunDiscoveryCommandTimesOut(t *testing.T) {
 	previous := discoveryCommandTimeout
 	discoveryCommandTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { discoveryCommandTimeout = previous })
 
 	start := time.Now()
-	_, err := runDiscoveryCommand(t.TempDir(), "sleep", "30")
+	_, err := runDiscoveryCommand(context.Background(), t.TempDir(), "sleep", "30")
 	if err == nil || !strings.Contains(err.Error(), "sleep 30 did not finish within 50ms") {
 		t.Fatalf("runDiscoveryCommand error = %v, want timeout", err)
 	}

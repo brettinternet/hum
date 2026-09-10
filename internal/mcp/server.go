@@ -19,9 +19,10 @@ const (
 	mcpProtocolVersion = "2025-06-18"
 	maxMessageBytes    = 4 << 20
 
-	maxInFlightRequests = 64
-	responseQueueSize   = maxInFlightRequests * 2
-	serverShutdownWait  = time.Second
+	maxInFlightRequests    = 64
+	responseQueueSize      = maxInFlightRequests * 2
+	serverShutdownWait     = time.Second
+	serverShutdownDeadline = 2 * time.Second
 )
 
 type rpcRequest struct {
@@ -561,6 +562,8 @@ func (s *Server) Serve(ctx context.Context, reader io.Reader, writer io.Writer) 
 	}
 
 shutdown:
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), serverShutdownDeadline)
+	defer cancelShutdown()
 	stopReader()
 	registry.cancelAll()
 	waitTimer := time.NewTimer(serverShutdownWait)
@@ -570,13 +573,26 @@ shutdown:
 			<-waitTimer.C
 		}
 	case <-waitTimer.C:
+	case <-shutdownCtx.Done():
 	}
 	_ = transport.Close()
-	writerErr := transport.wait()
-	// Closing the response transport releases handlers blocked while enqueueing
-	// their terminal response. Context-aware handlers should all join here.
-	<-handlers.doneChannel()
-	<-readDone
+	var writerErr error
+	select {
+	case <-transport.done:
+		writerErr = transport.wait()
+	case <-shutdownCtx.Done():
+	}
+	// Closing the response transport releases handlers blocked while enqueueing.
+	// All shutdown joins share one absolute deadline so no late phase can extend
+	// the documented two-second bound.
+	select {
+	case <-handlers.doneChannel():
+	case <-shutdownCtx.Done():
+	}
+	select {
+	case <-readDone:
+	case <-shutdownCtx.Done():
+	}
 	if transportFailed && terminalErr == nil && writerErr != nil {
 		terminalErr = writerErr
 	}

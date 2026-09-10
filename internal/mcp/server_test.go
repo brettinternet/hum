@@ -155,6 +155,18 @@ func (s *serverTestSession) wait(t *testing.T, timeout time.Duration) error {
 	}
 }
 
+type cancellationResolver struct {
+	entered chan struct{}
+	done    chan struct{}
+}
+
+func (r cancellationResolver) Resolve(ctx context.Context, _ string) (Resolution, error) {
+	close(r.entered)
+	<-ctx.Done()
+	close(r.done)
+	return Resolution{}, ctx.Err()
+}
+
 type serverTestClient struct {
 	*fakeClient
 	waitStarted chan string
@@ -222,6 +234,38 @@ func waitForName(t *testing.T, started <-chan string, want string, timeout time.
 		case <-deadline.C:
 			t.Fatalf("timed out waiting for %s to start", want)
 		}
+	}
+}
+
+func TestServerDiscoveryCancellationOnEOF(t *testing.T) {
+	root := t.TempDir()
+	resolver := cancellationResolver{entered: make(chan struct{}), done: make(chan struct{})}
+	server := NewServer(Options{
+		Resolver: resolver,
+		ClientFactory: func(context.Context, bool) (Client, error) {
+			return &fakeClient{}, nil
+		},
+	})
+	session := newServerTestSession(t, server, context.Background())
+	session.send(t, "list", "tools/call", toolsCallParams(root, "list", nil))
+	select {
+	case <-resolver.entered:
+	case <-time.After(time.Second):
+		t.Fatal("discovery resolver did not start")
+	}
+
+	started := time.Now()
+	session.closeInput()
+	if err := session.wait(t, 2*time.Second); err != nil {
+		t.Fatalf("Serve after EOF = %v, want nil", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("Serve after EOF took %s", elapsed)
+	}
+	select {
+	case <-resolver.done:
+	default:
+		t.Fatal("Serve returned before cancelled discovery resolver exited")
 	}
 }
 
