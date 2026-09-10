@@ -4,7 +4,7 @@ title: Enforce each MCP tool input contract before side effects
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:49'
-updated_date: '2026-09-10 01:57'
+updated_date: '2026-09-10 06:01'
 labels: []
 dependencies: []
 modified_files:
@@ -42,3 +42,12 @@ Outcome: Runtime MCP validation exactly matches each advertised closed input sch
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-10 06:01
+---
+Refinement 2026-09-10: confirmed. `decodeInput` (internal/mcp/tools.go:415) decodes every tool into the shared `commonInput` union with DisallowUnknownFields, so only fields outside the union are rejected; per-tool rejection exists only for text/base64 (input) and signal. Dispatch (:690-760) passes `name` through for `up` and ignores it for `down`. `s.resolve` (:489) maps an empty project_root to a global Resolution with no definitions, so global `up` is an empty no-op and global `list` with all forwards to the daemon.
+---
+<!-- COMMENTS:END -->

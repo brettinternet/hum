@@ -4,7 +4,7 @@ title: Remove the duplicate daemon wire model
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:52'
-updated_date: '2026-09-10 01:59'
+updated_date: '2026-09-10 06:01'
 labels: []
 dependencies: []
 modified_files:
@@ -44,3 +44,12 @@ Outcome: The daemon and client dispatch directly through the canonical typed `in
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-10 06:01
+---
+Refinement 2026-09-10: confirmed. internal/daemon/wire_protocol.go is 406 lines of `wireRequestFromProtocol`/`writeProtocolResponse` field copying with 35 wire* references in that file plus 42 in client.go and 27 in server.go. Worthwhile as a drift-prevention chore; protocol JSON unchanged per non-goals.
+---
+<!-- COMMENTS:END -->

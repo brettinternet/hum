@@ -4,7 +4,7 @@ title: Report declared stopped processes consistently in status
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:50'
-updated_date: '2026-09-10 01:57'
+updated_date: '2026-09-10 06:01'
 labels: []
 dependencies: []
 modified_files:
@@ -39,3 +39,12 @@ Outcome: `hum status NAME` reports a resolved but never-launched manifest defini
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-10 06:01
+---
+Refinement 2026-09-10: confirmed. In `statusCommand` (internal/cli/commands.go:888) the daemon-present not-found branch already projects a declared definition through `manifestProcess` (:965), and `projectProcessList` (:866) does the same when the daemon is absent; only the detail daemon-absent branch (:940-944) returns `manifestUnavailableMessage`, an error in both human and JSON mode. Fix is to reuse `manifestProcess` there.
+---
+<!-- COMMENTS:END -->

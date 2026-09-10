@@ -4,9 +4,11 @@ title: Make coverage instrumentation compatible with child-process tests
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:55'
-updated_date: '2026-09-10 01:59'
-labels: []
-dependencies: []
+updated_date: '2026-09-10 06:01'
+labels:
+  - tooling
+dependencies:
+  - HUM-069
 modified_files:
   - internal/process/process_test.go
   - internal/testutil/harness.go
@@ -40,3 +42,12 @@ Outcome: Repository-wide Go coverage collection passes without helper-process co
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-10 06:01
+---
+Refinement 2026-09-10: reproduced with `mise exec go -- go test ./... -count=1 -coverprofile=/tmp/hum-coverage.out` (exit 1): seven internal/process failures (TestStartCapturesLiteralArguments, TestStartedCallbackPrecedesOutputCapture, TestStartProvidesEOFStdin, TestStartResolvesExecutableFromSuppliedPath, TestStartResolvesRelativeAndEmptyPathComponentsFromSpecDirectory, TestCaptureSeparatesStreamsAndFlushesTailsBeforeExit, TestCaptureDrainsFastExitOutput) each with `warning: GOCOVERDIR not set`. Labelled tooling (Taskfile.dist.yaml); depends on HUM-069 because both edit internal/testutil/harness.go and Taskfile.dist.yaml.
+---
+<!-- COMMENTS:END -->

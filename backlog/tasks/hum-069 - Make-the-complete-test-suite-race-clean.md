@@ -4,8 +4,9 @@ title: Make the complete test suite race-clean
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:51'
-updated_date: '2026-09-10 01:58'
-labels: []
+updated_date: '2026-09-10 06:01'
+labels:
+  - tooling
 dependencies: []
 modified_files:
   - internal/cli/tty.go
@@ -42,3 +43,12 @@ Outcome: `go test -race ./...` passes locally and CI runs that complete race sur
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-10 06:01
+---
+Refinement 2026-09-10: reproduced with `mise exec go -- go test -race ./... -count=1` (exit 1, ~80s for internal/cli). Four DATA RACE reports: three test-side (cmd/hum/integration_test.go:308,400,558-559; internal/cli/serve_run_test.go:1092,1131,1965,1999-2000, all unsynchronized exec.Cmd reads) and one production race between `ttyInput.start` reading stdin.Fd (internal/cli/tty.go:108) and the forwarding goroutine closing it (tty.go:228). Failing tests: TestBuiltBinaryIntegration, TestAttachedRunInterruptLifecycle, TestTTYCLI. Labelled tooling because Taskfile.dist.yaml and .github/workflows/ci.yaml are gate files.
+---
+<!-- COMMENTS:END -->

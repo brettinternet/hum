@@ -4,7 +4,7 @@ title: Make CLI JSON error codes type-driven
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:52'
-updated_date: '2026-09-10 01:59'
+updated_date: '2026-09-10 06:01'
 labels: []
 dependencies: []
 modified_files:
@@ -29,7 +29,7 @@ Outcome: Public JSON error codes are determined by typed error categories, never
 <!-- AC:BEGIN -->
 - [ ] #1 `mise exec go -- go test ./internal/cli -run TestJSONErrors -count=1` exits 0.
 - [ ] #2 `mise exec go -- go test ./internal/cli -run TestJSONErrorClassificationIgnoresMessageText -count=1` exits 0 after phrase-collision cases remain `internal` and typed usage/unavailable errors retain their documented codes.
-- [ ] #3 `rg -n "likelyCLIUsageError|strings.Contains.*requires|strings.Contains.*duplicate" internal/cli/config.go` exits 1 with no matches.
+- [ ] #3 `rg -n "likelyCLIUsageError|likelyDaemonUnavailableMessage|strings.Contains\(message" internal/cli/config.go` exits 1 with no matches.
 - [ ] #4 `mise exec go -- go test ./internal/cli ./integration -count=1` exits 0.
 <!-- AC:END -->
 
@@ -42,3 +42,12 @@ Outcome: Public JSON error codes are determined by typed error categories, never
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-10 06:01
+---
+Refinement 2026-09-10: confirmed. `likelyCLIUsageError` (internal/cli/config.go:173) matches 15 phrase markers and `likelyDaemonUnavailableMessage` (:157) matches two; both feed `jsonErrorFor`. AC#3 widened to also require removal of the unavailable-message heuristic, which the description already covers.
+---
+<!-- COMMENTS:END -->

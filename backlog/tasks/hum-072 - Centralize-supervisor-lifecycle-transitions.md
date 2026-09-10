@@ -4,7 +4,7 @@ title: Centralize supervisor lifecycle transitions
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:52'
-updated_date: '2026-09-10 01:59'
+updated_date: '2026-09-10 06:01'
 labels: []
 dependencies: []
 modified_files:
@@ -41,3 +41,12 @@ Outcome: Start, restart, automatic relaunch, exit publication, and failure recov
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-10 06:01
+---
+Refinement 2026-09-10: confirmed. `doneClosed` is declared at internal/app/app.go:837 and assigned at :1472, :1639, :1966, :2107, :2402 with no reads. Running-state initialization duplicated between Start and Restart as described. Keep scope tight per non-goals; app.go is 3573 lines and the supervisor is the riskiest package to refactor, so AC#2 invariant tests must exist before consolidation.
+---
+<!-- COMMENTS:END -->

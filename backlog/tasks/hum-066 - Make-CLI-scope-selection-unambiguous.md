@@ -4,7 +4,7 @@ title: Make CLI scope selection unambiguous
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:50'
-updated_date: '2026-09-10 01:57'
+updated_date: '2026-09-10 06:01'
 labels: []
 dependencies: []
 modified_files:
@@ -43,3 +43,12 @@ Outcome: Child arguments can never retarget a process into another namespace, an
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-10 06:01
+---
+Refinement 2026-09-10: confirmed. `parseRunArgs` (internal/cli/commands.go:401) accepts the separator-less form when args[1] has no leading dash, and `rawScopeFlag` (internal/cli/root.go:495) scans the whole invocation and only stops at a literal `--`, so `hum run demo /bin/echo -g` both forwards `-g` and selects global scope. `parseSignalArgs` (:1893) handles --json, --project/-C and runtime flags after positionals but not --global/-g: `--global` fails as an unknown option and `-g` is taken as a third positional.
+---
+<!-- COMMENTS:END -->

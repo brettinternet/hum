@@ -4,7 +4,7 @@ title: Make CLI help concise and truthful
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:51'
-updated_date: '2026-09-10 01:57'
+updated_date: '2026-09-10 06:01'
 labels: []
 dependencies:
   - HUM-064
@@ -24,7 +24,7 @@ ordinal: 44700
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: Root and subcommand help lead with task-oriented usage, show only selectors a command supports, and move protocol/state-machine detail to durable documentation. Evidence: root help is about 393 words and several subcommand descriptions exceed 200 words; inherited help advertises `--global` on commands that reject it and project selectors on commands that reject overrides. Scope: shorten command descriptions, expose scope flags only where valid, retain links or brief pointers to detailed design/coding-agent docs, and add help-contract tests. Non-goals: do not remove supported options, change command behavior, or duplicate full reference documentation in help text.
+Outcome: Root and subcommand help lead with task-oriented usage, show only selectors a command supports, and move protocol/state-machine detail to durable documentation. Evidence (measured 2026-09-10 with `hum CMD --help | wc -w`): root 393 words; logs 436, up 329, run 318, wait 299, restart 280, mcp 267, input 246, attach 222, init 208 all exceed 200. Inherited `--project/-C` is advertised on mcp, serve, skill, shutdown, and completion although `rejectProjectOverride` rejects it on the first four and completion is scope-neutral. Scope: shorten command descriptions, expose scope flags only where valid, retain links or brief pointers to detailed design/coding-agent docs, and add help-contract tests. Non-goals: do not remove supported options, change command behavior, or duplicate full reference documentation in help text.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -44,3 +44,12 @@ Outcome: Root and subcommand help lead with task-oriented usage, show only selec
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-10 06:01
+---
+Refinement 2026-09-10: confirmed and re-measured; description updated with exact counts and the actual inherited-flag leak (--project on mcp/serve/skill/shutdown/completion). Kept dependencies on HUM-064 and HUM-066 because both change the help text this task budgets.
+---
+<!-- COMMENTS:END -->

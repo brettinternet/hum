@@ -4,7 +4,7 @@ title: Stop implicit Mix execution and make discovery cancellable
 status: To Do
 assignee: []
 created_date: '2026-09-10 01:49'
-updated_date: '2026-09-10 01:56'
+updated_date: '2026-09-10 06:01'
 labels: []
 dependencies: []
 modified_files:
@@ -43,3 +43,12 @@ Outcome: Implicit project discovery never evaluates repository `mix.exs`, and ca
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-10 06:01
+---
+Refinement 2026-09-10: confirmed. `detectMix` (internal/project/resolver.go:1017) runs `mix help --names`, which evaluates `mix.exs`; `runDiscoveryCommand` (:251) derives from `context.Background()`; `mcpResolver.Resolve` (internal/cli/mcp.go:58) discards ctx. Other sources verified non-executing so the Mix-only scope is justified: `task --dir X --list-all --json` did not evaluate a `sh:` var sentinel, just is called with `--dump` (no backtick evaluation), and mise config is trust-gated. docs/design.md:664 and docs/coding-agents.md:32 document the two-second MCP shutdown bound referenced by AC#3.
+---
+<!-- COMMENTS:END -->
