@@ -662,11 +662,12 @@ func TestLogsFollow(t *testing.T) {
 	}()
 	sawEviction := followStdout.waitFor(`"type":"eviction"`, 5*time.Second)
 	sawMoreEvent := followStdout.waitFor(`"more":true`, 5*time.Second)
+	sawNextEvent := followStdout.waitFor("\n{", 5*time.Second)
 	cancelFollow()
 	err = <-followDone
 	hum006ListLogsLeaveDir(t, followOldwd)
 	followOutput, stderr := followStdout.String(), followStderr.String()
-	if !sawEviction || !sawMoreEvent {
+	if !sawEviction || !sawMoreEvent || !sawNextEvent {
 		t.Fatalf("bounded eviction follow did not produce required events: stdout=%q stderr=%q", followOutput, stderr)
 	}
 	if err != nil {

@@ -1050,7 +1050,7 @@ func TestAttachedRunInterruptLifecycle(t *testing.T) {
 		releaseStart := func() { releaseOnce.Do(func() { close(release) }) }
 
 		supervisor, err := app.New(app.Options{
-			StopGrace: 100 * time.Millisecond,
+			StopGrace: 2 * time.Second,
 			StartProcess: func(spec process.Spec) (app.Child, error) {
 				if err := os.WriteFile(entered, []byte("entered"), 0600); err != nil {
 					return nil, err
@@ -1089,7 +1089,7 @@ func TestAttachedRunInterruptLifecycle(t *testing.T) {
 		if err := cliServeRunWaitForText(client.stdoutPath, "fixture:sigint-1\n"); err != nil {
 			t.Fatalf("queued SIGINT was not forwarded: %v; stdout=%q stderr=%q", err, client.stdout(), client.stderr())
 		}
-		if client.cmd.ProcessState != nil {
+		if client.exited() {
 			t.Fatal("queued first SIGINT detached the client")
 		}
 		if err := client.cmd.Process.Signal(os.Interrupt); err != nil {
@@ -1128,7 +1128,7 @@ func TestAttachedRunInterruptLifecycle(t *testing.T) {
 		if !strings.Contains(client.stderr(), "interrupt sent to signals; press Ctrl+C again to stop") {
 			t.Fatalf("first SIGINT hint missing: %q", client.stderr())
 		}
-		if client.cmd.ProcessState != nil {
+		if client.exited() {
 			t.Fatal("first SIGINT detached the client")
 		}
 		if err := client.cmd.Process.Signal(os.Interrupt); err != nil {
@@ -2051,7 +2051,7 @@ func cliServeRunStartDaemonWithSupervisor(t *testing.T, runtimeDir string, super
 	t.Helper()
 	server, err := daemon.NewServer(daemon.Config{
 		RuntimeDir: runtimeDir,
-		StopGrace:  100 * time.Millisecond,
+		StopGrace:  2 * time.Second,
 		Supervisor: supervisor,
 	})
 	if err != nil {

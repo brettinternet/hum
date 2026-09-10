@@ -59,7 +59,7 @@ tasks:
 
   race:
     desc: Run race-sensitive package tests
-    cmd: mise exec go -- go test -race ./internal/output ./internal/process ./internal/app ./internal/daemon
+    cmd: mise exec go -- go test -race ./...
 
   smoke:
     desc: Build hum and run built-binary smoke coverage

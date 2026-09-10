@@ -92,11 +92,85 @@ type integrationActionResult struct {
 	Error   json.RawMessage `json:"error"`
 }
 
+type integrationAsyncCommand struct {
+	cmd     *exec.Cmd
+	done    chan struct{}
+	waitErr error
+}
+
+func integrationStartAsyncCommand(cmd *exec.Cmd) *integrationAsyncCommand {
+	process := &integrationAsyncCommand{cmd: cmd, done: make(chan struct{})}
+	go func() {
+		process.waitErr = cmd.Wait()
+		close(process.done)
+	}()
+	return process
+}
+
+func (p *integrationAsyncCommand) exited() bool {
+	if p == nil {
+		return true
+	}
+	select {
+	case <-p.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *integrationAsyncCommand) wait(timeout time.Duration) error {
+	if p == nil {
+		return errors.New("nil process")
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-p.done:
+		return p.waitErr
+	case <-timer.C:
+		if p.cmd != nil && p.cmd.Process != nil {
+			_ = p.cmd.Process.Kill()
+		}
+		killTimer := time.NewTimer(time.Second)
+		defer killTimer.Stop()
+		select {
+		case <-p.done:
+		case <-killTimer.C:
+		}
+		return errors.New("timed out waiting for process")
+	}
+}
+
+func (p *integrationAsyncCommand) stop(timeout time.Duration) {
+	if p == nil || p.exited() {
+		return
+	}
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-p.done:
+		return
+	case <-timer.C:
+	}
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+	killTimer := time.NewTimer(time.Second)
+	defer killTimer.Stop()
+	select {
+	case <-p.done:
+	case <-killTimer.C:
+	}
+}
+
 type integrationFollower struct {
-	cmd    *exec.Cmd
-	lines  chan string
-	stderr *bytes.Buffer
-	wait   chan error
+	process *integrationAsyncCommand
+	lines   chan string
+	stderr  *bytes.Buffer
 }
 
 func TestBuiltBinaryIntegration(t *testing.T) {
@@ -201,16 +275,17 @@ func TestBuiltBinaryIntegration(t *testing.T) {
 	})
 
 	serveStdout, serveStderr := new(bytes.Buffer), new(bytes.Buffer)
-	serve := exec.Command(binary, "serve")
-	serve.Dir = repoRoot
-	serve.Env = append([]string(nil), os.Environ()...)
-	serve.Stdout = serveStdout
-	serve.Stderr = serveStderr
-	if err := serve.Start(); err != nil {
+	serveCmd := exec.Command(binary, "serve")
+	serveCmd.Dir = repoRoot
+	serveCmd.Env = append([]string(nil), os.Environ()...)
+	serveCmd.Stdout = serveStdout
+	serveCmd.Stderr = serveStderr
+	if err := serveCmd.Start(); err != nil {
 		t.Fatalf("start foreground serve: %v", err)
 	}
+	serve := integrationStartAsyncCommand(serveCmd)
 	t.Cleanup(func() {
-		integrationStopServe(serve)
+		serve.stop(3 * time.Second)
 	})
 	t.Cleanup(func() {
 		integrationForceShutdown(binary, cwd)
@@ -229,14 +304,11 @@ func TestBuiltBinaryIntegration(t *testing.T) {
 			t.Fatalf("attached line %d = %q, %v; want %q", index, line, lineErr, want)
 		}
 	}
-	select {
-	case err := <-attached.wait:
+	if err := attached.process.wait(8 * time.Second); err != nil {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 7 {
 			t.Fatalf("attached exit = %v, want code 7", err)
 		}
-	case <-time.After(8 * time.Second):
-		t.Fatal("attached run did not exit with its child")
 	}
 	if attached.stderr.String() != "attached-stderr\n" {
 		t.Errorf("attached stderr = %q, want raw child stderr only", attached.stderr.String())
@@ -397,10 +469,10 @@ func TestBuiltBinaryIntegration(t *testing.T) {
 			t.Fatalf("logs follower after stop: line=%q err=%v stderr=%q", waitingLine, err, follower.stderr.String())
 		}
 	}
-	if follower.cmd.ProcessState != nil {
+	if follower.process.exited() {
 		t.Fatal("logs follower exited after stop")
 	}
-	if err := follower.cmd.Process.Signal(os.Interrupt); err != nil {
+	if err := follower.process.cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("detach logs follower: %v", err)
 	}
 	if err := integrationDrainFollower(follower, 8*time.Second); err != nil {
@@ -497,11 +569,11 @@ func TestBuiltBinaryIntegration(t *testing.T) {
 		t.Fatalf("guard remained listed after forced shutdown: %+v", afterForcedProcesses)
 	}
 
-	serveWaitErr := integrationWaitProcess(serve, 8*time.Second)
+	serveWaitErr := serve.wait(8 * time.Second)
 	if serveWaitErr != nil {
 		t.Fatalf("foreground serve after forced shutdown: %v (stdout=%q stderr=%q)", serveWaitErr, serveStdout.String(), serveStderr.String())
 	}
-	if code := serve.ProcessState.ExitCode(); code != 0 {
+	if code := integrationCommandCode(serve.waitErr); code != 0 {
 		t.Fatalf("foreground serve exit code = %d, want 0 (stderr=%q)", code, serveStderr.String())
 	}
 	if strings.TrimSpace(serveStdout.String()) != "" {
@@ -535,6 +607,17 @@ func integrationRunBinaryContext(ctx context.Context, binary, cwd string, args .
 	return integrationCommandResult{stdout: stdout.String(), stderr: stderr.String(), code: code, err: err}
 }
 
+func integrationCommandCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
 func integrationForceShutdown(binary, cwd string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -554,10 +637,7 @@ func integrationStartFollower(binary, cwd string, args ...string) (*integrationF
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	wait := make(chan error, 1)
-	go func() {
-		wait <- cmd.Wait()
-	}()
+	process := integrationStartAsyncCommand(cmd)
 	lines := make(chan string, 128)
 	go func() {
 		reader := bufio.NewReader(stdout)
@@ -572,7 +652,7 @@ func integrationStartFollower(binary, cwd string, args ...string) (*integrationF
 		}
 		close(lines)
 	}()
-	return &integrationFollower{cmd: cmd, lines: lines, stderr: stderr, wait: wait}, nil
+	return &integrationFollower{process: process, lines: lines, stderr: stderr}, nil
 }
 
 func integrationFollowerLine(follower *integrationFollower, timeout time.Duration) (string, error) {
@@ -593,37 +673,14 @@ func integrationFollowerLine(follower *integrationFollower, timeout time.Duratio
 }
 
 func integrationStopFollower(follower *integrationFollower, timeout time.Duration) {
-	if follower == nil || follower.cmd == nil {
+	if follower == nil {
 		return
 	}
-	if follower.cmd.ProcessState != nil {
-		return
-	}
-	if follower.cmd.ProcessState == nil && follower.cmd.Process != nil {
-		_ = follower.cmd.Process.Signal(syscall.SIGTERM)
-	}
-	if follower.wait == nil {
-		return
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-follower.wait:
-		return
-	case <-timer.C:
-	}
-	if follower.cmd.ProcessState == nil && follower.cmd.Process != nil {
-		_ = follower.cmd.Process.Kill()
-	}
-	timer.Reset(time.Second)
-	select {
-	case <-follower.wait:
-	case <-timer.C:
-	}
+	follower.process.stop(timeout)
 }
 
 func integrationDrainFollower(follower *integrationFollower, timeout time.Duration) error {
-	if follower == nil || follower.wait == nil {
+	if follower == nil || follower.process == nil {
 		return errors.New("nil follower")
 	}
 	timer := time.NewTimer(timeout)
@@ -631,7 +688,7 @@ func integrationDrainFollower(follower *integrationFollower, timeout time.Durati
 	var waitErr error
 	waitDone := false
 	lines := follower.lines
-	wait := follower.wait
+	wait := follower.process.done
 	for lines != nil || !waitDone {
 		select {
 		case line, ok := <-lines:
@@ -642,7 +699,8 @@ func integrationDrainFollower(follower *integrationFollower, timeout time.Durati
 			if _, err := integrationFollowEventFromJSON(line); err != nil {
 				return fmt.Errorf("decode event %q: %w", line, err)
 			}
-		case waitErr = <-wait:
+		case <-wait:
+			waitErr = follower.process.waitErr
 			waitDone = true
 			wait = nil
 		case <-timer.C:
@@ -761,7 +819,7 @@ func integrationWaitForRuntimeFile(t *testing.T, path, description string) {
 	}
 }
 
-func integrationWaitForSocket(t *testing.T, serve *exec.Cmd, socket string) {
+func integrationWaitForSocket(t *testing.T, serve *integrationAsyncCommand, socket string) {
 	t.Helper()
 	deadline := time.Now().Add(8 * time.Second)
 	for {
@@ -771,56 +829,10 @@ func integrationWaitForSocket(t *testing.T, serve *exec.Cmd, socket string) {
 		if time.Now().After(deadline) {
 			t.Fatalf("foreground serve did not create socket %q", socket)
 		}
-		if serve.ProcessState != nil {
-			t.Fatalf("foreground serve exited before readiness (exit=%d)", serve.ProcessState.ExitCode())
+		if serve.exited() {
+			t.Fatalf("foreground serve exited before readiness (exit=%d)", integrationCommandCode(serve.waitErr))
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func integrationStopServe(serve *exec.Cmd) {
-	if serve == nil || serve.Process == nil || serve.ProcessState != nil {
-		return
-	}
-	done := make(chan error, 1)
-	go func() { done <- serve.Wait() }()
-	_ = serve.Process.Signal(syscall.SIGTERM)
-	timer := time.NewTimer(3 * time.Second)
-	defer timer.Stop()
-	select {
-	case <-done:
-		return
-	case <-timer.C:
-	}
-	_ = serve.Process.Kill()
-	timer.Reset(time.Second)
-	select {
-	case <-done:
-	case <-timer.C:
-	}
-}
-
-func integrationWaitProcess(cmd *exec.Cmd, timeout time.Duration) error {
-	if cmd == nil || cmd.ProcessState != nil {
-		return nil
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		timer.Reset(time.Second)
-		select {
-		case <-done:
-		case <-timer.C:
-		}
-		return errors.New("timed out waiting for process")
 	}
 }
 

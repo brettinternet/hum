@@ -24,6 +24,7 @@ import (
 type ttyInput struct {
 	session  *daemon.InputSession
 	stdin    *os.File
+	stdinFD  int
 	errOut   io.Writer
 	terminal bool
 
@@ -84,17 +85,18 @@ func newTTYInput(session *daemon.InputSession, errOut io.Writer) (*ttyInput, err
 	if session == nil {
 		return nil, errors.New("nil tty input session")
 	}
-	input := &ttyInput{session: session, stdin: os.Stdin, errOut: errOut, stop: make(chan struct{}), done: make(chan struct{})}
+	input := &ttyInput{session: session, stdin: os.Stdin, stdinFD: -1, errOut: errOut, stop: make(chan struct{}), done: make(chan struct{})}
 	if input.stdin == nil {
 		return input, nil
 	}
-	input.terminal = term.IsTerminal(int(input.stdin.Fd()))
+	input.stdinFD = int(input.stdin.Fd())
+	input.terminal = term.IsTerminal(input.stdinFD)
 	if input.terminal {
-		state, err := term.MakeRaw(int(input.stdin.Fd()))
+		state, err := term.MakeRaw(input.stdinFD)
 		if err != nil {
 			return nil, fmt.Errorf("enable raw terminal input: %w", err)
 		}
-		input.restore = func() { _ = term.Restore(int(input.stdin.Fd()), state) }
+		input.restore = func() { _ = term.Restore(input.stdinFD, state) }
 	}
 	return input, nil
 }
@@ -105,7 +107,7 @@ func (i *ttyInput) start() {
 	}
 	go i.forward()
 	go i.watchSession()
-	if i.stdin != nil && term.IsTerminal(int(i.stdin.Fd())) {
+	if i.terminal {
 		go i.resizeLoop()
 	}
 }
@@ -128,7 +130,7 @@ func (i *ttyInput) resizeLoop() {
 		case <-i.stop:
 			return
 		case <-signals:
-			width, height, err := term.GetSize(int(i.stdin.Fd()))
+			width, height, err := term.GetSize(i.stdinFD)
 			if err != nil || width <= 0 || height <= 0 {
 				continue
 			}
