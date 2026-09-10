@@ -2424,9 +2424,20 @@ func (s *Supervisor) PrepareTTYScoped(scope string, req StartRequest) error {
 		if req.Argv[0] == "" {
 			return fmt.Errorf("%w: argv must not be empty", ErrInvalidRequest)
 		}
+		var readyConfig *ReadinessConfig
+		var readyPattern *regexp.Regexp
+		if req.Ready != nil {
+			config := *req.Ready
+			compiled, compileErr := regexp.Compile(config.Match)
+			if compileErr != nil {
+				return fmt.Errorf("%w: readiness match: %v", ErrInvalidRequest, compileErr)
+			}
+			readyConfig, readyPattern = &config, compiled
+		}
 		rec.argv = append([]string(nil), req.Argv...)
 		rec.source = req.Source
 		rec.env = append([]string(nil), req.Env...)
+		rec.readyConfig, rec.readyPattern = readyConfig, readyPattern
 	}
 	if req.TTYSize != nil {
 		size := *req.TTYSize

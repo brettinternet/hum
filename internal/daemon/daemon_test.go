@@ -451,63 +451,91 @@ func TestStatusFollowers(t *testing.T) {
 }
 
 func TestStatusResponseShapes(t *testing.T) {
-	initialCursor := uint64(19)
-	item := wireProcess{
-		Name:       "status",
-		Root:       "/work/project",
-		PID:        42,
-		PGID:       42,
-		Cwd:        "/work/project",
-		Argv:       []string{"tool"},
-		NextCursor: &initialCursor,
+	item := protocolProcessFromApp(app.Process{Name: "status", Root: "/work/project", PID: 42, PGID: 42, Cwd: "/work/project", Argv: []string{"tool"}, NextCursor: 19})
+	if item.NextCursor != nil {
+		t.Fatalf("generic process conversion retained next cursor: %#v", item.NextCursor)
 	}
-	encode := func(t *testing.T, response wireResponse) []byte {
+	encode := func(t *testing.T, response any) []byte {
 		t.Helper()
 		var sink strings.Builder
-		if err := writeProtocolResponse(protocol.NewEncoder(&sink), response); err != nil {
-			t.Fatalf("write %s response: %v", response.Op, err)
+		if err := protocol.NewEncoder(&sink).EncodeResponse(response); err != nil {
+			t.Fatal(err)
 		}
 		return []byte(sink.String())
 	}
-	assertOmitted := func(t *testing.T, response wireResponse) {
+	assertOmitted := func(t *testing.T, response any) {
 		t.Helper()
 		if encoded := string(encode(t, response)); strings.Contains(encoded, `"next_cursor"`) {
-			t.Fatalf("%s response unexpectedly includes next_cursor: %s", response.Op, encoded)
+			t.Fatalf("response unexpectedly includes next_cursor: %s", encoded)
 		}
 	}
-
-	t.Run("start omits next cursor", func(t *testing.T) {
-		assertOmitted(t, wireResponse{Op: "start", OK: true, Process: &item})
-	})
-	t.Run("list omits next cursor", func(t *testing.T) {
-		assertOmitted(t, wireResponse{Op: "list", OK: true, Processes: []wireProcess{item}})
-	})
-	t.Run("stop omits next cursor", func(t *testing.T) {
-		assertOmitted(t, wireResponse{Op: "stop", OK: true, Process: &item})
-	})
+	assertOmitted(t, protocol.StartResponse{Op: protocol.OpStart, OK: true, Process: &item})
+	assertOmitted(t, protocol.ListResponse{Op: protocol.OpList, OK: true, Processes: []protocol.Process{item}})
+	assertOmitted(t, protocol.StopResponse{Op: protocol.OpStop, OK: true, Process: &item})
 	for _, test := range []struct {
 		name   string
-		cursor uint64
-	}{
-		{name: "nonzero", cursor: 19},
-		{name: "zero", cursor: 0},
-	} {
+		cursor protocol.Cursor
+	}{{"nonzero", 19}, {"zero", 0}} {
 		t.Run("get includes exact next cursor "+test.name, func(t *testing.T) {
-			nextCursor := test.cursor
-			item.NextCursor = &nextCursor
-			encoded := encode(t, wireResponse{Op: "get", OK: true, Process: &item})
+			getItem := item
+			getItem.NextCursor = &test.cursor
+			encoded := encode(t, protocol.GetResponse{Op: protocol.OpGet, OK: true, Process: &getItem})
 			var got protocol.GetResponse
 			if err := json.Unmarshal(encoded, &got); err != nil {
-				t.Fatalf("decode get response: %v", err)
+				t.Fatal(err)
 			}
 			if got.Process == nil || got.Process.NextCursor == nil {
-				t.Fatalf("get response next_cursor = %#v, want pointer to %d", got.Process, test.cursor)
+				t.Fatalf("get response next_cursor omitted")
 			}
-			if got := uint64(*got.Process.NextCursor); got != test.cursor {
-				t.Fatalf("get response next_cursor = %d, want %d", got, test.cursor)
+			if *got.Process.NextCursor != test.cursor {
+				t.Fatalf("next cursor=%d", *got.Process.NextCursor)
 			}
 		})
 	}
+
+	t.Run("dispatch omits populated next cursor except get", func(t *testing.T) {
+		root := t.TempDir()
+		child := &daemonTestChild{pid: 42042, done: make(chan struct{})}
+		supervisor, err := app.New(app.Options{StartProcess: func(spec process.Spec) (app.Child, error) {
+			if _, appendErr := spec.Output.Append(output.Stdout, time.Now(), "started\n"); appendErr != nil {
+				return nil, appendErr
+			}
+			return child, nil
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server, err := NewServer(Config{RuntimeDir: shortRuntimeDir(t), Supervisor: supervisor, StopGrace: time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer server.Close()
+
+		startValue, _ := server.dispatch(&protocol.Request{Op: protocol.OpStart, Start: &protocol.StartRequest{Op: protocol.OpStart, Scope: app.ScopeProject, Name: "status", Root: root, Cwd: root, Argv: []string{"status"}}})
+		startResponse, ok := startValue.(protocol.StartResponse)
+		if !ok || startResponse.Process == nil || startResponse.Process.NextCursor != nil {
+			t.Fatalf("start response = %#v, want process without next_cursor", startValue)
+		}
+		stored, err := supervisor.GetScoped(app.ScopeProject, root, "status")
+		if err != nil || stored.NextCursor == 0 {
+			t.Fatalf("stored process next cursor = %d, err %v; want nonzero source value", stored.NextCursor, err)
+		}
+		listValue, _ := server.dispatch(&protocol.Request{Op: protocol.OpList, List: &protocol.ListRequest{Op: protocol.OpList, Scope: app.ScopeProject, Cwd: root}})
+		listResponse, ok := listValue.(protocol.ListResponse)
+		if !ok || len(listResponse.Processes) != 1 || listResponse.Processes[0].NextCursor != nil {
+			t.Fatalf("list response = %#v, want process without next_cursor", listValue)
+		}
+		getValue, _ := server.dispatch(&protocol.Request{Op: protocol.OpGet, Get: &protocol.GetRequest{Op: protocol.OpGet, Scope: app.ScopeProject, Name: "status", Cwd: root}})
+		getResponse, ok := getValue.(protocol.GetResponse)
+		if !ok || getResponse.Process == nil || getResponse.Process.NextCursor == nil || *getResponse.Process.NextCursor == 0 {
+			t.Fatalf("get response = %#v, want populated next_cursor", getValue)
+		}
+		stopValue, _ := server.dispatch(&protocol.Request{Op: protocol.OpStop, Stop: &protocol.StopRequest{Op: protocol.OpStop, Scope: app.ScopeProject, Name: "status", Cwd: root}})
+		stopResponse, ok := stopValue.(protocol.StopResponse)
+		if !ok || stopResponse.Process == nil || stopResponse.Process.NextCursor != nil {
+			t.Fatalf("stop response = %#v, want process without next_cursor", stopValue)
+		}
+	})
 }
 
 func TestStatusGetRejectsOmittedNextCursor(t *testing.T) {
@@ -1020,14 +1048,7 @@ func TestConcurrentStartup(t *testing.T) {
 		startEntered := make(chan struct{})
 		releaseStart := make(chan struct{})
 		child := &daemonTestChild{pid: 424242, done: make(chan struct{})}
-		supervisor, err := app.New(app.Options{
-			StopGrace: time.Millisecond,
-			StartProcess: func(process.Spec) (app.Child, error) {
-				close(startEntered)
-				<-releaseStart
-				return child, nil
-			},
-		})
+		supervisor, err := app.New(app.Options{StopGrace: time.Millisecond, StartProcess: func(process.Spec) (app.Child, error) { close(startEntered); <-releaseStart; return child, nil }})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1036,53 +1057,50 @@ func TestConcurrentStartup(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = server.Close() })
-
-		startRequest := testStartRequest(root, "race", testShell(t), "-c", "sleep 1")
-		startDone := make(chan wireResponse, 1)
+		startDone := make(chan any, 1)
 		go func() {
-			response, _ := server.dispatch(wireRequest{
-				Op: string(protocol.OpStart), Name: startRequest.Name, Argv: startRequest.Argv,
-				Cwd: startRequest.Cwd, Env: startRequest.Env,
-			})
+			response, _ := server.dispatch(&protocol.Request{Op: protocol.OpStart, Start: &protocol.StartRequest{Op: protocol.OpStart, Name: "race", Argv: []string{"fake", "race"}, Cwd: root}})
 			startDone <- response
 		}()
 		select {
 		case <-startEntered:
 		case <-time.After(time.Second):
-			t.Fatal("start did not reach the process admission barrier")
+			t.Fatal("start did not reach process admission barrier")
 		}
-		shutdownDone := make(chan wireResponse, 1)
+		shutdownDone := make(chan any, 1)
 		go func() {
-			response, _ := server.dispatch(wireRequest{Op: string(protocol.OpShutdown), Force: false})
+			response, _ := server.dispatch(&protocol.Request{Op: protocol.OpShutdown, Shutdown: &protocol.ShutdownRequest{Op: protocol.OpShutdown}})
 			shutdownDone <- response
 		}()
 		close(releaseStart)
-
-		var startResponse, shutdownResponse wireResponse
+		var startResponse, shutdownResponse any
 		select {
 		case startResponse = <-startDone:
 		case <-time.After(time.Second):
-			t.Fatal("start remained blocked after admission barrier release")
+			t.Fatal("start remained blocked")
 		}
 		select {
 		case shutdownResponse = <-shutdownDone:
 		case <-time.After(time.Second):
-			t.Fatal("non-forced shutdown remained blocked after start admission")
+			t.Fatal("shutdown remained blocked")
 		}
-		switch {
-		case startResponse.Error == nil:
-			if startResponse.Process == nil {
-				t.Fatal("successful start response omitted process")
+		startOK, startSuccess := startResponse.(protocol.StartResponse)
+		shutdownError, shutdownFailed := shutdownResponse.(protocol.ErrorResponse)
+		if startSuccess {
+			if startOK.Process == nil {
+				t.Fatal("successful start omitted process")
 			}
-			if shutdownResponse.Error == nil || shutdownResponse.Error.Code != string(protocol.ErrorActiveProcesses) {
-				t.Fatalf("start admitted without shutdown refusal: shutdown response = %+v", shutdownResponse)
+			if !shutdownFailed || shutdownError.Error == nil || shutdownError.Error.Code != protocol.ErrorActiveProcesses {
+				t.Fatalf("start admitted without shutdown refusal: %#v", shutdownResponse)
 			}
-		case startResponse.Error.Code == string(protocol.ErrorSupervisorClosed):
-			if shutdownResponse.Error != nil || shutdownResponse.Op != string(protocol.OpShutdown) {
-				t.Fatalf("shutdown won without start rejection: shutdown response = %+v", shutdownResponse)
+		} else {
+			startError, ok := startResponse.(protocol.ErrorResponse)
+			if !ok || startError.Error == nil || startError.Error.Code != protocol.ErrorSupervisorClosed {
+				t.Fatalf("unexpected start response: %#v", startResponse)
 			}
-		default:
-			t.Fatalf("unexpected start response during concurrent shutdown: %+v", startResponse)
+			if shutdownFailed {
+				t.Fatalf("shutdown unexpectedly refused after start rejection: %#v", shutdownResponse)
+			}
 		}
 	})
 	t.Run("Restart and Shutdown(false) admission", func(t *testing.T) {
@@ -1094,21 +1112,18 @@ func TestConcurrentStartup(t *testing.T) {
 		firstChild := &daemonTestChild{pid: 424243, done: make(chan struct{})}
 		secondChild := &daemonTestChild{pid: 424244, done: make(chan struct{})}
 		var starts atomic.Int32
-		supervisor, err := app.New(app.Options{
-			StopGrace: time.Millisecond,
-			StartProcess: func(process.Spec) (app.Child, error) {
-				switch starts.Add(1) {
-				case 1:
-					return firstChild, nil
-				case 2:
-					close(restartEntered)
-					<-releaseRestart
-					return secondChild, nil
-				default:
-					return nil, errors.New("unexpected extra process start")
-				}
-			},
-		})
+		supervisor, err := app.New(app.Options{StopGrace: time.Millisecond, StartProcess: func(process.Spec) (app.Child, error) {
+			switch starts.Add(1) {
+			case 1:
+				return firstChild, nil
+			case 2:
+				close(restartEntered)
+				<-releaseRestart
+				return secondChild, nil
+			default:
+				return nil, errors.New("unexpected extra process start")
+			}
+		}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1116,55 +1131,46 @@ func TestConcurrentStartup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			releaseOnce.Do(func() { close(releaseRestart) })
-			_ = server.Close()
-		})
-
-		startResponse, _ := server.dispatch(wireRequest{
-			Op:   string(protocol.OpStart),
-			Name: "race",
-			Cwd:  root,
-			Argv: []string{"fake", "race"},
-		})
-		if startResponse.Error != nil || startResponse.Process == nil {
-			t.Fatalf("initial process start = %+v", startResponse)
+		t.Cleanup(func() { releaseOnce.Do(func() { close(releaseRestart) }); _ = server.Close() })
+		startResponse, _ := server.dispatch(&protocol.Request{Op: protocol.OpStart, Start: &protocol.StartRequest{Op: protocol.OpStart, Name: "race", Cwd: root, Argv: []string{"fake", "race"}}})
+		started, ok := startResponse.(protocol.StartResponse)
+		if !ok || started.Process == nil {
+			t.Fatalf("initial process start = %#v", startResponse)
 		}
-
-		restartDone := make(chan wireResponse, 1)
+		restartDone := make(chan any, 1)
 		go func() {
-			response, _ := server.dispatch(wireRequest{Op: string(protocol.OpRestart), Cwd: root, Name: "race"})
+			response, _ := server.dispatch(&protocol.Request{Op: protocol.OpRestart, Restart: &protocol.RestartRequest{Op: protocol.OpRestart, Cwd: root, Name: "race"}})
 			restartDone <- response
 		}()
 		select {
 		case <-restartEntered:
 		case <-time.After(time.Second):
-			t.Fatal("restart did not reach the relaunch admission barrier")
+			t.Fatal("restart did not reach relaunch admission barrier")
 		}
-
-		shutdownDone := make(chan wireResponse, 1)
+		shutdownDone := make(chan any, 1)
 		go func() {
-			response, _ := server.dispatch(wireRequest{Op: string(protocol.OpShutdown), Force: false})
+			response, _ := server.dispatch(&protocol.Request{Op: protocol.OpShutdown, Shutdown: &protocol.ShutdownRequest{Op: protocol.OpShutdown}})
 			shutdownDone <- response
 		}()
 		releaseOnce.Do(func() { close(releaseRestart) })
-
-		var restartResponse, shutdownResponse wireResponse
+		var restartResponse, shutdownResponse any
 		select {
 		case restartResponse = <-restartDone:
 		case <-time.After(time.Second):
-			t.Fatal("restart remained blocked after relaunch barrier release")
+			t.Fatal("restart remained blocked")
 		}
 		select {
 		case shutdownResponse = <-shutdownDone:
 		case <-time.After(time.Second):
-			t.Fatal("non-forced shutdown remained blocked after restart admission")
+			t.Fatal("shutdown remained blocked")
 		}
-		if restartResponse.Error != nil || restartResponse.Process == nil || restartResponse.Process.RestartCount != 1 {
-			t.Fatalf("restart response during concurrent shutdown = %+v", restartResponse)
+		restarted, ok := restartResponse.(protocol.RestartResponse)
+		shutdownError, shutdownFailed := shutdownResponse.(protocol.ErrorResponse)
+		if !ok || restarted.Process == nil || restarted.Process.RestartCount != 1 {
+			t.Fatalf("restart response = %#v", restartResponse)
 		}
-		if shutdownResponse.Error == nil || shutdownResponse.Error.Code != string(protocol.ErrorActiveProcesses) {
-			t.Fatalf("restart admitted without shutdown refusal: shutdown response = %+v", shutdownResponse)
+		if !shutdownFailed || shutdownError.Error == nil || shutdownError.Error.Code != protocol.ErrorActiveProcesses {
+			t.Fatalf("restart admitted without shutdown refusal: %#v", shutdownResponse)
 		}
 	})
 }
@@ -1809,22 +1815,9 @@ func daemonWaitRequest(name, cwd, match string, timeout time.Duration) protocol.
 
 func TestWaitRequestConversion(t *testing.T) {
 	after := protocol.Cursor(0)
-	request := protocol.Request{
-		Op: protocol.OpWait,
-		Wait: &protocol.WaitRequest{
-			Op: protocol.OpWait, Name: "wait", Cwd: "/work/project",
-			After: &after, Match: "ready", TimeoutMS: 1234,
-		},
-	}
-	wire, err := wireRequestFromProtocol(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wire.Op != string(protocol.OpWait) || wire.Name != "wait" || wire.Cwd != "/work/project" || wire.Match != "ready" || wire.TimeoutMS != 1234 || wire.After == nil || *wire.After != 0 {
-		t.Fatalf("wire wait request = %#v", wire)
-	}
+	request := protocol.WaitRequest{Op: protocol.OpWait, Name: "wait", Cwd: "/work/project", After: &after, Match: "ready", TimeoutMS: 1234}
 	var sink strings.Builder
-	if err := writeProtocolRequest(protocol.NewEncoder(&sink), wire); err != nil {
+	if err := protocol.NewEncoder(&sink).EncodeRequest(request); err != nil {
 		t.Fatal(err)
 	}
 	decoded, err := protocol.NewDecoder(strings.NewReader(sink.String())).DecodeRequest()
@@ -1832,16 +1825,16 @@ func TestWaitRequestConversion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decoded.Wait == nil || decoded.Wait.After == nil || *decoded.Wait.After != 0 || decoded.Wait.TimeoutMS != 1234 || decoded.Wait.Match != "ready" {
-		t.Fatalf("decoded wait request = %#v", decoded.Wait)
+		t.Fatalf("decoded wait request=%#v", decoded.Wait)
 	}
 }
 
 func TestWaitProcessObserved(t *testing.T) {
 	for _, observed := range []bool{false, true} {
 		t.Run(strconv.FormatBool(observed), func(t *testing.T) {
-			response := wireResponseFromWait(app.WaitResult{Outcome: app.WaitTimedOut, ProcessObserved: observed})
+			response := protocolWaitResponse(app.WaitResult{Outcome: app.WaitTimedOut, ProcessObserved: observed})
 			var sink strings.Builder
-			if err := writeProtocolResponse(protocol.NewEncoder(&sink), response); err != nil {
+			if err := protocol.NewEncoder(&sink).EncodeResponse(response); err != nil {
 				t.Fatal(err)
 			}
 			wantField := `"process_observed":` + strconv.FormatBool(observed)
@@ -1869,7 +1862,7 @@ func TestWaitResponseShape(t *testing.T) {
 	for _, result := range cases {
 		t.Run(string(result.Outcome), func(t *testing.T) {
 			var sink strings.Builder
-			if err := writeProtocolResponse(protocol.NewEncoder(&sink), wireResponseFromWait(result)); err != nil {
+			if err := protocol.NewEncoder(&sink).EncodeResponse(protocolWaitResponse(result)); err != nil {
 				t.Fatalf("encode wait response: %v", err)
 			}
 			encoded := sink.String()
@@ -2245,54 +2238,56 @@ func TestOutputReadExceedsLogLineLimit(t *testing.T) {
 
 func TestSinceWireRequest(t *testing.T) {
 	cutoff := time.Now().Add(-time.Second).Truncate(time.Nanosecond)
-	outputRequest := wireRequestFromProtocolOutputRequest(protocol.OutputRequest{Op: protocol.OpOutput, Name: "output", Cwd: "/tmp", SinceUnixNano: cutoff.UnixNano()})
+	outputRequest := protocol.OutputRequest{Op: protocol.OpOutput, Name: "output", Cwd: "/tmp", SinceUnixNano: cutoff.UnixNano()}
 	if outputRequest.SinceUnixNano != cutoff.UnixNano() {
-		t.Fatalf("output wire since_unix_nano = %d, want %d", outputRequest.SinceUnixNano, cutoff.UnixNano())
+		t.Fatalf("output since_unix_nano = %d, want %d", outputRequest.SinceUnixNano, cutoff.UnixNano())
 	}
-	followRequest := wireRequestFromProtocolFollowRequest(protocol.FollowRequest{Op: protocol.OpFollow, Name: "follow", Cwd: "/tmp", SinceUnixNano: cutoff.UnixNano()})
+	followRequest := protocol.FollowRequest{Op: protocol.OpFollow, Name: "follow", Cwd: "/tmp", SinceUnixNano: cutoff.UnixNano()}
 	if followRequest.SinceUnixNano != cutoff.UnixNano() {
-		t.Fatalf("follow wire since_unix_nano = %d, want %d", followRequest.SinceUnixNano, cutoff.UnixNano())
+		t.Fatalf("follow since_unix_nano = %d, want %d", followRequest.SinceUnixNano, cutoff.UnixNano())
 	}
-	options, err := readOptionsFromWire(wireRequest{SinceUnixNano: cutoff.UnixNano()})
-	if err != nil {
-		t.Fatal(err)
+	for _, test := range []struct {
+		name string
+		read func() (output.ReadOptions, error)
+	}{
+		{name: "output", read: func() (output.ReadOptions, error) { return readOptionsFromProtocol(outputRequest) }},
+		{name: "follow", read: func() (output.ReadOptions, error) { return readOptionsFromFollow(followRequest) }},
+	} {
+		options, err := test.read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !options.Since.Equal(cutoff) {
+			t.Fatalf("%s since cutoff = %v, want immutable cutoff %v", test.name, options.Since, cutoff)
+		}
 	}
-	if !options.Since.Equal(cutoff) {
-		t.Fatalf("wire since cutoff = %v, want immutable cutoff %v", options.Since, cutoff)
-	}
-	relative, err := readOptionsFromWire(wireRequest{SinceMS: 10})
+	relative, err := readOptionsFromProtocol(protocol.OutputRequest{SinceMS: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if relative.Since.IsZero() || time.Until(relative.Since) > 0 {
-		t.Fatalf("relative wire since cutoff = %v, want a past cutoff", relative.Since)
+		t.Fatalf("relative since cutoff = %v, want a past cutoff", relative.Since)
 	}
 	for _, since := range []int64{-1, maxSinceMilliseconds + 1} {
-		if _, err := readOptionsFromWire(wireRequest{SinceMS: since}); err == nil || !errors.Is(err, app.ErrInvalidRequest) {
+		if _, err := readOptionsFromProtocol(protocol.OutputRequest{SinceMS: since}); err == nil || !errors.Is(err, app.ErrInvalidRequest) {
 			t.Fatalf("since_ms=%d validation error = %v, want invalid request", since, err)
 		}
 	}
 	for _, test := range []struct {
 		name string
-		op   protocol.Operation
+		read func(int64) (output.ReadOptions, error)
 	}{
-		{name: "output", op: protocol.OpOutput},
-		{name: "follow", op: protocol.OpFollow},
+		{name: "output", read: func(since int64) (output.ReadOptions, error) {
+			return readOptionsFromProtocol(protocol.OutputRequest{Op: protocol.OpOutput, Name: "output", SinceMS: since, SinceUnixNano: cutoff.UnixNano()})
+		}},
+		{name: "follow", read: func(since int64) (output.ReadOptions, error) {
+			return readOptionsFromFollow(protocol.FollowRequest{Op: protocol.OpFollow, Name: "follow", SinceMS: since, SinceUnixNano: cutoff.UnixNano()})
+		}},
 	} {
 		for _, since := range []int64{-1, 1, maxSinceMilliseconds + 1} {
 			t.Run(fmt.Sprintf("%s mixed since_ms=%d", test.name, since), func(t *testing.T) {
-				var request protocol.Request
-				if test.op == protocol.OpOutput {
-					request = protocol.Request{Op: protocol.OpOutput, Output: &protocol.OutputRequest{Op: protocol.OpOutput, Name: "output", SinceMS: since, SinceUnixNano: cutoff.UnixNano()}}
-				} else {
-					request = protocol.Request{Op: protocol.OpFollow, Follow: &protocol.FollowRequest{Op: protocol.OpFollow, Name: "follow", SinceMS: since, SinceUnixNano: cutoff.UnixNano()}}
-				}
-				wire, err := wireRequestFromProtocol(request)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := readOptionsFromWire(wire); err == nil || !errors.Is(err, app.ErrInvalidRequest) {
-					t.Fatalf("mixed since request = %#v, error %v; want invalid request", wire, err)
+				if _, err := test.read(since); err == nil || !errors.Is(err, app.ErrInvalidRequest) {
+					t.Fatalf("mixed since_ms=%d error = %v, want invalid request", since, err)
 				}
 			})
 		}
@@ -2300,7 +2295,7 @@ func TestSinceWireRequest(t *testing.T) {
 }
 
 func TestScopeDaemonWire(t *testing.T) {
-	wire := wireProcessFromApp(app.Process{Name: "web", Root: "/work/main"})
+	wire := protocolProcessFromApp(app.Process{Name: "web", Root: "/work/main"})
 	encoded, err := json.Marshal(wire)
 	if err != nil {
 		t.Fatal(err)
@@ -2309,7 +2304,7 @@ func TestScopeDaemonWire(t *testing.T) {
 		t.Fatalf("wire snapshot = %s", encoded)
 	}
 	err = &app.NotFoundError{Root: "/work/linked", Name: "web", OtherScopes: []app.ScopeMatch{{Scope: "project", ProjectRoot: "/work/main"}}}
-	mapped := wireErrorToProtocol(protocolWireError(err))
+	mapped := protocolWireError(err)
 	if mapped == nil {
 		t.Fatal("missing wire error")
 	}

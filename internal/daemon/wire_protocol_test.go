@@ -9,35 +9,30 @@ import (
 	"hum/internal/app"
 	"hum/internal/output"
 	"hum/internal/process"
+	"hum/internal/protocol"
 )
 
 func TestGlobalScopeWireValidation(t *testing.T) {
-	legacy := wireRequest{Op: "get", Name: "proxy", Cwd: "/project"}
-	if err := normalizeWireScope(&legacy); err != nil || legacy.Scope != app.ScopeProject {
-		t.Fatalf("legacy scope = %q err=%v", legacy.Scope, err)
+	legacy := protocol.Request{Op: protocol.OpGet, Get: &protocol.GetRequest{Op: protocol.OpGet, Name: "proxy", Cwd: "/project"}}
+	if err := normalizeProtocolScope(&legacy); err != nil || legacy.Get.Scope != app.ScopeProject {
+		t.Fatalf("legacy scope=%q err=%v", legacy.Get.Scope, err)
 	}
-	for _, request := range []wireRequest{
-		{Op: "get", Scope: "machine", Name: "proxy"},
-		{Op: "start", Scope: app.ScopeGlobal, Root: "/project", Name: "proxy"},
-		{Op: "list", Scope: app.ScopeGlobal, All: true},
-	} {
-		if err := normalizeWireScope(&request); err == nil {
-			t.Fatalf("invalid global request accepted: %+v", request)
+	cases := []protocol.Request{{Op: protocol.OpGet, Get: &protocol.GetRequest{Op: protocol.OpGet, Scope: "machine"}}, {Op: protocol.OpStart, Start: &protocol.StartRequest{Op: protocol.OpStart, Scope: app.ScopeGlobal, Root: "/project"}}, {Op: protocol.OpList, List: &protocol.ListRequest{Op: protocol.OpList, Scope: app.ScopeGlobal, All: true}}}
+	for _, request := range cases {
+		if err := normalizeProtocolScope(&request); err == nil {
+			t.Fatalf("invalid global request accepted: %#v", request)
 		}
 	}
 	server := testServer(t, Config{RuntimeDir: shortRuntimeDir(t)})
 	root := t.TempDir()
-	for _, request := range []app.StartRequest{
-		{Name: "proxy", Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}},
-		{Scope: app.ScopeGlobal, Name: "proxy", Cwd: t.TempDir(), Argv: []string{"/bin/sh", "-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}},
-	} {
+	for _, request := range []app.StartRequest{{Name: "proxy", Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}}, {Scope: app.ScopeGlobal, Name: "proxy", Cwd: t.TempDir(), Argv: []string{"/bin/sh", "-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}}} {
 		if _, err := server.supervisor.Start(request); err != nil {
 			t.Fatal(err)
 		}
 	}
 	items, err := server.listProcessesScoped(root, app.ScopeProject, true, true)
 	if err != nil || len(items) != 2 || items[0].Scope == items[1].Scope {
-		t.Fatalf("all-scope list = %+v err=%v", items, err)
+		t.Fatalf("all-scope list=%+v err=%v", items, err)
 	}
 }
 
@@ -72,16 +67,16 @@ func TestTerminalStateWireRoundTrip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			wire := wireProcessFromApp(tc.want)
+			wire := protocolProcessFromApp(tc.want)
 			encoded, err := json.Marshal(wire)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var decoded wireProcess
+			var decoded protocol.Process
 			if err := json.Unmarshal(encoded, &decoded); err != nil {
 				t.Fatal(err)
 			}
-			got := protocolProcessFromWire(decoded)
+			got := decoded
 			if got.State != string(tc.want.State) {
 				t.Fatalf("state = %q, want %q", got.State, tc.want.State)
 			}

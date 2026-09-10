@@ -9,9 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -535,130 +533,107 @@ func (s *Server) serveConn(conn net.Conn) {
 			_ = writeProtocolError(encoder, protocolReq.Op, versionErr)
 			continue
 		}
-		req, err := wireRequestFromProtocol(protocolReq)
-		if err != nil {
+		if err := normalizeProtocolScope(&protocolReq); err != nil {
 			_ = writeProtocolError(encoder, protocolReq.Op, err)
 			continue
 		}
-		if err := normalizeWireScope(&req); err != nil {
-			_ = writeProtocolError(encoder, protocolReq.Op, err)
-			continue
-		}
-		shutdownResponseRegistered := false
-		if req.Op == "shutdown" {
-			shutdownResponseRegistered = s.registerShutdownResponse()
-		}
-		if req.Op == "follow" {
-			s.handleFollow(ctx, conn, encoder, req)
+		shutdownResponseRegistered := protocolReq.Op == protocol.OpShutdown && s.registerShutdownResponse()
+		if protocolReq.Op == protocol.OpFollow {
+			s.handleFollow(ctx, conn, encoder, *protocolReq.Follow)
 			return
 		}
-		if req.Op == "input_attach" {
-			s.handleInput(ctx, conn, decoder, encoder, req)
+		if protocolReq.Op == protocol.OpInputAttach {
+			s.handleInput(ctx, conn, decoder, encoder, *protocolReq.InputAttach)
 			return
 		}
-		if req.Op == "wait" {
-			s.handleWait(ctx, conn, encoder, req)
+		if protocolReq.Op == protocol.OpWait {
+			s.handleWait(ctx, conn, encoder, *protocolReq.Wait)
 			return
 		}
-		resp, terminal := s.dispatch(req)
-		writeErr := writeProtocolResponse(encoder, resp)
+		resp, terminal := s.dispatch(&protocolReq)
+		writeErr := encoder.EncodeResponse(resp)
 
 		var oversized *protocol.OversizedError
 		if errors.As(writeErr, &oversized) {
 			message := fmt.Sprintf("response of %d bytes exceeds the %d byte message limit; request fewer entries or bytes", oversized.Size, oversized.Limit)
-			writeErr = writeProtocolError(encoder, protocol.Operation(req.Op), protocol.NewWireError(protocol.ErrorOversized, message, nil))
+			writeErr = writeProtocolError(encoder, protocolReq.Op, protocol.NewWireError(protocol.ErrorOversized, message, nil))
 		}
 		if shutdownResponseRegistered {
 			s.shutdownResponses.Done()
 		}
-		if writeErr != nil {
-			return
-		}
-		if terminal {
+		if writeErr != nil || terminal {
 			return
 		}
 	}
 }
 
-func dispatchError(op string, err error) wireResponse {
-	return wireResponse{Op: op, Error: protocolWireError(err)}
+func dispatchError(op protocol.Operation, err error) protocol.ErrorResponse {
+	return protocol.ErrorResponse{Op: op, OK: false, Error: protocolWireError(err)}
 }
 
-func normalizeWireScope(req *wireRequest) error {
-	if req.Scope == "" {
-		req.Scope = app.ScopeProject
-	}
-	if req.Scope != app.ScopeProject && req.Scope != app.ScopeGlobal {
-		return protocol.NewWireError(protocol.ErrorInvalidRequest, "scope must be project or global", nil)
-	}
-	if req.Scope == app.ScopeGlobal && req.Root != "" {
-		return protocol.NewWireError(protocol.ErrorInvalidRequest, "global scope cannot include a project root", nil)
-	}
-	if req.Scope == app.ScopeGlobal && req.All {
-		return protocol.NewWireError(protocol.ErrorInvalidRequest, "global scope conflicts with all; all already spans every scope", nil)
-	}
-	return nil
-}
-
-func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
+func (s *Server) dispatch(req *protocol.Request) (any, bool) {
 	switch req.Op {
-	case "start":
-		if req.Root != "" {
-			canonical, err := canonicalRequestRoot(req.Root)
+	case protocol.OpStart:
+		value := req.Start
+		if value.Root != "" {
+			canonical, err := canonicalRequestRoot(value.Root)
 			if err != nil {
 				return dispatchError(req.Op, err), false
 			}
-			req.Root = canonical
+			value.Root = canonical
 		}
 		s.shutdownMu.Lock()
 		if s.shutdownStarted {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, app.ErrSupervisorClosed), false
 		}
-		if req.Cwd == "" {
-			req.Cwd = "."
+		if value.Cwd == "" {
+			value.Cwd = "."
 		}
-		var ttySize *app.TTYSize
-		if req.Columns != 0 || req.Rows != 0 {
-			ttySize = &app.TTYSize{Columns: req.Columns, Rows: req.Rows}
+		var size *app.TTYSize
+		if value.TTYSize != nil {
+			size = &app.TTYSize{Columns: value.TTYSize.Columns, Rows: value.TTYSize.Rows}
 		}
-		p, err := s.supervisor.Start(app.StartRequest{Name: req.Name, Scope: req.Scope, Source: req.Source, Root: req.Root, Argv: req.Argv, Cwd: req.Cwd, Env: append([]string(nil), req.Env...), Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize, Restart: app.RestartPolicy(req.Restart), Attached: req.Attached})
+		launched, err := s.supervisor.Start(app.StartRequest{Name: value.Name, Scope: value.Scope, Source: value.Source, Root: value.Root, Argv: value.Argv, Cwd: value.Cwd, Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), Attached: value.Attached})
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
 		}
-		s.trackProcess(p)
+		s.trackProcess(launched)
 		s.shutdownMu.Unlock()
-		process := wireProcessFromApp(p)
-		return wireResponse{Op: req.Op, OK: true, Process: &process, Warnings: s.StartupWarnings()}, false
-	case "list":
-		if req.Cwd == "" {
-			req.Cwd = "."
+		item := protocolProcessFromApp(launched)
+		return protocol.StartResponse{Op: req.Op, OK: true, Process: &item, Warnings: s.StartupWarnings()}, false
+	case protocol.OpList:
+		value := req.List
+		if value.Cwd == "" {
+			value.Cwd = "."
 		}
-		items, err := s.listProcessesScoped(req.Cwd, req.Scope, req.All, req.IncludeCompleted)
+		items, err := s.listProcessesScoped(value.Cwd, value.Scope, value.All, value.IncludeCompleted)
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		for _, p := range items {
-			s.trackProcess(p)
+		for _, item := range items {
+			s.trackProcess(item)
 		}
-		return wireResponse{Op: req.Op, OK: true, Processes: wireProcessesFromApp(items), Warnings: s.StartupWarnings()}, false
-	case "get":
-		p, err := s.supervisor.GetScoped(req.Scope, req.Cwd, req.Name)
+		return protocol.ListResponse{Op: req.Op, OK: true, Processes: protocolProcessesFromApp(items), Warnings: s.StartupWarnings()}, false
+	case protocol.OpGet:
+		value := req.Get
+		item, err := s.supervisor.GetScoped(value.Scope, value.Cwd, value.Name)
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		s.trackProcess(p)
-		process := wireProcessFromApp(p)
-		nextCursor := uint64(p.NextCursor)
-		process.NextCursor = &nextCursor
-		return wireResponse{Op: req.Op, OK: true, Process: &process, Warnings: s.StartupWarnings()}, false
-	case "output":
-		store, err := s.supervisor.OutputScoped(req.Scope, req.Cwd, req.Name)
+		s.trackProcess(item)
+		snapshot := protocolProcessFromApp(item)
+		cursor := protocol.Cursor(item.NextCursor)
+		snapshot.NextCursor = &cursor
+		return protocol.GetResponse{Op: req.Op, OK: true, Process: &snapshot, Warnings: s.StartupWarnings()}, false
+	case protocol.OpOutput:
+		value := req.Output
+		store, err := s.supervisor.OutputScoped(value.Scope, value.Cwd, value.Name)
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		options, err := readOptionsFromWire(req)
+		options, err := readOptionsFromProtocol(*value)
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
@@ -666,100 +641,97 @@ func (s *Server) dispatch(req wireRequest) (wireResponse, bool) {
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		return wireResponseFromRead(req.Op, stripBoundedChildText(result)), false
-	case "signal":
-		parsed, err := sharedsignals.Parse(req.Signal)
+		return protocolOutputResponse(req.Op, stripBoundedChildText(result)), false
+	case protocol.OpSignal:
+		value := req.Signal
+		parsed, err := sharedsignals.Parse(value.Signal)
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
 		var signalErr error
-		if req.Control {
-			signalErr = s.supervisor.SignalControlScoped(req.Scope, req.Cwd, req.Name, parsed.Signal)
+		if value.Control {
+			signalErr = s.supervisor.SignalControlScoped(value.Scope, value.Cwd, value.Name, parsed.Signal)
 		} else {
-			signalErr = s.supervisor.SignalObservationalScoped(req.Scope, req.Cwd, req.Name, parsed.Signal)
+			signalErr = s.supervisor.SignalObservationalScoped(value.Scope, value.Cwd, value.Name, parsed.Signal)
 		}
 		if signalErr != nil {
 			return dispatchError(req.Op, signalErr), false
 		}
-		return wireResponse{Op: req.Op, OK: true, Name: req.Name, Signal: &wireSignal{Name: parsed.Name, Number: parsed.Number}, Status: "sent"}, false
-	case "stop":
-		if err := s.supervisor.StopScoped(context.Background(), req.Scope, req.Cwd, req.Name); err != nil {
+		return protocol.SignalResponse{Op: req.Op, OK: true, Name: value.Name, Signal: &protocol.SignalInfo{Name: parsed.Name, Number: parsed.Number}, Status: "sent"}, false
+	case protocol.OpStop:
+		value := req.Stop
+		if err := s.supervisor.StopScoped(context.Background(), value.Scope, value.Cwd, value.Name); err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		var process *wireProcess
-		if item, err := s.supervisor.GetScoped(req.Scope, req.Cwd, req.Name); err == nil {
+		var snapshot *protocol.Process
+		if item, err := s.supervisor.GetScoped(value.Scope, value.Cwd, value.Name); err == nil {
 			s.trackProcess(item)
-			value := wireProcessFromApp(item)
-			process = &value
+			v := protocolProcessFromApp(item)
+			snapshot = &v
 		}
-		return wireResponse{Op: req.Op, OK: true, Process: process}, false
-	case "remove":
-		if err := s.supervisor.RemoveScoped(context.Background(), req.Scope, req.Cwd, req.Name); err != nil {
+		return protocol.StopResponse{Op: req.Op, OK: true, Process: snapshot}, false
+	case protocol.OpRemove:
+		value := req.Remove
+		if err := s.supervisor.RemoveScoped(context.Background(), value.Scope, value.Cwd, value.Name); err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		return wireResponse{Op: req.Op, OK: true}, false
-	case "restart":
-		if req.Root != "" {
-			canonical, err := canonicalRequestRoot(req.Root)
+		return protocol.RemoveResponse{Op: req.Op, OK: true}, false
+	case protocol.OpRestart:
+		value := req.Restart
+		if value.Root != "" {
+			canonical, err := canonicalRequestRoot(value.Root)
 			if err != nil {
 				return dispatchError(req.Op, err), false
 			}
-			req.Root = canonical
+			value.Root = canonical
 		}
 		s.shutdownMu.Lock()
 		if s.shutdownStarted {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, app.ErrSupervisorClosed), false
 		}
-		var ttySize *app.TTYSize
-		if req.Columns != 0 || req.Rows != 0 {
-			ttySize = &app.TTYSize{Columns: req.Columns, Rows: req.Rows}
+		var size *app.TTYSize
+		if value.TTYSize != nil {
+			size = &app.TTYSize{Columns: value.TTYSize.Columns, Rows: value.TTYSize.Rows}
 		}
-		options := app.RestartOptions{
-			Update: req.Update, Source: req.Source, Root: req.Root, Cwd: req.Cwd,
-			Argv: append([]string(nil), req.Argv...), Env: append([]string(nil), req.Env...),
-			Ready: appReadinessConfigFromWire(req.Ready), TTY: req.TTY, TTYSize: ttySize,
-			Restart: app.RestartPolicy(req.Restart),
-		}
-		options.Scope = req.Scope
-		process, err := s.supervisor.RestartScoped(context.Background(), req.Scope, req.Cwd, req.Name, options)
+		options := app.RestartOptions{Update: value.Update, Source: value.Source, Root: value.Root, Cwd: value.Cwd, Argv: append([]string(nil), value.Argv...), Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), Scope: value.Scope}
+		launched, err := s.supervisor.RestartScoped(context.Background(), value.Scope, value.Cwd, value.Name, options)
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
 		}
-		s.trackProcess(process)
+		s.trackProcess(launched)
 		s.shutdownMu.Unlock()
-		value := wireProcessFromApp(process)
-		return wireResponse{Op: req.Op, OK: true, Process: &value}, false
-	case "shutdown":
-		err := s.shutdown(req.Force)
-		if err != nil {
+		snapshot := protocolProcessFromApp(launched)
+		return protocol.RestartResponse{Op: req.Op, OK: true, Process: &snapshot}, false
+	case protocol.OpShutdown:
+		if err := s.shutdown(req.Shutdown.Force); err != nil {
 			return dispatchError(req.Op, err), false
 		}
-		return wireResponse{Op: req.Op, OK: true}, true
+		return protocol.ShutdownResponse{Op: req.Op, OK: true}, true
 	default:
-		return wireResponse{Error: &wireError{Code: "unknown_operation", Message: fmt.Sprintf("unknown operation %q", req.Op)}}, false
+		return dispatchError(req.Op, fmt.Errorf("unknown operation %q", req.Op)), false
 	}
 }
 
-func (s *Server) executeWait(ctx context.Context, req wireRequest) (wireResponse, error) {
+func (s *Server) executeWait(ctx context.Context, req protocol.WaitRequest) (protocol.WaitResponse, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	options, timeout, err := waitOptionsFromWire(req)
+	options, timeout, err := waitOptionsFromProtocol(req)
 	if err != nil {
-		return wireResponse{}, err
+		return protocol.WaitResponse{}, err
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	result, err := s.supervisor.WaitScoped(waitCtx, req.Scope, req.Cwd, req.Name, options)
 	if err != nil {
-		return wireResponse{}, err
+		return protocol.WaitResponse{}, err
 	}
-	return wireResponseFromWait(result), nil
+	return protocolWaitResponse(result), nil
 }
 
-func (s *Server) handleWait(ctx context.Context, conn net.Conn, encoder *protocol.Encoder, req wireRequest) {
+func (s *Server) handleWait(ctx context.Context, conn net.Conn, encoder *protocol.Encoder, req protocol.WaitRequest) {
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	disconnected := make(chan struct{})
@@ -782,35 +754,10 @@ func (s *Server) handleWait(ctx context.Context, conn net.Conn, encoder *protoco
 		_ = writeProtocolError(encoder, protocol.OpWait, err)
 		return
 	}
-	_ = writeProtocolResponse(encoder, response)
+	_ = encoder.EncodeResponse(response)
 }
 
-func waitOptionsFromWire(req wireRequest) (app.WaitOptions, time.Duration, error) {
-	if req.Name == "" {
-		return app.WaitOptions{}, 0, fmt.Errorf("%w: wait name is required", app.ErrInvalidRequest)
-	}
-	if req.TimeoutMS <= 0 {
-		return app.WaitOptions{}, 0, fmt.Errorf("%w: wait timeout must be positive", app.ErrInvalidRequest)
-	}
-	if req.TimeoutMS > maxWaitTimeoutMS {
-		return app.WaitOptions{}, 0, fmt.Errorf("%w: wait timeout exceeds server maximum", app.ErrInvalidRequest)
-	}
-	options := app.WaitOptions{}
-	if req.After != nil {
-		cursor := output.Cursor(*req.After)
-		options.After = &cursor
-	}
-	if req.Match != "" {
-		match, err := regexp.Compile(req.Match)
-		if err != nil {
-			return app.WaitOptions{}, 0, fmt.Errorf("%w: invalid match expression: %v", app.ErrInvalidRequest, err)
-		}
-		options.Match = match
-	}
-	return options, time.Duration(req.TimeoutMS) * time.Millisecond, nil
-}
-
-func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *protocol.Encoder, req wireRequest) {
+func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *protocol.Encoder, req protocol.FollowRequest) {
 	s.shutdownMu.Lock()
 	if s.shutdownStarted {
 		s.shutdownMu.Unlock()
@@ -821,7 +768,7 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 	s.shutdownMu.Unlock()
 	defer s.followers.Done()
 
-	options, err := readOptionsFromWire(req)
+	options, err := readOptionsFromFollow(req)
 	if err != nil {
 		_ = writeProtocolError(encoder, protocol.OpFollow, err)
 		return
@@ -866,7 +813,7 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 				return
 			}
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
-				_ = encoder.EncodeResponse(protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventError, Name: req.Name, Error: wireErrorToProtocol(protocolWireError(err))})
+				_ = encoder.EncodeResponse(protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventError, Name: req.Name, Error: protocolWireError(err)})
 			}
 			return
 		}
@@ -910,7 +857,7 @@ func canonicalRequestRoot(root string) (string, error) {
 	return canonical, nil
 }
 
-func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protocol.Decoder, encoder *protocol.Encoder, req wireRequest) {
+func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protocol.Decoder, encoder *protocol.Encoder, req protocol.InputAttachRequest) {
 	if req.Root != "" {
 		canonical, err := canonicalRequestRoot(req.Root)
 		if err != nil {
@@ -928,7 +875,7 @@ func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protoc
 		size = &app.TTYSize{Columns: req.Columns, Rows: req.Rows}
 	}
 	if len(req.Argv) != 0 {
-		if err := s.supervisor.PrepareTTYScoped(req.Scope, app.StartRequest{Name: req.Name, Scope: req.Scope, Root: req.Root, Cwd: req.Cwd, Argv: req.Argv, Source: req.Source, TTY: true, TTYSize: size}); err != nil {
+		if err := s.supervisor.PrepareTTYScoped(req.Scope, app.StartRequest{Name: req.Name, Scope: req.Scope, Root: req.Root, Cwd: req.Cwd, Argv: req.Argv, Source: req.Source, Ready: appReadinessConfigFromProtocol(req.Ready), TTY: true, TTYSize: size}); err != nil {
 			_ = writeProtocolError(encoder, protocol.OpInputAttach, err)
 			return
 		}
@@ -1009,44 +956,44 @@ func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protoc
 			if errors.Is(decodeErr, io.EOF) {
 				return
 			}
-			// Decode-time validation (including a missing launch cursor) must
-			// be reported as a typed input error rather than silently closing
-			// the owner transport. No lease operation is invoked on this path.
 			_ = writeProtocolError(encoder, protocol.Operation(""), decodeErr)
 			return
 		}
-		wire, convertErr := wireRequestFromProtocol(request)
-		if convertErr != nil {
-			_ = writeProtocolError(encoder, request.Op, convertErr)
-			continue
-		}
 		var response error
-		ack := protocol.InputAckResponse{Op: protocol.Operation(wire.Op)}
-		switch wire.Op {
-		case "input_write":
-			inputRequest := protocol.InputWriteRequest{Op: protocol.OpInputWrite, LaunchCursor: protocol.Cursor(wire.LaunchCursor), Data: wire.Data}
-			data, decodeDataErr := inputRequest.InputBytes()
-			if decodeDataErr != nil {
-				response = decodeDataErr
-				break
+		switch request.Op {
+		case protocol.OpInputWrite:
+			inputRequest := *request.InputWrite
+			data, err := inputRequest.InputBytes()
+			if err != nil {
+				response = err
+			} else {
+				response = runInputOperation(inputCtx, conn, func(operationCtx context.Context) error {
+					return lease.Write(operationCtx, output.Cursor(inputRequest.LaunchCursor), data)
+				})
 			}
+			ack := protocol.InputAckResponse{Op: protocol.OpInputWrite, OK: response == nil, LaunchCursor: inputRequest.LaunchCursor, Written: len(data), Error: protocolWireError(response)}
+			writeMu.Lock()
+			writeErr := encoder.EncodeResponse(ack)
+			writeMu.Unlock()
+			if writeErr != nil {
+				return
+			}
+		case protocol.OpInputResize:
+			inputRequest := *request.InputResize
 			response = runInputOperation(inputCtx, conn, func(operationCtx context.Context) error {
-				return lease.Write(operationCtx, output.Cursor(wire.LaunchCursor), data)
+				return lease.Resize(operationCtx, output.Cursor(inputRequest.LaunchCursor), inputRequest.Columns, inputRequest.Rows)
 			})
-			ack = protocol.InputAckResponse{Op: protocol.OpInputWrite, OK: response == nil, LaunchCursor: protocol.Cursor(wire.LaunchCursor), Written: len(data)}
-		case "input_resize":
-			response = runInputOperation(inputCtx, conn, func(operationCtx context.Context) error {
-				return lease.Resize(operationCtx, output.Cursor(wire.LaunchCursor), wire.Columns, wire.Rows)
-			})
-			ack = protocol.InputAckResponse{Op: protocol.OpInputResize, OK: response == nil, LaunchCursor: protocol.Cursor(wire.LaunchCursor)}
-		case "input_release":
-			// Release first: the acknowledgement is the one-shot client's proof
-			// that the server has cleared the durable lease. Mark the explicit
-			// path before closing the lease so the lease watcher does not close
-			// this connection before the acknowledgement is encoded.
+			ack := protocol.InputAckResponse{Op: protocol.OpInputResize, OK: response == nil, LaunchCursor: inputRequest.LaunchCursor, Error: protocolWireError(response)}
+			writeMu.Lock()
+			writeErr := encoder.EncodeResponse(ack)
+			writeMu.Unlock()
+			if writeErr != nil {
+				return
+			}
+		case protocol.OpInputRelease:
 			close(releaseRequested)
 			lease.Release()
-			ack = protocol.InputAckResponse{Op: protocol.OpInputRelease, OK: true}
+			ack := protocol.InputAckResponse{Op: protocol.OpInputRelease, OK: true}
 			writeMu.Lock()
 			writeErr := encoder.EncodeResponse(ack)
 			writeMu.Unlock()
@@ -1055,17 +1002,14 @@ func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protoc
 			}
 			return
 		default:
-			response = fmt.Errorf("%w: input connection does not accept %q", app.ErrInvalidRequest, wire.Op)
-		}
-		if response != nil {
-			ack.OK = false
-			ack.Error = wireErrorToProtocol(protocolWireError(response))
-		}
-		writeMu.Lock()
-		writeErr := encoder.EncodeResponse(ack)
-		writeMu.Unlock()
-		if writeErr != nil {
-			return
+			response = fmt.Errorf("%w: input connection does not accept %q", app.ErrInvalidRequest, request.Op)
+			ack := protocol.InputAckResponse{Op: request.Op, OK: false, Error: protocolWireError(response)}
+			writeMu.Lock()
+			writeErr := encoder.EncodeResponse(ack)
+			writeMu.Unlock()
+			if writeErr != nil {
+				return
+			}
 		}
 	}
 }
@@ -1118,242 +1062,6 @@ func stripBoundedChildText(result output.ReadResult) output.ReadResult {
 
 const maxSinceMilliseconds int64 = (1<<63 - 1) / int64(time.Millisecond)
 
-func readOptionsFromWire(req wireRequest) (output.ReadOptions, error) {
-	options := output.ReadOptions{Tail: req.Tail, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
-	if options.MaxBytes > maxBoundedReadBytes {
-		options.MaxBytes = maxBoundedReadBytes
-	}
-	if req.SinceMS < 0 {
-		return output.ReadOptions{}, fmt.Errorf("%w: since_ms must be positive", app.ErrInvalidRequest)
-	}
-	if req.SinceMS > maxSinceMilliseconds {
-		return output.ReadOptions{}, fmt.Errorf("%w: since_ms is too large", app.ErrInvalidRequest)
-	}
-	if req.SinceMS != 0 && req.SinceUnixNano != 0 {
-		return output.ReadOptions{}, fmt.Errorf("%w: since_ms and since_unix_nano cannot both be set", app.ErrInvalidRequest)
-	}
-	if req.SinceUnixNano != 0 {
-		options.Since = time.Unix(0, req.SinceUnixNano)
-	} else if req.SinceMS != 0 {
-		options.Since = time.Now().Add(-time.Duration(req.SinceMS) * time.Millisecond)
-	}
-	if req.After != nil {
-		cursor := output.Cursor(*req.After)
-		options.After = &cursor
-	}
-	if req.Match != "" {
-		match, err := regexp.Compile(req.Match)
-		if err != nil {
-			return output.ReadOptions{}, fmt.Errorf("%w: invalid match expression: %v", app.ErrInvalidRequest, err)
-		}
-		options.Match = match
-	}
-	options.Streams = streamMask(req.Stream)
-	return options, nil
-}
-
-func streamMask(stream string) output.StreamMask {
-	switch strings.ToLower(stream) {
-	case "stdout":
-		return output.StdoutMask
-	case "stderr":
-		return output.StderrMask
-	case "system":
-		return output.SystemMask
-	case "both", "stdout+stderr", "stdout,stderr":
-		return output.AllStreams
-	default:
-		return output.AllStreams
-	}
-}
-
-// wire DTOs intentionally contain no environment field on responses.
-type wireRequest struct {
-	Op               string               `json:"op"`
-	Scope            string               `json:"scope,omitempty"`
-	Version          int                  `json:"version,omitempty"`
-	Name             string               `json:"name,omitempty"`
-	Argv             []string             `json:"argv,omitempty"`
-	Cwd              string               `json:"cwd,omitempty"`
-	Root             string               `json:"root,omitempty"`
-	Env              []string             `json:"env,omitempty"`
-	Source           string               `json:"source,omitempty"`
-	Ready            *wireReadinessConfig `json:"ready,omitempty"`
-	Restart          string               `json:"restart,omitempty"`
-	Attached         bool                 `json:"attached,omitempty"`
-	Update           bool                 `json:"update,omitempty"`
-	TTY              bool                 `json:"tty"`
-	Columns          uint16               `json:"columns,omitempty"`
-	Rows             uint16               `json:"rows,omitempty"`
-	LaunchCursor     uint64               `json:"launch_cursor,omitempty"`
-	Data             string               `json:"data,omitempty"`
-	All              bool                 `json:"all,omitempty"`
-	IncludeCompleted bool                 `json:"include_completed,omitempty"`
-	After            *uint64              `json:"after,omitempty"`
-	SinceMS          int64                `json:"since_ms,omitempty"`
-	SinceUnixNano    int64                `json:"since_unix_nano,omitempty"`
-	Tail             int                  `json:"tail,omitempty"`
-	Stream           string               `json:"stream,omitempty"`
-	Match            string               `json:"match,omitempty"`
-	TimeoutMS        int64                `json:"timeout_ms,omitempty"`
-	MaxEntries       int                  `json:"max_entries,omitempty"`
-	MaxBytes         int                  `json:"max_bytes,omitempty"`
-	Signal           string               `json:"signal,omitempty"`
-	Control          bool                 `json:"control,omitempty"`
-	UntilExit        bool                 `json:"until_exit,omitempty"`
-	Force            bool                 `json:"force,omitempty"`
-}
-type wireReadinessConfig struct {
-	Match   string        `json:"match"`
-	Timeout time.Duration `json:"timeout"`
-}
-
-type wireResponse struct {
-	Op              string                    `json:"op,omitempty"`
-	Name            string                    `json:"name,omitempty"`
-	OK              bool                      `json:"ok,omitempty"`
-	Version         int                       `json:"version,omitempty"`
-	Process         *wireProcess              `json:"process,omitempty"`
-	Processes       []wireProcess             `json:"processes,omitempty"`
-	Entries         []wireEntry               `json:"entries,omitempty"`
-	Next            *uint64                   `json:"next,omitempty"`
-	Oldest          *uint64                   `json:"oldest,omitempty"`
-	Latest          *uint64                   `json:"latest,omitempty"`
-	EvictedThrough  *uint64                   `json:"evicted_through,omitempty"`
-	Truncated       bool                      `json:"truncated,omitempty"`
-	More            bool                      `json:"more,omitempty"`
-	Signal          *wireSignal               `json:"signal,omitempty"`
-	Status          string                    `json:"status,omitempty"`
-	Type            string                    `json:"type,omitempty"`
-	Outcome         string                    `json:"outcome,omitempty"`
-	Cursor          *uint64                   `json:"cursor,omitempty"`
-	ProcessObserved *bool                     `json:"process_observed,omitempty"`
-	Message         string                    `json:"message,omitempty"`
-	Ready           bool                      `json:"ready,omitempty"`
-	Warnings        []protocol.StartupWarning `json:"warnings,omitempty"`
-	Exit            *wireExit                 `json:"exit,omitempty"`
-	Error           *wireError                `json:"error,omitempty"`
-}
-
-type wireSignal struct {
-	Name   string `json:"name"`
-	Number int    `json:"number"`
-}
-
-type wireError struct {
-	Code          string   `json:"code"`
-	Message       string   `json:"message"`
-	Details       any      `json:"details,omitempty"`
-	DaemonVersion int      `json:"daemon_version,omitempty"`
-	Processes     []string `json:"processes,omitempty"`
-}
-
-type wireProcess struct {
-	Name         string           `json:"name"`
-	Source       string           `json:"source,omitempty"`
-	Scope        string           `json:"scope"`
-	Root         string           `json:"project_root,omitempty"`
-	TTY          bool             `json:"tty"`
-	PID          int              `json:"pid"`
-	PGID         int              `json:"pgid"`
-	Cwd          string           `json:"cwd"`
-	Argv         []string         `json:"argv"`
-	Start        time.Time        `json:"start"`
-	LaunchCursor uint64           `json:"launch_cursor"`
-	NextCursor   *uint64          `json:"next_cursor,omitempty"`
-	State        string           `json:"state"`
-	Exit         *wireProcessExit `json:"exit,omitempty"`
-	ExitCode     int              `json:"exit_code,omitempty"`
-	ExitedAt     time.Time        `json:"exited_at,omitempty"`
-	RestartCount int              `json:"restart_count,omitempty"`
-	Followers    int              `json:"followers"`
-	Restart      string           `json:"restart"`
-	Relaunches   int              `json:"relaunches"`
-	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
-	Readiness    *wireReadiness   `json:"readiness,omitempty"`
-}
-
-type wireReadiness struct {
-	State  string    `json:"state"`
-	Cursor *uint64   `json:"cursor,omitempty"`
-	Time   time.Time `json:"time,omitempty"`
-	Match  string    `json:"match,omitempty"`
-}
-
-type wireProcessExit struct {
-	Code     int         `json:"code,omitempty"`
-	ExitCode int         `json:"exit_code,omitempty"`
-	Error    string      `json:"error,omitempty"`
-	Time     time.Time   `json:"time,omitempty"`
-	Signal   *wireSignal `json:"signal,omitempty"`
-}
-
-type wireReadResult struct {
-	Entries        []wireEntry `json:"entries,omitempty"`
-	Next           *uint64     `json:"next,omitempty"`
-	Oldest         *uint64     `json:"oldest,omitempty"`
-	Latest         *uint64     `json:"latest,omitempty"`
-	EvictedThrough *uint64     `json:"evicted_through,omitempty"`
-	Truncated      bool        `json:"truncated,omitempty"`
-	More           bool        `json:"more,omitempty"`
-}
-type wireEntry struct {
-	Cursor uint64    `json:"cursor"`
-	Stream string    `json:"stream"`
-	Time   time.Time `json:"time"`
-	Text   string    `json:"text"`
-}
-
-type wireExit struct {
-	Code   int         `json:"code"`
-	Error  string      `json:"error,omitempty"`
-	Time   time.Time   `json:"time"`
-	Signal *wireSignal `json:"signal,omitempty"`
-}
-
-func protocolWireError(err error) *wireError {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, app.ErrInputStopped) {
-		return &wireError{Code: string(protocol.ErrorInputClosed), Message: err.Error(), Details: map[string]any{"stopped": true}}
-	}
-	var protocolWire *protocol.WireError
-	if errors.As(err, &protocolWire) && protocolWire != nil {
-		return &wireError{Code: string(protocolWire.Code), Message: protocolWire.Message, Details: protocolWire.Details}
-	}
-	var version *VersionMismatchError
-	if errors.As(err, &version) {
-		return &wireError{Code: string(protocol.ErrorVersionMismatch), Message: version.Error(), Details: protocol.VersionMismatchDetails{Client: version.ClientVersion, Daemon: version.DaemonVersion}, DaemonVersion: version.DaemonVersion}
-	}
-	var active *ActiveProcessesError
-	if errors.As(err, &active) {
-		return &wireError{Code: string(protocol.ErrorActiveProcesses), Message: active.Error(), Details: append([]string(nil), active.Names...), Processes: append([]string(nil), active.Names...)}
-	}
-	var notFound *app.NotFoundError
-	if errors.As(err, &notFound) && notFound != nil {
-		details := map[string]any{"scope": app.ScopeProject}
-		if notFound.Root == "" {
-			details["scope"] = app.ScopeGlobal
-		} else {
-			details["project_root"] = notFound.Root
-		}
-		if len(notFound.OtherScopes) != 0 {
-			details["other_scopes"] = notFound.OtherScopes
-		}
-		return &wireError{Code: string(protocol.ErrorNotFound), Message: notFound.Error(), Details: details}
-	}
-	var malformed *MalformedRequestError
-	if errors.As(err, &malformed) {
-		return &wireError{Code: string(protocol.ErrorMalformed), Message: malformed.Error()}
-	}
-	var oversized *RequestTooLargeError
-	if errors.As(err, &oversized) {
-		return &wireError{Code: string(protocol.ErrorOversized), Message: oversized.Error()}
-	}
-	return &wireError{Code: errorCode(err), Message: err.Error()}
-}
-
 func errorCode(err error) string {
 	switch {
 	case errors.Is(err, app.ErrProcessNotFound):
@@ -1385,80 +1093,4 @@ func errorCode(err error) string {
 	default:
 		return string(protocol.ErrorInternal)
 	}
-}
-
-func wireProcessesFromApp(items []app.Process) []wireProcess {
-	result := make([]wireProcess, 0, len(items))
-	for _, item := range items {
-		result = append(result, wireProcessFromApp(item))
-	}
-	return result
-}
-
-func wireProcessFromApp(item app.Process) wireProcess {
-	scope := item.Scope
-	if scope == "" {
-		scope = "project"
-	}
-	result := wireProcess{
-		Name: item.Name, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
-		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
-		LaunchCursor: uint64(item.LaunchCursor), State: string(item.State),
-		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
-		Followers: item.Followers, Restart: string(item.Restart), Relaunches: item.Relaunches,
-		NextLaunchAt: item.NextLaunchAt,
-	}
-	if item.Readiness != nil {
-		result.Readiness = &wireReadiness{
-			State: item.Readiness.State, Cursor: cursorUint64(item.Readiness.Cursor),
-			Time: item.Readiness.Time, Match: item.Readiness.Match,
-		}
-	}
-	if item.Exit != nil {
-		result.Exit = &wireProcessExit{Code: item.Exit.ExitCode, Error: errorString(item.Exit.Err), Time: item.Exit.ExitedAt}
-		if item.Exit.Signal != nil {
-			result.Exit.Signal = &wireSignal{Name: item.Exit.Signal.Name, Number: item.Exit.Signal.Number}
-		}
-	}
-	return result
-}
-
-func errorString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
-
-func wireReadResultFromOutput(result output.ReadResult) *wireReadResult {
-	wire := &wireReadResult{
-		Entries:   make([]wireEntry, 0, len(result.Entries)),
-		Truncated: result.Truncated, More: result.More,
-	}
-	for _, item := range result.Entries {
-		wire.Entries = append(wire.Entries, wireEntry{Cursor: uint64(item.Cursor), Stream: streamName(item.Stream), Time: item.Time, Text: item.Text})
-	}
-	wire.Next = cursorUint64(result.Next)
-	wire.Oldest = cursorUint64(result.Oldest)
-	wire.Latest = cursorUint64(result.Latest)
-	wire.EvictedThrough = cursorUint64(result.EvictedThrough)
-	return wire
-}
-
-func eventTypeForRead(result output.ReadResult) string {
-	if result.EvictedThrough != nil {
-		return "eviction"
-	}
-	if result.Next != nil && len(result.Entries) == 0 {
-		return "cursor"
-	}
-	return "output"
-}
-
-func cursorUint64(cursor *output.Cursor) *uint64 {
-	if cursor == nil {
-		return nil
-	}
-	value := uint64(*cursor)
-	return &value
 }

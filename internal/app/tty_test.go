@@ -580,6 +580,27 @@ func TestPrepareTTYPreservesRetainedLaunchSpec(t *testing.T) {
 	}
 }
 
+func TestPrepareTTYRetainsReadinessForLaunch(t *testing.T) {
+	root := makeProject(t, false)
+	child := &ttyLeaseChild{pid: 9500, done: make(chan struct{}), result: process.Result{ExitCode: 0, ExitedAt: time.Now()}}
+	s, err := New(Options{StartProcess: func(process.Spec) (Child, error) { return child, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown(context.Background())
+	ready := &ReadinessConfig{Match: "server ready", Timeout: time.Second}
+	if err := s.PrepareTTY(StartRequest{Name: "dev", Root: root, Cwd: root, Argv: []string{"dev"}, Source: "manifest", Ready: ready, TTY: true}); err != nil {
+		t.Fatal(err)
+	}
+	started, err := s.Start(StartRequest{Name: "dev", Root: root, Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Readiness == nil || started.Readiness.Match != ready.Match || started.Readiness.State != ReadinessStarting {
+		t.Fatalf("prepared readiness = %#v, want starting matcher %q", started.Readiness, ready.Match)
+	}
+}
+
 func errorsIs(err, target error) bool {
 	if err == nil {
 		return false

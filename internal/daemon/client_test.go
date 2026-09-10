@@ -1,11 +1,17 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"hum/internal/protocol"
 )
 
 func TestStartupBudgetIncludesEveryRecordedGroup(t *testing.T) {
@@ -54,5 +60,81 @@ func TestStartupBudgetWithoutStateIsDialSlack(t *testing.T) {
 	}
 	if got != 5*time.Second {
 		t.Fatalf("StartupBudget() = %s, want 5s", got)
+	}
+}
+
+func TestInputAttachRejectsUnexpectedResponseOperations(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		responses []any
+		wantOp    protocol.Operation
+	}{
+		{name: "attach response", responses: []any{protocol.GetResponse{Op: protocol.OpGet, OK: true}}, wantOp: protocol.OpGet},
+		{name: "state event", responses: []any{protocol.InputAttachResponse{Op: protocol.OpInputAttach, OK: true}, protocol.InputStateEvent{Op: protocol.OpEvent, State: protocol.StateRunning, LaunchCursor: 1, TTY: true}}, wantOp: protocol.OpEvent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			socket := filepath.Join(shortRuntimeDir(t), "input.sock")
+			listener, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			serverDone := make(chan error, 1)
+			go func() {
+				conn, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					serverDone <- acceptErr
+					return
+				}
+				defer conn.Close()
+				decoder := protocol.NewDecoder(conn)
+				encoder := protocol.NewEncoder(conn)
+				if _, decodeErr := decoder.DecodeRequest(); decodeErr != nil {
+					serverDone <- decodeErr
+					return
+				}
+				if encodeErr := encoder.EncodeResponse(protocol.HelloResponse{Op: protocol.OpHello, Version: protocol.Version}); encodeErr != nil {
+					serverDone <- encodeErr
+					return
+				}
+				if _, decodeErr := decoder.DecodeRequest(); decodeErr != nil {
+					serverDone <- decodeErr
+					return
+				}
+				for _, response := range tc.responses {
+					if encodeErr := encoder.EncodeResponse(response); encodeErr != nil {
+						serverDone <- encodeErr
+						return
+					}
+				}
+				serverDone <- nil
+			}()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			client := &Client{socket: socket}
+			_, err = client.InputAttach(ctx, InputAttachRequest{Name: "tty", Cwd: t.TempDir(), Root: t.TempDir(), TTY: true})
+			if err == nil || !strings.Contains(err.Error(), string(tc.wantOp)) {
+				t.Fatalf("InputAttach() error = %v, want unexpected %q operation", err, tc.wantOp)
+			}
+			if err := <-serverDone; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestInputAckBlankOperationPreservesTypedError(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	session := &InputSession{client: NewClient(clientConn), acks: make(chan json.RawMessage, 1)}
+	session.acks <- json.RawMessage(`{"ok":false,"error":{"code":"oversized","message":"too large"}}`)
+	err := session.waitForAck(context.Background(), protocol.OpInputWrite)
+	var wireErr *protocol.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != protocol.ErrorOversized {
+		t.Fatalf("waitForAck() error = %v, want typed oversized error", err)
+	}
+	if !session.client.closed {
+		t.Fatal("blank-operation terminal error did not invalidate client")
 	}
 }

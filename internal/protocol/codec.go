@@ -342,6 +342,131 @@ func (r Request) MarshalJSON() ([]byte, error) {
 	}{Op: r.Op, ID: r.ID})
 }
 
+// ResponseEnvelope is the dynamically dispatched response union. Each
+// operation-specific field retains the canonical protocol DTO decoded from the
+// socket; Generic is used for unknown response operations.
+type ResponseEnvelope struct {
+	Op          Operation
+	OK          bool
+	Version     int
+	Warnings    []StartupWarning
+	Error       *WireError
+	Hello       *HelloResponse
+	Start       *StartResponse
+	List        *ListResponse
+	Get         *GetResponse
+	Wait        *WaitResponse
+	Output      *OutputResponse
+	Signal      *SignalResponse
+	Stop        *StopResponse
+	Restart     *RestartResponse
+	Remove      *RemoveResponse
+	Shutdown    *ShutdownResponse
+	Event       *StreamEvent
+	InputAttach *InputAttachResponse
+	InputAck    *InputAckResponse
+	InputState  *InputStateEvent
+	Generic     *Response
+}
+
+// DecodeResponse reads and dispatches one response DTO by its op field.
+func (d *Decoder) DecodeResponse() (ResponseEnvelope, error) {
+	raw, err := d.decodeRaw()
+	if err != nil {
+		return ResponseEnvelope{}, err
+	}
+	var header struct {
+		Op Operation `json:"op"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return ResponseEnvelope{}, &DecodeError{Kind: DecodeMalformed, Err: err}
+	}
+	var failed ErrorResponse
+	hasError := json.Unmarshal(raw, &failed) == nil && failed.Error != nil
+	if header.Op == "" {
+		if hasError {
+			return ResponseEnvelope{Op: failed.Op, OK: failed.OK, Error: failed.Error}, nil
+		}
+		return ResponseEnvelope{}, &DecodeError{Kind: DecodeUnknownOperation, Err: MissingOperationError{}}
+	}
+	result := ResponseEnvelope{Op: header.Op}
+	decode := func(target any) error { return json.Unmarshal(raw, target) }
+	switch header.Op {
+	case OpHello:
+		result.Hello = new(HelloResponse)
+		err = decode(result.Hello)
+		result.Version, result.Warnings = result.Hello.Version, result.Hello.Warnings
+	case OpStart:
+		result.Start = new(StartResponse)
+		err = decode(result.Start)
+		result.OK, result.Error, result.Warnings = result.Start.OK, result.Start.Error, result.Start.Warnings
+	case OpList:
+		result.List = new(ListResponse)
+		err = decode(result.List)
+		result.OK, result.Error, result.Warnings = result.List.OK, result.List.Error, result.List.Warnings
+	case OpGet:
+		result.Get = new(GetResponse)
+		err = decode(result.Get)
+		result.OK, result.Error, result.Warnings = result.Get.OK, result.Get.Error, result.Get.Warnings
+	case OpWait:
+		result.Wait = new(WaitResponse)
+		err = decode(result.Wait)
+		result.OK, result.Error = result.Wait.OK, result.Wait.Error
+	case OpOutput:
+		result.Output = new(OutputResponse)
+		err = decode(result.Output)
+		result.OK, result.Error = result.Output.OK, result.Output.Error
+	case OpSignal:
+		result.Signal = new(SignalResponse)
+		err = decode(result.Signal)
+		result.OK, result.Error = result.Signal.OK, result.Signal.Error
+	case OpStop:
+		result.Stop = new(StopResponse)
+		err = decode(result.Stop)
+		result.OK, result.Error = result.Stop.OK, result.Stop.Error
+	case OpRestart:
+		result.Restart = new(RestartResponse)
+		err = decode(result.Restart)
+		result.OK, result.Error = result.Restart.OK, result.Restart.Error
+	case OpRemove:
+		result.Remove = new(RemoveResponse)
+		err = decode(result.Remove)
+		result.OK, result.Error = result.Remove.OK, result.Remove.Error
+	case OpShutdown:
+		result.Shutdown = new(ShutdownResponse)
+		err = decode(result.Shutdown)
+		result.OK, result.Error = result.Shutdown.OK, result.Shutdown.Error
+	case OpEvent:
+		result.Event = new(StreamEvent)
+		err = decode(result.Event)
+		result.Error = result.Event.Error
+	case OpInputAttach:
+		result.InputAttach = new(InputAttachResponse)
+		err = decode(result.InputAttach)
+		result.OK, result.Error = result.InputAttach.OK, result.InputAttach.Error
+	case OpInputWrite, OpInputResize, OpInputRelease:
+		result.InputAck = new(InputAckResponse)
+		err = decode(result.InputAck)
+		result.OK, result.Error = result.InputAck.OK, result.InputAck.Error
+	case OpInputState:
+		result.InputState = new(InputStateEvent)
+		err = decode(result.InputState)
+		result.Error = result.InputState.Error
+	default:
+		result.Generic = new(Response)
+		err = decode(result.Generic)
+		result.OK, result.Error, result.Warnings = result.Generic.OK, result.Generic.Error, result.Generic.Warnings
+	}
+	if err != nil {
+		return ResponseEnvelope{}, &DecodeError{Kind: DecodeMalformed, Err: err}
+	}
+	if hasError {
+		result.OK = failed.OK
+		result.Error = failed.Error
+	}
+	return result, nil
+}
+
 // Encoder writes one bounded JSON message per line.
 type Encoder struct {
 	writer io.Writer

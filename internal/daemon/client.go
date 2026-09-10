@@ -172,7 +172,7 @@ func (c *Client) hello(ctx context.Context) error {
 	}
 	c.stateMu.Unlock()
 
-	response, err := c.roundTripLocked(ctx, wireRequest{Op: "hello", Version: wireVersion})
+	response, err := c.roundTripLocked(ctx, protocol.Hello{Op: protocol.OpHello, Version: wireVersion}, protocol.OpHello)
 	if err != nil {
 		var mismatch *VersionMismatchError
 		if errors.As(err, &mismatch) {
@@ -236,7 +236,7 @@ func (c *Client) StartupWarnings() []protocol.StartupWarning {
 	return append([]protocol.StartupWarning(nil), c.warnings...)
 }
 
-func (c *Client) recordWarnings(response wireResponse) {
+func (c *Client) recordWarnings(response protocol.ResponseEnvelope) {
 	if c == nil || response.Warnings == nil {
 		return
 	}
@@ -246,56 +246,52 @@ func (c *Client) recordWarnings(response wireResponse) {
 }
 
 func (c *Client) Start(ctx context.Context, req StartRequest) (app.Process, error) {
-	request := wireRequest{
-		Op: "start", Scope: req.Scope, Name: req.Name, Source: req.Source, Root: req.Root,
-		Argv: append([]string(nil), req.Argv...), Cwd: req.Cwd,
-		Env: append([]string(nil), req.Env...), Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY, Restart: req.Restart, Attached: req.Attached,
-	}
-	if req.TTYSize != nil {
-		request.Columns, request.Rows = req.TTYSize.Columns, req.TTYSize.Rows
-	}
-	response, err := c.roundTrip(ctx, request)
+	req.Op = protocol.OpStart
+	response, err := c.roundTrip(ctx, req, protocol.OpStart)
 	if err != nil {
 		return app.Process{}, err
 	}
-	if response.Process == nil {
+	if response.Start == nil || response.Start.Process == nil {
 		return app.Process{}, errors.New("daemon start response omitted process")
 	}
-	return appProcessFromWire(*response.Process), nil
+	return appProcessFromProtocol(*response.Start.Process), nil
 }
-
 func (c *Client) List(ctx context.Context, req ListRequest) ([]app.Process, error) {
-	response, err := c.roundTrip(ctx, wireRequest{Op: "list", Scope: req.Scope, Cwd: req.Cwd, All: req.All, IncludeCompleted: req.IncludeCompleted})
+	req.Op = protocol.OpList
+	response, err := c.roundTrip(ctx, req, protocol.OpList)
 	if err != nil {
 		return nil, err
 	}
-	items := make([]app.Process, 0, len(response.Processes))
-	for _, item := range response.Processes {
-		items = append(items, appProcessFromWire(item))
+	if response.List == nil {
+		return nil, errors.New("daemon list response omitted payload")
+	}
+	items := make([]app.Process, 0, len(response.List.Processes))
+	for _, item := range response.List.Processes {
+		items = append(items, appProcessFromProtocol(item))
 	}
 	return items, nil
 }
-
 func (c *Client) Get(ctx context.Context, req GetRequest) (app.Process, error) {
-	response, err := c.roundTrip(ctx, wireRequest{Op: "get", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd})
+	req.Op = protocol.OpGet
+	response, err := c.roundTrip(ctx, req, protocol.OpGet)
 	if err != nil {
 		return app.Process{}, err
 	}
-	if response.Process == nil {
+	if response.Get == nil || response.Get.Process == nil {
 		return app.Process{}, errors.New("daemon get response omitted process")
 	}
-	if response.Process.NextCursor == nil {
+	if response.Get.Process.NextCursor == nil {
 		return app.Process{}, errors.New("daemon get response omitted next_cursor")
 	}
-	return appProcessFromWire(*response.Process), nil
+	return appProcessFromProtocol(*response.Get.Process), nil
 }
-
 func (c *Client) Output(ctx context.Context, req OutputRequest) (output.ReadResult, error) {
-	response, err := c.roundTrip(ctx, wireRequestFromProtocolOutputRequest(req))
+	req.Op = protocol.OpOutput
+	response, err := c.roundTrip(ctx, req, protocol.OpOutput)
 	if err != nil {
 		return output.ReadResult{}, err
 	}
-	return outputResultFromWire(response), nil
+	return outputResultFromProtocol(response.Output), nil
 }
 
 // Wait opens a fresh connection when this client was dialed from a socket, so
@@ -316,47 +312,46 @@ func (c *Client) Wait(ctx context.Context, req WaitRequest) (app.WaitResult, err
 }
 
 func (c *Client) wait(ctx context.Context, req WaitRequest) (app.WaitResult, error) {
-	response, err := c.roundTrip(ctx, wireRequestFromProtocolWait(&req))
+	req.Op = protocol.OpWait
+	response, err := c.roundTrip(ctx, req, protocol.OpWait)
 	if err != nil {
 		return app.WaitResult{}, err
 	}
-	if response.Cursor == nil {
-		return app.WaitResult{}, errors.New("daemon wait response omitted cursor")
+	if response.Wait == nil {
+		return app.WaitResult{}, errors.New("daemon wait response omitted payload")
 	}
-	outcome := app.WaitOutcome(response.Outcome)
+	value := response.Wait
+	outcome := app.WaitOutcome(value.Outcome)
 	switch outcome {
 	case app.WaitMatched, app.WaitExited, app.WaitTimedOut:
 	default:
-		return app.WaitResult{}, fmt.Errorf("daemon wait response has unknown outcome %q", response.Outcome)
+		return app.WaitResult{}, fmt.Errorf("daemon wait response has unknown outcome %q", value.Outcome)
 	}
-	processObserved := false
-	if outcome == app.WaitTimedOut {
-		if response.ProcessObserved == nil {
-			return app.WaitResult{}, errors.New("daemon wait timeout response omitted process_observed")
-		}
-		processObserved = *response.ProcessObserved
-	}
-	result := app.WaitResult{Outcome: outcome, Cursor: output.Cursor(*response.Cursor), ProcessObserved: processObserved}
-	if response.Exit != nil {
-		result.Exit = &processResult{ExitCode: response.Exit.Code, Err: errorFromString(response.Exit.Error), ExitedAt: response.Exit.Time}
-		if response.Exit.Signal != nil {
-			result.Exit.Signal = &process.SignalInfo{Name: response.Exit.Signal.Name, Number: response.Exit.Signal.Number}
+	processObserved := value.ProcessObserved
+	result := app.WaitResult{Outcome: outcome, Cursor: output.Cursor(value.Cursor), ProcessObserved: processObserved}
+	if value.Exit != nil {
+		result.Exit = &processResult{ExitCode: value.Exit.Code, Err: errorFromString(value.Exit.Error), ExitedAt: value.Exit.Time}
+		if value.Exit.Signal != nil {
+			result.Exit.Signal = &process.SignalInfo{Name: value.Exit.Signal.Name, Number: value.Exit.Signal.Number}
 		}
 	}
 	return result, nil
 }
 
-// Follow opens a fresh connection, preserving independent follower cursors
-// even when several followers are created from one control client.
+// Follow opens a fresh connection, preserving independent follower cursors.
 func (c *Client) Follow(ctx context.Context, req FollowRequest) (*Follower, error) {
 	if c.socket == "" {
 		return nil, errors.New("client has no socket path for a follower")
 	}
 	followerClient, err := Dial(ctx, c.socket)
 	if err != nil {
+		if followerClient != nil {
+			_ = followerClient.Close()
+		}
 		return nil, err
 	}
-	if err := followerClient.writeOnly(ctx, wireRequestFromProtocolFollowRequest(req)); err != nil {
+	req.Op = protocol.OpFollow
+	if err := followerClient.writeOnly(ctx, req, protocol.OpFollow); err != nil {
 		_ = followerClient.Close()
 		return nil, err
 	}
@@ -370,16 +365,13 @@ func (c *Client) Follow(ctx context.Context, req FollowRequest) (*Follower, erro
 		_ = follower.Close()
 		return nil, wireErrorToError(response.Error)
 	}
-	if response.Type != string(protocol.EventReady) {
+	if response.Event == nil || response.Event.Type != protocol.EventReady {
 		_ = follower.Close()
 		return nil, fmt.Errorf("daemon follow response omitted ready event")
 	}
 	return follower, nil
 }
 
-// Follower represents one bounded follow stream. Next returns retained output,
-// cursor/eviction metadata, and finally process exit. Closing it does not stop
-// the supervised process.
 type Follower struct{ client *Client }
 
 func (f *Follower) Next(ctx context.Context) (output.Event, error) {
@@ -396,24 +388,20 @@ func (f *Follower) Next(ctx context.Context) (output.Event, error) {
 	if response.Error != nil {
 		return output.Event{}, wireErrorToError(response.Error)
 	}
-	if response.Op != "event" {
+	if response.Event == nil {
 		return output.Event{}, fmt.Errorf("unexpected follower response %q", response.Op)
 	}
-	if response.Type == "exit" && response.Exit != nil {
-		exit := &output.Exit{Code: response.Exit.Code, Time: response.Exit.Time}
-		if response.Exit.Signal != nil {
-			exit.SignalName = response.Exit.Signal.Name
-			exit.SignalNumber = response.Exit.Signal.Number
+	event := response.Event
+	if event.Type == protocol.EventExit && event.Exit != nil {
+		exit := &output.Exit{Code: event.Exit.Code, Time: event.Exit.Time}
+		if event.Exit.Signal != nil {
+			exit.SignalName = event.Exit.Signal.Name
+			exit.SignalNumber = event.Exit.Signal.Number
 		}
 		return output.Event{Exit: exit}, nil
 	}
-	return output.Event{Read: &output.ReadResult{
-		Entries: entriesFromWire(response.Entries), Next: cursorFromUint64(response.Next),
-		Oldest: cursorFromUint64(response.Oldest), Latest: cursorFromUint64(response.Latest),
-		EvictedThrough: cursorFromUint64(response.EvictedThrough), Truncated: response.Truncated, More: response.More,
-	}}, nil
+	return output.Event{Read: &output.ReadResult{Entries: entriesFromProtocol(event.Entries), Next: cursorFromProtocol(event.Next), Oldest: cursorFromProtocol(event.Oldest), Latest: cursorFromProtocol(event.Latest), EvictedThrough: cursorFromProtocol(event.EvictedThrough), Truncated: event.Truncated, More: event.More}}, nil
 }
-
 func (f *Follower) Close() error {
 	if f == nil || f.client == nil {
 		return nil
@@ -460,10 +448,13 @@ func (c *Client) InputAttach(ctx context.Context, req InputAttachRequest) (*Inpu
 	}
 	inputClient, err := Dial(ctx, c.socket)
 	if err != nil {
+		if inputClient != nil {
+			_ = inputClient.Close()
+		}
 		return nil, err
 	}
-	request := wireRequest{Op: "input_attach", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: req.TTY, Argv: append([]string(nil), req.Argv...), Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready), Columns: req.Columns, Rows: req.Rows}
-	if err := inputClient.writeOnly(ctx, request); err != nil {
+	req.Op = protocol.OpInputAttach
+	if err := inputClient.writeOnly(ctx, req, protocol.OpInputAttach); err != nil {
 		_ = inputClient.Close()
 		return nil, err
 	}
@@ -475,6 +466,10 @@ func (c *Client) InputAttach(ctx context.Context, req InputAttachRequest) (*Inpu
 	if response.Error != nil {
 		_ = inputClient.Close()
 		return nil, protocolErrorToError(response.Error)
+	}
+	if response.Op != protocol.OpInputAttach {
+		_ = inputClient.Close()
+		return nil, unexpectedResponseOp(string(protocol.OpInputAttach), string(response.Op))
 	}
 	if !response.OK {
 		_ = inputClient.Close()
@@ -488,6 +483,10 @@ func (c *Client) InputAttach(ctx context.Context, req InputAttachRequest) (*Inpu
 	if event.Error != nil {
 		_ = inputClient.Close()
 		return nil, protocolErrorToError(event.Error)
+	}
+	if event.Op != protocol.OpInputState {
+		_ = inputClient.Close()
+		return nil, unexpectedResponseOp(string(protocol.OpInputState), string(event.Op))
 	}
 	session := &InputSession{
 		client: inputClient, state: event.State, cursor: event.LaunchCursor,
@@ -689,7 +688,7 @@ func (s *InputSession) dispatchInputEvents() {
 		}
 	}
 }
-func (s *InputSession) writeRequest(ctx context.Context, req wireRequest, want protocol.Operation) error {
+func (s *InputSession) writeRequest(ctx context.Context, req any, op protocol.Operation) error {
 	if s == nil || s.client == nil {
 		return net.ErrClosed
 	}
@@ -698,14 +697,14 @@ func (s *InputSession) writeRequest(ctx context.Context, req wireRequest, want p
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.writeRequestLocked(ctx, req, want)
+	return s.writeRequestLocked(ctx, req, op)
 }
 
-func (s *InputSession) writeRequestLocked(ctx context.Context, req wireRequest, want protocol.Operation) error {
-	if err := s.client.writeOnly(ctx, req); err != nil {
+func (s *InputSession) writeRequestLocked(ctx context.Context, req any, op protocol.Operation) error {
+	if err := s.client.writeOnly(ctx, req, op); err != nil {
 		return err
 	}
-	return s.waitForAck(ctx, want)
+	return s.waitForAck(ctx, op)
 }
 
 func (s *InputSession) waitForAck(ctx context.Context, want protocol.Operation) error {
@@ -714,7 +713,14 @@ func (s *InputSession) waitForAck(ctx context.Context, want protocol.Operation) 
 		if err := json.Unmarshal(raw, &ack); err != nil {
 			return err
 		}
+		if ack.Error != nil {
+			if ack.Op == "" {
+				s.client.invalidate()
+				return protocolErrorToError(ack.Error)
+			}
+		}
 		if ack.Op != want {
+			s.client.invalidate()
 			return fmt.Errorf("daemon input response operation %q does not match %q", ack.Op, want)
 		}
 		if ack.Error != nil {
@@ -753,7 +759,7 @@ func (s *InputSession) WriteAt(ctx context.Context, cursor protocol.Cursor, data
 	if len(data) > protocol.MaxInputBytes {
 		return &protocol.WireError{Code: protocol.ErrorInputTooLarge, Message: "input payload exceeds 32768 bytes"}
 	}
-	return s.writeRequest(ctx, wireRequest{Op: "input_write", LaunchCursor: uint64(cursor), Data: base64.StdEncoding.EncodeToString(data)}, protocol.OpInputWrite)
+	return s.writeRequest(ctx, protocol.InputWriteRequest{Op: protocol.OpInputWrite, LaunchCursor: cursor, Data: base64.StdEncoding.EncodeToString(data)}, protocol.OpInputWrite)
 }
 func (s *InputSession) Resize(ctx context.Context, columns, rows uint16) error {
 	_, cursor := s.State()
@@ -763,7 +769,7 @@ func (s *InputSession) ResizeAt(ctx context.Context, cursor protocol.Cursor, col
 	if columns == 0 || rows == 0 {
 		return &protocol.WireError{Code: protocol.ErrorInvalidRequest, Message: "tty dimensions must be non-zero"}
 	}
-	return s.writeRequest(ctx, wireRequest{Op: "input_resize", LaunchCursor: uint64(cursor), Columns: columns, Rows: rows}, protocol.OpInputResize)
+	return s.writeRequest(ctx, protocol.InputResizeRequest{Op: protocol.OpInputResize, LaunchCursor: cursor, Columns: columns, Rows: rows}, protocol.OpInputResize)
 }
 
 // releaseOneShot sends the explicit input_release operation and waits for its
@@ -779,7 +785,7 @@ func (s *InputSession) releaseOneShot() error {
 	s.releaseOnce.Do(func() {
 		var err error
 		if s.writeMu.TryLock() {
-			err = s.writeRequestLocked(context.Background(), wireRequest{Op: "input_release"}, protocol.OpInputRelease)
+			err = s.writeRequestLocked(context.Background(), protocol.InputReleaseRequest{Op: protocol.OpInputRelease}, protocol.OpInputRelease)
 			s.writeMu.Unlock()
 		}
 		// A failed release acknowledgement cannot establish that the server
@@ -819,138 +825,123 @@ func (c *Client) ControlSignal(ctx context.Context, req SignalRequest) error {
 	_, err := c.SignalResult(ctx, req)
 	return err
 }
-
-// Signal sends one observational signal and preserves the historical
-// error-only client surface for callers that do not need the canonical result.
 func (c *Client) Signal(ctx context.Context, req SignalRequest) error {
 	_, err := c.SignalResult(ctx, req)
 	return err
 }
-
-// SignalResult sends one observational signal and returns its canonical name,
-// number, and sent status.
 func (c *Client) SignalResult(ctx context.Context, req SignalRequest) (protocol.SignalResult, error) {
-	response, err := c.roundTrip(ctx, wireRequest{Op: "signal", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Signal: req.Signal, Control: req.Control})
+	req.Op = protocol.OpSignal
+	response, err := c.roundTrip(ctx, req, protocol.OpSignal)
 	if err != nil {
 		return protocol.SignalResult{}, err
 	}
-	return protocolSignalResultFromWire(response, req.Name)
+	return protocolSignalResultFromResponse(response.Signal, req.Name)
 }
-
 func (c *Client) Stop(ctx context.Context, req StopRequest) error {
-	_, err := c.roundTrip(ctx, wireRequest{Op: "stop", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd})
+	req.Op = protocol.OpStop
+	_, err := c.roundTrip(ctx, req, protocol.OpStop)
 	return err
 }
-
 func (c *Client) Remove(ctx context.Context, req RemoveRequest) error {
-	_, err := c.roundTrip(ctx, wireRequest{Op: "remove", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd})
+	req.Op = protocol.OpRemove
+	_, err := c.roundTrip(ctx, req, protocol.OpRemove)
 	return err
 }
-
 func (c *Client) Restart(ctx context.Context, req RestartRequest) (app.Process, error) {
-	request := wireRequest{
-		Op: "restart", Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
-		Argv: append([]string(nil), req.Argv...), Env: append([]string(nil), req.Env...),
-		Source: req.Source, Ready: wireReadinessConfigFromProtocol(req.Ready), TTY: req.TTY, Restart: req.Restart,
-	}
-	if req.TTYSize != nil {
-		request.Columns, request.Rows = req.TTYSize.Columns, req.TTYSize.Rows
-	}
-	response, err := c.roundTrip(ctx, request)
+	req.Op = protocol.OpRestart
+	response, err := c.roundTrip(ctx, req, protocol.OpRestart)
 	if err != nil {
 		return app.Process{}, err
 	}
-	if response.Process == nil {
+	if response.Restart == nil || response.Restart.Process == nil {
 		return app.Process{}, errors.New("daemon restart response omitted process")
 	}
-	return appProcessFromWire(*response.Process), nil
+	return appProcessFromProtocol(*response.Restart.Process), nil
 }
-
-// Shutdown remains legal on a Client returned alongside VersionMismatchError.
 func (c *Client) Shutdown(ctx context.Context, req ShutdownRequest) error {
-	_, err := c.roundTrip(ctx, wireRequest{Op: "shutdown", Force: req.Force})
+	req.Op = protocol.OpShutdown
+	_, err := c.roundTrip(ctx, req, protocol.OpShutdown)
 	return err
 }
 
-func (c *Client) roundTrip(ctx context.Context, req wireRequest) (wireResponse, error) {
+func (c *Client) roundTrip(ctx context.Context, req any, op protocol.Operation) (protocol.ResponseEnvelope, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.roundTripLocked(ctx, req)
+	return c.roundTripLocked(ctx, req, op)
 }
-
-func (c *Client) roundTripLocked(ctx context.Context, req wireRequest) (wireResponse, error) {
-	if err := c.requestAllowed(req.Op); err != nil {
-		return wireResponse{}, err
+func (c *Client) roundTripLocked(ctx context.Context, req any, op protocol.Operation) (protocol.ResponseEnvelope, error) {
+	var empty protocol.ResponseEnvelope
+	if err := c.requestAllowed(string(op)); err != nil {
+		return empty, err
 	}
 	cleanup, err := setConnContextWithCancel(c.conn, ctx)
 	if err != nil {
-		return wireResponse{}, err
+		return empty, err
 	}
 	defer cleanup()
-	if err := writeProtocolRequest(c.encoder, req); err != nil {
+	if err := c.encoder.EncodeRequest(req); err != nil {
 		if invalidateAfterWriteError(err) {
 			c.invalidate()
 		}
-		return wireResponse{}, contextError(ctx, err)
+		return empty, contextError(ctx, err)
 	}
-	response, err := readProtocolResponse(c.decoder)
+	response, err := c.decoder.DecodeResponse()
 	c.recordWarnings(response)
-	if err != nil {
-		if response.Error != nil {
-			if response.Op == "" {
-				c.invalidate()
-				return response, err
-			}
-			if response.Op != req.Op {
-				c.invalidate()
-				return response, unexpectedResponseOp(req.Op, response.Op)
-			}
-			return response, err
+	if response.Error != nil {
+		if response.Op == "" {
+			c.invalidate()
+			return response, wireErrorToError(response.Error)
 		}
+		if response.Op != op {
+			c.invalidate()
+			return response, unexpectedResponseOp(string(op), string(response.Op))
+		}
+		return response, wireErrorToError(response.Error)
+	}
+	if err != nil {
 		c.invalidate()
 		return response, contextError(ctx, err)
 	}
-	if response.Op != req.Op {
+	if response.Op != op {
 		c.invalidate()
-		return response, unexpectedResponseOp(req.Op, response.Op)
+		return response, unexpectedResponseOp(string(op), string(response.Op))
 	}
 	return response, nil
 }
-
-func (c *Client) readResponse(ctx context.Context) (wireResponse, error) {
+func (c *Client) readResponse(ctx context.Context) (protocol.ResponseEnvelope, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	var empty protocol.ResponseEnvelope
 	if err := c.requestAllowed("event"); err != nil {
-		return wireResponse{}, err
+		return empty, err
 	}
 	cleanup, err := setConnContextWithCancel(c.conn, ctx)
 	if err != nil {
-		return wireResponse{}, err
+		return empty, err
 	}
 	defer cleanup()
-	response, err := readProtocolResponse(c.decoder)
+	response, err := c.decoder.DecodeResponse()
 	c.recordWarnings(response)
-	if err != nil {
-		if response.Error == nil {
-			c.invalidate()
-			return response, contextError(ctx, err)
-		}
+	if response.Error != nil {
 		if response.Op == "" {
 			c.invalidate()
 		}
-		return response, err
+		return response, wireErrorToError(response.Error)
 	}
-	if response.Op != "event" {
+	if err != nil {
 		c.invalidate()
-		return response, unexpectedResponseOp("event", response.Op)
+		return response, contextError(ctx, err)
+	}
+	if response.Op != protocol.OpEvent {
+		c.invalidate()
+		return response, unexpectedResponseOp("event", string(response.Op))
 	}
 	return response, nil
 }
-
-func (c *Client) writeOnly(ctx context.Context, req wireRequest) error {
+func (c *Client) writeOnly(ctx context.Context, req any, op protocol.Operation) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.requestAllowed(req.Op); err != nil {
+	if err := c.requestAllowed(string(op)); err != nil {
 		return err
 	}
 	cleanup, err := setConnContextWithCancel(c.conn, ctx)
@@ -958,7 +949,7 @@ func (c *Client) writeOnly(ctx context.Context, req wireRequest) error {
 		return err
 	}
 	defer cleanup()
-	if err := writeProtocolRequest(c.encoder, req); err != nil {
+	if err := c.encoder.EncodeRequest(req); err != nil {
 		if invalidateAfterWriteError(err) {
 			c.invalidate()
 		}
@@ -1037,83 +1028,6 @@ func invalidateAfterWriteError(err error) bool {
 	return !errors.Is(err, protocol.ErrMalformed) && !errors.Is(err, protocol.ErrOversized)
 }
 
-func unexpectedResponseOp(expected, actual string) error {
-	return fmt.Errorf("daemon response operation %q does not match request operation %q", actual, expected)
-}
-
-func writeProtocolRequest(encoder *protocol.Encoder, req wireRequest) error {
-	var value any
-	switch req.Op {
-	case "hello":
-		value = protocol.Hello{Op: protocol.OpHello, Version: req.Version}
-	case "start":
-		value = protocol.StartRequest{
-			Op: protocol.OpStart, Scope: req.Scope, Name: req.Name, Argv: req.Argv, Cwd: req.Cwd, Root: req.Root, Env: req.Env,
-			Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY, Restart: req.Restart, Attached: req.Attached,
-		}
-		if req.Columns != 0 || req.Rows != 0 {
-			start := value.(protocol.StartRequest)
-			start.TTYSize = &protocol.TTYSize{Columns: req.Columns, Rows: req.Rows}
-			value = start
-		}
-	case "list":
-		value = protocol.ListRequest{Op: protocol.OpList, Scope: req.Scope, Cwd: req.Cwd, All: req.All, IncludeCompleted: req.IncludeCompleted}
-	case "get":
-		value = protocol.GetRequest{Op: protocol.OpGet, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd}
-	case "output":
-		value = protocol.OutputRequest{Op: protocol.OpOutput, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
-	case "follow":
-		value = protocol.FollowRequest{Op: protocol.OpFollow, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), UntilExit: req.UntilExit, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: protocol.Stream(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
-	case "wait":
-		value = protocol.WaitRequest{Op: protocol.OpWait, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, After: protocolCursorFromUint64(req.After), Match: req.Match, TimeoutMS: req.TimeoutMS}
-	case "signal":
-		value = protocol.SignalRequest{Op: protocol.OpSignal, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Signal: req.Signal, Control: req.Control}
-	case "stop":
-		value = protocol.StopRequest{Op: protocol.OpStop, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd}
-	case "remove":
-		value = protocol.RemoveRequest{Op: protocol.OpRemove, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd}
-	case "restart":
-		value = protocol.RestartRequest{
-			Op: protocol.OpRestart, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Root: req.Root, Update: req.Update,
-			Argv: req.Argv, Env: req.Env, Source: req.Source,
-			Ready: protocolReadinessConfigFromWire(req.Ready), TTY: req.TTY, Restart: req.Restart,
-		}
-		if req.Columns != 0 || req.Rows != 0 {
-			restart := value.(protocol.RestartRequest)
-			restart.TTYSize = &protocol.TTYSize{Columns: req.Columns, Rows: req.Rows}
-			value = restart
-		}
-	case "shutdown":
-		value = protocol.ShutdownRequest{Op: protocol.OpShutdown, Force: req.Force}
-	case "input_attach":
-		value = protocol.InputAttachRequest{Op: protocol.OpInputAttach, Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, Root: req.Root, TTY: req.TTY, Argv: req.Argv, Source: req.Source, Ready: protocolReadinessConfigFromWire(req.Ready), Columns: req.Columns, Rows: req.Rows}
-	case "input_release":
-		value = protocol.InputReleaseRequest{Op: protocol.OpInputRelease}
-	case "input_write":
-		value = protocol.InputWriteRequest{Op: protocol.OpInputWrite, LaunchCursor: protocol.Cursor(req.LaunchCursor), Data: req.Data}
-	case "input_resize":
-		value = protocol.InputResizeRequest{Op: protocol.OpInputResize, LaunchCursor: protocol.Cursor(req.LaunchCursor), Columns: req.Columns, Rows: req.Rows}
-	default:
-		value = protocol.Request{Op: protocol.Operation(req.Op)}
-	}
-	return encoder.EncodeRequest(value)
-}
-
-func readProtocolResponse(decoder *protocol.Decoder) (wireResponse, error) {
-	var raw json.RawMessage
-	if err := decoder.Decode(&raw); err != nil {
-		return wireResponse{}, err
-	}
-	var response wireResponse
-	if err := json.Unmarshal(raw, &response); err != nil {
-		return wireResponse{}, &MalformedRequestError{Err: err}
-	}
-	if response.Error != nil {
-		return response, wireErrorToError(response.Error)
-	}
-	return response, nil
-}
-
 func setConnContext(conn net.Conn, ctx context.Context) error {
 	if ctx == nil {
 		return nil
@@ -1133,149 +1047,22 @@ func setConnContextWithCancel(conn net.Conn, ctx context.Context) (func(), error
 	if err := setConnContext(conn, ctx); err != nil {
 		return nil, err
 	}
-	done := ctx.Done()
-	if done == nil {
+	if ctx.Done() == nil {
 		return func() { clearConnDeadline(conn) }, nil
 	}
-	stop := make(chan struct{})
-	stopped := make(chan struct{})
+	stop, stopped := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(stopped)
 		select {
-		case <-done:
+		case <-ctx.Done():
 			_ = conn.SetDeadline(time.Now())
 		case <-stop:
 		}
 	}()
-	return func() {
-		close(stop)
-		<-stopped
-		clearConnDeadline(conn)
-	}, nil
+	return func() { close(stop); <-stopped; clearConnDeadline(conn) }, nil
 }
-
 func clearConnDeadline(conn net.Conn) { _ = conn.SetDeadline(time.Time{}) }
 
-func wireRequestFromProtocolOutputRequest(req protocol.OutputRequest) wireRequest {
-	wire := wireRequest{Op: string(protocol.OpOutput), Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes}
-	if req.After != nil {
-		value := uint64(*req.After)
-		wire.After = &value
-	}
-	return wire
-}
-
-func wireRequestFromProtocolFollowRequest(req protocol.FollowRequest) wireRequest {
-	wire := wireRequest{Op: string(protocol.OpFollow), Scope: req.Scope, Name: req.Name, Cwd: req.Cwd, SinceMS: req.SinceMS, SinceUnixNano: req.SinceUnixNano, Tail: req.Tail, Stream: string(req.Stream), Match: req.Match, MaxEntries: req.MaxEntries, MaxBytes: req.MaxBytes, UntilExit: req.UntilExit}
-	if req.After != nil {
-		value := uint64(*req.After)
-		wire.After = &value
-	}
-	return wire
-}
-
-func protocolErrorToError(wire *protocol.WireError) error {
-	if wire == nil {
-		return nil
-	}
-	return &protocol.WireError{Code: wire.Code, Message: wire.Message, Details: wire.Details}
-}
-
-func wireErrorToError(wire *wireError) error {
-	if wire == nil {
-		return nil
-	}
-	if wire.Code == string(protocol.ErrorVersionMismatch) || wire.Code == "version_mismatch" {
-		clientVersion, daemonVersion := 0, wire.DaemonVersion
-		if details, ok := wire.Details.(map[string]any); ok {
-			if value, ok := details["client"].(float64); ok {
-				clientVersion = int(value)
-			}
-			if value, ok := details["daemon"].(float64); ok {
-				daemonVersion = int(value)
-			}
-		}
-		return &VersionMismatchError{ClientVersion: clientVersion, DaemonVersion: daemonVersion, Message: wire.Message}
-	}
-	if wire.Code == string(protocol.ErrorActiveProcesses) || wire.Code == "active_processes" {
-		names := append([]string(nil), wire.Processes...)
-		if len(names) == 0 {
-			if values, ok := wire.Details.([]any); ok {
-				names = make([]string, 0, len(values))
-				for _, value := range values {
-					if name, ok := value.(string); ok {
-						names = append(names, name)
-					}
-				}
-			}
-		}
-		return &ActiveProcessesError{Names: names}
-	}
-	return &WireError{Code: protocol.ErrorCode(wire.Code), Message: wire.Message, Details: wire.Details}
-}
-
-func appProcessFromWire(item wireProcess) app.Process {
-	scope := item.Scope
-	if scope == "" {
-		scope = "project"
-	}
-	result := app.Process{
-		Name: item.Name, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
-		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
-		LaunchCursor: output.Cursor(item.LaunchCursor), State: app.State(item.State),
-		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount,
-		Followers: item.Followers, Restart: app.RestartPolicy(item.Restart), Relaunches: item.Relaunches,
-		NextLaunchAt: item.NextLaunchAt,
-	}
-	if item.Readiness != nil {
-		result.Readiness = &app.Readiness{
-			State: item.Readiness.State, Cursor: cursorFromUint64(item.Readiness.Cursor),
-			Time: item.Readiness.Time, Match: item.Readiness.Match,
-		}
-	}
-	if item.NextCursor != nil {
-		result.NextCursor = output.Cursor(*item.NextCursor)
-	}
-	if item.Exit != nil {
-		exitCode := item.Exit.Code
-		if exitCode == 0 && item.Exit.ExitCode != 0 {
-			exitCode = item.Exit.ExitCode
-		}
-		result.Exit = &processResult{ExitCode: exitCode, Err: errorFromString(item.Exit.Error), ExitedAt: item.Exit.Time}
-		if item.Exit.Signal != nil {
-			result.Exit.Signal = &process.SignalInfo{Name: item.Exit.Signal.Name, Number: item.Exit.Signal.Number}
-		}
-	}
-	return result
-}
-
-// processResult is assigned through the app.Process.Exit field below. Keeping
-// conversion in one place makes response DTOs incapable of carrying Env.
-type processResult = process.Result
-
-func errorFromString(value string) error {
-	if value == "" {
-		return nil
-	}
-	return errors.New(value)
-}
-
-func outputResultFromWire(response wireResponse) output.ReadResult {
-	return output.ReadResult{Entries: entriesFromWire(response.Entries), Next: cursorFromUint64(response.Next), Oldest: cursorFromUint64(response.Oldest), Latest: cursorFromUint64(response.Latest), EvictedThrough: cursorFromUint64(response.EvictedThrough), Truncated: response.Truncated, More: response.More}
-}
-
-func entriesFromWire(items []wireEntry) []output.Entry {
-	entries := make([]output.Entry, 0, len(items))
-	for _, item := range items {
-		entries = append(entries, output.Entry{Cursor: output.Cursor(item.Cursor), Stream: outputStreamFromName(item.Stream), Time: item.Time, Text: item.Text})
-	}
-	return entries
-}
-
-func cursorFromUint64(value *uint64) *output.Cursor {
-	if value == nil {
-		return nil
-	}
-	cursor := output.Cursor(*value)
-	return &cursor
+func unexpectedResponseOp(expected, actual string) error {
+	return fmt.Errorf("daemon response operation %q does not match request operation %q", actual, expected)
 }
