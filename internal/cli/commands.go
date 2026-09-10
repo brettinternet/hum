@@ -965,7 +965,11 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		}
 		if daemonUnavailable(err) {
 			if definition, ok := manifest.byName[name]; ok {
-				return manifestUnavailableMessage(definition, manifest.selector)
+				process := manifestProcess(definition, manifest.root)
+				if cmd.Bool("json") {
+					return encodeJSON(writer, statusJSONFor(process))
+				}
+				return renderStatusHuman(writer, process)
 			}
 			return newUserFacingError(logsUnavailableMessageFor(manifest.selector))
 		}

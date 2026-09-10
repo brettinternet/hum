@@ -43,9 +43,12 @@ func TestImplicitMixDiscoveryDoesNotExecuteProjectCode(t *testing.T) {
 			return err
 		}},
 		{name: "status", run: func(t *testing.T) error {
-			_, _, err := stopShutdownRun(t, "status", "--json", "dev")
-			if err == nil {
-				return errors.New("status unexpectedly succeeded without a daemon")
+			output, _, err := stopShutdownRun(t, "status", "--json", "dev")
+			if err != nil {
+				return err
+			}
+			if got := statusDecodeJSON(t, output); got.State != "stopped" {
+				return fmt.Errorf("discovered status state = %q, want stopped", got.State)
 			}
 			return nil
 		}},

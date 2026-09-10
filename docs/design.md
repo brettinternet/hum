@@ -87,8 +87,9 @@ worktree when DIR exactly matches a canonical root retained by the daemon.
 
 - The resolved project root scopes names and manifests.
 - `status` without a name renders a compact current-project process table and includes unlaunched
-  manifest declarations; `status <name>` retains the full single-process detail view. Aggregate
-  JSON uses the same `{"processes":[...]}` collection shape as `list`.
+  manifest declarations; `status <name>` retains the full single-process detail view. A resolved
+  declaration without a daemon record is reported as stopped, even when no daemon is running.
+  Aggregate JSON uses the same `{"processes":[...]}` collection shape as `list`.
 - An ad-hoc `run` keeps the selected DIR as the child cwd; a manifest definition keeps its
   declared root-relative `cwd`.
 - `init` writes at the resolved root, and `list --all` uses the selected project while merging

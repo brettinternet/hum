@@ -313,6 +313,51 @@ func TestStatusErrors(t *testing.T) {
 	})
 }
 
+func TestStatusDeclaredProcessWithoutDaemon(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	runtimeDir := hum006ListLogsTempDir(t, "status-declared-runtime")
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  api:\n    argv: [task, dev]\n")
+
+	human, stderr, err := stopShutdownRun(t, "status", "api")
+	if err != nil || stderr != "" {
+		t.Fatalf("declared status: err=%v stderr=%q output=%q", err, stderr, human)
+	}
+	for _, want := range []string{"name: api", "source: manifest", "project_root: " + projectRoot, "argv: task dev", "state: stopped"} {
+		if !strings.Contains(human, want) {
+			t.Errorf("declared status missing %q: %q", want, human)
+		}
+	}
+
+	output, stderr, err := stopShutdownRun(t, "status", "api", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("declared status --json: err=%v stderr=%q output=%q", err, stderr, output)
+	}
+	got := statusDecodeJSON(t, output)
+	if got.Name != "api" || got.Source != "manifest" || got.ProjectRoot != projectRoot || got.State != string(app.StateStopped) {
+		t.Errorf("declared status JSON = %#v, want stopped manifest api in %q", got, projectRoot)
+	}
+	if !reflect.DeepEqual(got.Argv, []string{"task", "dev"}) {
+		t.Errorf("declared status argv = %#v, want [task dev]", got.Argv)
+	}
+
+	paths := daemon.NewRuntimePaths(runtimeDir)
+	for _, path := range []string{paths.Socket, paths.PID} {
+		if _, statErr := os.Stat(path); statErr == nil {
+			t.Errorf("status created daemon artifact %q", path)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("inspect daemon artifact %q: %v", path, statErr)
+		}
+	}
+	entries, err := os.ReadDir(runtimeDir)
+	if err != nil {
+		t.Fatalf("read runtime directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("status populated runtime directory %q: %#v", runtimeDir, entries)
+	}
+}
+
 func TestStatusUnavailableDoesNotStartDaemon(t *testing.T) {
 	stopShutdownTestProject(t)
 	runtimeDir := hum006ListLogsTempDir(t, "status-runtime")
