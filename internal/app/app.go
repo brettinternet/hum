@@ -834,8 +834,72 @@ type record struct {
 	terminalAt time.Time
 	terminal   bool
 	done       chan struct{}
-	doneClosed bool
 	stopMu     sync.Mutex
+}
+
+// transitionDormantLocked initializes a retained session before its first
+// incarnation. Dormant records are terminal and their wait channel is already
+// closed, so waiters always wait for a future launch.
+func transitionDormantLocked(rec *record) {
+	done := make(chan struct{})
+	close(done)
+	rec.state = StateExited
+	rec.result = process.Result{}
+	rec.terminalAt = time.Time{}
+	rec.terminal = true
+	rec.done = done
+}
+
+// transitionRunningLocked publishes one successful incarnation. Running
+// records always have a child, an open incarnation wait channel, and no
+// terminal result. The caller must hold Supervisor.mu.
+func (s *Supervisor) transitionRunningLocked(rec *record, child Child, startedAt time.Time, launchCursor output.Cursor, launchBoundary bool, tracker *readinessTracker, restarted bool) {
+	s.removeCompletedLocked(rec)
+	startIdentity := ""
+	if identityChild, ok := child.(IdentityChild); ok {
+		startIdentity = identityChild.StartIdentity()
+	}
+	if startIdentity == "" {
+		if identity, err := process.ProcessStartIdentity(child.PID()); err == nil {
+			startIdentity = identity
+		}
+	}
+	rec.child, rec.pid, rec.pgid = child, child.PID(), child.PGID()
+	rec.startIdentity = startIdentity
+	rec.unresolved = false
+	rec.persisting = false
+	rec.start, rec.cursor = startedAt, launchCursor
+	if restarted {
+		rec.restartCount++
+	}
+	rec.launchBoundary = launchBoundary
+	rec.state, rec.result, rec.terminalAt, rec.terminal = StateRunning, process.Result{}, time.Time{}, false
+	rec.done = make(chan struct{})
+	rec.incarnation++
+	s.processObservations[rec.key]++
+	rec.tracker = tracker
+}
+
+// transitionTerminalLocked records the immutable result for one incarnation.
+// Terminal waiters are released separately, after exit persistence completes.
+// The caller must hold Supervisor.mu.
+func transitionTerminalLocked(rec *record, result process.Result) {
+	rec.result = result
+	rec.terminalAt = result.ExitedAt
+	rec.terminal = true
+	if rec.operatorStop {
+		rec.state = StateStopped
+	} else {
+		rec.state = StateExited
+	}
+	rec.operatorStop = false
+}
+
+// transitionUnresolvedLocked reserves a record whose process state could not
+// be made durable or safely reclaimed. The caller must hold Supervisor.mu.
+func transitionUnresolvedLocked(rec *record) {
+	rec.unresolved = true
+	rec.state = StateUnresolved
 }
 
 // inputOperation represents one child write or resize. The done channel is
@@ -1251,8 +1315,7 @@ func (s *Supervisor) markUnresolved(rec *record) {
 	}
 	s.mu.Lock()
 	if s.records[rec.key] == rec {
-		rec.unresolved = true
-		rec.state = StateUnresolved
+		transitionUnresolvedLocked(rec)
 	}
 	s.mu.Unlock()
 }
@@ -1467,9 +1530,8 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 			s.mu.Unlock()
 			return Process{}, fmt.Errorf("output store: %w", storeErr)
 		}
-		done := make(chan struct{})
-		close(done)
-		rec = &record{key: key, name: req.Name, scope: req.Scope, root: root, store: store, state: StateExited, terminal: true, done: done, doneClosed: true, restart: restartPolicyForSource(req.Source, req.Restart)}
+		rec = &record{key: key, name: req.Name, scope: req.Scope, root: root, store: store, restart: restartPolicyForSource(req.Source, req.Restart)}
+		transitionDormantLocked(rec)
 		if !automatic && explicitRecord == nil {
 			rec.stopMu.Lock()
 			explicitRecord = rec
@@ -1615,31 +1677,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		}
 		return Process{}, &NotFoundError{Root: root, Name: req.Name}
 	}
-	s.removeCompletedLocked(rec)
-	startIdentity := ""
-	if identityChild, ok := child.(IdentityChild); ok {
-		startIdentity = identityChild.StartIdentity()
-	}
-	if startIdentity == "" {
-		if identity, identityErr := process.ProcessStartIdentity(child.PID()); identityErr == nil {
-			startIdentity = identity
-		}
-	}
-	rec.child, rec.pid, rec.pgid = child, child.PID(), child.PGID()
-	rec.startIdentity = startIdentity
-	rec.unresolved = false
-	rec.persisting = false
-	rec.start, rec.cursor = startedAt, launchCursor
-	if wasLaunched {
-		rec.restartCount++
-	}
-	rec.launchBoundary = launchBoundary
-	rec.state, rec.result, rec.terminalAt, rec.terminal = StateRunning, process.Result{}, time.Time{}, false
-	rec.done = make(chan struct{})
-	rec.doneClosed = false
-	rec.incarnation++
-	s.processObservations[key]++
-	rec.tracker = tracker
+	s.transitionRunningLocked(rec, child, startedAt, launchCursor, launchBoundary, tracker, wasLaunched)
 	if automatic {
 		rec.relaunches++
 		rec.automaticCurrent = true
@@ -1934,39 +1972,11 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 		_ = child.Wait()
 		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
 	}
-	s.removeCompletedLocked(rec)
-	startIdentity := ""
-	if identityChild, ok := child.(IdentityChild); ok {
-		startIdentity = identityChild.StartIdentity()
-	}
-	if startIdentity == "" {
-		if identity, identityErr := process.ProcessStartIdentity(child.PID()); identityErr == nil {
-			startIdentity = identity
-		}
-	}
-	rec.child = child
-	rec.pid = child.PID()
-	rec.pgid = child.PGID()
-	rec.startIdentity = startIdentity
-	rec.unresolved = false
-	rec.persisting = false
-	rec.start = startedAt
-	rec.cursor = launchCursor
-	rec.restartCount++
 	rec.relaunches = 0
 	rec.nextLaunchAt = time.Time{}
 	rec.automaticCurrent = false
 	rec.automaticStarting = false
-	rec.launchBoundary = true
-	rec.state = StateRunning
-	rec.result = process.Result{}
-	rec.terminalAt = time.Time{}
-	rec.terminal = false
-	rec.done = make(chan struct{})
-	rec.doneClosed = false
-	rec.incarnation++
-	s.processObservations[rec.key]++
-	rec.tracker = launchTracker
+	s.transitionRunningLocked(rec, child, startedAt, launchCursor, true, launchTracker, true)
 	input := rec.input
 	if input != nil {
 		input.beginIncarnation()
@@ -2038,17 +2048,9 @@ func (s *Supervisor) reconcile(rec *record) {
 		s.mu.Unlock()
 		return
 	}
-	rec.result = result
-	rec.terminalAt = result.ExitedAt
-	rec.terminal = true
-	if rec.operatorStop {
-		rec.state = StateStopped
-	} else {
-		rec.state = StateExited
-	}
+	transitionTerminalLocked(rec, result)
 	store := rec.store
 	terminalProcess := rec.snapshotLocked()
-	rec.operatorStop = false
 	republish := rec.pendingExit
 	rec.pendingExit = false
 	tracker := rec.tracker
@@ -2093,8 +2095,7 @@ func (s *Supervisor) reconcile(rec *record) {
 	if currentIncarnation {
 		rec.persisting = false
 		if persistErr != nil {
-			rec.unresolved = true
-			rec.state = StateUnresolved
+			transitionUnresolvedLocked(rec)
 			s.cancelRelaunchLocked(rec, true)
 		} else if shouldRelaunch && !rec.controlIntent {
 			s.scheduleRelaunchLocked(rec)
@@ -2103,9 +2104,6 @@ func (s *Supervisor) reconcile(rec *record) {
 	// Waiters hold the incarnation's channel even if completed-record eviction
 	// removed this record while the durable exit update was in flight.
 	close(terminalDone)
-	if rec.done == terminalDone {
-		rec.doneClosed = true
-	}
 	if currentIncarnation {
 		s.evictLocked()
 	}
@@ -2341,9 +2339,8 @@ func (s *Supervisor) ensureSessionScoped(scope, cwd, name string) (*record, erro
 	if err != nil {
 		return nil, fmt.Errorf("output store: %w", err)
 	}
-	done := make(chan struct{})
-	close(done)
-	rec := &record{key: key, name: name, scope: scope, root: root, cwd: root, store: store, state: StateExited, terminal: true, done: done, restart: RestartNever}
+	rec := &record{key: key, name: name, scope: scope, root: root, cwd: root, store: store, restart: RestartNever}
+	transitionDormantLocked(rec)
 	s.trackStore(key, store)
 	s.records[key] = rec
 	return rec, nil
@@ -2397,9 +2394,8 @@ func (s *Supervisor) PrepareTTYScoped(scope string, req StartRequest) error {
 		if storeErr != nil {
 			return fmt.Errorf("output store: %w", storeErr)
 		}
-		done := make(chan struct{})
-		close(done)
-		rec = &record{key: key, name: req.Name, scope: scope, root: root, cwd: requestCwd, store: store, state: StateExited, terminal: true, done: done, doneClosed: true, restart: RestartNever}
+		rec = &record{key: key, name: req.Name, scope: scope, root: root, cwd: requestCwd, store: store, restart: RestartNever}
+		transitionDormantLocked(rec)
 		s.trackStore(key, store)
 		s.records[key] = rec
 	}

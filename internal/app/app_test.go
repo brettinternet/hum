@@ -313,6 +313,192 @@ func recordDone(t *testing.T, s *Supervisor, root, name string) <-chan struct{} 
 	return rec.done
 }
 
+func assertLifecycleInvariant(t *testing.T, s *Supervisor, root, name string, want State) {
+	t.Helper()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec := s.records[keyFor(root, name)]
+	if rec == nil {
+		t.Fatalf("record %s/%s missing", root, name)
+	}
+	if rec.state != want {
+		t.Fatalf("state = %s, want %s", rec.state, want)
+	}
+	done := inputChannelClosed(rec.done)
+	switch want {
+	case StateRunning:
+		if rec.terminal || rec.child == nil || rec.pid <= 0 || done || rec.unresolved || !rec.terminalAt.IsZero() || rec.result != (process.Result{}) {
+			t.Fatalf("invalid running lifecycle: terminal=%t child=%T pid=%d done=%t unresolved=%t terminal_at=%v result=%+v", rec.terminal, rec.child, rec.pid, done, rec.unresolved, rec.terminalAt, rec.result)
+		}
+	case StateExited, StateStopped:
+		if !rec.terminal || !done || rec.unresolved || rec.terminalAt.IsZero() && rec.incarnation != 0 {
+			t.Fatalf("invalid terminal lifecycle: terminal=%t done=%t unresolved=%t incarnation=%d terminal_at=%v", rec.terminal, done, rec.unresolved, rec.incarnation, rec.terminalAt)
+		}
+	case StateUnresolved:
+		if !rec.unresolved || done != rec.terminal {
+			t.Fatalf("invalid unresolved lifecycle: unresolved=%t done=%t terminal=%t", rec.unresolved, done, rec.terminal)
+		}
+	default:
+		t.Fatalf("unsupported lifecycle state %s", want)
+	}
+}
+
+func TestRunningTransitionSharedByStartAndRestart(t *testing.T) {
+	root := makeProject(t, false)
+	children := []*subscriptionChild{
+		newSubscriptionChild(4201, 0, time.Unix(301, 0), ""),
+		newSubscriptionChild(4202, 0, time.Unix(302, 0), ""),
+	}
+	launch := 0
+	s := testSupervisor(t, Options{StartProcess: func(spec process.Spec) (Child, error) {
+		child := children[launch]
+		launch++
+		child.store = spec.Output
+		return child, nil
+	}})
+	started, err := s.Start(StartRequest{Name: "shared", Cwd: root, Argv: []string{"shared"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLifecycleInvariant(t, s, root, "shared", StateRunning)
+	firstDone := recordDone(t, s, root, "shared")
+	restarted, err := s.Restart(context.Background(), root, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLifecycleInvariant(t, s, root, "shared", StateRunning)
+	secondDone := recordDone(t, s, root, "shared")
+	if restarted.RestartCount != started.RestartCount+1 || restarted.PID == started.PID || !inputChannelClosed(firstDone) || firstDone == secondDone {
+		t.Fatalf("restart transition = %+v after %+v; first_done_closed=%t reused_done=%t", restarted, started, inputChannelClosed(firstDone), firstDone == secondDone)
+	}
+}
+
+func TestLifecycleTransitionInvariants(t *testing.T) {
+	t.Run("start stop and remove", func(t *testing.T) {
+		root := makeProject(t, false)
+		children := []*subscriptionChild{
+			newSubscriptionChild(4301, 0, time.Unix(311, 0), ""),
+			newSubscriptionChild(4302, 0, time.Unix(312, 0), ""),
+		}
+		launch := 0
+		s := testSupervisor(t, Options{StartProcess: func(spec process.Spec) (Child, error) {
+			child := children[launch]
+			launch++
+			child.store = spec.Output
+			return child, nil
+		}})
+		if _, err := s.Start(StartRequest{Name: "stopped", Cwd: root, Argv: []string{"stopped"}}); err != nil {
+			t.Fatal(err)
+		}
+		assertLifecycleInvariant(t, s, root, "stopped", StateRunning)
+		if err := s.Stop(context.Background(), root, "stopped"); err != nil {
+			t.Fatal(err)
+		}
+		assertLifecycleInvariant(t, s, root, "stopped", StateStopped)
+		if !inputChannelClosed(children[0].done) {
+			t.Fatal("stop left its child running")
+		}
+
+		if _, err := s.Start(StartRequest{Name: "removed", Cwd: root, Argv: []string{"removed"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Remove(context.Background(), root, "removed"); err != nil {
+			t.Fatal(err)
+		}
+		s.mu.RLock()
+		_, retained := s.records[keyFor(root, "removed")]
+		s.mu.RUnlock()
+		if retained {
+			t.Fatal("removed lifecycle record was retained")
+		}
+		if !inputChannelClosed(children[1].done) {
+			t.Fatal("remove left its child running")
+		}
+	})
+
+	t.Run("explicit restart", func(t *testing.T) {
+		root := makeProject(t, false)
+		children := []*subscriptionChild{
+			newSubscriptionChild(4401, 0, time.Unix(321, 0), ""),
+			newSubscriptionChild(4402, 0, time.Unix(322, 0), ""),
+		}
+		launch := 0
+		s := testSupervisor(t, Options{StartProcess: func(spec process.Spec) (Child, error) {
+			child := children[launch]
+			launch++
+			child.store = spec.Output
+			return child, nil
+		}})
+		if _, err := s.Start(StartRequest{Name: "restart", Cwd: root, Argv: []string{"restart"}}); err != nil {
+			t.Fatal(err)
+		}
+		firstDone := recordDone(t, s, root, "restart")
+		if _, err := s.Restart(context.Background(), root, "restart"); err != nil {
+			t.Fatal(err)
+		}
+		assertLifecycleInvariant(t, s, root, "restart", StateRunning)
+		if secondDone := recordDone(t, s, root, "restart"); !inputChannelClosed(firstDone) || firstDone == secondDone {
+			t.Fatalf("restart did not finish the old incarnation: first_done_closed=%t reused_done=%t", inputChannelClosed(firstDone), firstDone == secondDone)
+		}
+	})
+
+	t.Run("automatic relaunch", func(t *testing.T) {
+		harness := newRelaunchTestHarness(t, []relaunchTestLaunch{{code: 1}, {code: 0}}, 20)
+		if _, err := harness.s.Start(StartRequest{Name: "automatic", Source: "manifest", Root: harness.root, Cwd: harness.root, Argv: []string{"automatic"}, Restart: RestartOnFailure}); err != nil {
+			t.Fatal(err)
+		}
+		harness.child(0).release()
+		waitForRelaunch(t, harness.s, harness.root, "automatic", func(model Process) bool { return model.NextLaunchAt != nil })
+		if !harness.timers.fire(time.Second) {
+			t.Fatal("missing automatic relaunch timer")
+		}
+		waitForRelaunchChildren(t, harness, 2)
+		running := waitForRelaunch(t, harness.s, harness.root, "automatic", func(model Process) bool { return model.State == StateRunning })
+		assertLifecycleInvariant(t, harness.s, running.Root, "automatic", StateRunning)
+	})
+
+	t.Run("exit persistence failure", func(t *testing.T) {
+		root := makeProject(t, false)
+		child := newSubscriptionChild(4501, 7, time.Unix(331, 0), "")
+		s := testSupervisor(t, Options{
+			StartProcess: func(spec process.Spec) (Child, error) { child.store = spec.Output; return child, nil },
+			PersistExit:  func(Process) error { return errors.New("persist exit") },
+		})
+		if _, err := s.Start(StartRequest{Name: "unresolved", Cwd: root, Argv: []string{"unresolved"}}); err != nil {
+			t.Fatal(err)
+		}
+		done := recordDone(t, s, root, "unresolved")
+		child.release()
+		waitSubscriptionSignal(t, done, "exit persistence transition")
+		assertLifecycleInvariant(t, s, root, "unresolved", StateUnresolved)
+	})
+
+	t.Run("live unresolved recovery", func(t *testing.T) {
+		root := makeProject(t, false)
+		s := testSupervisor(t, Options{})
+		if err := s.AddUnresolved(root, "live-unresolved", 4601, 4601, "start-identity"); err != nil {
+			t.Fatal(err)
+		}
+		assertLifecycleInvariant(t, s, root, "live-unresolved", StateUnresolved)
+	})
+
+	t.Run("tty preparation", func(t *testing.T) {
+		root := makeProject(t, false)
+		s := testSupervisor(t, Options{})
+		if err := s.PrepareTTY(StartRequest{Name: "tty", Root: root, Cwd: root, Argv: []string{"tty"}, TTY: true}); err != nil {
+			t.Fatal(err)
+		}
+		assertLifecycleInvariant(t, s, root, "tty", StateExited)
+		s.mu.RLock()
+		rec := s.records[keyFor(root, "tty")]
+		valid := rec != nil && rec.tty && rec.incarnation == 0 && rec.child == nil && rec.pid == 0
+		s.mu.RUnlock()
+		if !valid {
+			t.Fatal("TTY preparation did not retain a dormant lifecycle record")
+		}
+	})
+}
+
 func waitForOutput(t *testing.T, subscription *output.Subscription, text string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
