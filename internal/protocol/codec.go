@@ -439,7 +439,7 @@ func (d *Decoder) DecodeResponse() (ResponseEnvelope, error) {
 	case OpEvent:
 		result.Event = new(StreamEvent)
 		err = decode(result.Event)
-		result.Error = result.Event.Error
+		result.Error, result.Warnings = result.Event.Error, result.Event.Warnings
 	case OpInputAttach:
 		result.InputAttach = new(InputAttachResponse)
 		err = decode(result.InputAttach)

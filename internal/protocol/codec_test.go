@@ -87,6 +87,7 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 			}
 		})
 	}
+	requireEveryFieldPopulated(t, requests, nil)
 
 	process := Process{Name: "process", Source: "manifest", Scope: ScopeProject, Root: "/project", TTY: true, PID: 41, PGID: 42, Cwd: "/work", Argv: []string{"tool"}, Start: stamp, LaunchCursor: cursor, NextCursor: &next, State: StateExited, Exit: &Exit{Code: -1, Time: stamp, Error: "failed", Signal: &SignalInfo{Name: "SIGTERM", Number: 15}}, ExitCode: -1, ExitedAt: stamp, RestartCount: 2, Followers: 3, Restart: RestartOnFailure, Relaunches: 4, NextLaunchAt: &stamp, Readiness: &Readiness{State: ReadinessReady, Cursor: &cursor, Time: stamp, Match: "ready"}}
 	entries := []OutputEntry{{Cursor: cursor, Stream: StreamStdout, Time: stamp, Text: "output"}}
@@ -131,6 +132,9 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 			if !bytes.Equal(wantJSON, actualJSON) {
 				t.Fatalf("response round trip = %s, want %s", actualJSON, wantJSON)
 			}
+			if warnings := reflect.ValueOf(want).FieldByName("Warnings"); warnings.IsValid() && !reflect.DeepEqual(got.Warnings, warnings.Interface()) {
+				t.Fatalf("envelope warnings = %#v, want %#v", got.Warnings, warnings.Interface())
+			}
 			if expected, ok := want.(WaitResponse); ok && expected.Outcome == WaitTimedOut {
 				decoded := actual.(WaitResponse)
 				if !decoded.ProcessObserved {
@@ -138,6 +142,38 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 				}
 			}
 		})
+	}
+	// Typed responses carry Error only on failure, which ErrorResponse covers.
+	requireEveryFieldPopulated(t, responses, map[string]bool{"Error": true, "ErrorResponse.OK": true})
+	requireEveryFieldPopulated(t, []any{process, *process.Exit, *process.Exit.Signal, *process.Readiness, entries[0], *wireError}, nil)
+}
+
+// requireEveryFieldPopulated fails when an exported, JSON-visible field of a
+// fixture type is zero in every fixture of that type. A comparison against a
+// hand-written literal cannot notice a new DTO field that both sides leave at
+// its zero value, so this forces every field to take part in the round trip.
+func requireEveryFieldPopulated(t *testing.T, fixtures []any, allowZero map[string]bool) {
+	t.Helper()
+	populated := map[reflect.Type]map[string]bool{}
+	for _, fixture := range fixtures {
+		value := reflect.ValueOf(fixture)
+		if populated[value.Type()] == nil {
+			populated[value.Type()] = map[string]bool{}
+		}
+		for index := 0; index < value.NumField(); index++ {
+			if !value.Field(index).IsZero() {
+				populated[value.Type()][value.Type().Field(index).Name] = true
+			}
+		}
+	}
+	for typ, fields := range populated {
+		for index := 0; index < typ.NumField(); index++ {
+			field := typ.Field(index)
+			if !field.IsExported() || field.Tag.Get("json") == "-" || fields[field.Name] || allowZero[field.Name] || allowZero[typ.Name()+"."+field.Name] {
+				continue
+			}
+			t.Errorf("%s.%s is zero in every fixture; populate it so the round trip proves it survives", typ.Name(), field.Name)
+		}
 	}
 }
 

@@ -710,7 +710,10 @@ func (s *Server) dispatch(req *protocol.Request) (any, bool) {
 		}
 		return protocol.ShutdownResponse{Op: req.Op, OK: true}, true
 	default:
-		return dispatchError(req.Op, fmt.Errorf("unknown operation %q", req.Op)), false
+		// A known op that this connection cannot dispatch (a repeated hello or
+		// an input op outside an attach) is a protocol misuse, not a daemon
+		// fault; keep the pre-refactor unknown_operation code and blank op.
+		return protocol.ErrorResponse{OK: false, Error: protocol.NewWireError(protocol.ErrorUnknownOperation, fmt.Sprintf("unknown operation %q", req.Op), nil)}, false
 	}
 }
 
@@ -971,7 +974,10 @@ func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protoc
 					return lease.Write(operationCtx, output.Cursor(inputRequest.LaunchCursor), data)
 				})
 			}
-			ack := protocol.InputAckResponse{Op: protocol.OpInputWrite, OK: response == nil, LaunchCursor: inputRequest.LaunchCursor, Written: len(data), Error: protocolWireError(response)}
+			ack := protocol.InputAckResponse{Op: protocol.OpInputWrite, OK: response == nil, Error: protocolWireError(response)}
+			if err == nil {
+				ack.LaunchCursor, ack.Written = inputRequest.LaunchCursor, len(data)
+			}
 			writeMu.Lock()
 			writeErr := encoder.EncodeResponse(ack)
 			writeMu.Unlock()

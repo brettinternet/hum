@@ -2358,3 +2358,29 @@ func TestScopeDaemonWire(t *testing.T) {
 		t.Fatalf("removed-root remove: %v", err)
 	}
 }
+
+func TestDispatchRejectsNonDispatchableKnownOperations(t *testing.T) {
+	supervisor, err := app.New(app.Options{StartProcess: func(process.Spec) (app.Child, error) { return nil, errors.New("unused") }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(Config{RuntimeDir: shortRuntimeDir(t), Supervisor: supervisor, StopGrace: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	// A repeated hello or an input operation outside an attach connection is
+	// a protocol misuse: the wire keeps the unknown_operation code and blank op
+	// rather than reporting an internal daemon fault.
+	for _, op := range []protocol.Operation{protocol.OpHello, protocol.OpInputWrite, protocol.OpInputResize, protocol.OpInputRelease} {
+		value, done := server.dispatch(&protocol.Request{Op: op})
+		response, ok := value.(protocol.ErrorResponse)
+		if !ok || done {
+			t.Fatalf("%s dispatch = %#v done=%v, want error response", op, value, done)
+		}
+		if response.Op != "" || response.OK || response.Error == nil || response.Error.Code != protocol.ErrorUnknownOperation {
+			t.Fatalf("%s dispatch response = %#v, want blank op with %s", op, response, protocol.ErrorUnknownOperation)
+		}
+	}
+}
