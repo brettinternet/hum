@@ -17,9 +17,10 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 	cursor, next := Cursor(7), Cursor(8)
 	ready := &ReadinessConfig{Match: "ready", Timeout: 3 * time.Second}
 	tty := &TTYSize{Columns: 120, Rows: 40}
+	stopGrace := 2 * time.Second
 	requests := []any{
 		Hello{Op: OpHello, Version: 19},
-		StartRequest{Op: OpStart, Scope: ScopeProject, Name: "start", Argv: []string{"tool", "--flag"}, Cwd: "/work", Root: "/project", Env: []string{"A=B"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, Attached: true},
+		StartRequest{Op: OpStart, Scope: ScopeProject, Name: "start", Argv: []string{"tool", "--flag"}, Cwd: "/work", Root: "/project", Env: []string{"A=B"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace, Attached: true},
 		ListRequest{Op: OpList, Scope: ScopeGlobal, Cwd: "/work", All: true, IncludeCompleted: true},
 		GetRequest{Op: OpGet, Scope: ScopeProject, Name: "get", Cwd: "/work"},
 		OutputRequest{Op: OpOutput, Scope: ScopeProject, Name: "output", Cwd: "/work", After: &cursor, SinceMS: 11, Tail: 12, Stream: StreamStdout, Match: "needle", Context: 2, MaxEntries: 13, MaxBytes: 14},
@@ -29,7 +30,7 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 		WaitRequest{Op: OpWait, Scope: ScopeProject, Name: "wait", Cwd: "/work", After: &cursor, Match: "wait", TimeoutMS: 18},
 		SignalRequest{Op: OpSignal, Scope: ScopeGlobal, Name: "signal", Cwd: "/work", Signal: "SIGTERM", Control: true},
 		StopRequest{Op: OpStop, Scope: ScopeProject, Name: "stop", Cwd: "/work"},
-		RestartRequest{Op: OpRestart, Scope: ScopeProject, Name: "restart", Cwd: "/work", Root: "/project", Update: true, Argv: []string{"new"}, Env: []string{"C=D"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure},
+		RestartRequest{Op: OpRestart, Scope: ScopeProject, Name: "restart", Cwd: "/work", Root: "/project", Update: true, Argv: []string{"new"}, Env: []string{"C=D"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace},
 		RemoveRequest{Op: OpRemove, Scope: ScopeGlobal, Name: "remove", Cwd: "/work"},
 		ShutdownRequest{Op: OpShutdown, Force: true},
 		InputAttachRequest{Op: OpInputAttach, Scope: ScopeProject, Name: "input", Cwd: "/work", Root: "/project", TTY: true, Argv: []string{"shell"}, Source: "manifest", Ready: ready, Columns: 100, Rows: 30},
@@ -89,7 +90,7 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 	}
 	requireEveryFieldPopulated(t, requests, nil)
 
-	process := Process{Name: "process", Source: "manifest", Scope: ScopeProject, Root: "/project", TTY: true, PID: 41, PGID: 42, Cwd: "/work", Argv: []string{"tool"}, Start: stamp, LaunchCursor: cursor, NextCursor: &next, State: StateExited, Exit: &Exit{Code: -1, Time: stamp, Error: "failed", Signal: &SignalInfo{Name: "SIGTERM", Number: 15}}, ExitCode: -1, ExitedAt: stamp, RestartCount: 2, Followers: 3, Restart: RestartOnFailure, Relaunches: 4, NextLaunchAt: &stamp, Readiness: &Readiness{State: ReadinessReady, Cursor: &cursor, Time: stamp, Match: "ready"}}
+	process := Process{Name: "process", Source: "manifest", Scope: ScopeProject, Root: "/project", TTY: true, PID: 41, PGID: 42, Cwd: "/work", Argv: []string{"tool"}, Start: stamp, LaunchCursor: cursor, NextCursor: &next, State: StateExited, Exit: &Exit{Code: -1, Time: stamp, Error: "failed", Signal: &SignalInfo{Name: "SIGTERM", Number: 15}}, ExitCode: -1, ExitedAt: stamp, RestartCount: 2, Followers: 3, Restart: RestartOnFailure, StopGrace: stopGrace, StopGraceInherited: true, Relaunches: 4, NextLaunchAt: &stamp, Readiness: &Readiness{State: ReadinessReady, Cursor: &cursor, Time: stamp, Match: "ready"}}
 	entries := []OutputEntry{{Cursor: cursor, Stream: StreamStdout, Time: stamp, Text: "output"}}
 	wireError := NewWireError(ErrorInvalidRequest, "bad", map[string]any{"client": 18, "daemon": 19})
 	responses := []any{

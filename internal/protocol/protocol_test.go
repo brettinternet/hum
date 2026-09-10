@@ -111,12 +111,54 @@ func TestGlobalScopeRequests(t *testing.T) {
 	}
 }
 
+func TestProcessStopGraceProtocol(t *testing.T) {
+	zero := time.Duration(0)
+	start := StartRequest{Op: OpStart, Name: "api", Cwd: "/project", Argv: []string{"api"}, StopGrace: &zero}
+	encoded, err := json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"stop_grace":0`)) {
+		t.Fatalf("start request omitted explicit zero: %s", encoded)
+	}
+	var decoded StartRequest
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.StopGrace == nil || *decoded.StopGrace != 0 {
+		t.Fatalf("decoded explicit zero = %#v", decoded.StopGrace)
+	}
+	restart := RestartRequest{Op: OpRestart, Name: "api", Cwd: "/project", Update: true, Source: "manifest", StopGrace: &zero}
+	restartEncoded, err := json.Marshal(restart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(restartEncoded, []byte(`"stop_grace":0`)) {
+		t.Fatalf("restart request omitted explicit zero: %s", restartEncoded)
+	}
+	var decodedRestart RestartRequest
+	if err := json.Unmarshal(restartEncoded, &decodedRestart); err != nil {
+		t.Fatal(err)
+	}
+	if decodedRestart.StopGrace == nil || *decodedRestart.StopGrace != 0 {
+		t.Fatalf("decoded restart explicit zero = %#v", decodedRestart.StopGrace)
+	}
+	process := Process{Name: "api", Scope: ScopeProject, StopGrace: 3 * time.Second, StopGraceInherited: true}
+	encoded, err = json.Marshal(process)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"stop_grace":3000000000`)) || !bytes.Contains(encoded, []byte(`"stop_grace_inherited":true`)) {
+		t.Fatalf("snapshot grace fields = %s", encoded)
+	}
+}
+
 func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	hello, err := json.Marshal(NewHello())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":18}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":19}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -531,7 +573,7 @@ func TestStatusGetRequestResponseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","scope":"project","project_root":"/work/project","tty":false,"pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0,"restart":"never","relaunches":0}}`+"\n"; got != want {
+	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","scope":"project","project_root":"/work/project","tty":false,"pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0,"restart":"never","relaunches":0,"stop_grace":0,"stop_grace_inherited":false}}`+"\n"; got != want {
 		t.Fatalf("get response JSON = %s, want %s", got, want)
 	}
 
@@ -709,7 +751,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":18}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":19}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError

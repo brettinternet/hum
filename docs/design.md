@@ -17,6 +17,8 @@ not.
 
 `internal/orchestrate` owns scheduling, readiness, recovery, drift, removal, and skip classification. CLI and MCP adapt daemon snapshots and render the same model.
 
+Manifest processes may override the daemon SIGTERM-to-SIGKILL window with `stop_grace`. Omission inherits the daemon default and explicit `0s` remains distinct. The admitted effective value is retained in each process snapshot; restarts adopt the current definition, automatic relaunches retain the admitted policy, and orphan-group reclaim uses the daemon default.
+
 ```text
 CLI ─┐                       ┌─> launch order
      ├─> internal/orchestrate ├─> readiness

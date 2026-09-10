@@ -43,14 +43,15 @@ func IsActiveState(state string) bool {
 // definition. Adapters translate their project-specific definition types into
 // this small model before invoking orchestration.
 type Definition struct {
-	Name    string
-	Source  string
-	Argv    []string
-	Cwd     string
-	Ready   *ReadinessConfig
-	After   []string
-	TTY     bool
-	Restart string
+	Name      string
+	Source    string
+	Argv      []string
+	Cwd       string
+	Ready     *ReadinessConfig
+	After     []string
+	TTY       bool
+	Restart   string
+	StopGrace *time.Duration
 }
 
 // ReadinessConfig describes the output expression used by a definition.
@@ -86,27 +87,29 @@ type Exit struct {
 // Process is the common process snapshot exchanged by adapters and the
 // orchestrator. It intentionally contains no daemon or output-store handles.
 type Process struct {
-	Name         string
-	Source       string
-	Root         string
-	TTY          bool
-	PID          int
-	PGID         int
-	Cwd          string
-	Argv         []string
-	Start        time.Time
-	LaunchCursor uint64
-	NextCursor   *uint64
-	State        string
-	Exit         *Exit
-	ExitCode     int
-	ExitedAt     time.Time
-	RestartCount int
-	Followers    int
-	Restart      string
-	Relaunches   int
-	NextLaunchAt *time.Time
-	Readiness    *Readiness
+	Name               string
+	Source             string
+	Root               string
+	TTY                bool
+	PID                int
+	PGID               int
+	Cwd                string
+	Argv               []string
+	Start              time.Time
+	LaunchCursor       uint64
+	NextCursor         *uint64
+	State              string
+	Exit               *Exit
+	ExitCode           int
+	ExitedAt           time.Time
+	RestartCount       int
+	Followers          int
+	Restart            string
+	Relaunches         int
+	NextLaunchAt       *time.Time
+	StopGrace          time.Duration
+	StopGraceInherited bool
+	Readiness          *Readiness
 }
 
 // WaitRequest is the adapter-neutral readiness wait request.
@@ -157,15 +160,16 @@ type EnsureOperations struct {
 
 // StartRequest is the adapter-neutral direct launch request.
 type StartRequest struct {
-	Name    string
-	Source  string
-	Root    string
-	Cwd     string
-	Argv    []string
-	Env     []string
-	Ready   *ReadinessConfig
-	TTY     bool
-	Restart string
+	Name      string
+	Source    string
+	Root      string
+	Cwd       string
+	Argv      []string
+	Env       []string
+	Ready     *ReadinessConfig
+	TTY       bool
+	Restart   string
+	StopGrace *time.Duration
 }
 
 // UpOperations are the seams for one adapter's daemon and rendering model.
@@ -326,6 +330,10 @@ func copyDefinition(definition Definition) Definition {
 		ready := *definition.Ready
 		definition.Ready = &ready
 	}
+	if definition.StopGrace != nil {
+		grace := *definition.StopGrace
+		definition.StopGrace = &grace
+	}
 	return definition
 }
 
@@ -377,6 +385,13 @@ func DefinitionChangedFields(root string, definition Definition, process Process
 	processReady, processMatch := processReadinessMatch(process)
 	if definitionReady != processReady || definitionMatch != processMatch {
 		changed = append(changed, "readiness_match")
+	}
+	if definition.StopGrace == nil {
+		if !process.StopGraceInherited {
+			changed = append(changed, "stop_grace")
+		}
+	} else if process.StopGraceInherited || *definition.StopGrace != process.StopGrace {
+		changed = append(changed, "stop_grace")
 	}
 	if definition.TTY != process.TTY {
 		changed = append(changed, "tty")
@@ -809,7 +824,7 @@ func Ensure(ctx context.Context, root string, definition Definition, env []strin
 	started, startErr := ops.Start(ctx, StartRequest{
 		Name: definition.Name, Source: definition.Source, Root: root, Cwd: definition.Cwd,
 		Argv: append([]string(nil), definition.Argv...), Env: append([]string(nil), env...),
-		Ready: copyReadinessConfig(definition.Ready), TTY: definition.TTY, Restart: EffectiveRestart(definition.Restart),
+		Ready: copyReadinessConfig(definition.Ready), TTY: definition.TTY, Restart: EffectiveRestart(definition.Restart), StopGrace: copyDuration(definition.StopGrace),
 	})
 	if startErr == nil {
 		observedAt := started.Start
@@ -842,6 +857,14 @@ func Ensure(ctx context.Context, root string, definition Definition, env []strin
 		}
 	}
 	return makeError(startErr)
+}
+
+func copyDuration(value *time.Duration) *time.Duration {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func copyReadinessConfig(config *ReadinessConfig) *ReadinessConfig {

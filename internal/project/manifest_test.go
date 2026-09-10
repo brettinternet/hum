@@ -17,6 +17,51 @@ func writeTestManifest(t *testing.T, root, contents string) {
 	}
 }
 
+func TestStopGraceManifest(t *testing.T) {
+	root := t.TempDir()
+	cases := []struct {
+		name string
+		raw  string
+		want *time.Duration
+		err  bool
+	}{
+		{name: "inherited", raw: "", want: nil},
+		{name: "positive", raw: "stop_grace: 2s", want: durationPtr(2 * time.Second)},
+		{name: "sub-second", raw: "stop_grace: 250ms", want: durationPtr(250 * time.Millisecond)},
+		{name: "explicit zero", raw: "stop_grace: 0s", want: durationPtr(0)},
+		{name: "bare zero", raw: "stop_grace: 0", err: true},
+		{name: "malformed", raw: "stop_grace: nope", err: true},
+		{name: "negative", raw: "stop_grace: -1s", err: true},
+		{name: "wrong type", raw: "stop_grace: 1", err: true},
+		{name: "unknown", raw: "grace: 1s", err: true},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			body := "version: 1\nprocesses:\n  api:\n    argv: [api]\n"
+			if test.raw != "" {
+				body += "    " + test.raw + "\n"
+			}
+			writeTestManifest(t, root, body)
+			definitions, err := LoadDefinitions(root)
+			if test.err {
+				if err == nil {
+					t.Fatal("LoadDefinitions succeeded")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := definitions[0].StopGrace
+			if (got == nil) != (test.want == nil) || got != nil && *got != *test.want {
+				t.Fatalf("StopGrace = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func durationPtr(value time.Duration) *time.Duration { return &value }
+
 func TestLoadDefinitionsManifest(t *testing.T) {
 	root := t.TempDir()
 	for _, directory := range []string{"api", "web"} {

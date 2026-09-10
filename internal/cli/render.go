@@ -258,58 +258,62 @@ type listJSON struct {
 }
 
 type listProcessJSON struct {
-	Name         string           `json:"name"`
-	Source       string           `json:"source"`
-	Scope        string           `json:"scope"`
-	Root         string           `json:"root"`
-	ProjectRoot  string           `json:"project_root,omitempty"`
-	TTY          bool             `json:"tty"`
-	PID          int              `json:"pid"`
-	PGID         int              `json:"pgid"`
-	Cwd          string           `json:"cwd"`
-	Argv         []string         `json:"argv"`
-	Start        time.Time        `json:"start"`
-	LaunchCursor protocol.Cursor  `json:"launch_cursor"`
-	NextCursor   *protocol.Cursor `json:"next_cursor,omitempty"`
-	State        string           `json:"state"`
-	Exit         *protocol.Exit   `json:"exit,omitempty"`
-	ExitCode     int              `json:"exit_code,omitempty"`
-	ExitedAt     time.Time        `json:"exited_at,omitempty"`
-	RestartCount int              `json:"restart_count,omitempty"`
-	Followers    int              `json:"followers"`
-	Restart      string           `json:"restart"`
-	Relaunches   int              `json:"relaunches"`
-	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
-	Readiness    string           `json:"readiness,omitempty"`
-	ReadyCursor  *protocol.Cursor `json:"ready_cursor,omitempty"`
+	Name               string           `json:"name"`
+	Source             string           `json:"source"`
+	Scope              string           `json:"scope"`
+	Root               string           `json:"root"`
+	ProjectRoot        string           `json:"project_root,omitempty"`
+	TTY                bool             `json:"tty"`
+	PID                int              `json:"pid"`
+	PGID               int              `json:"pgid"`
+	Cwd                string           `json:"cwd"`
+	Argv               []string         `json:"argv"`
+	Start              time.Time        `json:"start"`
+	LaunchCursor       protocol.Cursor  `json:"launch_cursor"`
+	NextCursor         *protocol.Cursor `json:"next_cursor,omitempty"`
+	State              string           `json:"state"`
+	Exit               *protocol.Exit   `json:"exit,omitempty"`
+	ExitCode           int              `json:"exit_code,omitempty"`
+	ExitedAt           time.Time        `json:"exited_at,omitempty"`
+	RestartCount       int              `json:"restart_count,omitempty"`
+	Followers          int              `json:"followers"`
+	Restart            string           `json:"restart"`
+	Relaunches         int              `json:"relaunches"`
+	StopGrace          string           `json:"stop_grace"`
+	StopGraceInherited bool             `json:"stop_grace_inherited"`
+	NextLaunchAt       *time.Time       `json:"next_launch_at,omitempty"`
+	Readiness          string           `json:"readiness,omitempty"`
+	ReadyCursor        *protocol.Cursor `json:"ready_cursor,omitempty"`
 }
 
 // statusJSON is the stable, response-safe representation used by status.
 // Keep this type separate from protocol.Process so status output does not
 // expose protocol-only fields.
 type statusJSON struct {
-	Name         string                    `json:"name"`
-	Source       string                    `json:"source,omitempty"`
-	Scope        string                    `json:"scope"`
-	ProjectRoot  string                    `json:"project_root,omitempty"`
-	TTY          bool                      `json:"tty"`
-	PID          int                       `json:"pid"`
-	PGID         int                       `json:"pgid"`
-	Cwd          string                    `json:"cwd"`
-	Argv         []string                  `json:"argv"`
-	StartedAt    string                    `json:"started_at"`
-	State        string                    `json:"state"`
-	Readiness    string                    `json:"readiness,omitempty"`
-	ReadyCursor  *protocol.Cursor          `json:"ready_cursor,omitempty"`
-	ExitStatus   *int                      `json:"exit_status"`
-	Signal       *protocol.SignalInfo      `json:"signal,omitempty"`
-	RestartCount int                       `json:"restart_count"`
-	Followers    int                       `json:"followers"`
-	Restart      string                    `json:"restart"`
-	Relaunches   int                       `json:"relaunches"`
-	NextLaunchAt *time.Time                `json:"next_launch_at,omitempty"`
-	NextCursor   protocol.Cursor           `json:"next_cursor"`
-	Warnings     []protocol.StartupWarning `json:"warnings,omitempty"`
+	Name               string                    `json:"name"`
+	Source             string                    `json:"source,omitempty"`
+	Scope              string                    `json:"scope"`
+	ProjectRoot        string                    `json:"project_root,omitempty"`
+	TTY                bool                      `json:"tty"`
+	PID                int                       `json:"pid"`
+	PGID               int                       `json:"pgid"`
+	Cwd                string                    `json:"cwd"`
+	Argv               []string                  `json:"argv"`
+	StartedAt          string                    `json:"started_at"`
+	State              string                    `json:"state"`
+	Readiness          string                    `json:"readiness,omitempty"`
+	ReadyCursor        *protocol.Cursor          `json:"ready_cursor,omitempty"`
+	ExitStatus         *int                      `json:"exit_status"`
+	Signal             *protocol.SignalInfo      `json:"signal,omitempty"`
+	RestartCount       int                       `json:"restart_count"`
+	Followers          int                       `json:"followers"`
+	Restart            string                    `json:"restart"`
+	Relaunches         int                       `json:"relaunches"`
+	StopGrace          string                    `json:"stop_grace"`
+	StopGraceInherited bool                      `json:"stop_grace_inherited"`
+	NextLaunchAt       *time.Time                `json:"next_launch_at,omitempty"`
+	NextCursor         protocol.Cursor           `json:"next_cursor"`
+	Warnings           []protocol.StartupWarning `json:"warnings,omitempty"`
 }
 
 func statusJSONFor(process app.Process) statusJSON {
@@ -318,23 +322,25 @@ func statusJSONFor(process app.Process) statusJSON {
 		scope = "project"
 	}
 	result := statusJSON{
-		Name:         process.Name,
-		Source:       process.Source,
-		Scope:        scope,
-		ProjectRoot:  process.Root,
-		TTY:          process.TTY,
-		PID:          process.PID,
-		PGID:         process.PGID,
-		Cwd:          process.Cwd,
-		Argv:         append([]string(nil), process.Argv...),
-		StartedAt:    process.Start.Format(time.RFC3339Nano),
-		State:        string(process.State),
-		RestartCount: process.RestartCount,
-		Followers:    process.Followers,
-		Restart:      string(effectiveProcessRestart(process)),
-		Relaunches:   process.Relaunches,
-		NextLaunchAt: process.NextLaunchAt,
-		NextCursor:   protocol.Cursor(process.NextCursor),
+		Name:               process.Name,
+		Source:             process.Source,
+		Scope:              scope,
+		ProjectRoot:        process.Root,
+		TTY:                process.TTY,
+		PID:                process.PID,
+		PGID:               process.PGID,
+		Cwd:                process.Cwd,
+		Argv:               append([]string(nil), process.Argv...),
+		StartedAt:          process.Start.Format(time.RFC3339Nano),
+		State:              string(process.State),
+		RestartCount:       process.RestartCount,
+		Followers:          process.Followers,
+		Restart:            string(effectiveProcessRestart(process)),
+		Relaunches:         process.Relaunches,
+		StopGrace:          process.StopGrace.String(),
+		StopGraceInherited: process.StopGraceInherited,
+		NextLaunchAt:       process.NextLaunchAt,
+		NextCursor:         protocol.Cursor(process.NextCursor),
 	}
 	result.Readiness, result.ReadyCursor = processReadinessFields(process)
 	if result.Argv == nil {
@@ -455,26 +461,28 @@ func processJSON(process app.Process) listProcessJSON {
 		scope = "project"
 	}
 	result := listProcessJSON{
-		Name:         process.Name,
-		Source:       process.Source,
-		Scope:        scope,
-		Root:         process.Root,
-		ProjectRoot:  process.Root,
-		TTY:          process.TTY,
-		PID:          process.PID,
-		PGID:         process.PGID,
-		Cwd:          process.Cwd,
-		Argv:         append([]string(nil), process.Argv...),
-		Start:        process.Start,
-		LaunchCursor: protocol.Cursor(process.LaunchCursor),
-		State:        string(process.State),
-		ExitCode:     process.ExitCode,
-		ExitedAt:     process.ExitedAt,
-		RestartCount: process.RestartCount,
-		Followers:    process.Followers,
-		Restart:      string(effectiveProcessRestart(process)),
-		Relaunches:   process.Relaunches,
-		NextLaunchAt: process.NextLaunchAt,
+		Name:               process.Name,
+		Source:             process.Source,
+		Scope:              scope,
+		Root:               process.Root,
+		ProjectRoot:        process.Root,
+		TTY:                process.TTY,
+		PID:                process.PID,
+		PGID:               process.PGID,
+		Cwd:                process.Cwd,
+		Argv:               append([]string(nil), process.Argv...),
+		Start:              process.Start,
+		LaunchCursor:       protocol.Cursor(process.LaunchCursor),
+		State:              string(process.State),
+		ExitCode:           process.ExitCode,
+		ExitedAt:           process.ExitedAt,
+		RestartCount:       process.RestartCount,
+		Followers:          process.Followers,
+		Restart:            string(effectiveProcessRestart(process)),
+		Relaunches:         process.Relaunches,
+		StopGrace:          process.StopGrace.String(),
+		StopGraceInherited: process.StopGraceInherited,
+		NextLaunchAt:       process.NextLaunchAt,
 	}
 	if process.NextCursor != 0 {
 		nextCursor := protocol.Cursor(process.NextCursor)
@@ -1302,6 +1310,13 @@ func renderStatusHumanWithPolicy(w io.Writer, process app.Process, colors colorP
 		status.PGID, status.Cwd, shellJoin(status.Argv), status.StartedAt,
 		colors.apply(processStateStyle(process.State, process.ExitCode), status.State), restartLabel,
 	); err != nil {
+		return err
+	}
+	graceLabel := status.StopGrace
+	if status.StopGraceInherited {
+		graceLabel += " (inherited)"
+	}
+	if _, err := fmt.Fprintf(w, "stop_grace: %s\n", graceLabel); err != nil {
 		return err
 	}
 	if status.NextLaunchAt != nil {

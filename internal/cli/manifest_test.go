@@ -163,7 +163,7 @@ func TestUpAdapterParity(t *testing.T) {
 	}
 	process := app.Process{
 		Name: "api", Source: "manifest", Root: root, Cwd: root, Argv: []string{"old"},
-		State: app.StateRunning, PID: 41, LaunchCursor: 9,
+		State: app.StateRunning, PID: 41, LaunchCursor: 9, StopGraceInherited: true,
 		Readiness: &app.Readiness{State: app.ReadinessStarting, Match: "old"},
 	}
 	sharedDrift := orchestrate.DefinitionDriftResult(root, cliOrchestrateDefinition(definition), cliOrchestrateProcess(process))
@@ -188,7 +188,7 @@ func TestUpAdapterParity(t *testing.T) {
 		t.Fatalf("CLI adapter retained skipped snapshot=%#v", retainedRoundTrip)
 	}
 
-	stale := app.Process{Name: "api", Source: "manifest", Argv: []string{"api"}, State: app.StateRunning, PID: 41, Restart: app.RestartNever}
+	stale := app.Process{Name: "api", Source: "manifest", Argv: []string{"api"}, State: app.StateRunning, PID: 41, Restart: app.RestartNever, StopGraceInherited: true}
 	freshExit := manifestLaunchResult{Name: "api", Outcome: "exited_before_ready", Source: "manifest", Argv: []string{"api"}, State: string(app.StateExited), Restart: string(app.RestartNever), ExitCode: &exitCode}
 	freshRoundTrip := cliManifestLaunchResult(definition, cliSharedLaunchResult(definition, freshExit, &stale))
 	if freshRoundTrip.State != string(app.StateExited) || freshRoundTrip.PID != nil || freshRoundTrip.ExitCode == nil || *freshRoundTrip.ExitCode != exitCode {
@@ -312,7 +312,7 @@ func TestManifestLaunchResultPreservesEmptyReadinessMatcher(t *testing.T) {
 	definition := project.Definition{Name: "worker", Source: "manifest", Cwd: "/project", Argv: []string{"worker"}, Ready: &project.ReadyDefinition{Match: ""}}
 	process := app.Process{
 		Name: "worker", Source: "manifest", Root: "/project", Cwd: "/project", Argv: []string{"worker"},
-		State: app.StateExited, Readiness: &app.Readiness{State: app.ReadinessStarting, Match: ""},
+		State: app.StateExited, StopGraceInherited: true, Readiness: &app.Readiness{State: app.ReadinessStarting, Match: ""},
 	}
 	result := manifestLaunchResultFor(definition, process, "recovery_pending")
 	if !result.ReadinessConfigured || result.ReadinessMatch != "" {
@@ -335,7 +335,7 @@ func TestUpPreservesEmptyReadinessMatcherInNDJSON(t *testing.T) {
 		"worker": {
 			Name: "worker", Source: "manifest", Root: root, Cwd: root, Argv: []string{"worker"},
 			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting},
-			NextCursor: &nextCursor, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
+			NextCursor: &nextCursor, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 2, NextLaunchAt: &next,
 		},
 	}
 	runtimeDir, _, done := manifestCLIRecoveryStubDaemon(t, processes)
@@ -370,11 +370,11 @@ func TestUpPreservesCrashRecovery(t *testing.T) {
 	processes := map[string]protocol.Process{
 		"pending": {
 			Name: "pending", Source: "manifest", Root: root, Cwd: root, Argv: []string{"pending"},
-			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}, LaunchCursor: 11, NextCursor: &pendingNextCursor, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
+			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}, LaunchCursor: 11, NextCursor: &pendingNextCursor, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 2, NextLaunchAt: &next,
 		},
 		"exhausted": {
 			Name: "exhausted", Source: "manifest", Root: root, Cwd: root, Argv: []string{"exhausted"},
-			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}, LaunchCursor: 19, NextCursor: &exhaustedNextCursor, Restart: protocol.RestartOnFailure, Relaunches: 5,
+			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}, LaunchCursor: 19, NextCursor: &exhaustedNextCursor, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 5,
 		},
 	}
 	runtimeDir, operations, done := manifestCLIRecoveryStubDaemon(t, processes)
@@ -581,7 +581,7 @@ func TestManifestReadinessSurvivesExitAfterMatch(t *testing.T) {
 		process := protocol.Process{
 			Name: "web", Source: "manifest", Root: "/tmp/project", PID: 123,
 			Cwd: "/tmp/project", Argv: []string{"fixture"}, LaunchCursor: 0,
-			NextCursor: &next, State: string(app.StateRunning),
+			NextCursor: &next, State: string(app.StateRunning), StopGraceInherited: true,
 		}
 		gets := 0
 		for {
@@ -691,13 +691,13 @@ func TestManifestReadinessRefreshesExitedSnapshot(t *testing.T) {
 		running := protocol.Process{
 			Name: "web", Source: "manifest", Root: "/tmp/project", PID: 123,
 			Cwd: "/tmp/project", Argv: []string{"fixture"}, LaunchCursor: 0,
-			NextCursor: &next, State: string(app.StateRunning),
+			NextCursor: &next, State: string(app.StateRunning), StopGraceInherited: true,
 			Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"},
 		}
 		exited := protocol.Process{
 			Name: "web", Source: "manifest", Root: "/tmp/project", PID: 0,
 			Cwd: "/tmp/project", Argv: []string{"fixture"}, LaunchCursor: 0,
-			NextCursor: &next, State: string(app.StateExited), ExitCode: 7,
+			NextCursor: &next, State: string(app.StateExited), StopGraceInherited: true, ExitCode: 7,
 		}
 		gets := 0
 		for {
@@ -1999,10 +1999,10 @@ func TestUpReportsRemovedManifestSessions(t *testing.T) {
 	}
 	currentNextCursor := protocol.Cursor(10)
 	processes := map[string]protocol.Process{
-		"current":    {Name: "current", Source: "manifest", Root: root, Cwd: root, Argv: []string{"current"}, State: "running", PID: 10, LaunchCursor: 1, NextCursor: &currentNextCursor},
-		"running":    {Name: "running", Source: "manifest", Root: root, Cwd: root, Argv: []string{"running"}, State: "running", PID: 11, LaunchCursor: 2},
-		"pending":    {Name: "pending", Source: "manifest", Root: root, Cwd: root, Argv: []string{"pending"}, State: "exited", LaunchCursor: 3, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next},
-		"exhausted":  {Name: "exhausted", Source: "manifest", Root: root, Cwd: root, Argv: []string{"exhausted"}, State: "exited", LaunchCursor: 4, Restart: protocol.RestartOnFailure, Relaunches: 5},
+		"current":    {Name: "current", Source: "manifest", Root: root, Cwd: root, Argv: []string{"current"}, State: "running", PID: 10, LaunchCursor: 1, NextCursor: &currentNextCursor, StopGraceInherited: true},
+		"running":    {Name: "running", Source: "manifest", Root: root, Cwd: root, Argv: []string{"running"}, State: "running", PID: 11, LaunchCursor: 2, StopGraceInherited: true},
+		"pending":    {Name: "pending", Source: "manifest", Root: root, Cwd: root, Argv: []string{"pending"}, State: "exited", LaunchCursor: 3, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 2, NextLaunchAt: &next},
+		"exhausted":  {Name: "exhausted", Source: "manifest", Root: root, Cwd: root, Argv: []string{"exhausted"}, State: "exited", LaunchCursor: 4, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 5},
 		"stopped":    {Name: "stopped", Source: "manifest", Root: root, Cwd: root, Argv: []string{"stopped"}, State: "exited", LaunchCursor: 5},
 		"ad_hoc":     {Name: "ad_hoc", Source: "ad_hoc", Root: root, Cwd: root, Argv: []string{"ad_hoc"}, State: "running", PID: 12, LaunchCursor: 6},
 		"discovered": {Name: "discovered", Source: "package_json", Root: root, Cwd: root, Argv: []string{"discovered"}, State: "running", PID: 13, LaunchCursor: 7},
@@ -2048,7 +2048,7 @@ func TestUpReportsRemovedManifestSessionsWithoutManifest(t *testing.T) {
 	processes := map[string]protocol.Process{
 		"removed": {
 			Name: "removed", Source: "manifest", Root: root, Cwd: root, Argv: []string{"removed"},
-			State: "running", PID: 11, LaunchCursor: 2,
+			State: "running", PID: 11, LaunchCursor: 2, StopGraceInherited: true,
 		},
 	}
 	runtimeDir, _, done := manifestCLIRecoveryStubDaemon(t, processes)

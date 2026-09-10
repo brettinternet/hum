@@ -134,7 +134,7 @@ func appProcessFromProtocol(item protocol.Process) app.Process {
 		Name: item.Name, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: output.Cursor(item.LaunchCursor), State: app.State(item.State), ExitCode: item.ExitCode, ExitedAt: item.ExitedAt,
-		RestartCount: item.RestartCount, Followers: item.Followers, Restart: app.RestartPolicy(item.Restart), Relaunches: item.Relaunches, NextLaunchAt: item.NextLaunchAt,
+		RestartCount: item.RestartCount, Followers: item.Followers, Restart: app.RestartPolicy(item.Restart), StopGrace: item.StopGrace, StopGraceInherited: item.StopGraceInherited, Relaunches: item.Relaunches, NextLaunchAt: item.NextLaunchAt,
 	}
 	if item.Readiness != nil {
 		result.Readiness = &app.Readiness{State: item.Readiness.State, Cursor: cursorFromProtocol(item.Readiness.Cursor), Time: item.Readiness.Time, Match: item.Readiness.Match}
@@ -160,7 +160,7 @@ func protocolProcessFromApp(item app.Process) protocol.Process {
 	}
 	result := protocol.Process{Name: item.Name, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start, LaunchCursor: protocol.Cursor(item.LaunchCursor), State: string(item.State),
-		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount, Followers: item.Followers, Restart: string(item.Restart), Relaunches: item.Relaunches, NextLaunchAt: item.NextLaunchAt}
+		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount, Followers: item.Followers, Restart: string(item.Restart), StopGrace: item.StopGrace, StopGraceInherited: item.StopGraceInherited, Relaunches: item.Relaunches, NextLaunchAt: item.NextLaunchAt}
 	if item.Readiness != nil {
 		result.Readiness = &protocol.Readiness{State: item.Readiness.State, Cursor: protocolCursor(item.Readiness.Cursor), Time: item.Readiness.Time, Match: item.Readiness.Match}
 	}

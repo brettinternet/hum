@@ -12,8 +12,9 @@ import (
 
 // Version is the current private protocol version. Version 16 added attached-
 // run launch/follow scoping and control-intent signal requests; version 17 added
-// the explicit global process namespace; version 18 adds bounded match context.
-const Version = 18
+// the explicit global process namespace; version 18 added bounded match context;
+// version 19 adds per-process stop grace.
+const Version = 19
 
 const (
 	ScopeProject = "project"
@@ -243,19 +244,20 @@ type ReadinessConfig struct {
 // Root is the explicit manifest project root used for supervisor keying; Cwd
 // remains the child working directory.
 type StartRequest struct {
-	Op       Operation        `json:"op"`
-	Scope    string           `json:"scope,omitempty"`
-	Name     string           `json:"name"`
-	Argv     []string         `json:"argv"`
-	Cwd      string           `json:"cwd"`
-	Root     string           `json:"root,omitempty"`
-	Env      []string         `json:"env"`
-	Source   string           `json:"source,omitempty"`
-	Ready    *ReadinessConfig `json:"ready,omitempty"`
-	TTY      bool             `json:"tty"`
-	TTYSize  *TTYSize         `json:"tty_size,omitempty"`
-	Restart  string           `json:"restart"`
-	Attached bool             `json:"attached,omitempty"`
+	Op        Operation        `json:"op"`
+	Scope     string           `json:"scope,omitempty"`
+	Name      string           `json:"name"`
+	Argv      []string         `json:"argv"`
+	Cwd       string           `json:"cwd"`
+	Root      string           `json:"root,omitempty"`
+	Env       []string         `json:"env"`
+	Source    string           `json:"source,omitempty"`
+	Ready     *ReadinessConfig `json:"ready,omitempty"`
+	TTY       bool             `json:"tty"`
+	TTYSize   *TTYSize         `json:"tty_size,omitempty"`
+	Restart   string           `json:"restart"`
+	StopGrace *time.Duration   `json:"stop_grace,omitempty"`
+	Attached  bool             `json:"attached,omitempty"`
 }
 
 // TTYSize is a terminal size in character cells.
@@ -272,39 +274,41 @@ func NewStartRequest(name string, argv []string, cwd string, env []string) Start
 // MarshalJSON writes the stable start request fields in protocol order.
 func (r StartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op       Operation        `json:"op"`
-		Scope    string           `json:"scope,omitempty"`
-		Name     string           `json:"name"`
-		Argv     []string         `json:"argv"`
-		Cwd      string           `json:"cwd"`
-		Root     string           `json:"root,omitempty"`
-		Env      []string         `json:"env"`
-		Source   string           `json:"source,omitempty"`
-		Ready    *ReadinessConfig `json:"ready,omitempty"`
-		TTY      bool             `json:"tty"`
-		TTYSize  *TTYSize         `json:"tty_size,omitempty"`
-		Restart  string           `json:"restart"`
-		Attached bool             `json:"attached,omitempty"`
-	}{Op: OpStart, Scope: r.Scope, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart), Attached: r.Attached})
+		Op        Operation        `json:"op"`
+		Scope     string           `json:"scope,omitempty"`
+		Name      string           `json:"name"`
+		Argv      []string         `json:"argv"`
+		Cwd       string           `json:"cwd"`
+		Root      string           `json:"root,omitempty"`
+		Env       []string         `json:"env"`
+		Source    string           `json:"source,omitempty"`
+		Ready     *ReadinessConfig `json:"ready,omitempty"`
+		TTY       bool             `json:"tty"`
+		TTYSize   *TTYSize         `json:"tty_size,omitempty"`
+		Restart   string           `json:"restart"`
+		StopGrace *time.Duration   `json:"stop_grace,omitempty"`
+		Attached  bool             `json:"attached,omitempty"`
+	}{Op: OpStart, Scope: r.Scope, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart), StopGrace: r.StopGrace, Attached: r.Attached})
 }
 
 // UnmarshalJSON decodes a start request and validates its operation when
 // present.
 func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op       Operation        `json:"op"`
-		Scope    string           `json:"scope"`
-		Name     string           `json:"name"`
-		Argv     []string         `json:"argv"`
-		Cwd      string           `json:"cwd"`
-		Root     string           `json:"root"`
-		Env      []string         `json:"env"`
-		Source   string           `json:"source"`
-		Ready    *ReadinessConfig `json:"ready"`
-		TTY      bool             `json:"tty"`
-		TTYSize  *TTYSize         `json:"tty_size"`
-		Restart  string           `json:"restart"`
-		Attached bool             `json:"attached"`
+		Op        Operation        `json:"op"`
+		Scope     string           `json:"scope"`
+		Name      string           `json:"name"`
+		Argv      []string         `json:"argv"`
+		Cwd       string           `json:"cwd"`
+		Root      string           `json:"root"`
+		Env       []string         `json:"env"`
+		Source    string           `json:"source"`
+		Ready     *ReadinessConfig `json:"ready"`
+		TTY       bool             `json:"tty"`
+		TTYSize   *TTYSize         `json:"tty_size"`
+		Restart   string           `json:"restart"`
+		StopGrace *time.Duration   `json:"stop_grace"`
+		Attached  bool             `json:"attached"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -315,7 +319,7 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	r.Op = OpStart
 	r.Name, r.Argv, r.Cwd, r.Root, r.Env, r.Scope = wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env, wire.Scope
 	r.Source, r.Ready = wire.Source, wire.Ready
-	r.TTY, r.TTYSize, r.Restart, r.Attached = wire.TTY, wire.TTYSize, effectiveRestart(wire.Restart), wire.Attached
+	r.TTY, r.TTYSize, r.Restart, r.StopGrace, r.Attached = wire.TTY, wire.TTYSize, effectiveRestart(wire.Restart), wire.StopGrace, wire.Attached
 	return nil
 }
 
@@ -767,19 +771,20 @@ func (r *RemoveRequest) UnmarshalJSON(data []byte) error {
 // never echoed in a response. Root is the explicit manifest root used for
 // lookup and retained record keying; Cwd remains the update child directory.
 type RestartRequest struct {
-	Op      Operation        `json:"op"`
-	Scope   string           `json:"scope,omitempty"`
-	Name    string           `json:"name"`
-	Cwd     string           `json:"cwd"`
-	Root    string           `json:"root,omitempty"`
-	Update  bool             `json:"update,omitempty"`
-	Argv    []string         `json:"argv,omitempty"`
-	Env     []string         `json:"env,omitempty"`
-	Source  string           `json:"source,omitempty"`
-	Ready   *ReadinessConfig `json:"ready,omitempty"`
-	TTY     bool             `json:"tty"`
-	TTYSize *TTYSize         `json:"tty_size,omitempty"`
-	Restart string           `json:"restart,omitempty"`
+	Op        Operation        `json:"op"`
+	Scope     string           `json:"scope,omitempty"`
+	Name      string           `json:"name"`
+	Cwd       string           `json:"cwd"`
+	Root      string           `json:"root,omitempty"`
+	Update    bool             `json:"update,omitempty"`
+	Argv      []string         `json:"argv,omitempty"`
+	Env       []string         `json:"env,omitempty"`
+	Source    string           `json:"source,omitempty"`
+	Ready     *ReadinessConfig `json:"ready,omitempty"`
+	TTY       bool             `json:"tty"`
+	TTYSize   *TTYSize         `json:"tty_size,omitempty"`
+	Restart   string           `json:"restart,omitempty"`
+	StopGrace *time.Duration   `json:"stop_grace,omitempty"`
 }
 
 // NewRestartRequest builds a restart request that preserves the retained
@@ -791,38 +796,40 @@ func NewRestartRequest(name, cwd string) RestartRequest {
 // MarshalJSON writes the stable restart request fields in protocol order.
 func (r RestartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op      Operation        `json:"op"`
-		Scope   string           `json:"scope,omitempty"`
-		Name    string           `json:"name"`
-		Cwd     string           `json:"cwd"`
-		Root    string           `json:"root,omitempty"`
-		Update  bool             `json:"update,omitempty"`
-		Argv    []string         `json:"argv,omitempty"`
-		Env     []string         `json:"env,omitempty"`
-		Source  string           `json:"source,omitempty"`
-		Ready   *ReadinessConfig `json:"ready,omitempty"`
-		TTY     bool             `json:"tty"`
-		TTYSize *TTYSize         `json:"tty_size,omitempty"`
-		Restart string           `json:"restart,omitempty"`
-	}{Op: OpRestart, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: r.Restart})
+		Op        Operation        `json:"op"`
+		Scope     string           `json:"scope,omitempty"`
+		Name      string           `json:"name"`
+		Cwd       string           `json:"cwd"`
+		Root      string           `json:"root,omitempty"`
+		Update    bool             `json:"update,omitempty"`
+		Argv      []string         `json:"argv,omitempty"`
+		Env       []string         `json:"env,omitempty"`
+		Source    string           `json:"source,omitempty"`
+		Ready     *ReadinessConfig `json:"ready,omitempty"`
+		TTY       bool             `json:"tty"`
+		TTYSize   *TTYSize         `json:"tty_size,omitempty"`
+		Restart   string           `json:"restart,omitempty"`
+		StopGrace *time.Duration   `json:"stop_grace,omitempty"`
+	}{Op: OpRestart, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: r.Restart, StopGrace: r.StopGrace})
 }
 
 // UnmarshalJSON decodes a restart request.
 func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op      Operation        `json:"op"`
-		Scope   string           `json:"scope"`
-		Name    string           `json:"name"`
-		Cwd     string           `json:"cwd"`
-		Root    string           `json:"root"`
-		Update  bool             `json:"update"`
-		Argv    []string         `json:"argv"`
-		Env     []string         `json:"env"`
-		Source  string           `json:"source"`
-		Ready   *ReadinessConfig `json:"ready"`
-		TTY     bool             `json:"tty"`
-		TTYSize *TTYSize         `json:"tty_size"`
-		Restart string           `json:"restart"`
+		Op        Operation        `json:"op"`
+		Scope     string           `json:"scope"`
+		Name      string           `json:"name"`
+		Cwd       string           `json:"cwd"`
+		Root      string           `json:"root"`
+		Update    bool             `json:"update"`
+		Argv      []string         `json:"argv"`
+		Env       []string         `json:"env"`
+		Source    string           `json:"source"`
+		Ready     *ReadinessConfig `json:"ready"`
+		TTY       bool             `json:"tty"`
+		TTYSize   *TTYSize         `json:"tty_size"`
+		Restart   string           `json:"restart"`
+		StopGrace *time.Duration   `json:"stop_grace"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -832,7 +839,7 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	}
 	r.Op, r.Scope, r.Name, r.Cwd, r.Root = OpRestart, wire.Scope, wire.Name, wire.Cwd, wire.Root
 	r.Update, r.Argv, r.Env, r.Source, r.Ready = wire.Update, wire.Argv, wire.Env, wire.Source, wire.Ready
-	r.TTY, r.TTYSize, r.Restart = wire.TTY, wire.TTYSize, wire.Restart
+	r.TTY, r.TTYSize, r.Restart, r.StopGrace = wire.TTY, wire.TTYSize, wire.Restart, wire.StopGrace
 	return nil
 }
 
@@ -1022,28 +1029,30 @@ const (
 // is the next output cursor to be assigned, unlike OutputResult.Next, which is
 // the last source cursor consumed by a logs read.
 type Process struct {
-	Name         string     `json:"name"`
-	Source       string     `json:"source,omitempty"`
-	Scope        string     `json:"scope"`
-	Root         string     `json:"project_root,omitempty"`
-	TTY          bool       `json:"tty"`
-	PID          int        `json:"pid"`
-	PGID         int        `json:"pgid"`
-	Cwd          string     `json:"cwd"`
-	Argv         []string   `json:"argv"`
-	Start        time.Time  `json:"start"`
-	LaunchCursor Cursor     `json:"launch_cursor"`
-	NextCursor   *Cursor    `json:"next_cursor,omitempty"`
-	State        string     `json:"state"`
-	Exit         *Exit      `json:"exit,omitempty"`
-	ExitCode     int        `json:"exit_code,omitempty"`
-	ExitedAt     time.Time  `json:"exited_at,omitempty"`
-	RestartCount int        `json:"restart_count,omitempty"`
-	Followers    int        `json:"followers"`
-	Restart      string     `json:"restart"`
-	Relaunches   int        `json:"relaunches"`
-	NextLaunchAt *time.Time `json:"next_launch_at,omitempty"`
-	Readiness    *Readiness `json:"readiness,omitempty"`
+	Name               string        `json:"name"`
+	Source             string        `json:"source,omitempty"`
+	Scope              string        `json:"scope"`
+	Root               string        `json:"project_root,omitempty"`
+	TTY                bool          `json:"tty"`
+	PID                int           `json:"pid"`
+	PGID               int           `json:"pgid"`
+	Cwd                string        `json:"cwd"`
+	Argv               []string      `json:"argv"`
+	Start              time.Time     `json:"start"`
+	LaunchCursor       Cursor        `json:"launch_cursor"`
+	NextCursor         *Cursor       `json:"next_cursor,omitempty"`
+	State              string        `json:"state"`
+	Exit               *Exit         `json:"exit,omitempty"`
+	ExitCode           int           `json:"exit_code,omitempty"`
+	ExitedAt           time.Time     `json:"exited_at,omitempty"`
+	RestartCount       int           `json:"restart_count,omitempty"`
+	Followers          int           `json:"followers"`
+	Restart            string        `json:"restart"`
+	Relaunches         int           `json:"relaunches"`
+	StopGrace          time.Duration `json:"stop_grace"`
+	StopGraceInherited bool          `json:"stop_grace_inherited"`
+	NextLaunchAt       *time.Time    `json:"next_launch_at,omitempty"`
+	Readiness          *Readiness    `json:"readiness,omitempty"`
 }
 
 // MarshalJSON normalizes the default policy while retaining the stable flat
@@ -1063,11 +1072,37 @@ func (p Process) MarshalJSON() ([]byte, error) {
 // restart-policy fields.
 func (p *Process) UnmarshalJSON(data []byte) error {
 	type processJSON Process
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	stopGrace := fields["stop_grace"]
+	delete(fields, "stop_grace")
+	withoutGrace, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
 	var value processJSON
-	if err := json.Unmarshal(data, &value); err != nil {
+	if err := json.Unmarshal(withoutGrace, &value); err != nil {
 		return err
 	}
 	*p = Process(value)
+	if len(stopGrace) != 0 && string(stopGrace) != "null" {
+		var numeric time.Duration
+		if err := json.Unmarshal(stopGrace, &numeric); err == nil {
+			p.StopGrace = numeric
+		} else {
+			var text string
+			if err := json.Unmarshal(stopGrace, &text); err != nil {
+				return err
+			}
+			numeric, err = time.ParseDuration(text)
+			if err != nil {
+				return err
+			}
+			p.StopGrace = numeric
+		}
+	}
 	if p.Restart == "" {
 		p.Restart = RestartNever
 	}

@@ -59,6 +59,376 @@ func startShell(s *Supervisor, root, name, script string) (Process, error) {
 	})
 }
 
+type processStopGraceChild struct {
+	pid     int
+	done    chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	signals []os.Signal
+	result  process.Result
+}
+
+func (c *processStopGraceChild) PID() int              { return c.pid }
+func (c *processStopGraceChild) PGID() int             { return c.pid }
+func (c *processStopGraceChild) Done() <-chan struct{} { return c.done }
+func (c *processStopGraceChild) Wait() process.Result {
+	<-c.done
+	if c.result.ExitedAt.IsZero() {
+		c.result.ExitedAt = time.Now()
+	}
+	return c.result
+}
+func (c *processStopGraceChild) finish() {
+	c.once.Do(func() { close(c.done) })
+}
+func (c *processStopGraceChild) Signal(signal os.Signal) error {
+	c.mu.Lock()
+	c.signals = append(c.signals, signal)
+	c.mu.Unlock()
+	if signal == syscall.SIGKILL {
+		c.once.Do(func() { close(c.done) })
+	}
+	return nil
+}
+
+type processStopGraceTimers struct {
+	mu    sync.Mutex
+	items map[time.Duration][]chan time.Time
+}
+
+func newProcessStopGraceTimers() *processStopGraceTimers {
+	return &processStopGraceTimers{items: make(map[time.Duration][]chan time.Time)}
+}
+func (t *processStopGraceTimers) after(duration time.Duration) <-chan time.Time {
+	channel := make(chan time.Time, 1)
+	t.mu.Lock()
+	t.items[duration] = append(t.items[duration], channel)
+	t.mu.Unlock()
+	return channel
+}
+func (t *processStopGraceTimers) wait(duration time.Duration) bool {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		t.mu.Lock()
+		ready := len(t.items[duration]) > 0
+		t.mu.Unlock()
+		if ready {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
+}
+func (t *processStopGraceTimers) fire(duration time.Duration) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	items := t.items[duration]
+	if len(items) == 0 {
+		return false
+	}
+	t.items[duration] = items[1:]
+	items[0] <- time.Now()
+	return true
+}
+
+func (c *processStopGraceChild) gotSignals() []os.Signal {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]os.Signal(nil), c.signals...)
+}
+
+func TestProcessStopGraceLifecycle(t *testing.T) {
+	root := makeProject(t, false)
+	explicitZero := time.Duration(0)
+	children := []*processStopGraceChild{
+		{pid: 901, done: make(chan struct{})},
+		{pid: 902, done: make(chan struct{})},
+	}
+	timers := make(chan struct{})
+	var afterDurations chan time.Duration = make(chan time.Duration, 2)
+	index := 0
+	s := testSupervisor(t, Options{
+		StopGrace: 2 * time.Second,
+		StartProcess: func(process.Spec) (Child, error) {
+			child := children[index]
+			index++
+			return child, nil
+		},
+		After: func(duration time.Duration) <-chan time.Time {
+			afterDurations <- duration
+			return func() <-chan time.Time {
+				result := make(chan time.Time)
+				go func() { <-timers; close(result) }()
+				return result
+			}()
+		},
+	})
+	if _, err := s.Start(StartRequest{Name: "zero", Root: root, Cwd: root, Argv: []string{"zero"}, StopGrace: &explicitZero}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(StartRequest{Name: "inherited", Root: root, Cwd: root, Argv: []string{"inherited"}}); err != nil {
+		t.Fatal(err)
+	}
+	zero, err := s.Get(root, "zero")
+	if err != nil || zero.StopGrace != 0 || zero.StopGraceInherited {
+		t.Fatalf("explicit zero snapshot = %#v, err=%v", zero, err)
+	}
+	inherited, err := s.Get(root, "inherited")
+	if err != nil || inherited.StopGrace != 2*time.Second || !inherited.StopGraceInherited {
+		t.Fatalf("inherited snapshot = %#v, err=%v", inherited, err)
+	}
+	if err := s.Stop(context.Background(), root, "zero"); err != nil {
+		t.Fatal(err)
+	}
+	if signals := children[0].gotSignals(); len(signals) != 2 || signals[0] != syscall.SIGTERM || signals[1] != syscall.SIGKILL {
+		t.Fatalf("explicit zero signals = %v, want TERM,KILL", signals)
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- s.Stop(context.Background(), root, "inherited") }()
+	select {
+	case duration := <-afterDurations:
+		if duration != 2*time.Second {
+			t.Fatalf("inherited timer duration = %s, want 2s", duration)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("inherited stop did not arm its admitted timer")
+	}
+	if signals := children[1].gotSignals(); len(signals) != 1 || signals[0] != syscall.SIGTERM {
+		t.Fatalf("inherited pre-expiry signals = %v, want TERM", signals)
+	}
+	close(timers)
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	if signals := children[1].gotSignals(); len(signals) != 2 || signals[1] != syscall.SIGKILL {
+		t.Fatalf("inherited post-expiry signals = %v, want TERM,KILL", signals)
+	}
+}
+
+func TestProcessStopGraceOperations(t *testing.T) {
+	newChild := func(pid int) *processStopGraceChild {
+		return &processStopGraceChild{pid: pid, done: make(chan struct{})}
+	}
+	zero := time.Duration(0)
+	longGrace := 4 * time.Second
+
+	root := makeProject(t, false)
+	t.Run("restart remove replacement and shutdown use record values", func(t *testing.T) {
+		first, second, third, fourth, fifth := newChild(921), newChild(922), newChild(923), newChild(924), newChild(925)
+		index := 0
+		timers := newProcessStopGraceTimers()
+		s := testSupervisor(t, Options{StopGrace: 3 * time.Second, After: timers.after, StartProcess: func(process.Spec) (Child, error) {
+			child := []*processStopGraceChild{first, second, third, fourth, fifth}[index]
+			index++
+			return child, nil
+		}})
+		if _, err := s.Start(StartRequest{Name: "replace", Root: root, Cwd: root, Argv: []string{"old"}, StopGrace: &zero}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Restart(context.Background(), root, "replace"); err != nil {
+			t.Fatal(err)
+		}
+		if signals := first.gotSignals(); len(signals) != 2 || signals[0] != syscall.SIGTERM || signals[1] != syscall.SIGKILL {
+			t.Fatalf("replacement cleanup signals = %v, want TERM,KILL", signals)
+		}
+		current, err := s.Get(root, "replace")
+		if err != nil || current.StopGrace != 0 || current.StopGraceInherited {
+			t.Fatalf("restart snapshot = %#v, err=%v", current, err)
+		}
+		if err := s.Stop(context.Background(), root, "replace"); err != nil {
+			t.Fatal(err)
+		}
+		if signals := second.gotSignals(); len(signals) != 2 || signals[0] != syscall.SIGTERM || signals[1] != syscall.SIGKILL {
+			t.Fatalf("explicit restart grace signals = %v, want TERM,KILL", signals)
+		}
+		if _, err := s.Start(StartRequest{Name: "replace", Root: root, Cwd: root, Argv: []string{"replacement"}, StopGrace: &longGrace}); err != nil {
+			t.Fatal(err)
+		}
+		current, err = s.Get(root, "replace")
+		if err != nil || current.StopGrace != longGrace || current.StopGraceInherited {
+			t.Fatalf("replacement snapshot = %#v, err=%v", current, err)
+		}
+		removeDone := make(chan error, 1)
+		go func() { removeDone <- s.Remove(context.Background(), root, "replace") }()
+		if !timers.wait(longGrace) {
+			t.Fatal("remove did not arm the admitted replacement grace timer")
+		}
+		if signals := third.gotSignals(); len(signals) != 1 || signals[0] != syscall.SIGTERM {
+			t.Fatalf("remove pre-expiry signals = %v, want TERM", signals)
+		}
+		if !timers.fire(longGrace) {
+			t.Fatal("remove grace timer did not fire")
+		}
+		if err := <-removeDone; err != nil {
+			t.Fatal(err)
+		}
+		if signals := third.gotSignals(); len(signals) != 2 || signals[1] != syscall.SIGKILL {
+			t.Fatalf("remove post-expiry signals = %v, want TERM,KILL", signals)
+		}
+		if _, err := s.Get(root, "replace"); !errors.Is(err, ErrProcessNotFound) {
+			t.Fatalf("removed record error = %v, want not found", err)
+		}
+		if _, err := s.Start(StartRequest{Name: "shutdown-zero", Root: root, Cwd: root, Argv: []string{"shutdown-zero"}, StopGrace: &zero}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Start(StartRequest{Name: "shutdown", Root: root, Cwd: root, Argv: []string{"shutdown"}}); err != nil {
+			t.Fatal(err)
+		}
+		shutdownDone := make(chan error, 1)
+		go func() { shutdownDone <- s.Shutdown(context.Background()) }()
+		if !timers.wait(3 * time.Second) {
+			t.Fatal("shutdown did not arm the Supervisor default grace timer")
+		}
+		if signals := fourth.gotSignals(); len(signals) != 2 || signals[0] != syscall.SIGTERM || signals[1] != syscall.SIGKILL {
+			t.Fatalf("shutdown explicit-zero signals = %v, want TERM,KILL", signals)
+		}
+		if signals := fifth.gotSignals(); len(signals) != 1 || signals[0] != syscall.SIGTERM {
+			t.Fatalf("shutdown pre-expiry signals = %v, want TERM", signals)
+		}
+		if !timers.fire(3 * time.Second) {
+			t.Fatal("shutdown grace timer did not fire")
+		}
+		if err := <-shutdownDone; err != nil {
+			t.Fatal(err)
+		}
+		if signals := fifth.gotSignals(); len(signals) != 2 || signals[1] != syscall.SIGKILL {
+			t.Fatalf("shutdown post-expiry signals = %v, want TERM,KILL", signals)
+		}
+	})
+
+	t.Run("in-flight stop retains admitted value after source mutation", func(t *testing.T) {
+		child := newChild(926)
+		grace := 2 * time.Second
+		timer := make(chan time.Time)
+		armed := make(chan time.Duration, 1)
+		s := testSupervisor(t, Options{StopGrace: 9 * time.Second, StartProcess: func(process.Spec) (Child, error) { return child, nil }, After: func(duration time.Duration) <-chan time.Time {
+			armed <- duration
+			grace = 0
+			return timer
+		}})
+		if _, err := s.Start(StartRequest{Name: "in-flight", Root: root, Cwd: root, Argv: []string{"in-flight"}, StopGrace: &grace}); err != nil {
+			t.Fatal(err)
+		}
+		stopped := make(chan error, 1)
+		go func() { stopped <- s.Stop(context.Background(), root, "in-flight") }()
+		select {
+		case admitted := <-armed:
+			if admitted != 2*time.Second {
+				t.Fatalf("in-flight admitted timer = %s, want 2s", admitted)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("in-flight stop did not arm a timer")
+		}
+		close(timer)
+		if err := <-stopped; err != nil {
+			t.Fatal(err)
+		}
+		if signals := child.gotSignals(); len(signals) != 2 || signals[0] != syscall.SIGTERM || signals[1] != syscall.SIGKILL {
+			t.Fatalf("in-flight stop signals = %v, want TERM,KILL", signals)
+		}
+	})
+
+	t.Run("control intent and automatic cancellation use admitted grace", func(t *testing.T) {
+		child := newChild(931)
+		timers := newProcessStopGraceTimers()
+		s := testSupervisor(t, Options{StopGrace: 5 * time.Second, After: timers.after, StartProcess: func(process.Spec) (Child, error) { return child, nil }})
+		grace := 250 * time.Millisecond
+		if _, err := s.Start(StartRequest{Name: "control", Source: "manifest", Root: root, Cwd: root, Argv: []string{"control"}, StopGrace: &grace, Restart: RestartOnFailure}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SignalControl(root, "control", syscall.SIGUSR1); err != nil {
+			t.Fatal(err)
+		}
+		if !timers.wait(grace) {
+			t.Fatal("control intent timer was not armed with admitted grace")
+		}
+		if signals := child.gotSignals(); len(signals) != 1 || signals[0] != syscall.SIGUSR1 {
+			t.Fatalf("control signals before expiry = %v, want USR1", signals)
+		}
+		if !timers.fire(grace) {
+			t.Fatal("control intent timer did not fire")
+		}
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			s.mu.RLock()
+			intent := s.records[scopedKey(ScopeProject, root, "control")].controlIntent
+			s.mu.RUnlock()
+			if !intent {
+				child.finish()
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatal("control intent remained active after admitted grace")
+	})
+
+	t.Run("automatic successor retains admitted grace", func(t *testing.T) {
+		first, second := newChild(936), newChild(937)
+		first.result.ExitCode = 1
+		children := []*processStopGraceChild{first, second}
+		index := 0
+		timers := newProcessStopGraceTimers()
+		s := testSupervisor(t, Options{StopGrace: 8 * time.Second, After: timers.after, StartProcess: func(process.Spec) (Child, error) {
+			child := children[index]
+			index++
+			return child, nil
+		}})
+		grace := 350 * time.Millisecond
+		if _, err := s.Start(StartRequest{Name: "successor", Source: "manifest", Root: root, Cwd: root, Argv: []string{"successor"}, Restart: RestartOnFailure, StopGrace: &grace}); err != nil {
+			t.Fatal(err)
+		}
+		first.finish()
+		if !timers.wait(time.Second) {
+			t.Fatal("successor relaunch timer was not armed")
+		}
+		if !timers.fire(time.Second) {
+			t.Fatal("successor relaunch timer did not fire")
+		}
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			current, err := s.Get(root, "successor")
+			if err == nil && current.Relaunches == 1 {
+				if current.StopGrace != grace || current.StopGraceInherited {
+					t.Fatalf("successor snapshot = %#v, want admitted grace %s", current, grace)
+				}
+				second.finish()
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatal("automatic successor was not published")
+	})
+
+	t.Run("stop cancels automatic relaunch with admitted record", func(t *testing.T) {
+		child := newChild(941)
+		timers := newProcessStopGraceTimers()
+		starts := 0
+		s := testSupervisor(t, Options{StopGrace: 7 * time.Second, After: timers.after, StartProcess: func(process.Spec) (Child, error) {
+			starts++
+			return child, nil
+		}})
+		grace := 300 * time.Millisecond
+		child.result.ExitCode = 1
+		if _, err := s.Start(StartRequest{Name: "recover", Source: "manifest", Root: root, Cwd: root, Argv: []string{"recover"}, Restart: RestartOnFailure, StopGrace: &grace}); err != nil {
+			t.Fatal(err)
+		}
+		child.finish()
+		if !timers.wait(time.Second) {
+			t.Fatal("automatic relaunch timer was not armed")
+		}
+		if err := s.Stop(context.Background(), root, "recover"); err != nil {
+			t.Fatal(err)
+		}
+		// The injected timer channel may still be delivered after cancellation;
+		// the generation check must prevent it from claiming a successor.
+		timers.fire(time.Second)
+		time.Sleep(10 * time.Millisecond)
+		if starts != 1 {
+			t.Fatalf("automatic relaunch starts = %d, want one admitted start", starts)
+		}
+	})
+}
+
 func TestSupervisorGlobalScope(t *testing.T) {
 	first, second, missing := makeProject(t, false), makeProject(t, true), makeProject(t, false)
 	s := testSupervisor(t, Options{})

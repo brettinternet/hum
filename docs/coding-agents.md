@@ -22,6 +22,8 @@ in `sh -c` or include a project path in the registration.
 
 MCP requests with IDs run concurrently up to 64 in flight.
 
+Process results include the effective `stop_grace` duration and `stop_grace_inherited`. In a manifest, omit `stop_grace` to inherit the daemon setting or use `0s` for immediate SIGKILL after the TERM check. Explicit restart adopts the current manifest definition; automatic relaunch retains the admitted value. Startup orphan reclaim remains on the daemon default.
+
 - A 65th request is rejected with `-32001` without starting, and a duplicate in-flight ID is
   rejected with `-32600`; notifications and responses consume no slots.
 - `notifications/cancelled` cancels exactly its matching request and returns `-32800`, while an

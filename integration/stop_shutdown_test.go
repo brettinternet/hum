@@ -5,6 +5,7 @@ package integration
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,11 +31,13 @@ type stopitRunProcess struct {
 }
 
 type stopitListedProcess struct {
-	Name  string `json:"name"`
-	Root  string `json:"root"`
-	PID   int    `json:"pid"`
-	PGID  int    `json:"pgid"`
-	State string `json:"state"`
+	Name               string `json:"name"`
+	Root               string `json:"root"`
+	PID                int    `json:"pid"`
+	PGID               int    `json:"pgid"`
+	State              string `json:"state"`
+	StopGrace          string `json:"stop_grace"`
+	StopGraceInherited bool   `json:"stop_grace_inherited"`
 }
 
 type stopitListResponse struct {
@@ -105,6 +108,75 @@ func TestStopTree(t *testing.T) {
 	stopitRequirePath(t, paths.socket)
 	stopitRequirePath(t, paths.pid)
 	stopitRequirePath(t, paths.ready)
+}
+
+func TestPerProcessStopGrace(t *testing.T) {
+	stopitRequireUnix(t)
+	hum := testutil.BuildHum(t)
+	fixture := testutil.BuildFixture(t)
+	projectRoot := stopitCanonicalTempDir(t)
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=2s")
+	fastMarker := filepath.Join(t.TempDir(), "fast-tree")
+	slowMarker := filepath.Join(t.TempDir(), "slow-tree")
+	manifest := fmt.Sprintf(`version: 1
+processes:
+  fast:
+    argv: [%q, tree, %q, ignore-term]
+    stop_grace: 0s
+  slow:
+    argv: [%q, tree, %q, ignore-term]
+    stop_grace: 500ms
+`, fixture, fastMarker, fixture, slowMarker)
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Start(t, hum, projectRoot, env, "serve")
+	paths := stopitRuntimePaths(runtimeDir)
+	testutil.WaitForFile(t, paths.ready, stopitReadyWait)
+	var groups []int
+	t.Cleanup(func() {
+		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
+		stopitCleanupGroups(groups)
+	})
+	up := testutil.Run(t, hum, projectRoot, env, "up", "--detach")
+	if up.Code != 0 || up.Err != nil {
+		t.Fatalf("manifest up: code=%d stdout=%q stderr=%q err=%v", up.Code, up.Stdout, up.Stderr, up.Err)
+	}
+	testutil.WaitForFile(t, fastMarker+".started", stopitReadyWait)
+	testutil.WaitForFile(t, slowMarker+".started", stopitReadyWait)
+	fast := stopitLookupProcess(t, hum, projectRoot, env, "fast")
+	slow := stopitLookupProcess(t, hum, projectRoot, env, "slow")
+	if fast.StopGrace != "0s" || fast.StopGraceInherited {
+		t.Fatalf("fast snapshot = %+v, want explicit 0s", fast)
+	}
+	if slow.StopGrace != "500ms" || slow.StopGraceInherited {
+		t.Fatalf("slow snapshot = %+v, want explicit 500ms", slow)
+	}
+	if fast.PGID > 0 {
+		groups = append(groups, fast.PGID)
+	}
+	if slow.PGID > 0 {
+		groups = append(groups, slow.PGID)
+	}
+	fastStarted := time.Now()
+	fastStop := testutil.Run(t, hum, projectRoot, env, "stop", "fast")
+	fastElapsed := time.Since(fastStarted)
+	if fastStop.Code != 0 || fastStop.Err != nil {
+		t.Fatalf("stop fast: code=%d stdout=%q stderr=%q err=%v", fastStop.Code, fastStop.Stdout, fastStop.Stderr, fastStop.Err)
+	}
+	if fastElapsed >= 400*time.Millisecond {
+		t.Fatalf("explicit zero stop took %s, want under 400ms", fastElapsed)
+	}
+	slowStarted := time.Now()
+	slowStop := testutil.Run(t, hum, projectRoot, env, "stop", "slow")
+	slowElapsed := time.Since(slowStarted)
+	if slowStop.Code != 0 || slowStop.Err != nil {
+		t.Fatalf("stop slow: code=%d stdout=%q stderr=%q err=%v", slowStop.Code, slowStop.Stdout, slowStop.Stderr, slowStop.Err)
+	}
+	if slowElapsed < 400*time.Millisecond {
+		t.Fatalf("500ms stop took %s, want at least 400ms", slowElapsed)
+	}
 }
 
 func TestShutdown(t *testing.T) {

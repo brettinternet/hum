@@ -66,6 +66,11 @@
           "type": "string",
           "enum": ["never", "on-failure"],
           "default": "never"
+        },
+        "stop_grace": {
+          "description": "Optional non-negative Go duration between SIGTERM and SIGKILL. Omit to inherit the daemon default; 0s kills immediately after the TERM check.",
+          "type": "string",
+          "pattern": "^[+]?(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|μs|ms|s|m|h))+$"
         }
       }
     },

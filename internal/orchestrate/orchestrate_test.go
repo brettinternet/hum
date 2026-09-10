@@ -10,6 +10,21 @@ import (
 	"time"
 )
 
+func TestProcessStopGraceDefinitionDrift(t *testing.T) {
+	inherited := Definition{Name: "api", Source: "manifest", Argv: []string{"api"}}
+	explicitZero := time.Duration(0)
+	if changed := DefinitionChangedFields("/project", inherited, Process{Source: "manifest", Argv: []string{"api"}, StopGrace: explicitZero}); !reflect.DeepEqual(changed, []string{"stop_grace"}) {
+		t.Fatalf("explicit zero to omitted changed fields = %v, want [stop_grace]", changed)
+	}
+	if changed := DefinitionChangedFields("/project", inherited, Process{Source: "manifest", Argv: []string{"api"}, StopGraceInherited: true}); len(changed) != 0 {
+		t.Fatalf("inherited to omitted changed fields = %v, want none", changed)
+	}
+	explicitGrace := 2 * time.Second
+	if changed := DefinitionChangedFields("/project", Definition{Name: "api", Source: "manifest", Argv: []string{"api"}, StopGrace: &explicitGrace}, Process{Source: "manifest", Argv: []string{"api"}, StopGrace: time.Second}); !reflect.DeepEqual(changed, []string{"stop_grace"}) {
+		t.Fatalf("explicit grace mismatch changed fields = %v, want [stop_grace]", changed)
+	}
+}
+
 func TestOrchestrateUp(t *testing.T) {
 	root := t.TempDir()
 	t.Run("readiness success timeout early exit", func(t *testing.T) {
@@ -28,7 +43,7 @@ func TestOrchestrateUp(t *testing.T) {
 			}, outcome: "exited_before_ready"},
 		} {
 			t.Run(test.name, func(t *testing.T) {
-				current := Process{Name: "api", Source: "manifest", Cwd: root, PID: 41, State: "running", LaunchCursor: 3, Readiness: &Readiness{State: ReadinessStarting, Match: "ready"}}
+				current := Process{Name: "api", Source: "manifest", Cwd: root, PID: 41, State: "running", LaunchCursor: 3, Readiness: &Readiness{State: ReadinessStarting, Match: "ready"}, StopGraceInherited: true}
 				definition := Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, Ready: &ReadinessConfig{Match: "ready"}}
 				var mu sync.Mutex
 				waits := 0
@@ -97,7 +112,7 @@ func TestOrchestrateUp(t *testing.T) {
 				started = append(started, definition.Name)
 				pid := len(started)
 				orderMu.Unlock()
-				process := Process{Name: definition.Name, Source: definition.Source, Cwd: root, PID: pid, State: "running", LaunchCursor: 1}
+				process := Process{Name: definition.Name, Source: definition.Source, Cwd: root, PID: pid, State: "running", LaunchCursor: 1, StopGraceInherited: true}
 				if definition.Ready != nil {
 					process.Readiness = &Readiness{State: ReadinessStarting, Match: definition.Ready.Match}
 				}
@@ -166,14 +181,14 @@ func TestOrchestrateUp(t *testing.T) {
 
 	t.Run("definition drift removed definitions and recovery", func(t *testing.T) {
 		definition := Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"new"}, Ready: &ReadinessConfig{Match: "new"}}
-		drifted := Process{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"old"}, State: "running", PID: 7, LaunchCursor: 8, Readiness: &Readiness{State: ReadinessStarting, Match: "old"}}
+		drifted := Process{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"old"}, State: "running", PID: 7, LaunchCursor: 8, Readiness: &Readiness{State: ReadinessStarting, Match: "old"}, StopGraceInherited: true}
 		drift := DefinitionDriftResult(root, definition, drifted)
 		if drift.Outcome != "definition_drift" || !reflect.DeepEqual(drift.ChangedFields, []string{"argv", "readiness_match"}) || drift.Guidance != "hum restart api" {
 			t.Fatalf("drift=%#v", drift)
 		}
 		next := time.Now().Add(time.Minute)
-		pending := Process{Name: "pending", Source: "manifest", State: "exited", Restart: "on-failure", Relaunches: 2, NextLaunchAt: &next}
-		exhausted := Process{Name: "exhausted", Source: "manifest", State: "exited", Restart: "on-failure", Relaunches: AutomaticRelaunchLimit}
+		pending := Process{Name: "pending", Source: "manifest", State: "exited", Restart: "on-failure", Relaunches: 2, NextLaunchAt: &next, StopGraceInherited: true}
+		exhausted := Process{Name: "exhausted", Source: "manifest", State: "exited", Restart: "on-failure", Relaunches: AutomaticRelaunchLimit, StopGraceInherited: true}
 		if outcome, ok := RecoveryOutcome(Definition{Name: "pending", Source: "manifest"}, pending); !ok || outcome != "recovery_pending" {
 			t.Fatalf("pending recovery=%q,%v", outcome, ok)
 		}
@@ -194,7 +209,7 @@ func TestOrchestrateUp(t *testing.T) {
 
 	t.Run("surviving descendants retain the launch slot", func(t *testing.T) {
 		definition := Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}}
-		current := Process{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, State: "descendants", PGID: 41}
+		current := Process{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, State: "descendants", PGID: 41, StopGraceInherited: true}
 		starts := 0
 		result := Ensure(context.Background(), root, definition, nil, false, EnsureOperations{
 			Get: func(context.Context, string, string) (Process, error) { return current, nil },

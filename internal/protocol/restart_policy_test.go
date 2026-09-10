@@ -8,8 +8,8 @@ import (
 )
 
 func TestRestartPolicyProtocol(t *testing.T) {
-	if Version != 18 {
-		t.Fatalf("protocol version = %d, want bounded match-context protocol version 18", Version)
+	if Version != 19 {
+		t.Fatalf("protocol version = %d, want per-process stop-grace protocol version 19", Version)
 	}
 	if !IsActiveState(StateRunning) || !IsActiveState(StateDescendants) || IsActiveState(StateExited) {
 		t.Fatal("active state classification does not include running leaders and surviving descendants")

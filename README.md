@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Keep local project processes running between commands. `hum` gives humans and coding agents bounded logs, readiness checks, dependencies, JSON/MCP output, and controlled TTY input.
+Keep project processes running between commands with bounded logs, readiness, dependencies, JSON/MCP output, and TTY input.
 
 ```text
 hum.yaml ──> hum daemon ──> db ──> api ──> web
@@ -14,18 +14,18 @@ hum.yaml ──> hum daemon ──> db ──> api ──> web
 
 ## Install
 
-Install the latest release with [mise](https://mise.jdx.dev/):
+Install releases with [mise](https://mise.jdx.dev/):
 
 ```toml
 [tools]
 "github:brettinternet/hum" = "latest"
 ```
 
-To build from a checkout, see [development setup and checks](docs/development.md).
+To build from a checkout, see [development setup](docs/development.md).
 
 ## Quickstart
 
-Try a portable clock process in a fresh directory:
+Try a clock process in a fresh directory:
 
 ```sh
 mkdir hum-quickstart && cd hum-quickstart
@@ -40,7 +40,7 @@ hum run hello --detach -- sh -c 'printf "hello from hum\\n"'
 hum up
 ```
 
-`hum up` follows output. After a clock line, press Ctrl+C to detach, then stop:
+`hum up` follows output. Press Ctrl+C to detach, then stop:
 
 ```sh
 hum down
@@ -48,7 +48,7 @@ hum down
 
 ## Start processes
 
-Without configuration, `hum up` finds a conventional `dev` task in Mise, Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or Phoenix.
+Without configuration, `hum up` finds conventional `dev` tasks in Mise, Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or Phoenix.
 
 For multiple processes, add `hum.yaml`:
 
@@ -71,7 +71,7 @@ processes:
       match: "Local:"
 ```
 
-`hum up` starts processes, gates dependents on `ready`, and follows prefixed terminal output. Ctrl+C detaches; `hum down` stops. `hum up --detach` waits and returns. JSON and redirected output stay bounded:
+`hum up` starts processes, gates dependents on `ready`, and follows output. Ctrl+C detaches; `hum down` stops. `hum up --detach` waits and returns. JSON and redirected output stay bounded:
 
 ```yaml
 processes:
@@ -92,7 +92,7 @@ hum stop web
 hum down
 ```
 
-`start` is explicit and does not start dependencies. `down` stops project processes concurrently. See [design and command semantics](docs/design.md) for validation and exit details.
+`start` is explicit and does not start dependencies. `down` stops project processes concurrently. See [design and command semantics](docs/design.md) for validation details.
 
 ### Operate from anywhere
 
@@ -106,7 +106,7 @@ hum run preview --project /path/to/checkout -- bun run preview
 
 A relative selector starts from the invocation directory. Ad-hoc runs use the selected directory as `cwd`; manifest `cwd` values stay project-relative.
 
-`--project` does not apply to `serve`, `shutdown`, `mcp`, or `skill`. `-d` means `serve --daemon`, `run --detach`, or `up --detach`.
+`--project` does not apply to `serve`, `shutdown`, `mcp`, or `skill`. `-d` means daemon, run, or up detach.
 
 ## Sessions
 
@@ -137,6 +137,8 @@ processes:
 ```
 
 A non-zero exit relaunches after `1s`, `2s`, `4s`, `8s`, and `16s`, then stops retrying. Manual controls win. `hum restart NAME` adopts manifest changes; automatic relaunches reuse the previous definition. Status, JSON, and MCP expose recovery state and counts.
+
+Manifest `stop_grace` accepts non-negative durations; omission inherits, while `0s` means immediate kill. Status, JSON, and MCP show the effective value and inheritance marker. Restarts adopt definitions; relaunches and orphan reclaim retain policy.
 
 ## Aggregate logs
 

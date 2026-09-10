@@ -3,6 +3,9 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -11,6 +14,56 @@ import (
 	"hum/internal/process"
 	"hum/internal/protocol"
 )
+
+func TestProcessStopGraceWireRoundTrip(t *testing.T) {
+	item := app.Process{Name: "api", Scope: app.ScopeProject, Root: "/project", StopGrace: 0, StopGraceInherited: false}
+	wire := protocolProcessFromApp(item)
+	if wire.StopGrace != 0 || wire.StopGraceInherited {
+		t.Fatalf("explicit zero wire snapshot = %#v", wire)
+	}
+	back := appProcessFromProtocol(wire)
+	if back.StopGrace != 0 || back.StopGraceInherited {
+		t.Fatalf("explicit zero app snapshot = %#v", back)
+	}
+	item.StopGrace = 1500 * time.Millisecond
+	item.StopGraceInherited = true
+	wire = protocolProcessFromApp(item)
+	if wire.StopGrace != item.StopGrace || !wire.StopGraceInherited {
+		t.Fatalf("inherited wire snapshot = %#v", wire)
+	}
+}
+
+func TestProcessStopGraceDaemonManifestFallback(t *testing.T) {
+	root := t.TempDir()
+	testExecutable := strconv.Quote(os.Args[0])
+	manifest := []byte("version: 1\nprocesses:\n  explicit:\n    argv: [" + testExecutable + ", -test.run=^$]\n    stop_grace: 250ms\n  inherited:\n    argv: [" + testExecutable + ", -test.run=^$]\n")
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := testServer(t, Config{RuntimeDir: filepath.Join(shortRuntimeDir(t), "runtime"), StopGrace: 3 * time.Second})
+	start := func(name string) protocol.Process {
+		response, ok := server.dispatch(&protocol.Request{Op: protocol.OpStart, Start: &protocol.StartRequest{Op: protocol.OpStart, Name: name, Scope: protocol.ScopeProject, Root: root, Cwd: root, Argv: []string{os.Args[0], "-test.run=^$"}, Source: "manifest"}})
+		if !ok && response == nil {
+			t.Fatalf("start %q returned no response", name)
+		}
+		value, ok := response.(protocol.StartResponse)
+		if !ok || value.Process == nil {
+			if failure, isFailure := response.(protocol.ErrorResponse); isFailure {
+				t.Fatalf("start %q error = %#v", name, failure.Error)
+			}
+			t.Fatalf("start %q response = %#v", name, response)
+		}
+		return *value.Process
+	}
+	explicit := start("explicit")
+	if explicit.StopGrace != 250*time.Millisecond || explicit.StopGraceInherited {
+		t.Fatalf("manifest fallback explicit = %#v", explicit)
+	}
+	inherited := start("inherited")
+	if inherited.StopGrace != 3*time.Second || !inherited.StopGraceInherited {
+		t.Fatalf("manifest fallback inherited = %#v", inherited)
+	}
+}
 
 func TestGlobalScopeWireValidation(t *testing.T) {
 	legacy := protocol.Request{Op: protocol.OpGet, Get: &protocol.GetRequest{Op: protocol.OpGet, Name: "proxy", Cwd: "/project"}}

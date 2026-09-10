@@ -39,12 +39,13 @@ var (
 		"processes": {},
 	}
 	processFields = map[string]struct{}{
-		"argv":    {},
-		"cwd":     {},
-		"ready":   {},
-		"after":   {},
-		"tty":     {},
-		"restart": {},
+		"argv":       {},
+		"cwd":        {},
+		"ready":      {},
+		"after":      {},
+		"tty":        {},
+		"restart":    {},
+		"stop_grace": {},
 	}
 	readyFields = map[string]struct{}{
 		"match":   {},
@@ -52,16 +53,22 @@ var (
 	}
 )
 
+// IsManifestSource identifies records originating from a hum manifest.
+func IsManifestSource(source string) bool {
+	return source == "manifest" || source == "hum.yaml" || strings.HasPrefix(source, "manifest:") || strings.HasPrefix(source, "hum.yaml:")
+}
+
 // Definition is one named process declared by a project manifest.
 type Definition struct {
-	Name    string
-	Source  string
-	Argv    []string
-	Cwd     string
-	Ready   *ReadyDefinition
-	After   []string
-	TTY     bool
-	Restart RestartPolicy
+	Name      string
+	Source    string
+	Argv      []string
+	Cwd       string
+	Ready     *ReadyDefinition
+	After     []string
+	TTY       bool
+	Restart   RestartPolicy
+	StopGrace *time.Duration
 }
 
 // ReadyDefinition describes the output expression and timeout used to
@@ -330,7 +337,21 @@ func parseProcess(root, filename, context string, node *yaml.Node) (Definition, 
 			return Definition{}, manifestError(filename, context, "restart %q is invalid (want never or on-failure)", restartNode.Value)
 		}
 	}
-	return Definition{Argv: argv, Cwd: cwd, Ready: ready, After: after, TTY: tty, Restart: restart}, nil
+	var stopGrace *time.Duration
+	if stopGraceNode, ok := fields["stop_grace"]; ok {
+		if !isStringScalar(stopGraceNode) {
+			return Definition{}, manifestError(filename, context, "stop_grace must be a duration string")
+		}
+		parsed, parseErr := time.ParseDuration(stopGraceNode.Value)
+		if parseErr != nil {
+			return Definition{}, manifestError(filename, context, "invalid stop_grace %q: %v", stopGraceNode.Value, parseErr)
+		}
+		if parsed < 0 {
+			return Definition{}, manifestError(filename, context, "stop_grace must not be negative")
+		}
+		stopGrace = &parsed
+	}
+	return Definition{Argv: argv, Cwd: cwd, Ready: ready, After: after, TTY: tty, Restart: restart, StopGrace: stopGrace}, nil
 }
 
 func parseAfter(filename, context string, node *yaml.Node) ([]string, error) {
@@ -464,7 +485,18 @@ func decodeMapping(filename, context string, node *yaml.Node, allowed map[string
 		seen[name] = struct{}{}
 		if allowed != nil {
 			if _, known := allowed[name]; !known {
-				return nil, manifestError(filename, context, "unknown key %q (valid keys: %s)", name, sortedKeys(allowed))
+				validKeys := allowed
+				// Keep legacy diagnostics stable while accepting the additive
+				// stop_grace field.
+				if _, hasStopGrace := allowed["stop_grace"]; hasStopGrace {
+					validKeys = make(map[string]struct{}, len(allowed)-1)
+					for key := range allowed {
+						if key != "stop_grace" {
+							validKeys[key] = struct{}{}
+						}
+					}
+				}
+				return nil, manifestError(filename, context, "unknown key %q (valid keys: %s)", name, sortedKeys(validKeys))
 			}
 		}
 		entries = append(entries, yamlEntry{name: name, value: node.Content[i+1]})

@@ -96,18 +96,21 @@ const (
 // is the explicit manifest project root used for record keying; Cwd remains
 // only the child working directory.
 type StartRequest struct {
-	Name     string
-	Source   string
-	Scope    string
-	Root     string
-	Cwd      string
-	Argv     []string
-	Env      []string
-	Ready    *ReadinessConfig
-	TTY      bool
-	TTYSize  *TTYSize
-	Restart  RestartPolicy
-	Attached bool
+	Name    string
+	Source  string
+	Scope   string
+	Root    string
+	Cwd     string
+	Argv    []string
+	Env     []string
+	Ready   *ReadinessConfig
+	TTY     bool
+	TTYSize *TTYSize
+	Restart RestartPolicy
+	// StopGrace is an optional per-process override. A nil value inherits the
+	// supervisor default when this request admits a new record.
+	StopGrace *time.Duration
+	Attached  bool
 
 	// The following fields are supervisor-internal. They let the timer claim a
 	// relaunch through the ordinary launch path without exposing a second API.
@@ -138,19 +141,21 @@ type Process struct {
 	Start time.Time
 	// StartIdentity is retained only inside the daemon lifecycle boundary. It
 	// is never serialized into client-facing protocol snapshots.
-	StartIdentity string
-	LaunchCursor  output.Cursor
-	NextCursor    output.Cursor
-	State         State
-	Exit          *process.Result
-	ExitCode      int
-	ExitedAt      time.Time
-	RestartCount  int
-	Followers     int
-	Restart       RestartPolicy
-	Relaunches    int
-	NextLaunchAt  *time.Time
-	Readiness     *Readiness
+	StartIdentity      string
+	LaunchCursor       output.Cursor
+	NextCursor         output.Cursor
+	State              State
+	Exit               *process.Result
+	ExitCode           int
+	ExitedAt           time.Time
+	RestartCount       int
+	Followers          int
+	Restart            RestartPolicy
+	StopGrace          time.Duration
+	StopGraceInherited bool
+	Relaunches         int
+	NextLaunchAt       *time.Time
+	Readiness          *Readiness
 }
 
 // WaitOutcome describes the terminal state observed by Wait.
@@ -187,17 +192,18 @@ type WaitResult struct {
 // historical ad-hoc restart behavior. Root, when present, is the explicit
 // manifest root used to locate and retain the record key.
 type RestartOptions struct {
-	Update  bool
-	Source  string
-	Scope   string
-	Root    string
-	Cwd     string
-	Argv    []string
-	Env     []string
-	Ready   *ReadinessConfig
-	TTY     bool
-	TTYSize *TTYSize
-	Restart RestartPolicy
+	Update    bool
+	Source    string
+	Scope     string
+	Root      string
+	Cwd       string
+	Argv      []string
+	Env       []string
+	Ready     *ReadinessConfig
+	TTY       bool
+	TTYSize   *TTYSize
+	Restart   RestartPolicy
+	StopGrace *time.Duration
 }
 
 // Options configures a Supervisor. A zero OutputLimits value delegates to the
@@ -785,6 +791,8 @@ type record struct {
 	tracker             *readinessTracker
 	tty                 bool
 	restart             RestartPolicy
+	stopGrace           time.Duration
+	stopGraceInherited  bool
 	relaunches          int
 	relaunchExhausted   bool
 	nextLaunchAt        time.Time
@@ -1435,6 +1443,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	if !validRestartPolicy(req.Restart) {
 		return Process{}, fmt.Errorf("%w: restart must be never or on-failure", ErrInvalidRequest)
 	}
+	if req.StopGrace != nil && *req.StopGrace < 0 {
+		return Process{}, fmt.Errorf("%w: stop grace must not be negative", ErrInvalidRequest)
+	}
 	automatic := req.automaticRecord != nil
 	requestCwd, err := absoluteClean(req.Cwd)
 	if err != nil {
@@ -1530,7 +1541,11 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 			s.mu.Unlock()
 			return Process{}, fmt.Errorf("output store: %w", storeErr)
 		}
-		rec = &record{key: key, name: req.Name, scope: req.Scope, root: root, store: store, restart: restartPolicyForSource(req.Source, req.Restart)}
+		recordGrace, inherited := s.stopGrace, true
+		if req.StopGrace != nil {
+			recordGrace, inherited = *req.StopGrace, false
+		}
+		rec = &record{key: key, name: req.Name, scope: req.Scope, root: root, store: store, restart: restartPolicyForSource(req.Source, req.Restart), stopGrace: recordGrace, stopGraceInherited: inherited}
 		transitionDormantLocked(rec)
 		if !automatic && explicitRecord == nil {
 			rec.stopMu.Lock()
@@ -1560,6 +1575,11 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		rec.readyConfig, rec.readyPattern = readyConfig, readyPattern
 		if !automatic {
 			rec.restart = restartPolicyForSource(req.Source, req.Restart)
+			if req.StopGrace == nil {
+				rec.stopGrace, rec.stopGraceInherited = s.stopGrace, true
+			} else {
+				rec.stopGrace, rec.stopGraceInherited = *req.StopGrace, false
+			}
 		}
 		// An explicit argv replaces a stopped retained definition, including
 		// its TTY choice. Calls without argv intentionally retain it.
@@ -1742,6 +1762,9 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 	if !validRestartPolicy(update.Restart) {
 		return Process{}, fmt.Errorf("%w: restart must be never or on-failure", ErrInvalidRequest)
 	}
+	if update.StopGrace != nil && *update.StopGrace < 0 {
+		return Process{}, fmt.Errorf("%w: stop grace must not be negative", ErrInvalidRequest)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1897,6 +1920,11 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 		rec.readyConfig = updatedReady
 		rec.readyPattern = updatedPattern
 		rec.restart = restartPolicyForSource(update.Source, update.Restart)
+		if update.StopGrace == nil {
+			rec.stopGrace, rec.stopGraceInherited = s.stopGrace, true
+		} else {
+			rec.stopGrace, rec.stopGraceInherited = *update.StopGrace, false
+		}
 		rec.tty = updatedTTY
 		if updatedTTYSize != nil {
 			rec.ttySize = updatedTTYSize
@@ -3164,7 +3192,10 @@ func (s *Supervisor) SignalControlScoped(scope, cwd, name string, sig os.Signal)
 // reasonably have caused. A child that survives the ordinary stop grace has
 // resumed autonomous operation, so a later failure must follow restart policy.
 func (s *Supervisor) expireControlIntent(rec *record, child Child, incarnation, generation uint64) {
-	timer := s.after(s.stopGrace)
+	s.mu.RLock()
+	grace := rec.stopGrace
+	s.mu.RUnlock()
+	timer := s.after(grace)
 	go func() {
 		select {
 		case <-child.Done():
@@ -3252,7 +3283,10 @@ func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
 		_, waitErr := s.waitForDone(ctx, rec, -1)
 		return waitErr
 	}
-	if done, waitErr := s.waitForDone(ctx, rec, s.stopGrace); done || waitErr != nil {
+	s.mu.RLock()
+	grace := rec.stopGrace
+	s.mu.RUnlock()
+	if done, waitErr := s.waitForDone(ctx, rec, grace); done || waitErr != nil {
 		if waitErr != nil {
 			return waitErr
 		}
@@ -3500,23 +3534,25 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 
 func (r *record) snapshotLocked() Process {
 	model := Process{
-		Name:          r.name,
-		Source:        r.source,
-		Scope:         normalizedScope(r.scope),
-		Root:          r.root,
-		TTY:           r.tty,
-		PID:           r.pid,
-		PGID:          r.pgid,
-		Cwd:           r.cwd,
-		Argv:          append([]string(nil), r.argv...),
-		Start:         r.start,
-		StartIdentity: r.startIdentity,
-		LaunchCursor:  r.cursor,
-		State:         r.state,
-		RestartCount:  r.restartCount,
-		Followers:     r.followers,
-		Restart:       effectiveRestartPolicy(r.restart),
-		Relaunches:    r.relaunches,
+		Name:               r.name,
+		Source:             r.source,
+		Scope:              normalizedScope(r.scope),
+		Root:               r.root,
+		TTY:                r.tty,
+		PID:                r.pid,
+		PGID:               r.pgid,
+		Cwd:                r.cwd,
+		Argv:               append([]string(nil), r.argv...),
+		Start:              r.start,
+		StartIdentity:      r.startIdentity,
+		LaunchCursor:       r.cursor,
+		State:              r.state,
+		RestartCount:       r.restartCount,
+		Followers:          r.followers,
+		Restart:            effectiveRestartPolicy(r.restart),
+		StopGrace:          r.stopGrace,
+		StopGraceInherited: r.stopGraceInherited,
+		Relaunches:         r.relaunches,
 	}
 	if r.store != nil {
 		model.NextCursor = r.store.NextCursor()

@@ -62,14 +62,15 @@ var ErrDaemonUnavailable = errors.New("daemon unavailable")
 
 // Definition is one explicit or discovered project process.
 type Definition struct {
-	Name    string
-	Source  string
-	Argv    []string
-	Cwd     string
-	Ready   *protocol.ReadinessConfig
-	After   []string
-	TTY     bool
-	Restart string
+	Name      string
+	Source    string
+	Argv      []string
+	Cwd       string
+	Ready     *protocol.ReadinessConfig
+	After     []string
+	TTY       bool
+	Restart   string
+	StopGrace *time.Duration
 }
 
 // Resolution is the canonical project root and its process definitions.
@@ -279,40 +280,44 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"start": map[string]any{"type": "string"}, "launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 		"next_cursor": map[string]any{"type": "integer", "minimum": 0}, "state": map[string]any{"type": "string"},
 		"exit": exit, "exit_code": map[string]any{"type": "integer"}, "exited_at": map[string]any{"type": "string"},
-		"restart_count":  map[string]any{"type": "integer", "minimum": 0},
-		"followers":      map[string]any{"type": "integer", "minimum": 0, "description": "Live run and logs --follow clients attached to this supervision session."},
-		"restart":        map[string]any{"type": "string", "enum": []string{"never", "on-failure"}},
-		"relaunches":     map[string]any{"type": "integer", "minimum": 0, "maximum": 5},
-		"next_launch_at": map[string]any{"type": "string"},
-		"readiness":      readiness,
-		"warnings":       startupWarningsSchema,
-	}, "name", "source", "scope", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches")
+		"restart_count":        map[string]any{"type": "integer", "minimum": 0},
+		"followers":            map[string]any{"type": "integer", "minimum": 0, "description": "Live run and logs --follow clients attached to this supervision session."},
+		"restart":              map[string]any{"type": "string", "enum": []string{"never", "on-failure"}},
+		"relaunches":           map[string]any{"type": "integer", "minimum": 0, "maximum": 5},
+		"stop_grace":           map[string]any{"type": "integer", "minimum": 0, "description": "Effective SIGTERM-to-SIGKILL grace in nanoseconds."},
+		"stop_grace_inherited": map[string]any{"type": "boolean"},
+		"next_launch_at":       map[string]any{"type": "string"},
+		"readiness":            readiness,
+		"warnings":             startupWarningsSchema,
+	}, "name", "source", "scope", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches", "stop_grace", "stop_grace_inherited")
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
 	restart := objectSchema(map[string]any{
-		"name":           map[string]any{"type": "string", "description": "The restarted process name."},
-		"outcome":        map[string]any{"type": "string", "description": "restarted, running_unverified, exited_before_ready, timed_out, or error."},
-		"readiness":      map[string]any{"type": "string", "description": "The replacement readiness state observed by this request."},
-		"pid":            map[string]any{"type": "integer", "description": "The replacement process ID, or zero when no running process remains."},
-		"launch_cursor":  map[string]any{"type": "integer", "minimum": 0, "description": "The output cursor assigned to the replacement launch."},
-		"message":        map[string]any{"type": "string", "description": "Optional detail for a readiness or request failure."},
-		"source":         map[string]any{"type": "string"},
-		"root":           map[string]any{"type": "string"},
-		"tty":            map[string]any{"type": "boolean", "description": "Whether the replacement owns a pseudo-terminal."},
-		"pgid":           map[string]any{"type": "integer"},
-		"cwd":            map[string]any{"type": "string"},
-		"argv":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-		"start":          map[string]any{"type": "string"},
-		"next_cursor":    map[string]any{"type": "integer", "minimum": 0},
-		"state":          map[string]any{"type": "string"},
-		"exit":           exit,
-		"exit_code":      map[string]any{"type": "integer"},
-		"exited_at":      map[string]any{"type": "string"},
-		"restart_count":  map[string]any{"type": "integer", "minimum": 0},
-		"followers":      map[string]any{"type": "integer", "minimum": 0},
-		"restart":        map[string]any{"type": "string", "enum": []string{"never", "on-failure"}},
-		"relaunches":     map[string]any{"type": "integer", "minimum": 0, "maximum": 5},
-		"next_launch_at": map[string]any{"type": "string"},
+		"name":                 map[string]any{"type": "string", "description": "The restarted process name."},
+		"outcome":              map[string]any{"type": "string", "description": "restarted, running_unverified, exited_before_ready, timed_out, or error."},
+		"readiness":            map[string]any{"type": "string", "description": "The replacement readiness state observed by this request."},
+		"pid":                  map[string]any{"type": "integer", "description": "The replacement process ID, or zero when no running process remains."},
+		"launch_cursor":        map[string]any{"type": "integer", "minimum": 0, "description": "The output cursor assigned to the replacement launch."},
+		"message":              map[string]any{"type": "string", "description": "Optional detail for a readiness or request failure."},
+		"source":               map[string]any{"type": "string"},
+		"root":                 map[string]any{"type": "string"},
+		"tty":                  map[string]any{"type": "boolean", "description": "Whether the replacement owns a pseudo-terminal."},
+		"pgid":                 map[string]any{"type": "integer"},
+		"cwd":                  map[string]any{"type": "string"},
+		"argv":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"start":                map[string]any{"type": "string"},
+		"next_cursor":          map[string]any{"type": "integer", "minimum": 0},
+		"state":                map[string]any{"type": "string"},
+		"exit":                 exit,
+		"exit_code":            map[string]any{"type": "integer"},
+		"exited_at":            map[string]any{"type": "string"},
+		"restart_count":        map[string]any{"type": "integer", "minimum": 0},
+		"followers":            map[string]any{"type": "integer", "minimum": 0},
+		"restart":              map[string]any{"type": "string", "enum": []string{"never", "on-failure"}},
+		"relaunches":           map[string]any{"type": "integer", "minimum": 0, "maximum": 5},
+		"stop_grace":           map[string]any{"type": "integer", "minimum": 0},
+		"stop_grace_inherited": map[string]any{"type": "boolean"},
+		"next_launch_at":       map[string]any{"type": "string"},
 	}, "name", "outcome", "readiness", "pid", "launch_cursor")
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
@@ -592,7 +597,7 @@ func mcpDefinition(definition Definition) orchestrate.Definition {
 	shared := orchestrate.Definition{
 		Name: definition.Name, Source: definition.Source, Argv: append([]string(nil), definition.Argv...),
 		Cwd: definition.Cwd, After: append([]string(nil), definition.After...), TTY: definition.TTY,
-		Restart: effectiveRestart(definition.Restart),
+		Restart: effectiveRestart(definition.Restart), StopGrace: definition.StopGrace,
 	}
 	if definition.Ready != nil {
 		shared.Ready = &orchestrate.ReadinessConfig{Match: definition.Ready.Match, Timeout: definition.Ready.Timeout}
@@ -606,7 +611,7 @@ func orchestrateProcess(process protocol.Process) orchestrate.Process {
 		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
 		Start: process.Start, LaunchCursor: uint64(process.LaunchCursor), State: process.State,
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
-		Followers: process.Followers, Restart: process.Restart, Relaunches: process.Relaunches,
+		Followers: process.Followers, Restart: process.Restart, StopGrace: process.StopGrace, StopGraceInherited: process.StopGraceInherited, Relaunches: process.Relaunches,
 		NextLaunchAt: process.NextLaunchAt,
 	}
 	if process.NextCursor != nil {
@@ -637,7 +642,7 @@ func protocolProcess(process orchestrate.Process) protocol.Process {
 		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
 		Start: process.Start, LaunchCursor: protocol.Cursor(process.LaunchCursor), State: process.State,
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
-		Followers: process.Followers, Restart: process.Restart, Relaunches: process.Relaunches,
+		Followers: process.Followers, Restart: process.Restart, StopGrace: process.StopGrace, StopGraceInherited: process.StopGraceInherited, Relaunches: process.Relaunches,
 		NextLaunchAt: process.NextLaunchAt,
 	}
 	if process.NextCursor != nil {
@@ -677,7 +682,11 @@ func mcpLaunchResult(definition Definition, shared orchestrate.Result) launchRes
 }
 
 func stoppedProcess(root string, definition Definition) protocol.Process {
-	return protocol.Process{Name: definition.Name, Source: definition.Source, Root: root, TTY: definition.TTY, Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: "stopped", Restart: effectiveRestart(definition.Restart)}
+	process := protocol.Process{Name: definition.Name, Source: definition.Source, Root: root, TTY: definition.TTY, Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: "stopped", Restart: effectiveRestart(definition.Restart), StopGraceInherited: definition.StopGrace == nil}
+	if definition.StopGrace != nil {
+		process.StopGrace = *definition.StopGrace
+	}
+	return process
 }
 
 func (s *Server) environment() []string {
@@ -938,7 +947,7 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 			if request.Ready != nil {
 				ready = &protocol.ReadinessConfig{Match: request.Ready.Match, Timeout: request.Ready.Timeout}
 			}
-			current, err := client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Scope: resolution.Scope, Name: request.Name, Argv: append([]string(nil), request.Argv...), Cwd: request.Cwd, Root: request.Root, Env: append([]string(nil), request.Env...), Source: request.Source, Ready: ready, TTY: request.TTY, Restart: request.Restart})
+			current, err := client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Scope: resolution.Scope, Name: request.Name, Argv: append([]string(nil), request.Argv...), Cwd: request.Cwd, Root: request.Root, Env: append([]string(nil), request.Env...), Source: request.Source, Ready: ready, TTY: request.TTY, Restart: request.Restart, StopGrace: request.StopGrace})
 			return orchestrateProcess(current), err
 		},
 		IsNotFound:  func(err error) bool { return mapError(err).Code == string(protocol.ErrorNotFound) },
@@ -1561,57 +1570,61 @@ func (s *Server) signal(ctx context.Context, resolution Resolution, input common
 }
 
 type restartResult struct {
-	Name         string           `json:"name"`
-	Outcome      string           `json:"outcome"`
-	Readiness    string           `json:"readiness"`
-	PID          int              `json:"pid"`
-	LaunchCursor protocol.Cursor  `json:"launch_cursor"`
-	Message      string           `json:"message,omitempty"`
-	Source       string           `json:"source,omitempty"`
-	Root         string           `json:"root"`
-	TTY          bool             `json:"tty"`
-	PGID         int              `json:"pgid"`
-	Cwd          string           `json:"cwd"`
-	Argv         []string         `json:"argv"`
-	Start        time.Time        `json:"start"`
-	NextCursor   *protocol.Cursor `json:"next_cursor,omitempty"`
-	State        string           `json:"state"`
-	Exit         *protocol.Exit   `json:"exit,omitempty"`
-	ExitCode     int              `json:"exit_code,omitempty"`
-	ExitedAt     time.Time        `json:"exited_at,omitempty"`
-	RestartCount int              `json:"restart_count,omitempty"`
-	Followers    int              `json:"followers"`
-	Restart      string           `json:"restart"`
-	Relaunches   int              `json:"relaunches"`
-	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
+	Name               string           `json:"name"`
+	Outcome            string           `json:"outcome"`
+	Readiness          string           `json:"readiness"`
+	PID                int              `json:"pid"`
+	LaunchCursor       protocol.Cursor  `json:"launch_cursor"`
+	Message            string           `json:"message,omitempty"`
+	Source             string           `json:"source,omitempty"`
+	Root               string           `json:"root"`
+	TTY                bool             `json:"tty"`
+	PGID               int              `json:"pgid"`
+	Cwd                string           `json:"cwd"`
+	Argv               []string         `json:"argv"`
+	Start              time.Time        `json:"start"`
+	NextCursor         *protocol.Cursor `json:"next_cursor,omitempty"`
+	State              string           `json:"state"`
+	Exit               *protocol.Exit   `json:"exit,omitempty"`
+	ExitCode           int              `json:"exit_code,omitempty"`
+	ExitedAt           time.Time        `json:"exited_at,omitempty"`
+	RestartCount       int              `json:"restart_count,omitempty"`
+	Followers          int              `json:"followers"`
+	Restart            string           `json:"restart"`
+	Relaunches         int              `json:"relaunches"`
+	StopGrace          time.Duration    `json:"stop_grace"`
+	StopGraceInherited bool             `json:"stop_grace_inherited"`
+	NextLaunchAt       *time.Time       `json:"next_launch_at,omitempty"`
 }
 
 func restartResultForProcess(process protocol.Process, name, outcome, message string) restartResult {
 	process = normalizeProcess(process)
 	result := restartResult{
-		Name:         process.Name,
-		Outcome:      outcome,
-		Readiness:    protocol.ReadinessRunningUnverified,
-		PID:          process.PID,
-		LaunchCursor: process.LaunchCursor,
-		Message:      message,
-		Source:       process.Source,
-		Root:         process.Root,
-		TTY:          process.TTY,
-		PGID:         process.PGID,
-		Cwd:          process.Cwd,
-		Argv:         append([]string(nil), process.Argv...),
-		Start:        process.Start,
-		NextCursor:   process.NextCursor,
-		State:        process.State,
-		Exit:         process.Exit,
-		ExitCode:     process.ExitCode,
-		ExitedAt:     process.ExitedAt,
-		RestartCount: process.RestartCount,
-		Followers:    process.Followers,
-		Restart:      process.Restart,
-		Relaunches:   process.Relaunches,
-		NextLaunchAt: process.NextLaunchAt,
+		Name:               process.Name,
+		Outcome:            outcome,
+		Readiness:          protocol.ReadinessRunningUnverified,
+		PID:                process.PID,
+		LaunchCursor:       process.LaunchCursor,
+		Message:            message,
+		Source:             process.Source,
+		Root:               process.Root,
+		TTY:                process.TTY,
+		PGID:               process.PGID,
+		Cwd:                process.Cwd,
+		Argv:               append([]string(nil), process.Argv...),
+		Start:              process.Start,
+		NextCursor:         process.NextCursor,
+		State:              process.State,
+		Exit:               process.Exit,
+		ExitCode:           process.ExitCode,
+		ExitedAt:           process.ExitedAt,
+		RestartCount:       process.RestartCount,
+		Followers:          process.Followers,
+		Restart:            process.Restart,
+		Relaunches:         process.Relaunches,
+		StopGrace:          process.StopGrace,
+		StopGraceInherited: process.StopGraceInherited,
+		NextLaunchAt:       process.NextLaunchAt,
 	}
 	if result.Argv == nil {
 		result.Argv = []string{}
@@ -1660,6 +1673,7 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 		request.Root, request.Cwd, request.Update = resolution.Root, definition.Cwd, true
 		request.Argv, request.Env, request.Source, request.Ready, request.TTY = append([]string(nil), definition.Argv...), s.environment(), definition.Source, definition.Ready, definition.TTY
 		request.Restart = effectiveRestart(definition.Restart)
+		request.StopGrace = definition.StopGrace
 	}
 	launchedAt := time.Now()
 	process, err := client.Restart(ctx, request)

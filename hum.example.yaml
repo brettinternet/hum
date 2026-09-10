@@ -13,6 +13,7 @@ processes:
       match: "Listening"
       timeout: 30s # Defaults to 30s.
     restart: on-failure # Defaults to never.
+    stop_grace: 2s # Omit to inherit the daemon default; 0s sends SIGKILL immediately after the TERM check.
   web:
     argv: [bun, run, dev]
     # cwd is relative to the project root.

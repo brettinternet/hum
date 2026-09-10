@@ -116,7 +116,11 @@ func (f *fakeClient) Start(_ context.Context, req protocol.StartRequest) (protoc
 	if err := f.startErr[req.Name]; err != nil {
 		return protocol.Process{}, err
 	}
-	p := protocol.Process{Name: req.Name, Source: req.Source, Root: req.Root, Cwd: req.Cwd, Argv: append([]string(nil), req.Argv...), State: "running", LaunchCursor: 7, Restart: req.Restart}
+	p := protocol.Process{Name: req.Name, Source: req.Source, Root: req.Root, Cwd: req.Cwd, Argv: append([]string(nil), req.Argv...), State: "running", LaunchCursor: 7, Restart: req.Restart, StopGraceInherited: req.StopGrace == nil}
+	if req.StopGrace != nil {
+		p.StopGrace = *req.StopGrace
+	}
+
 	if req.Ready != nil {
 		p.Readiness = &protocol.Readiness{State: protocol.ReadinessStarting, Match: req.Ready.Match}
 	}
@@ -232,6 +236,12 @@ func (f *fakeClient) Restart(_ context.Context, req protocol.RestartRequest) (pr
 	p.RestartCount++
 	if req.Update {
 		p.Source, p.Root, p.Cwd = req.Source, req.Root, req.Cwd
+		p.StopGraceInherited = req.StopGrace == nil
+		if req.StopGrace != nil {
+			p.StopGrace = *req.StopGrace
+		} else {
+			p.StopGrace = 0
+		}
 		p.Argv = append([]string(nil), req.Argv...)
 		p.Readiness = nil
 		if req.Ready != nil {
@@ -253,6 +263,12 @@ func newTestServer(t *testing.T, definitions []Definition, client *fakeClient) (
 	}
 	if client.stopErr == nil {
 		client.stopErr = map[string]error{}
+	}
+	for name, process := range client.processes {
+		if process.StopGrace == 0 && !process.StopGraceInherited {
+			process.StopGraceInherited = true
+			client.processes[name] = process
+		}
 	}
 	ensures := []bool{}
 	s := NewServer(Options{Resolver: fakeResolver{resolution: Resolution{Root: root, Definitions: definitions}}, ClientFactory: func(_ context.Context, ensure bool) (Client, error) {
@@ -381,6 +397,84 @@ func TestGlobalScopeTools(t *testing.T) {
 		if !strings.Contains(definition.Description, "global") || !strings.Contains(definition.Description, "project_root") {
 			t.Fatalf("%s description omits global scope contract", definition.Name)
 		}
+	}
+}
+
+func TestProcessStopGraceSyntheticDefinition(t *testing.T) {
+	explicit := 750 * time.Millisecond
+	process := stoppedProcess("/project", Definition{Name: "db", Source: "manifest", Argv: []string{"db"}, StopGrace: &explicit})
+	if process.StopGrace != explicit || process.StopGraceInherited {
+		t.Fatalf("explicit synthetic snapshot = %#v, want %s and inherited=false", process, explicit)
+	}
+	inherited := stoppedProcess("/project", Definition{Name: "api", Source: "manifest", Argv: []string{"api"}})
+	if inherited.StopGrace != 0 || !inherited.StopGraceInherited {
+		t.Fatalf("inherited synthetic snapshot = %#v, want inherited=true", inherited)
+	}
+}
+
+func TestProcessStopGraceMCPProcessResultParity(t *testing.T) {
+	grace := 700 * time.Millisecond
+	client := &fakeClient{}
+	server, root, _ := newTestServer(t, []Definition{
+		{Name: "explicit", Source: "manifest", Cwd: ".", Argv: []string{"explicit"}, StopGrace: &grace},
+		{Name: "inherited", Source: "manifest", Cwd: ".", Argv: []string{"inherited"}},
+	}, client)
+	value, err := server.callTool(context.Background(), "up", args(root, "no_wait", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := value.([]launchResult)
+	if len(results) != 2 {
+		t.Fatalf("MCP up results = %#v, want two processes", results)
+	}
+	for _, result := range results {
+		if result.Process == nil {
+			t.Fatalf("MCP result omitted process: %#v", result)
+		}
+		switch result.Name {
+		case "explicit":
+			if result.Process.StopGrace != grace || result.Process.StopGraceInherited {
+				t.Fatalf("explicit MCP process = %#v", result.Process)
+			}
+		case "inherited":
+			if !result.Process.StopGraceInherited {
+				t.Fatalf("inherited MCP process = %#v", result.Process)
+			}
+		default:
+			t.Fatalf("unexpected MCP process result = %#v", result)
+		}
+	}
+	listedValue, err := server.callTool(context.Background(), "list", args(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := listedValue.([]protocol.Process)
+	if len(listed) != 2 {
+		t.Fatalf("MCP list = %#v, want two processes", listed)
+	}
+	for _, process := range listed {
+		if process.Name == "explicit" && (process.StopGrace != grace || process.StopGraceInherited) {
+			t.Fatalf("MCP list explicit = %#v", process)
+		}
+		if process.Name == "inherited" && !process.StopGraceInherited {
+			t.Fatalf("MCP list inherited = %#v", process)
+		}
+	}
+	statusValue, err := server.callTool(context.Background(), "status", args(root, "name", "explicit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := statusValue.(protocol.Process)
+	if status.StopGrace != grace || status.StopGraceInherited {
+		t.Fatalf("MCP status = %#v", status)
+	}
+	restartedValue, err := server.callTool(context.Background(), "restart", args(root, "name", "explicit", "no_wait", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := restartedValue.(restartResult)
+	if restarted.StopGrace != grace || restarted.StopGraceInherited {
+		t.Fatalf("MCP restart = %#v", restarted)
 	}
 }
 

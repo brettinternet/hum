@@ -111,15 +111,21 @@ func effectiveProcessRestart(process app.Process) app.RestartPolicy {
 }
 
 func manifestProcess(definition project.Definition, root string) app.Process {
+	grace := time.Duration(0)
+	inherited := definition.StopGrace == nil
+	if definition.StopGrace != nil {
+		grace = *definition.StopGrace
+	}
 	return app.Process{
-		Name:    definition.Name,
-		Source:  definition.Source,
-		Root:    root,
-		TTY:     definition.TTY,
-		Cwd:     definition.Cwd,
-		Argv:    append([]string(nil), definition.Argv...),
-		State:   app.State("stopped"),
-		Restart: app.RestartPolicy(restartPolicy(definition)),
+		Name:      definition.Name,
+		Source:    definition.Source,
+		Root:      root,
+		TTY:       definition.TTY,
+		Cwd:       definition.Cwd,
+		Argv:      append([]string(nil), definition.Argv...),
+		State:     app.State("stopped"),
+		Restart:   app.RestartPolicy(restartPolicy(definition)),
+		StopGrace: grace, StopGraceInherited: inherited,
 	}
 }
 
@@ -281,7 +287,7 @@ func cliOrchestrateDefinition(definition project.Definition) orchestrate.Definit
 	shared := orchestrate.Definition{
 		Name: definition.Name, Source: definition.Source, Argv: append([]string(nil), definition.Argv...),
 		Cwd: definition.Cwd, After: append([]string(nil), definition.After...), TTY: definition.TTY,
-		Restart: restartPolicy(definition),
+		Restart: restartPolicy(definition), StopGrace: definition.StopGrace,
 	}
 	if definition.Ready != nil {
 		shared.Ready = &orchestrate.ReadinessConfig{Match: definition.Ready.Match, Timeout: definition.Ready.Timeout}
@@ -295,7 +301,7 @@ func cliOrchestrateProcess(process app.Process) orchestrate.Process {
 		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
 		Start: process.Start, LaunchCursor: uint64(process.LaunchCursor), State: string(process.State),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
-		Followers: process.Followers, Restart: string(process.Restart), Relaunches: process.Relaunches,
+		Followers: process.Followers, Restart: string(process.Restart), StopGrace: process.StopGrace, StopGraceInherited: process.StopGraceInherited, Relaunches: process.Relaunches,
 		NextLaunchAt: process.NextLaunchAt,
 	}
 	if process.NextCursor != 0 {
@@ -329,7 +335,7 @@ func cliAppProcess(process orchestrate.Process) app.Process {
 		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
 		Start: process.Start, LaunchCursor: output.Cursor(process.LaunchCursor), State: app.State(process.State),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
-		Followers: process.Followers, Restart: app.RestartPolicy(process.Restart), Relaunches: process.Relaunches,
+		Followers: process.Followers, Restart: app.RestartPolicy(process.Restart), StopGrace: process.StopGrace, StopGraceInherited: process.StopGraceInherited, Relaunches: process.Relaunches,
 		NextLaunchAt: process.NextLaunchAt,
 	}
 	if process.NextCursor != nil {
@@ -572,7 +578,7 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 			current, err := client.Start(ctx, daemon.StartRequest{
 				Name: request.Name, Source: request.Source, Root: request.Root, Cwd: request.Cwd,
 				Argv: append([]string(nil), request.Argv...), Env: append([]string(nil), request.Env...),
-				Ready: ready, TTY: request.TTY, Restart: request.Restart,
+				Ready: ready, TTY: request.TTY, Restart: request.Restart, StopGrace: request.StopGrace,
 			})
 			return cliOrchestrateProcess(current), err
 		},

@@ -567,6 +567,26 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 }
 
+func manifestStopGrace(root, name string) *time.Duration {
+	if root == "" || name == "" {
+		return nil
+	}
+	definitions, err := project.LoadDefinitions(root)
+	if err != nil {
+		return nil
+	}
+	for _, definition := range definitions {
+		if definition.Name == name {
+			if definition.StopGrace == nil {
+				return nil
+			}
+			grace := *definition.StopGrace
+			return &grace
+		}
+	}
+	return nil
+}
+
 func dispatchError(op protocol.Operation, err error) protocol.ErrorResponse {
 	return protocol.ErrorResponse{Op: op, OK: false, Error: protocolWireError(err)}
 }
@@ -590,11 +610,14 @@ func (s *Server) dispatch(req *protocol.Request) (any, bool) {
 		if value.Cwd == "" {
 			value.Cwd = "."
 		}
+		if value.StopGrace == nil && project.IsManifestSource(value.Source) {
+			value.StopGrace = manifestStopGrace(value.Root, value.Name)
+		}
 		var size *app.TTYSize
 		if value.TTYSize != nil {
 			size = &app.TTYSize{Columns: value.TTYSize.Columns, Rows: value.TTYSize.Rows}
 		}
-		launched, err := s.supervisor.Start(app.StartRequest{Name: value.Name, Scope: value.Scope, Source: value.Source, Root: value.Root, Argv: value.Argv, Cwd: value.Cwd, Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), Attached: value.Attached})
+		launched, err := s.supervisor.Start(app.StartRequest{Name: value.Name, Scope: value.Scope, Source: value.Source, Root: value.Root, Argv: value.Argv, Cwd: value.Cwd, Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), StopGrace: value.StopGrace, Attached: value.Attached})
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
@@ -690,11 +713,14 @@ func (s *Server) dispatch(req *protocol.Request) (any, bool) {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, app.ErrSupervisorClosed), false
 		}
+		if value.StopGrace == nil && value.Update && project.IsManifestSource(value.Source) {
+			value.StopGrace = manifestStopGrace(value.Root, value.Name)
+		}
 		var size *app.TTYSize
 		if value.TTYSize != nil {
 			size = &app.TTYSize{Columns: value.TTYSize.Columns, Rows: value.TTYSize.Rows}
 		}
-		options := app.RestartOptions{Update: value.Update, Source: value.Source, Root: value.Root, Cwd: value.Cwd, Argv: append([]string(nil), value.Argv...), Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), Scope: value.Scope}
+		options := app.RestartOptions{Update: value.Update, Source: value.Source, Root: value.Root, Cwd: value.Cwd, Argv: append([]string(nil), value.Argv...), Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), StopGrace: value.StopGrace, Scope: value.Scope}
 		launched, err := s.supervisor.RestartScoped(context.Background(), value.Scope, value.Cwd, value.Name, options)
 		if err != nil {
 			s.shutdownMu.Unlock()
