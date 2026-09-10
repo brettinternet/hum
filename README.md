@@ -96,7 +96,7 @@ hum down
 
 ### Operate from anywhere
 
-Project commands accept `--project DIR` (or `-C DIR`) before or after the subcommand:
+Use `--project DIR` or `-C DIR` before or after the subcommand:
 
 ```sh
 hum --project /path/to/checkout up
@@ -104,7 +104,7 @@ hum status -C ../checkout api
 hum run preview --project /path/to/checkout -- bun run preview
 ```
 
-A relative selector starts from the invocation directory. Ad-hoc runs use the selected directory as cwd, while manifest cwd values remain project-relative.
+A relative selector starts from the invocation directory. Ad-hoc runs use the selected directory as `cwd`; manifest `cwd` values stay project-relative.
 
 `--project` does not apply to `serve`, `shutdown`, `mcp`, or `skill`. `-d` means `serve --daemon`, `run --detach`, or `up --detach`.
 
@@ -116,17 +116,18 @@ Run a named process without a manifest:
 hum run preview -- bun run preview
 hum run preview --detach -- bun run preview
 hum attach preview
-hum logs preview --follow
+hum logs preview --follow --tail 0
 hum wait preview --match "ready"
-hum stop preview
-hum remove preview
+hum stop preview       # preserve state
+hum remove preview     # discard state
+hum remove --all       # discard sessions in this scope
 ```
 
-Ad-hoc child argv requires `hum run NAME [options] -- COMMAND`; scope selectors precede `--`. Foreground run streams output, propagates status, stops on Ctrl+C/SIGTERM, and detaches on SIGHUP. `--detach`, `up`, and `start` leave ownership to the daemon. `hum attach NAME` and `logs --follow` are observers. Use `--tail 0` for live-only output. `stop` preserves state; `remove` discards one session or, with `--all`, the selected scope.
+Scope selectors go before the child `--`. Foreground runs propagate status, stop on Ctrl+C or SIGTERM, and detach on SIGHUP. `--detach`, `up`, and `start` leave ownership to the daemon; `hum attach NAME` and `logs --follow` only observe.
 
 ## Restart on failure
 
-Manifest processes default to `never`. Enable bounded recovery with `on-failure`:
+Manifest processes default to `never`. Enable bounded recovery:
 
 ```yaml
 processes:
@@ -135,25 +136,20 @@ processes:
     restart: on-failure
 ```
 
-A non-zero exit schedules at most five relaunches after:
-
-```text
-1s, 2s, 4s, 8s, 16s
-```
-
-Manual controls win. Relaunches reuse the last process definition. Use `hum restart NAME` to adopt changes. Status, JSON, and MCP expose recovery state and relaunch counts. Diagnose failures with `hum logs`.
+A non-zero exit relaunches after `1s`, `2s`, `4s`, `8s`, and `16s`, then stops retrying. Manual controls win. `hum restart NAME` adopts manifest changes; automatic relaunches reuse the previous definition. Status, JSON, and MCP expose recovery state and counts.
 
 ## Aggregate logs
 
 ```sh
-hum logs --follow
-hum logs web worker --tail 50
-hum logs web --stream stdout --match Listening
+hum logs --follow                                  # declared processes
+hum logs web worker --tail 50                     # selected processes
+hum logs web --stream stdout --match Listening    # matching stdout
+hum logs web --stream system                      # supervision events
 ```
 
-No names selects declarations, excluding ad-hoc. `--stream system` selects supervision; default `both` includes stdout, stderr, and system. Without `--after-cursor`, logs uses the newest default window; otherwise paging starts at the oldest retained entry. Ctrl+C closes followers only.
+Ad-hoc sessions are selected by name. The default stream `both` includes stdout, stderr, and system events. `--after-cursor` pages from the oldest retained entry; without it, logs starts with the newest default window. Ctrl+C closes followers only.
 
-Human output is prefixed with `[NAME]`; JSON output uses named NDJSON events. Logs `next` is the consumed cursor; process `next_cursor` is the next cursor to assign.
+Human output uses `[NAME]` prefixes. JSON output uses named NDJSON events. Logs `next` is the consumed cursor; process `next_cursor` is the next cursor to assign.
 
 ## Shell completion
 
@@ -179,7 +175,7 @@ codex plugin marketplace add .
 codex plugin add hum@hum
 ```
 
-`hum mcp` exposes project processes, bounded output, and one-shot TTY input over MCP. Agents can run separate worktrees in parallel:
+`hum mcp` exposes project processes, bounded output, and one-shot TTY input. Separate worktrees run independently:
 
 ```sh
 cd .worktrees/agent-a
@@ -196,7 +192,7 @@ See [coding-agent setup](docs/coding-agents.md) for Claude Code, Cursor, MCP, an
 
 ## TTY input
 
-TTY support is opt-in:
+Enable TTY support per process:
 
 ```yaml
 processes:
@@ -212,12 +208,18 @@ hum input console --text 'value'
 hum input console --base64 PADDED_VALUE
 ```
 
-A TTY has one input owner and sends exact text or strict padded base64 once; it never queues or echoes input. `logs --follow` receives output only. Use `--json` for the operation result; MCP provides the same operation.
+Each TTY has one input owner. Input is sent once, never queued or echoed. `logs --follow` receives output only. `--json` and MCP expose the same operation result.
 
 ## Project scopes
 
-hum scopes names by the invocation directory's nearest Git root, or that directory outside Git. Roots are canonical: symlink aliases share a record, separate worktrees do not. `--project PATH` or `-C PATH` reaches another scope, including a removed worktree. `hum --global` (`-g`) is a machine-wide ad-hoc namespace, as in `hum -g run proxy -- caddy run`; selectors can surround ordinary positionals (`hum signal proxy HUP --global`) but must precede `run`'s child `--`. It conflicts with `--project` and `list --all`, and `init` and `up` reject it. Lookups never fall back across scopes. JSON `scope` is `project` or `global`; global records omit `project_root`.
+```sh
+hum status                            # nearest Git root
+hum -C ../other-worktree status       # another project, even if removed
+hum list --all                        # every scope
+hum -g run proxy -- caddy run         # machine-wide ad-hoc session
+hum signal proxy HUP --global         # global selector after positionals
+```
 
-## License
+Project roots are canonical, so symlink aliases share a scope while separate worktrees do not. `--project PATH` and `-C PATH` select another project. `--global` and `-g` never fall back to project scopes and must precede `run`'s child `--`.
 
-[MIT](LICENSE)
+`--global` conflicts with `--project` and `list --all`; `init` and `up` reject it. JSON `scope` is `project` or `global`; global records omit `project_root`.
