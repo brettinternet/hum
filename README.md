@@ -31,6 +31,15 @@ brew trust --formula brettinternet/tap/hum
 brew install brettinternet/tap/hum
 ```
 
+Or download and verify the latest macOS or Linux release directly:
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/brettinternet/hum/main/install.sh | sh
+```
+
+Set `HUM_VERSION=0.9.0` (with or without the leading `v`) to pin a release, or set
+`HUM_INSTALL_DIR` to install somewhere other than `$HOME/.local/bin`.
+
 Or install releases with [mise](https://mise.jdx.dev/):
 
 ```toml
