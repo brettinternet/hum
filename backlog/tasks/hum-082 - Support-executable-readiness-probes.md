@@ -1,10 +1,10 @@
 ---
 id: HUM-082
 title: Support executable readiness probes
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-10 20:35'
-updated_date: '2026-09-10 20:56'
+updated_date: '2026-09-11 00:51'
 labels:
   - config
   - process
@@ -70,25 +70,40 @@ Non-goals: continuous liveness monitoring, restart-on-unhealthy behavior, built-
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `go test ./internal/project -run '^TestExecutableReadinessManifest$' -count=1 -v` exits 0 and prints PASS for match or exec exclusivity, non-empty exact argv, exec-only positive interval with a 1s default, the existing 30s timeout default, invalid interval/timeout rejection, and an `after` dependency satisfied by exec readiness.
-- [ ] #2 `go test ./internal/app ./internal/orchestrate -run 'ExecutableReadiness' -count=1 -v` exits 0 and prints PASS for immediate first attempt, serial retry after interval, inherited cwd/environment, success, process exit, timeout, stop/restart/shutdown cancellation, automatic-relaunch incarnation isolation, no surviving probe child, one max-line-bounded last-attempt diagnostic, and no retained output per attempt.
-- [ ] #3 `go test ./internal/protocol ./internal/daemon ./internal/cli ./internal/mcp -run 'ExecutableReadiness' -count=1 -v` exits 0 and prints PASS for the bumped wire contract, argv/interval/readiness-state round trips, start/up/restart and CLI/MCP result parity without an output-wait request for exec readiness, match-versus-exec and argv drift as `readiness_exec`, and unchanged match readiness behavior.
-- [ ] #4 `go test ./integration -run '^TestExecutableReadiness$' -count=1 -v` exits 0 and prints PASS for a test-written probe executable that initially exits nonzero, succeeds after the supervised process creates a marker, and releases its `after` dependent only after success; no task, just, or shell executable is required.
-- [ ] #5 `task ci` exits 0 after hum.schema.json, hum.example.yaml, README.md, docs/design.md, and docs/coding-agents.md document exact argv, immediate-first/1s-interval retry semantics, inherited cwd/environment, bounded terminal diagnostics, and the fact that readiness is startup gating rather than liveness monitoring.
+- [x] #1 `go test ./internal/project -run '^TestExecutableReadinessManifest$' -count=1 -v` exits 0 and prints PASS for match or exec exclusivity, non-empty exact argv, exec-only positive interval with a 1s default, the existing 30s timeout default, invalid interval/timeout rejection, and an `after` dependency satisfied by exec readiness.
+- [x] #2 `go test ./internal/app ./internal/orchestrate -run 'ExecutableReadiness' -count=1 -v` exits 0 and prints PASS for immediate first attempt, serial retry after interval, inherited cwd/environment, success, process exit, timeout, stop/restart/shutdown cancellation, automatic-relaunch incarnation isolation, no surviving probe child, one max-line-bounded last-attempt diagnostic, and no retained output per attempt.
+- [x] #3 `go test ./internal/protocol ./internal/daemon ./internal/cli ./internal/mcp -run 'ExecutableReadiness' -count=1 -v` exits 0 and prints PASS for the bumped wire contract, argv/interval/readiness-state round trips, start/up/restart and CLI/MCP result parity without an output-wait request for exec readiness, match-versus-exec and argv drift as `readiness_exec`, and unchanged match readiness behavior.
+- [x] #4 `go test ./integration -run '^TestExecutableReadiness$' -count=1 -v` exits 0 and prints PASS for a test-written probe executable that initially exits nonzero, succeeds after the supervised process creates a marker, and releases its `after` dependent only after success; no task, just, or shell executable is required.
+- [x] #5 `task ci` exits 0 after hum.schema.json, hum.example.yaml, README.md, docs/design.md, and docs/coding-agents.md document exact argv, immediate-first/1s-interval retry semantics, inherited cwd/environment, bounded terminal diagnostics, and the fact that readiness is startup gating rather than liveness monitoring.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Implementation started in isolated worktree; claimed with worklease after selection by task backlog:next.
+
+Implementation commit 6af0018 merged to main.
+AC#1 PASS — go test ./internal/project -run ^TestExecutableReadinessManifest$ -count=1 -v.
+AC#2 PASS — go test ./internal/app ./internal/orchestrate -run ExecutableReadiness -count=1 -v; targeted race coverage also passed.
+AC#3 PASS — go test ./internal/protocol ./internal/daemon ./internal/cli ./internal/mcp -run ExecutableReadiness -count=1 -v with protocol v20 after rebasing over v19 stop-grace.
+AC#4 PASS — go test ./integration -run ^TestExecutableReadiness$ -count=1 -v.
+AC#5 PASS — task ci passed on final merged commit, including full race suite.
+Independent verifier PASS for AC1-AC5 on merged commit 6af0018; no deleted, skipped, or weakened tests.
+Modified-file deviation: internal/protocol/codec_test.go and internal/protocol/restart_policy_test.go update frozen wire fixtures and version expectations required by the protocol bump. No protected gate files changed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added direct-argv executable readiness probes with durable per-incarnation state, serial retries, cancellation and process-group cleanup, bounded diagnostics, protocol v20, CLI/MCP parity, drift detection, schema/docs, and integration coverage. Commit 6af0018 is merged to main; task ci and independent verification passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
