@@ -1,13 +1,12 @@
 ---
 id: HUM-076
 title: Make releases reuse the exact commit CI result
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-10 20:08'
-updated_date: '2026-09-10 21:13'
+updated_date: '2026-09-11 14:55'
 labels:
   - tooling
-  - blocked
 dependencies: []
 references:
   - .github/workflows/release.yaml
@@ -45,7 +44,7 @@ Non-goals: trusting a branch name, pull-request result, other workflow, or a dif
 - [x] #1 `rg -n 'task ci|go test' .github/workflows/release.yaml` prints nothing, and `rg -n '^      - name:' .github/workflows/release.yaml` lists the CI verification step before both "Build release archives" and "Create GitHub release".
 - [x] #2 `rg -n '^\s+(actions|contents):' .github/workflows/release.yaml` prints exactly `actions: read` and `contents: write`, and `rg -c 'timeout-minutes' .github/workflows/release.yaml` prints 1.
 - [x] #3 The selection command from the verify step, run locally, prints `34522958965` for the v0.8.0 commit: `gh run list --workflow ci.yaml --commit d6cb6fb7e2afc24a0774b49f81a14b54bed0bc6e --branch main --event push --limit 1 --json databaseId --jq '.[0].databaseId'`; the same command with commit `9d7b5bd529d475f77b6e3e7d87fcb16540fe4c6b` (Dependabot PR head, never pushed to main) prints an empty line, which the step must turn into exit 1.
-- [ ] #4 For the first tag release after this change (RUN_ID from `gh run list --workflow release.yaml --limit 1 --json databaseId --jq '.[0].databaseId'`), `gh run view RUN_ID --json jobs --jq '.jobs[0].steps[].name'` contains no "Run CI" step and `gh run view RUN_ID --json jobs --jq '.jobs[0] | (.completedAt|fromdate) - (.startedAt|fromdate)'` prints a value no greater than 90.
+- [x] #4 For the first tag release after this change (RUN_ID from `gh run list --workflow release.yaml --limit 1 --json databaseId --jq '.[0].databaseId'`), `gh run view RUN_ID --json jobs --jq '.jobs[0].steps[].name'` contains no "Run CI" step and `gh run view RUN_ID --json jobs --jq '.jobs[0] | (.completedAt|fromdate) - (.startedAt|fromdate)'` prints a value no greater than 90.
 - [x] #5 `task ci` exits 0 (local gate unchanged).
 <!-- AC:END -->
 
@@ -53,7 +52,7 @@ Non-goals: trusting a branch name, pull-request result, other workflow, or a dif
 <!-- DOD:BEGIN -->
 - [x] #1 task ci passes on the final commit
 - [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
 - [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
 - [x] #5 No test was deleted, skipped, or weakened
 - [x] #6 No protected gate file was modified unless the owner labelled this task tooling
@@ -71,4 +70,14 @@ Review evidence — independent verifier passed AC#1, AC#2, AC#3, and AC#5; foun
 AC#4 pending — requires the first tag release after b1e746a. After that release, run the two recorded `gh run view RUN_ID` commands and record absence of Run CI plus job duration no greater than 90 seconds. The current latest release 34523456848 predates this change and is not valid evidence.
 
 Blocked on AC#4: no tag release exists after implementation commit b1e746a. The latest release run remains 34523456848 for v0.8.0 at d6cb6fb, which predates the change. User chose not to authorize pushing main or creating a release. Resume after an authorized post-b1e746a tag release; then run the two AC#4 gh run view commands, obtain an independent verifier PASS, and complete the task.
+
+AC#4 evidence — v0.9.0 release run 34612386708 succeeded. `gh run view 34612386708 --json jobs --jq ' .jobs[0].steps[].name '` listed Verify CI result, Build release archives, and Create GitHub release with no Run CI step; `gh run view 34612386708 --json jobs --jq '.jobs[0] | (.completedAt|fromdate) - (.startedAt|fromdate)'` returned 58 seconds.
+
+Final verification — independent verifier returned PASS for AC#1 through AC#5, reran `task ci` successfully, confirmed release v0.9.0 is published with four platform archives and checksums, and found no concrete defect.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Completed in release v0.9.0. Release run 34612386708 reused the successful CI result for commit 36ba4ee, omitted the former Run CI step, completed in 58 seconds, and published all expected assets.
+<!-- SECTION:FINAL_SUMMARY:END -->
