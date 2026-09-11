@@ -4507,6 +4507,38 @@ func TestPrelaunchFollowerSurvivesIdleRace(t *testing.T) {
 	}
 }
 
+func TestPrelaunchFollowerReleaseKeepsStartingSession(t *testing.T) {
+	root := makeProject(t, false)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	child := &timedChild{pid: 7200, done: make(chan struct{})}
+	s := testSupervisor(t, Options{StartProcess: func(process.Spec) (Child, error) {
+		close(entered)
+		<-release
+		return child, nil
+	}})
+
+	follower, err := s.Subscribe(root, "starting", output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan error, 1)
+	go func() {
+		_, startErr := startShell(s, root, "starting", "exit 0")
+		started <- startErr
+	}()
+	<-entered
+	follower.Close()
+	close(release)
+	if err := <-started; err != nil {
+		t.Fatalf("launch lost its pre-launch session when the follower closed: %v", err)
+	}
+	if _, err := s.Get(root, "starting"); err != nil {
+		t.Fatalf("published session is unavailable: %v", err)
+	}
+	child.release()
+}
+
 func TestRemoveReleasesOutputReferences(t *testing.T) {
 	root := makeProject(t, false)
 	child := &timedChild{pid: 7201, done: make(chan struct{}), result: process.Result{ExitCode: 0}}

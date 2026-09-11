@@ -1430,8 +1430,9 @@ func (s *Supervisor) trackStore(key string, store *output.Store) {
 		rec := s.records[key]
 		// A follower may attach between the last subscriber leaving and this
 		// callback acquiring s.mu; re-check under the lock so a live pre-launch
-		// follower keeps reserving its session.
-		if rec != nil && rec.store == store && rec.terminal && rec.incarnation == 0 && store.SubscriberCount() == 0 {
+		// follower or an in-flight launch keeps reserving its session.
+		_, starting := s.starting[key]
+		if rec != nil && rec.store == store && rec.terminal && rec.incarnation == 0 && !starting && store.SubscriberCount() == 0 {
 			delete(s.records, key)
 		} else {
 			s.evictLocked()

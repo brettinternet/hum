@@ -1073,6 +1073,9 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	defer client.Close()
 
+	signals := notifyFollowSignals()
+	defer signal.Stop(signals)
+
 	name := args[0]
 	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 	if err != nil {
@@ -1211,8 +1214,6 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		}
 	}
 
-	signals := notifyFollowSignals()
-	defer signal.Stop(signals)
 	return bufferedFollowLoop(ctx, follower, signals, live, func(event output.Event) error {
 		if event.Read == nil {
 			return nil
