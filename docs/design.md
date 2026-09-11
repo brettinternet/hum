@@ -129,6 +129,13 @@ contacting the daemon, so clients can discover this capability before trusting f
 CLI contract is independent of MCP and the private daemon protocol; local clients must not consume
 the daemon socket as a public interface.
 
+The repository's Herdr plugin is one such local client. Herdr owns workspace discovery UI, pane
+creation, labels, focus, and terminal lifecycle. Hum owns supervised processes, retained output,
+lifecycle state, and the exclusive TTY input lease. The plugin checks `hum version --json`, discovers
+the selected scope with `hum list --json`, preserves its canonical absolute `project_root`, and invokes
+only exact-argv public CLI commands with an explicit `--project`; it never connects to the private
+daemon socket.
+
 JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus
 identity, readiness, cursors, and errors when applicable.
 

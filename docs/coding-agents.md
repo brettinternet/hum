@@ -1,5 +1,15 @@
 # Coding-agent setup
 
+## Install the Herdr plugin
+
+With Hum and Python 3.10+ on Herdr's `PATH`, install the workspace process picker:
+
+```sh
+herdr plugin install brettinternet/hum/plugins/herdr --yes
+```
+
+The plugin verifies `hum version --json`, discovers the selected project with `hum list --json`, and uses exact CLI argument arrays for logs, attachment, and lifecycle actions. See [`plugins/herdr/README.md`](../plugins/herdr/README.md) for pane behavior and the Herdr/Hum ownership boundary.
+
 For silent services use `ready.exec` with an exact non-empty argv; hum never invokes it through a shell. The first probe runs immediately after launch and retries serially after failures at the positive `interval` (default 1s), up to `timeout` (default 30s). It inherits the supervised cwd/environment, retains one bounded terminal diagnostic, and is startup gating rather than liveness monitoring. Changing method or argv is `readiness_exec` drift; interval and timeout do not cause drift.
 
 ## Install the Claude Code plugin

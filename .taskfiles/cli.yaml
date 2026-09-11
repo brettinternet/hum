@@ -27,16 +27,19 @@ tasks:
     cmd: mise exec go -- go run ./cmd/hum {{.CLI_ARGS}}
 
   check:
-    desc: Run Go checks
+    desc: Run source checks
     cmds:
       - test -z "$(find . \( -type d \( -name .git -o -name .worktrees -o -name bin -o -name build -o -name dist -o -name gen -o -name generated -o -name vendor \) -prune \) -o -type f -name '*.go' -exec mise exec go -- gofmt -l {} +)"
       - mise exec go -- go vet ./...
       - mise exec staticcheck -- staticcheck ./...
+      - python3 -m unittest discover -s plugins/herdr -p 'test_*.py'
 
   fix:
     desc: Format Go files
     cmd: find . \( -type d \( -name .git -o -name .worktrees -o -name bin -o -name build -o -name dist -o -name gen -o -name generated -o -name vendor \) -prune \) -o -type f -name '*.go' -exec mise exec go -- gofmt -w {} +
 
   test:
-    desc: Run Go tests
-    cmd: mise exec go -- go test ./...
+    desc: Run tests
+    cmds:
+      - mise exec go -- go test ./...
+      - python3 -m unittest discover -s plugins/herdr -p 'test_*.py'

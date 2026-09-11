@@ -1,0 +1,62 @@
+id = "brettinternet.hum"
+name = "Hum Processes"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Discover and operate Hum-managed project processes"
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "processes"
+title = "Hum: Processes…"
+contexts = ["workspace"]
+command = ["python3", "./hum_herdr.py", "open-picker"]
+
+[[actions]]
+id = "logs"
+title = "Hum: Follow logs…"
+contexts = ["workspace"]
+command = ["python3", "./hum_herdr.py", "open-picker"]
+
+[[actions]]
+id = "start-attach"
+title = "Hum: Start/attach process…"
+contexts = ["workspace"]
+command = ["python3", "./hum_herdr.py", "open-picker"]
+
+[[actions]]
+id = "start"
+title = "Hum: Start process…"
+contexts = ["workspace"]
+command = ["python3", "./hum_herdr.py", "open-picker"]
+
+[[actions]]
+id = "stop"
+title = "Hum: Stop process…"
+contexts = ["workspace"]
+command = ["python3", "./hum_herdr.py", "open-picker"]
+
+[[actions]]
+id = "restart"
+title = "Hum: Restart process…"
+contexts = ["workspace"]
+command = ["python3", "./hum_herdr.py", "open-picker"]
+
+[[actions]]
+id = "remove"
+title = "Hum: Remove process…"
+contexts = ["workspace"]
+command = ["python3", "./hum_herdr.py", "open-picker"]
+
+[[panes]]
+id = "picker"
+title = "Hum Processes"
+placement = "popup"
+width = "72%"
+height = "70%"
+command = ["python3", "./hum_herdr.py", "picker"]
+
+[[panes]]
+id = "process"
+title = "Hum Process"
+placement = "split"
+command = ["python3", "./hum_herdr.py", "process"]
