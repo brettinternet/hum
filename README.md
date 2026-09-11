@@ -24,7 +24,14 @@ Let a coding agent diagnose a failed process from its retained logs
 
 ## Install
 
-Install releases with [mise](https://mise.jdx.dev/):
+Install on macOS with [Homebrew](https://brew.sh/):
+
+```sh
+brew trust --formula brettinternet/tap/hum
+brew install brettinternet/tap/hum
+```
+
+Or install releases with [mise](https://mise.jdx.dev/):
 
 ```toml
 [tools]

@@ -65,6 +65,77 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/checksums.txt
-          --verify-tag --generate-notes --title "${GITHUB_REF_NAME}"
+        run: |
+          set -eu
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists; reusing its immutable assets"
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/checksums.txt \
+              --verify-tag --generate-notes --title "${GITHUB_REF_NAME}"
+          fi
+
+      - name: Configure tap deploy key
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          set -eu
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          version="${TAG#v}"
+          arm64_asset="hum-${version}-macos-arm64.tar.gz"
+          x64_asset="hum-${version}-macos-x64.tar.gz"
+          published_dir="${RUNNER_TEMP}/published-release"
+          mkdir -p "$published_dir"
+          gh release download "$TAG" --pattern checksums.txt --dir "$published_dir"
+          arm64_sha="$(awk -v asset="./${arm64_asset}" '$2 == asset { print $1 }' "$published_dir/checksums.txt")"
+          x64_sha="$(awk -v asset="./${x64_asset}" '$2 == asset { print $1 }' "$published_dir/checksums.txt")"
+          test -n "$arm64_sha"
+          test -n "$x64_sha"
+
+          tap_dir="${RUNNER_TEMP}/homebrew-tap"
+          git clone git@github.com:brettinternet/homebrew-tap.git "$tap_dir"
+          mkdir -p "$tap_dir/Formula"
+          cat > "$tap_dir/Formula/hum.rb" <<FORMULA
+          class Hum < Formula
+            desc "Local development process supervisor"
+            homepage "https://github.com/brettinternet/hum"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/brettinternet/hum/releases/download/${TAG}/${arm64_asset}"
+                sha256 "${arm64_sha}"
+              end
+              on_intel do
+                url "https://github.com/brettinternet/hum/releases/download/${TAG}/${x64_asset}"
+                sha256 "${x64_sha}"
+              end
+            end
+
+            def install
+              bin.install "hum"
+            end
+
+            test do
+              assert_match "hum version #{version}", shell_output("#{bin}/hum --version")
+            end
+          end
+          FORMULA
+
+          git -C "$tap_dir" config user.name "github-actions[bot]"
+          git -C "$tap_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$tap_dir" add Formula/hum.rb
+          if git -C "$tap_dir" diff --cached --quiet; then
+            exit 0
+          fi
+          git -C "$tap_dir" commit -m "hum ${TAG}"
+          git -C "$tap_dir" push origin main
