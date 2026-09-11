@@ -238,7 +238,7 @@ hum version --json
 
 This feature-detection call does not resolve a project or contact the daemon.
 
-## Herdr plugin
+### Herdr plugin
 
 With `hum` and Python 3.10+ on Herdr's `PATH`, install the process picker:
 
@@ -248,6 +248,8 @@ herdr plugin install brettinternet/hum/plugins/herdr --yes
 
 It discovers the selected workspace through the public version 1 CLI contract and opens followed logs or interactive attachments in Herdr panes. See the [Herdr plugin guide](plugins/herdr/README.md) for actions and ownership boundaries.
 
+### Claude Code plugin
+
 With `hum` on `PATH`, install the Claude Code plugin:
 
 ```sh
@@ -255,7 +257,9 @@ claude plugin marketplace add brettinternet/hum
 claude plugin install hum@hum
 ```
 
-Or install the Codex plugin from a checkout:
+### Codex plugin
+
+Install the Codex plugin from a checkout with `hum` on `PATH`:
 
 ```sh
 codex plugin marketplace add .

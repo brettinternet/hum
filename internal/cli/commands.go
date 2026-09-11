@@ -36,7 +36,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 	commands := []*urfavecli.Command{
 		{
 			Name:        "version",
-			Usage:       "version",
+			Usage:       "print version and build metadata",
 			UsageText:   "hum version [--json]",
 			ArgsUsage:   "",
 			Description: "Print the Hum version and build time without resolving a project or contacting the daemon. Use --json to discover the supported CLI machine-output schema version.\n\nExamples:\n  hum version\n  hum version --json",
