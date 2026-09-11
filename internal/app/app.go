@@ -3596,7 +3596,10 @@ func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
 		if waitErr != nil {
 			return waitErr
 		}
-		if termErr != nil {
+		// EPERM can race the process group's natural teardown on macOS. Once
+		// the same incarnation is terminal there is no permission failure left
+		// to report, but preserve every other real signal failure.
+		if termErr != nil && !errors.Is(termErr, syscall.EPERM) {
 			return termErr
 		}
 		return nil
@@ -3609,13 +3612,14 @@ func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
 		killErr := child.Signal(syscall.SIGKILL)
 		if killErr != nil && !signalMeansDone(killErr) {
 			// Continue waiting: the child may have exited between the active
-			// check and the KILL syscall, but preserve a real signal failure.
+			// check and the KILL syscall. Terminal reconciliation wins that race;
+			// otherwise preserve the real signal failure.
 			if done, waitErr := s.waitForDone(ctx, rec, -1); waitErr != nil {
 				return waitErr
-			} else if !done {
+			} else if !done || !errors.Is(killErr, syscall.EPERM) {
 				return killErr
 			}
-			return killErr
+			return nil
 		}
 	}
 	_, waitErr := s.waitForDone(ctx, rec, -1)

@@ -70,6 +70,10 @@ tasks:
     desc: Run race-sensitive package tests
     cmd: mise exec go -- go test -race ./...
 
+  stress:
+    desc: Stress daemon and child-process tests
+    cmd: mise exec go -- go test -race -count=5 -shuffle=on -failfast ./integration ./internal/cli ./internal/daemon ./internal/app ./internal/mcp
+
   smoke:
     desc: Build hum and run built-binary smoke coverage
     deps:

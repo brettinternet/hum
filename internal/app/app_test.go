@@ -1032,6 +1032,28 @@ type esrchChild struct {
 	once sync.Once
 }
 
+type signalErrorOnExitChild struct {
+	done          chan struct{}
+	once          sync.Once
+	signals       int
+	closeOnSignal int
+}
+
+func (c *signalErrorOnExitChild) PID() int              { return 1235 }
+func (c *signalErrorOnExitChild) PGID() int             { return 1235 }
+func (c *signalErrorOnExitChild) Done() <-chan struct{} { return c.done }
+func (c *signalErrorOnExitChild) Wait() process.Result {
+	<-c.done
+	return process.Result{ExitCode: -1, ExitedAt: time.Now()}
+}
+func (c *signalErrorOnExitChild) Signal(os.Signal) error {
+	c.signals++
+	if c.signals == c.closeOnSignal {
+		c.once.Do(func() { close(c.done) })
+	}
+	return syscall.EPERM
+}
+
 type signalPolicyChild struct {
 	pid      int
 	exitCode int
@@ -1749,6 +1771,27 @@ func TestStopTreatsESRCHAsExited(t *testing.T) {
 	}
 	if model.State != StateStopped {
 		t.Fatalf("ESRCH model state = %s, want stopped", model.State)
+	}
+}
+
+func TestStopTreatsSignalErrorFollowedByExitAsStopped(t *testing.T) {
+	for _, closeOnSignal := range []int{1, 2} {
+		t.Run(fmt.Sprintf("signal_%d", closeOnSignal), func(t *testing.T) {
+			root := makeProject(t, false)
+			child := &signalErrorOnExitChild{done: make(chan struct{}), closeOnSignal: closeOnSignal}
+			s := testSupervisor(t, Options{
+				StopGrace: 0,
+				StartProcess: func(process.Spec) (Child, error) {
+					return child, nil
+				},
+			})
+			if _, err := s.Start(StartRequest{Name: "teardown", Cwd: root, Argv: []string{"/bin/true"}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Stop(context.Background(), root, "teardown"); err != nil {
+				t.Fatalf("stop after signal error and terminal reconciliation = %v, want nil", err)
+			}
+		})
 	}
 }
 
