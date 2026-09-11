@@ -440,7 +440,7 @@ func TestReconnect(t *testing.T) {
 		t.Fatalf("managed process after attached-client loss = %#v, want same running process", remaining)
 	}
 
-	observerHum := testutil.BuildHum(t)
+	observerHum := integrationHum(t)
 	observer := testutil.Start(t, observerHum, scenario.cwd, scenario.env, "logs", name, "--follow")
 	runitWaitForOutput(t, observer, false, "stdout:live with spaces \r\n")
 	runitWaitForOutput(t, observer, false, "stderr:live with spaces \r\n")
@@ -459,8 +459,8 @@ func runitNewScenario(t *testing.T) runitScenario {
 	runtimeDir := testutil.RuntimeDir(t)
 	clientDir := t.TempDir()
 	return runitScenario{
-		hum:        testutil.BuildHum(t),
-		fixture:    testutil.BuildFixture(t),
+		hum:        integrationHum(t),
+		fixture:    integrationFixture(t),
 		runtimeDir: runtimeDir,
 		cwd:        runitCanonicalPath(t, clientDir),
 		env: testutil.RuntimeEnv(runtimeDir,

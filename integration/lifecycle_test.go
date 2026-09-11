@@ -36,8 +36,8 @@ type lifecycleRuntime struct {
 
 func TestDaemonCrashReclaimsOrphans(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	runtime := lifecycleNewRuntime(t)
 	var daemonPID int
 	t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
@@ -92,7 +92,7 @@ func TestDaemonCrashReclaimsOrphans(t *testing.T) {
 
 func TestSignalExitObservation(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
+	hum := integrationHum(t)
 	runtime := lifecycleNewRuntime(t)
 	var daemonPID int
 	t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
@@ -161,8 +161,8 @@ func TestSignalExitObservation(t *testing.T) {
 
 func TestSignalledLeaderWithSurvivingDescendant(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	runtime := lifecycleNewRuntime(t)
 	var daemonPID int
 	t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
@@ -231,8 +231,8 @@ func TestSignalledLeaderWithSurvivingDescendant(t *testing.T) {
 
 func TestForegroundServe(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	runtime := lifecycleNewRuntime(t)
 
 	serve := testutil.Start(t, hum, runtime.cwd, runtime.env, "serve")
@@ -294,7 +294,7 @@ func TestForegroundServe(t *testing.T) {
 
 func TestDetachedServe(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
+	hum := integrationHum(t)
 	runtime := lifecycleNewRuntime(t)
 	daemonPID := 0
 	t.Cleanup(func() {
@@ -392,8 +392,8 @@ func TestDetachedServe(t *testing.T) {
 
 func TestAutomaticStartup(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 
 	t.Run("attached run starts a daemon automatically", func(t *testing.T) {
 		runtime := lifecycleNewRuntime(t)
@@ -556,8 +556,8 @@ func TestAutomaticStartup(t *testing.T) {
 
 func TestVersionMismatch(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 
 	t.Run("idle mismatched daemon is replaced", func(t *testing.T) {
 		runtime := lifecycleNewRuntime(t)

@@ -65,8 +65,8 @@ type zeroConfigCase struct {
 }
 
 func TestZeroConfigDiscovery(t *testing.T) {
-	fixture := testutil.BuildFixture(t)
-	hum := testutil.BuildHum(t)
+	fixture := integrationFixture(t)
+	hum := integrationHum(t)
 
 	cases := []zeroConfigCase{
 		{

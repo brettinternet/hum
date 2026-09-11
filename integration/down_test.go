@@ -50,8 +50,8 @@ type downWorkflowRun struct {
 }
 
 func TestDownWorkflow(t *testing.T) {
-	fixture := testutil.BuildFixture(t)
-	hum := testutil.BuildHum(t)
+	fixture := integrationFixture(t)
+	hum := integrationHum(t)
 	runtimeDir := testutil.RuntimeDir(t)
 	firstRoot := stopitCanonicalTempDir(t)
 	secondRoot := stopitCanonicalTempDir(t)

@@ -92,8 +92,8 @@ type relaunchIntegrationList struct {
 
 func TestRelaunchAfterCrash(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	project := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_OUTPUT_BYTES=65536", "HUM_COMPLETED_RECORDS=20", "HUM_STOP_GRACE=1s")
@@ -206,8 +206,8 @@ processes:
 
 func TestUpPreservesPendingRecovery(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	project, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

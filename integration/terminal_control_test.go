@@ -14,8 +14,8 @@ import (
 
 func TestBoundedLogsStripTerminalControl(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	root := t.TempDir()
 	canonicalRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {

@@ -24,8 +24,8 @@ type waitJSONResponse struct {
 
 func TestWait(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 
 	t.Run("buffered and subsequent output matches", func(t *testing.T) {
 		runtime := lifecycleNewRuntime(t)

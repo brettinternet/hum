@@ -16,8 +16,8 @@ import (
 )
 
 func TestOneShotInputAnswersPrompt(t *testing.T) {
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	runtimeDir := testutil.RuntimeDir(t)
 	root := t.TempDir()
 	env := testutil.RuntimeEnv(runtimeDir)
@@ -89,7 +89,7 @@ func TestOneShotInputAnswersPrompt(t *testing.T) {
 }
 
 func TestTTYInteractiveSession(t *testing.T) {
-	hum := testutil.BuildHum(t)
+	hum := integrationHum(t)
 	runtimeDir := testutil.RuntimeDir(t)
 	root := t.TempDir()
 	env := testutil.RuntimeEnv(runtimeDir)

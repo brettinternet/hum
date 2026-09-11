@@ -76,8 +76,8 @@ type manifestListResponse struct {
 
 func TestExecutableReadiness(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
@@ -224,7 +224,7 @@ func yamlQuote(value string) string {
 
 func TestUpReportsManifestRuntimeDrift(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
+	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
@@ -326,7 +326,7 @@ type manifestOutputResponse struct {
 
 func TestUpOrderedStack(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
+	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
@@ -397,7 +397,7 @@ processes:
 	}
 
 	manifestTestUpBlockedStack(t, hum)
-	manifestTestUpRecovery(t, hum, testutil.BuildFixture(t))
+	manifestTestUpRecovery(t, hum, integrationFixture(t))
 }
 
 func manifestTestUpBlockedStack(t *testing.T, hum string) {
@@ -505,7 +505,7 @@ processes:
 
 func TestUpStartupProgress(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
+	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
@@ -555,7 +555,7 @@ processes:
 
 func TestUpReadinessTimeoutDiagnostics(t *testing.T) {
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
+	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
@@ -649,8 +649,8 @@ func manifestOutputContains(result manifestOutputResponse, text string) bool {
 }
 
 func TestManifestWorkflow(t *testing.T) {
-	fixture := testutil.BuildFixture(t)
-	hum := testutil.BuildHum(t)
+	fixture := integrationFixture(t)
+	hum := integrationHum(t)
 	runtimeDir := testutil.RuntimeDir(t)
 	projectRoot := t.TempDir()
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_OUTPUT_BYTES=65536", "HUM_STOP_GRACE=1s")

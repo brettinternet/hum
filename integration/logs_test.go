@@ -551,8 +551,8 @@ func TestNDJSONFollow(t *testing.T) {
 func logsitNewHarness(t *testing.T) *logsitHarness {
 	t.Helper()
 	harness := &logsitHarness{
-		hum:     testutil.BuildHum(t),
-		fixture: testutil.BuildFixture(t),
+		hum:     integrationHum(t),
+		fixture: integrationFixture(t),
 		project: t.TempDir(),
 		env:     testutil.RuntimeEnv(testutil.RuntimeDir(t), "HUM_OUTPUT_BYTES="+logsitOutputBytes, "HUM_COMPLETED_RECORDS=20", "HUM_STOP_GRACE=1s"),
 	}

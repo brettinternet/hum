@@ -62,8 +62,8 @@ type stopitTree struct {
 func TestStopTree(t *testing.T) {
 	stopitRequireUnix(t)
 
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	projectRoot := stopitCanonicalTempDir(t)
 	runtimeDir := testutil.RuntimeDir(t)
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=250ms")
@@ -112,8 +112,8 @@ func TestStopTree(t *testing.T) {
 
 func TestPerProcessStopGrace(t *testing.T) {
 	stopitRequireUnix(t)
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	projectRoot := stopitCanonicalTempDir(t)
 	runtimeDir := testutil.RuntimeDir(t)
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=2s")
@@ -182,8 +182,8 @@ processes:
 func TestShutdown(t *testing.T) {
 	stopitRequireUnix(t)
 
-	hum := testutil.BuildHum(t)
-	fixture := testutil.BuildFixture(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	projectRoot := stopitCanonicalTempDir(t)
 	runtimeDir := testutil.RuntimeDir(t)
 	// The longer grace period makes the TERM barrier observable before the

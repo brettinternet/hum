@@ -15,8 +15,8 @@ import (
 )
 
 func TestInitThenUp(t *testing.T) {
-	fixture := testutil.BuildFixture(t)
-	hum := testutil.BuildHum(t)
+	fixture := integrationFixture(t)
+	hum := integrationHum(t)
 	projectRoot := zeroConfigCanonicalTempDir(t)
 	shimDir := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)

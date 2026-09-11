@@ -15,7 +15,7 @@ import (
 func durableSetup(t *testing.T) (string, lifecycleRuntime) {
 	t.Helper()
 	lifecycleRequireUnix(t)
-	hum := testutil.BuildHum(t)
+	hum := integrationHum(t)
 	runtime := lifecycleNewRuntime(t)
 	t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, 0) })
 	return hum, runtime
