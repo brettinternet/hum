@@ -1,14 +1,15 @@
 ---
 id: HUM-091
 title: Qualify the scheduled stress gate end to end
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-11 01:51'
-updated_date: '2026-09-11 06:28'
+updated_date: '2026-09-11 13:49'
 labels:
   - tooling
 dependencies:
   - HUM-080
+  - HUM-085
   - HUM-086
   - HUM-087
   - HUM-088
@@ -70,4 +71,6 @@ AC#3 — BLOCKED/FAIL: after authorized push of candidate efcacb1 to remote main
 AC#4 — PASS: `gh pr comment 1 --body '@dependabot rebase'` produced comment https://github.com/brettinternet/hum/pull/1#issuecomment-5630156781; rebased head 2265796f completed CI run https://github.com/brettinternet/hum/actions/runs/34568004514 successfully on all four Linux/macOS CI and race jobs.
 AC#5 — PASS: `rg -n 'stress' Taskfile.dist.yaml .github/workflows/ci.yaml` matched only `Taskfile.dist.yaml:73`; `task ci` exited 0 in 118.05s on candidate efcacb1.
 Delivery state — no production or test files changed. HUM-087 was reopened with the exact failure and next action; rerun AC#3 and final `task ci` after HUM-087 is complete.
+
+AC#3 — BLOCKED/FAIL on candidate d33a5aa: gh workflow run stress.yaml dispatched https://github.com/brettinternet/hum/actions/runs/34605158013 and gh run watch 34605158013 --exit-status exited 1. Linux passed; macOS timed out after 10m in TestProcessStopGraceOperations/restart_remove_replacement_and_shutdown_use_record_values because the synthetic 3s grace timer was not observed within its 1s polling window, after which cleanup blocked on the unfired timer. Reopened owning prerequisite HUM-085 with a deterministic synchronization and failure-cleanup acceptance criterion; rerun AC#3 and final task ci after HUM-085 completes.
 <!-- SECTION:NOTES:END -->
