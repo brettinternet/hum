@@ -9,7 +9,7 @@ staticcheck = "2026.2.1"
 
 "github:brettinternet/hum" = {
   version = "latest",
-  postinstall = 'mkdir -p "$MISE_TOOL_INSTALL_PATH/share/man/man1" && cp "$MISE_TOOL_INSTALL_PATH/hum.1" "$MISE_TOOL_INSTALL_PATH/share/man/man1/hum.1"',
+  postinstall = 'mkdir -p "$MISE_TOOL_INSTALL_PATH/man/man1" && cp "$MISE_TOOL_INSTALL_PATH/hum.1" "$MISE_TOOL_INSTALL_PATH/man/man1/hum.1"',
   minimum_release_age = "0"
 }
 
