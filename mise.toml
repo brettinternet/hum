@@ -7,5 +7,11 @@ task = "3.53.1"
 staticcheck = "2026.2.1"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.8.0"
 
+"github:brettinternet/hum" = {
+  version = "latest",
+  postinstall = 'mkdir -p "$MISE_TOOL_INSTALL_PATH/share/man/man1" && cp "$MISE_TOOL_INSTALL_PATH/hum.1" "$MISE_TOOL_INSTALL_PATH/share/man/man1/hum.1"',
+  minimum_release_age = "0"
+}
+
 # Backlog.md is the committed work queue.
 "github:MrLesk/Backlog.md" = { version = "1.51.0", bin = "backlog" }
