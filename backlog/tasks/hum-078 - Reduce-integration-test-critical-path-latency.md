@@ -1,10 +1,10 @@
 ---
 id: HUM-078
 title: Reduce integration test critical-path latency
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-10 20:08'
-updated_date: '2026-09-11 02:56'
+updated_date: '2026-09-11 05:03'
 labels:
   - tooling
 dependencies:
@@ -43,7 +43,7 @@ Non-goals: deleting or skipping tests; weakening assertions; shortening correctn
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 At both `BASE_SHA` and the candidate revision on the same runner, `for run_number in 1 2 3; do /usr/bin/time -p mise exec go -- go test -count=1 ./integration; done` exits 0 for all six runs; the recorded candidate median `real` time is no more than 70% of the base median.
+- [x] #1 At both `BASE_SHA` and the candidate revision on the same runner, `for run_number in 1 2 3; do /usr/bin/time -p mise exec go -- go test -count=1 ./integration; done` exits 0 for all six runs; the recorded candidate median `real` time is no more than 70% of the base median.
 - [x] #2 `mise exec go -- go test -race -count=1 ./integration` exits 0 at the candidate revision.
 - [x] #3 `mise exec go -- go test -shuffle=on -count=3 ./integration` exits 0, demonstrating that the optimization introduced no ordering dependency.
 - [x] #4 `task ci` exits 0 with no integration test deleted, skipped, or assertion weakened.
@@ -53,7 +53,7 @@ Non-goals: deleting or skipping tests; weakening assertions; shortening correctn
 <!-- DOD:BEGIN -->
 - [x] #1 task ci passes on the final commit
 - [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
 - [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
 - [x] #5 No test was deleted, skipped, or weakened
 - [x] #6 No protected gate file was modified unless the owner labelled this task tooling
@@ -80,4 +80,16 @@ AC#3 evidence — mise exec go -- go test -shuffle=on -count=3 ./integration exi
 AC#4 evidence — task ci exited 0 locally and independently; review confirmed only integration/ changed and no test was deleted, skipped, or weakened.
 Review evidence — independent verifier found no implementation defect: package TestMain builds immutable hum and fixture binaries once, retains per-test runtime and temp-directory isolation, and cleans package binaries after the run.
 Blocked on HUM-087: its known TestOneShotInputAnswersPrompt file-content readiness race prevents AC#1 from reliably producing three successful unchanged-base runs and therefore prevents a verifier PASS for every criterion. Resume after HUM-087, rerun both three-run loops on the same runner, and obtain a fresh independent PASS.
+
+Resumed after HUM-087 completion under worklease claim. Fresh AC#1 evidence — unchanged BASE_SHA a94b5a4 passed three runs at real 100.67s, 99.63s, and 99.41s (median 99.63s); final candidate 7255fe9 passed at 49.25s, 48.98s, and 48.57s (median 48.98s, 49.16% of base). Independent verifier measured base 101.58s, 103.21s, 101.35s (median 101.58s) and the pre-fix candidate 49.44s, 49.92s, 50.01s (median 49.92s, 49.14% of base), then accepted the final candidate timings.
+Verifier finding and resolution — the first independent exact shuffle run exposed an exit-vs-readiness race in TestManifestWorkflow. Commit 7255fe9 adds an explicit fixture exit gate; `mise exec go -- go test -count=20 -shuffle=on -run "^TestManifestWorkflow$" ./integration` passed locally and independently, and the independent exact AC#3 command passed in 144.147s.
+Final verification — `mise exec go -- go test -race -count=1 ./integration`, `mise exec go -- go test -shuffle=on -count=3 ./integration`, and `task ci` all exited 0 on the final candidate. Independent verifier returned PASS for AC#1-#4 and DoD#1-#6, confirmed the changes remain within integration/ and internal/testutil/, and found no deleted, skipped, or weakened test. Implementation commits 88648a7 and 7255fe9 are merged to main.
+
+Modified-file deviation — the authoritative HUM-078 backlog task file changed only through required provider-native evidence, completion, and claim-release workflow; product/test changes remain within the declared integration/ and internal/testutil/ paths.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Reduced integration-package median runtime by more than half by sharing package binaries, then replaced the remaining manifest readiness timing assumption with an explicit fixture exit gate. Merged commits 88648a7 and 7255fe9 to main; all acceptance checks and independent verification pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
