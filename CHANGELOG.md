@@ -2,6 +2,12 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.10.1](https://github.com/brettinternet/hum/compare/v0.10.0...v0.10.1) - 2026-09-11
+
+### Documentation
+
+- Improve manual guidance and examples
+
 ## [v0.10.0](https://github.com/brettinternet/hum/compare/v0.9.1...v0.10.0) - 2026-09-11
 
 ### Added
