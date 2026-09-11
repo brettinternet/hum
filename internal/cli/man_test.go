@@ -76,6 +76,9 @@ func TestWriteManPageCoversPublicCommandTree(t *testing.T) {
 			t.Errorf("%s exposes hidden --global flag", heading)
 		}
 	}
+	if section := manTestSection(page, `.SS "hum run"`); !strings.Contains(section, `\-\-global`) {
+		t.Error("hum run section omits its public --global flag")
+	}
 	if strings.Contains(page, "(default: false)") {
 		t.Error("man page prints noisy false defaults")
 	}

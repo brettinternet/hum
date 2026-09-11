@@ -32,7 +32,7 @@ func WriteManPage(writer io.Writer, root *urfavecli.Command, date string) error 
 	writeManSection(&page, "SYNOPSIS")
 	writeManLiteral(&page, commandUsage(root))
 	writeManSection(&page, "DESCRIPTION")
-	writeManParagraphs(&page, manDescription(root.Description))
+	writeManParagraphs(&page, "Supervise local development processes. Use hum up to start processes in hum.yaml. Use hum run for ad-hoc work. Inspect processes with hum status and hum logs. Select another project with --project. Use --global for machine-wide ad-hoc processes.")
 	writeManQuickStart(&page)
 	writeManConfiguration(&page)
 
