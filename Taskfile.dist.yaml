@@ -59,6 +59,8 @@ tasks:
     desc: Run all tests
     deps:
       - task: cli:test
+    cmds:
+      - sh scripts/install_test.sh
 
   coverage:
     desc: Run all tests and print function coverage
