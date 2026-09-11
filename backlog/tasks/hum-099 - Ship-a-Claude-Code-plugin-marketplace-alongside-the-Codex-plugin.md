@@ -1,9 +1,10 @@
 ---
 id: HUM-099
 title: Ship a Claude Code plugin marketplace alongside the Codex plugin
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-11 17:04'
+updated_date: '2026-09-11 18:43'
 labels:
   - integration
   - docs
@@ -39,19 +40,43 @@ Non-goals: a Cursor or Gemini plugin package, bundling the hum binary inside the
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `claude plugin validate . --strict` from the repository root exits 0 for the marketplace and the referenced plugins/hum plugin.
-- [ ] #2 AC2 — `go test ./internal/skill -run 'TestPlugin' -count=1 -v` exits 0 and proves the Claude manifest name is `hum`, its version equals the Codex manifest version, and the marketplace source is `./plugins/hum`.
-- [ ] #3 AC3 — `claude plugin marketplace add brettinternet/hum && claude plugin install hum@hum` exits 0 on the published main branch and `claude plugin details hum@hum` lists the hum skill and the hum MCP server; the reverse `claude plugin uninstall hum@hum && claude plugin marketplace remove hum` restores the previous state.
-- [ ] #4 AC4 — `rg -n 'claude plugin marketplace add brettinternet/hum|claude plugin install hum@hum' README.md docs/coding-agents.md` exits 0 and the manual `claude mcp add` registration remains documented as the fallback.
-- [ ] #5 AC5 — `task test` and `task check` exit 0 with no deleted, skipped, or weakened tests.
+- [x] #1 AC1 — `claude plugin validate . --strict` from the repository root exits 0 for the marketplace and the referenced plugins/hum plugin.
+- [x] #2 AC2 — `go test ./internal/skill -run 'TestPlugin' -count=1 -v` exits 0 and proves the Claude manifest name is `hum`, its version equals the Codex manifest version, and the marketplace source is `./plugins/hum`.
+- [x] #3 AC3 — `claude plugin marketplace add brettinternet/hum && claude plugin install hum@hum` exits 0 on the published main branch and `claude plugin details hum@hum` lists the hum skill and the hum MCP server; the reverse `claude plugin uninstall hum@hum && claude plugin marketplace remove hum` restores the previous state.
+- [x] #4 AC4 — `rg -n 'claude plugin marketplace add brettinternet/hum|claude plugin install hum@hum' README.md docs/coding-agents.md` exits 0 and the manual `claude mcp add` registration remains documented as the fallback.
+- [x] #5 AC5 — `task test` and `task check` exit 0 with no deleted, skipped, or weakened tests.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Commit 045f238 merged to local main.
+
+AC#1 — PASS: `claude plugin validate . --strict` exited 0.
+AC#2 — PASS: `go test ./internal/skill -run 'TestPlugin' -count=1 -v` exited 0; tests assert Claude name `hum`, Claude/Codex version equality, and marketplace source `./plugins/hum`.
+AC#3 — BLOCKED ON PUBLISH: local marketplace add/install/details/uninstall/remove all exited 0; `claude plugin details hum@hum` listed skill `hum` and MCP server `hum`, and Claude state was restored. The exact `claude plugin marketplace add brettinternet/hum` path cannot pass until local main is pushed to GitHub; pushing was not authorized.
+AC#4 — PASS: the specified `rg` command found both install commands in README.md and docs/coding-agents.md; `rg -n 'claude mcp add' docs/coding-agents.md` confirmed the manual fallback.
+AC#5 — PASS: `task test` and `task check` exited 0; no tests were deleted, skipped, or weakened.
+
+DoD evidence — `task ci` passed on final merged commit 045f238. An independent verifier passed AC1, AC2, AC4, AC5 and DoD1/4/5/6, passed the local AC3 lifecycle, and reported only the published-remote AC3 portion blocked. The diff touches exactly the five declared paths; no protected gate file changed.
+
+AC#3 — PASS after publish: `claude plugin marketplace add brettinternet/hum`, `claude plugin install hum@hum`, `claude plugin details hum@hum`, `claude plugin uninstall hum@hum`, and `claude plugin marketplace remove hum` all exited 0 against published origin/main 045f238. Details listed skill `hum` and MCP server `hum`; final marketplace list was empty.
+
+Final independent verifier — PASS for AC1–AC5. It independently confirmed origin/main at 045f238, repeated the published AC3 lifecycle with state restoration, and passed the focused validation, tests, documentation, and diff checks.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented and published the Claude Code plugin marketplace alongside the Codex plugin. Commit 045f238 is on origin/main; strict validation, focused tests, full test/check/CI gates, the published install/details/uninstall lifecycle, and independent verification all pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
