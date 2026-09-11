@@ -81,7 +81,27 @@ processes:
       match: "Local:"
 ```
 
-`hum up` starts processes, gates dependents on `ready`, and follows output. Ctrl+C detaches; `hum down` stops. `hum up --detach` waits and returns. JSON and redirected output stay bounded:
+`hum up` starts processes, gates dependents on `ready`, and follows output. Ctrl+C detaches; `hum down` stops. `hum up --detach` waits and returns.
+
+For checks that do not emit a reliable startup message, use an executable probe. Exit status 0 marks the process ready. For example, check PostgreSQL inside Docker Compose:
+
+```yaml
+ready:
+  exec: [docker, compose, exec, -T, db, pg_isready, -U, postgres]
+  interval: 1s
+  timeout: 30s
+```
+
+Or check an HTTP readiness endpoint:
+
+```yaml
+ready:
+  exec: [curl, --fail, --silent, --show-error, "http://127.0.0.1:3000/readyz"]
+  interval: 1s
+  timeout: 30s
+```
+
+JSON and redirected output stay bounded:
 
 ```yaml
 processes:
