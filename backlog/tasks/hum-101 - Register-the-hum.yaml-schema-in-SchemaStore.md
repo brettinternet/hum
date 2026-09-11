@@ -4,6 +4,7 @@ title: Register the hum.yaml schema in SchemaStore
 status: To Do
 assignee: []
 created_date: '2026-09-11 17:38'
+updated_date: '2026-09-11 17:49'
 labels:
   - docs
   - integration
@@ -15,6 +16,7 @@ references:
   - HUM-098
   - 'https://github.com/SchemaStore/schemastore/blob/master/CONTRIBUTING.md'
   - 'https://www.schemastore.org/api/json/catalog.json'
+  - hum.schema.json
 modified_files:
   - README.md
   - docs/design.md
@@ -26,20 +28,20 @@ ordinal: 73800
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: editors that use the SchemaStore catalog (VS Code YAML, JetBrains, Neovim yaml-language-server) validate and autocomplete `hum.yaml` automatically, without the `# yaml-language-server: $schema=` comment that HUM-098 writes.
+Outcome: editors that use the SchemaStore catalog validate and autocomplete `hum.yaml` automatically without requiring the inline schema directive emitted by `hum init`.
 
-Scope: after HUM-098 ships and the schema URL is stable, open and land a pull request against SchemaStore/schemastore adding a catalog entry named `hum` with `fileMatch: ["hum.yaml"]` and `url` pointing at `https://raw.githubusercontent.com/brettinternet/hum/main/schema/hum.schema.json`, plus the positive and negative test documents SchemaStore requires for a catalog entry. Prefer the external URL over a hosted copy so schema updates do not need a second upstream PR; if SchemaStore reviewers require a hosted copy, record that decision in Implementation Notes and add a follow-up for keeping the copy in sync. Once merged, document in README and docs/design.md that the inline `$schema` comment is optional for SchemaStore-aware editors and remains supported.
+Scope: after HUM-098 lands the synchronization safeguards for the existing root schema, open and land a pull request against SchemaStore/schemastore adding a catalog entry named `hum` with `fileMatch: ["hum.yaml"]` and `url` set to `https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json`, plus the positive and negative test documents SchemaStore requires. Prefer the external URL over a hosted copy so schema updates do not require a second upstream pull request; if reviewers require a hosted copy, record that decision in Implementation Notes and request approval for a separate synchronization follow-up. Once merged, document in README and docs/design.md that the inline directive is optional for SchemaStore-aware editors and remains supported.
 
-Human-required input: the SchemaStore PR is an external contribution that may wait on maintainer review; the task stays In Progress until merged and must not be marked Done on an open PR.
+External completion boundary: the task remains In Progress until the SchemaStore pull request is merged and the production catalog serves the entry.
 
-Non-goals: changing the schema content, versioned schema URLs per release, editor-specific configuration, or removing the `hum init` comment.
+Non-goals: changing schema content; moving the root schema; versioned schema URLs per release; editor-specific configuration; or removing the `hum init` directive.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `gh pr view <PR_NUMBER> --repo SchemaStore/schemastore --json state --jq .state` prints MERGED.
-- [ ] #2 AC2 — `curl -fsSL https://www.schemastore.org/api/json/catalog.json | python3 -c 'import json,sys; c=json.load(sys.stdin); e=[s for s in c["schemas"] if "hum.yaml" in s.get("fileMatch",[])]; assert len(e)==1 and e[0]["url"].endswith("/schema/hum.schema.json")'` exits 0.
-- [ ] #3 AC3 — `rg -n 'SchemaStore' README.md docs/design.md` exits 0 and the matched documentation states the inline `$schema` comment is optional for SchemaStore-aware editors and still supported.
+- [ ] #1 AC1 — `gh pr view PR_NUMBER --repo SchemaStore/schemastore --json state --jq .state` prints `MERGED`.
+- [ ] #2 AC2 — `curl -fsSL https://www.schemastore.org/api/json/catalog.json | python3 -c 'import json,sys; c=json.load(sys.stdin); e=[s for s in c["schemas"] if "hum.yaml" in s.get("fileMatch",[])]; assert len(e)==1 and e[0]["url"]=="https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json"'` exits 0.
+- [ ] #3 AC3 — `rg -n 'SchemaStore' README.md docs/design.md` exits 0 and the matched documentation states the inline schema directive is optional for SchemaStore-aware editors and remains supported.
 <!-- AC:END -->
 
 ## Definition of Done

@@ -4,21 +4,19 @@ title: Publish a versioned CLI machine-output contract
 status: To Do
 assignee: []
 created_date: '2026-09-06 19:10'
-updated_date: '2026-09-11 17:03'
+updated_date: '2026-09-11 17:48'
 labels:
   - cli
   - json
   - integration
   - contract
 milestone: m-5
-dependencies:
-  - HUM-092
+dependencies: []
 references:
   - HUM-092
   - docs/design.md
 modified_files:
   - internal/cli/
-  - internal/mcp/
   - cmd/hum/
   - integration/
   - docs/cli-json-v1.md
@@ -33,13 +31,11 @@ type: enhancement
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: external local clients can depend on a documented, discoverable version 1 contract for Hum's CLI JSON and NDJSON output instead of parsing human output or consuming the private daemon protocol.
 
-Scope: cover every command that supports `--json`, excluding attached `hum run`, whose documented output remains raw child output. Add `schema_version: 1` to every covered top-level JSON object and NDJSON record, including success, lifecycle-result, log, and terminal error records. Document framing, field requiredness and optionality, ordering guarantees, exit-code interaction, and a compatibility policy: version 1 may add optional object fields and new enum values but may not remove or rename fields, change field types or meanings, or change record framing. Lock representative command outputs to the contract with executable tests. Preserve current payload shapes apart from the additive version field.
+Scope: cover every command that supports `--json`, excluding attached `hum run`, whose documented output remains raw child output. Add `schema_version: 1` to every covered top-level JSON object and NDJSON record, including success, lifecycle-result, log, and terminal-error records. Document framing, field requiredness and optionality, ordering guarantees, exit-code interaction, and a compatibility policy: version 1 may add optional object fields and new enum values but may not remove or rename fields, change field types or meanings, or change record framing. Preserve current payload shapes apart from the additive version field.
 
-This work follows HUM-092 so the first real external adapter determines which details require normative documentation. The public boundary is the CLI process interface; MCP retains its own schemas and the daemon socket remains private.
+Delivery boundary: contract tests exercise the CLI encoders and representative built-binary output. The MCP tool schemas may share field names, but MCP and CLI remain independently versioned public surfaces; this task must not export MCP internals or make CLI compatibility depend on MCP schema tables. HUM-100 and HUM-092 consume this contract after it lands.
 
-Implementation guidance (2026-09-11 refinement): `internal/mcp/tools.go` already declares JSON Schemas for process snapshots, launch, stop, restart, signal, output, wait, and input results, and CLI aggregate JSON already shares the MCP `{"processes":[...]}` collection shape. Treat those schemas as the single source of field names and types: derive the documented version 1 contract from them and add a dependency-free parity test proving that each covered CLI JSON record's key set is declared by the corresponding MCP schema, documenting any deliberate divergence (for example the CLI `{"error":{...}}` envelope) explicitly. Do not maintain a second hand-written field list. Exporting the schema tables for the test may touch `internal/mcp/`, but MCP wire behavior must not change.
-
-Non-goals: a runtime plugin system; a public Go API; public daemon socket access; remote transport; MCP schema or behavior changes; versioning human-readable output; stabilizing undocumented internal fields; or adding new lifecycle operations.
+Non-goals: a runtime plugin system; a public Go API; public daemon socket access; remote transport; MCP schema or behavior changes; versioning human-readable output; stabilizing undocumented internal fields; or adding lifecycle operations.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -4,7 +4,7 @@ title: Publish Hum in nixpkgs
 status: To Do
 assignee: []
 created_date: '2026-09-11 16:40'
-updated_date: '2026-09-11 17:03'
+updated_date: '2026-09-11 17:50'
 labels:
   - tooling
   - docs
@@ -24,17 +24,23 @@ ordinal: 69800
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Nix and NixOS users currently have no package attribute for Hum. Scope: contribute and maintain a top-level nixpkgs hum package built from the tagged source with `buildGoModule` (nixpkgs policy prefers reproducible source builds over repackaged release binaries), cover Hum's supported Linux and macOS architectures, and document installation after the package is available. Non-goals: a first-party flake, a binary cache, a NixOS service module, or changing Hum runtime behavior. External delivery artifact: the package expression, maintainer metadata, and tests required by the upstream nixpkgs contribution.
+Outcome: Nix and NixOS users install Hum as the top-level `nixpkgs#hum` package, built reproducibly from a tagged source release.
 
-Packaging notes (2026-09-11): the module path is `hum` and the binary is `./cmd/hum`; set `ldflags` to `-s -w -X main.buildVersion=${version}` so `hum --version` reports the release rather than `dev`. `CGO_ENABLED=0` matches the release workflow. A `versionCheckHook` or `testers.testVersion` satisfies the nixpkgs test requirement.
+Scope: contribute and maintain a nixpkgs package using `buildGoModule`, cover Hum's supported Linux and macOS architectures, set release version metadata so `hum --version` is truthful, satisfy nixpkgs package tests and review, and document installation after the upstream change is available while retaining Mise instructions.
+
+Packaging constraints: the module path is `hum`, the binary entrypoint is `./cmd/hum`, release builds set `CGO_ENABLED=0`, and linker flags set `main.buildVersion` to the package version. Use the nixpkgs version check hook or `testers.testVersion` for the installed-binary assertion.
+
+Modified-file boundary: this repository may change only `README.md`; the external nixpkgs contribution owns the package expression, maintainer metadata, and upstream tests.
+
+Non-goals: a first-party flake; a binary cache; a NixOS service module; repackaging GitHub release binaries; changing Hum runtime behavior; or replacing Mise installation.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Against the nixpkgs contribution branch, `nix build .#hum` exits 0 on Linux x86_64 and macOS aarch64.
-- [ ] #2 After `nix build .#hum`, `./result/bin/hum --version` exits 0 and reports the packaged release version rather than dev.
-- [ ] #3 `nixpkgs-review pr PR_NUMBER` exits 0 and reports Hum as successfully built on the supported host platform.
-- [ ] #4 After the nixpkgs change is available, `rg -n "nix profile install nixpkgs#hum" README.md` finds one current Nix installation example while the existing Mise method remains documented.
+- [ ] #1 AC1 — In the nixpkgs contribution checkout, `nix build .#hum` exits 0 on Linux x86_64 and macOS aarch64.
+- [ ] #2 AC2 — After `nix build .#hum`, `./result/bin/hum --version` exits 0 and reports the packaged release version rather than `dev`.
+- [ ] #3 AC3 — Before submission, `nixpkgs-review wip` exits 0 and reports Hum successfully built on the supported host platform.
+- [ ] #4 AC4 — After the nixpkgs change is available, `rg -n "nix profile install nixpkgs#hum" README.md` finds one current Nix installation example while the existing Mise method remains documented.
 <!-- AC:END -->
 
 ## Definition of Done

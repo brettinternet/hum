@@ -4,7 +4,7 @@ title: Publish Hum to the Arch User Repository
 status: To Do
 assignee: []
 created_date: '2026-09-11 16:40'
-updated_date: '2026-09-11 17:02'
+updated_date: '2026-09-11 17:50'
 labels:
   - tooling
   - docs
@@ -25,7 +25,15 @@ ordinal: 68800
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Arch users should be able to install Hum with an AUR helper instead of translating GitHub release assets by hand. Scope: publish and maintain a hum-bin AUR package for the existing Linux x64 and arm64 release archives, establish the tagged-release update path, and document yay installation. Non-goals: an Arch official-repository submission, a source-built hum package, support for architectures absent from GitHub releases, or replacing the Mise installation path. External delivery artifacts: PKGBUILD and .SRCINFO in the AUR hum-bin repository.
+Outcome: Arch users install the released Hum binary as `hum-bin` from the Arch User Repository instead of translating GitHub release assets into a package themselves.
+
+Scope: publish and maintain `PKGBUILD` and `.SRCINFO` in the external AUR `hum-bin` repository for the existing Linux x64 and arm64 release archives, establish the tagged-release update path, and document installation with an AUR helper while retaining Mise instructions. Package sources use immutable release URLs and matching published checksums.
+
+Modified-file boundary: this repository may change only `README.md` and `.github/workflows/release.yaml`; the AUR repository owns `PKGBUILD` and `.SRCINFO`.
+
+External blocker (verified 2026-09-11): new AUR account registration is disabled during the maintainers' response to malicious activity. Keep this task unclaimed until registration reopens or an existing trusted maintainer agrees to publish `hum-bin`; record that objective unblock condition before implementation.
+
+Non-goals: an Arch official-repository submission; a source-built `hum` package; support for architectures absent from GitHub releases; changing Hum runtime behavior; or replacing Mise installation.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
