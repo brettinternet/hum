@@ -220,6 +220,15 @@ hum completion fish > ~/.config/fish/completions/hum.fish
 
 ## Coding agents
 
+Detect Hum's CLI machine-output contract before relying on JSON field semantics:
+
+```sh
+hum version --json
+# {"schema_version":1,"version":"<version>","build_time":"<time>"}
+```
+
+This feature-detection call does not resolve a project or contact the daemon.
+
 With `hum` on `PATH`:
 
 ```sh

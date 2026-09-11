@@ -8,7 +8,7 @@ This contract is separate from Hum's private daemon protocol and from the MCP to
 
 The contract applies when a command that supports `--json` (or `-j`, where documented) is invoked in JSON mode:
 
-- `init`; detached `run`; `list`; `status`; bounded and followed `logs`; `wait`; `input`; `signal`; `shutdown`
+- `version`; `init`; detached `run`; `list`; `status`; bounded and followed `logs`; `wait`; `input`; `signal`; `shutdown`
 - `start`, `up`, `down`, `restart`, `stop`, and `remove`
 - terminal errors emitted by any of those commands before or after other machine records
 
@@ -26,6 +26,7 @@ The following table defines the required top-level fields. Fields not listed as 
 
 | Output family | Commands | Required top-level fields |
 | --- | --- | --- |
+| Capability discovery | `version` | `schema_version`, `version`, `build_time` |
 | Manifest creation | `init` | `schema_version`, `path`, `outcome`, `next_command`, `candidates` |
 | Aggregate snapshot | `list`, aggregate `status` | `schema_version`, `processes`; `warnings` is optional |
 | Single-process snapshot | named `status` | `schema_version`, `name`, `scope`, `tty`, `pid`, `pgid`, `cwd`, `argv`, `started_at`, `state`, `exit_status`, `restart_count`, `followers`, `restart`, `relaunches`, `stop_grace`, `stop_grace_inherited`, `next_cursor` |
@@ -40,6 +41,8 @@ The following table defines the required top-level fields. Fields not listed as 
 | Named log/launch stream record | aggregate or followed `logs`, `start`, `up` | `schema_version`, `op`, `type`; `name` is required for named records, and the fields below depend on `type` |
 | Terminal error before output | any covered command | `schema_version`, `error` |
 | Terminal stream error | streaming command after prior output | `schema_version`, `op`, `type`, `error`; `type` is `error` and `name` is present when the failure belongs to one process |
+
+`hum version --json` emits exactly `{"schema_version":1,"version":"<version>","build_time":"<time>"}`. It does not resolve a project, read a manifest, or contact or start the daemon. Clients should use it to detect version 1 support before relying on this contract.
 
 A process snapshot's `processes` value and a log record's `entries` value are arrays, including when empty. `next` is the last source cursor consumed by a bounded log read; process `next_cursor` is the next cursor that will be assigned. Timestamps use RFC 3339 JSON strings. Durations use the existing integer nanosecond representation unless a field is explicitly documented as a duration string, such as `stop_grace`.
 

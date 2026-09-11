@@ -60,7 +60,7 @@ func configureCompletionCommand(command *urfavecli.Command) {
 			if err != nil {
 				return err
 			}
-			script := markCompletionNamePosition(shell, rendered.String())
+			script := "# hum version is available through dynamic command completion.\n" + markCompletionNamePosition(shell, rendered.String())
 			_, err = fmt.Fprint(writer, script)
 			return err
 		}

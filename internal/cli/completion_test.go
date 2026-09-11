@@ -60,13 +60,24 @@ func TestCompletionScripts(t *testing.T) {
 			if !strings.Contains(stdout, completionNamePositionEnv+"=1") {
 				t.Fatalf("completion %s output omitted NAME-position marker", shell)
 			}
+			if !strings.Contains(stdout, "hum version") {
+				t.Fatalf("completion %s output omitted version command", shell)
+			}
 			if stderr != "" {
 				t.Fatalf("completion %s wrote stderr: %q", shell, stderr)
 			}
 		})
 	}
 
-	stdout, stderr, err := runCompletionForTest(t, "--help")
+	stdout, stderr, err := runCompletionForTest(t, "--generate-shell-completion")
+	if err != nil {
+		t.Fatalf("root completion: %v", err)
+	}
+	if !strings.Contains(stdout, "version:") || stderr != "" {
+		t.Fatalf("root completion omitted version command: stdout=%q stderr=%q", stdout, stderr)
+	}
+
+	stdout, stderr, err = runCompletionForTest(t, "--help")
 	if err != nil {
 		t.Fatalf("root help: %v", err)
 	}

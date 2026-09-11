@@ -35,6 +35,20 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 	mcpCommand.Description = "Run the one-time stdio MCP server for coding agents. Its twelve tools are start, up, down, list, status, logs, wait, input, restart, stop, remove, and signal; start and up use resolved definitions, ad_hoc records from hum run persist until daemon shutdown or replacement, run, serve, and shutdown are not MCP tools, and explicit definitions use argv-based environment activation. Project scope requires an absolute existing project_root, global scope forbids project_root, up supports project scope only, and list all is available only from project scope; requests run concurrently up to 64, overflow returns -32001, duplicate IDs return -32600, notifications/cancelled return -32800, responses are serialized, and parent cancellation stops handlers; see docs/coding-agents.md.\n\nExamples:\n  hum mcp"
 	commands := []*urfavecli.Command{
 		{
+			Name:        "version",
+			Usage:       "version",
+			UsageText:   "hum version [--json]",
+			ArgsUsage:   "",
+			Description: "Print the Hum version and build time without resolving a project or contacting the daemon. Use --json to discover the supported CLI machine-output schema version.\n\nExamples:\n  hum version\n  hum version --json",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write stable JSON; default is human-readable output"},
+			},
+			OnUsageError: onUsageError,
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return versionCommand(ctx, cmd, version, buildTime, writer)
+			},
+		},
+		{
 			Name:        "serve",
 			Usage:       "run the daemon attached or detached",
 			UsageText:   "hum serve [--daemon]",
@@ -330,7 +344,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		}
 		command.ShellComplete = completeProcessNames
 		switch command.Name {
-		case "serve", "shutdown", "mcp", "skill":
+		case "version", "serve", "shutdown", "mcp", "skill":
 			command.CustomHelpTemplate = scopeNeutralCommandHelpTemplate
 		default:
 			globalFlag := &urfavecli.BoolFlag{Name: "global", Aliases: []string{"g"}, DefaultText: "false", Usage: "use the machine-wide global process namespace"}
@@ -341,6 +355,28 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		}
 	}
 	return commands
+}
+
+type versionJSON struct {
+	Version   string `json:"version"`
+	BuildTime string `json:"build_time"`
+}
+
+func versionCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+	if err := rejectProjectOverride(cmd, "version"); err != nil {
+		return err
+	}
+	if err := requireNoArgs(cmd, "version"); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if cmd.Bool("json") {
+		return encodeJSON(writer, versionJSON{Version: version, BuildTime: buildTime})
+	}
+	_, err := fmt.Fprintf(writer, "hum version %s (built %s)\n", version, buildTime)
+	return err
 }
 
 func serveCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, errWriter io.Writer) error {
