@@ -1,14 +1,16 @@
 ---
 id: HUM-101
 title: Register the hum.yaml schema in SchemaStore
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-11 17:38'
-updated_date: '2026-09-11 17:49'
+updated_date: '2026-09-11 19:04'
 labels:
   - docs
   - integration
   - human
+  - waiting
 milestone: m-5
 dependencies:
   - HUM-098
@@ -53,3 +55,13 @@ Non-goals: changing schema content; moving the root schema; versioned schema URL
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed with worklease. Implementation will prepare the SchemaStore contribution and complete repository documentation after the external catalog entry is merged.
+
+SchemaStore PR `SchemaStore/schemastore#6344` is open; external contribution checks `bun cli.js check` and `bun cli.js coverage` passed. Repository docs are prepared on branch `agent/HUM-101-schemastore`. Because SchemaStore rejects positive/negative test directories unless a matching schema is hosted in its repository, and its documented external-schema workflow requires only the catalog entry, the submitted external-schema PR intentionally has no test documents. Next, wait for upstream merge and production catalog propagation, then run HUM-101 acceptance checks, independent verification, merge the docs to main, and clean up.
+
+This task is waiting for upstream merge and production catalog propagation: https://github.com/SchemaStore/schemastore/pull/6344
+<!-- SECTION:NOTES:END -->

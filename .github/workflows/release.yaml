@@ -36,6 +36,25 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
 
+      - name: Generate release notes
+        run: |
+          set -eu
+          previous_tag="$(git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          if [ -n "$previous_tag" ]; then
+            git cliff "${previous_tag}..${GITHUB_REF_NAME}" --strip all | tail -n +3 > release-notes.md
+          else
+            git cliff --strip all | tail -n +3 > release-notes.md
+          fi
+          if [ ! -s release-notes.md ]; then
+            if [ -n "$previous_tag" ]; then
+              printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+                "$GITHUB_REPOSITORY" "$previous_tag" "$GITHUB_REF_NAME" > release-notes.md
+            else
+              printf '**Full Changelog**: https://github.com/%s/commits/%s\n' \
+                "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" > release-notes.md
+            fi
+          fi
+
       - name: Build release archives
         env:
           TAG: ${{ github.ref_name }}
@@ -43,11 +62,7 @@ jobs:
           set -eu
           version="${TAG#v}"
           build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          mkdir -p dist
-          mise exec go -- go run ./cmd/hum-man \
-            --version "$version" \
-            --build-time "$build_time" \
-            --date "${build_time%%T*}" > dist/hum.1
+          VERSION="$version" BUILD_TIME="$build_time" DATE="${build_time%%T*}" task cli:man
 
           for target in linux/amd64/x64 linux/arm64/arm64 darwin/amd64/x64 darwin/arm64/arm64; do
             IFS=/ read -r goos goarch asset_arch <<< "$target"
@@ -73,9 +88,10 @@ jobs:
           set -eu
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             echo "Release ${GITHUB_REF_NAME} already exists; reusing its immutable assets"
+            gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md
           else
             gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/checksums.txt \
-              --verify-tag --generate-notes --title "${GITHUB_REF_NAME}"
+              --verify-tag --notes-file release-notes.md --title "${GITHUB_REF_NAME}"
           fi
 
       - name: Configure tap deploy key
@@ -144,3 +160,24 @@ jobs:
           fi
           git -C "$tap_dir" commit -m "hum ${TAG}"
           git -C "$tap_dir" push origin main
+
+      - name: Update changelog
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git checkout --detach origin/main
+            task changelog
+            git add CHANGELOG.md
+            if git diff --cached --quiet; then
+              exit 0
+            fi
+            git commit -m "chore(release): update changelog for ${GITHUB_REF_NAME}"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "Changelog push raced with another main update; retrying ($attempt/3)" >&2
+          done
+          exit 1

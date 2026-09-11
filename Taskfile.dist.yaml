@@ -20,6 +20,14 @@ tasks:
     cmds:
       - task: cli:init
 
+  changelog:
+    desc: Regenerate CHANGELOG.md from conventional commits
+    cmd: mise exec git-cliff -- git-cliff --output CHANGELOG.md
+
+  changelog:check:
+    desc: Verify changelog generation
+    cmd: mise exec git-cliff -- git-cliff > /dev/null
+
   ci:
     desc: The gate. Everything that must pass before a backlog task is Done.
     cmds:
@@ -39,6 +47,7 @@ tasks:
     desc: Run all project checks
     deps:
       - task: cli:check
+      - task: changelog:check
 
   check:staged:
     desc: Format and run checks only for staged files
@@ -77,7 +86,10 @@ tasks:
     cmd: mise exec go -- go test -race -count=5 -shuffle=on -failfast ./integration ./internal/cli ./internal/daemon ./internal/app ./internal/mcp
 
   smoke:
-    desc: Build hum and run built-binary smoke coverage
+    desc: Build release outputs and run built-binary smoke coverage
     deps:
       - task: cli:build
-    cmd: mise exec go -- go test ./cmd/hum -run TestBuiltBinaryIntegration -count=1
+      - task: cli:man
+    cmds:
+      - test -s dist/hum.1
+      - mise exec go -- go test ./cmd/hum -run TestBuiltBinaryIntegration -count=1

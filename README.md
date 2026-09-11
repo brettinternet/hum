@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Keep processes running between commands. `hum` gives users bounded logs, readiness checks, dependencies, JSON/MCP output, and controlled TTY input.
+Keep processes running between commands. `hum` gives users bounded logs, readiness checks, dependencies, JSON/MCP output, and controlled TTY input. See the [changelog](CHANGELOG.md) for release history.
 
 ```text
 hum.yaml ──> hum daemon ──> db ──> api ──> web

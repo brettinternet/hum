@@ -1,19 +1,21 @@
 ---
 id: HUM-097
 title: Publish Hum in nixpkgs
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-11 16:40'
-updated_date: '2026-09-11 17:50'
+updated_date: '2026-09-11 20:24'
 labels:
   - tooling
   - docs
+  - waiting
 milestone: m-5
 dependencies: []
 references:
   - 'https://github.com/NixOS/nixpkgs/blob/master/CONTRIBUTING.md'
   - 'https://nixos.org/manual/nixpkgs/stable/'
   - .github/workflows/release.yaml
+  - 'https://github.com/NixOS/nixpkgs/pull/562380'
 modified_files:
   - README.md
 priority: low
@@ -52,3 +54,11 @@ Non-goals: a first-party flake; a binary cache; a NixOS service module; repackag
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Blocked before implementation: nixpkgs does not currently contain pkgs/by-name/hu/hum/package.nix; this host has neither nix nor nixpkgs-review installed; and no brettinternet/nixpkgs fork exists. Completing AC1-AC3 requires creating an external nixpkgs contribution and exercising it on macOS aarch64 and Linux x86_64. Repository policy requires explicit authorization before forking/pushing/opening that external PR. Next action: authorize a NixOS/nixpkgs fork, branch push, and pull request; then use CI for both supported hosts and nixpkgs-review, merge upstream, and only afterward add the README install command.
+
+External contribution opened: NixOS/nixpkgs#562380. AC1 evidence: GitHub Actions run 34637814632 executed `nix build -L .#hum` successfully on x86_64-linux (ubuntu-24.04) and aarch64-darwin (macos-14). AC2 evidence: the same run executed `./result/bin/hum --version` successfully on both hosts and printed `hum version 0.9.1 (built 1970-01-01T00:00:00Z)`. AC3 evidence: the same run executed `nix run github:Mic92/nixpkgs-review -- wip` successfully on both hosts and reported `1 package built: hum`. Nixpkgs PR checks are green after adding required structured attributes. Waiting for upstream review and merge before documenting `nixpkgs#hum` in README.md.
+<!-- SECTION:NOTES:END -->

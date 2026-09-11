@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Install [mise](https://mise.jdx.dev/) and make it available on your `PATH`. Project-managed versions of Go, Staticcheck, Task, Lefthook, gitleaks, govulncheck, and Backlog.md are declared in `mise.toml`.
+Install [mise](https://mise.jdx.dev/) and make it available on your `PATH`. Project-managed versions of Go, git-cliff, Staticcheck, Task, Lefthook, gitleaks, govulncheck, and Backlog.md are declared in `mise.toml`.
 
 ## Setup
 
@@ -56,7 +56,9 @@ The current executable supports:
 
 ## Release
 
-Push the release commit to `main` and wait for its CI workflow to start, then tag that exact commit and push the tag. The release workflow waits for the newest `main` push CI run for the tagged commit and publishes only when it succeeds. If CI fails or no matching run exists, push a fix and create a new tag for the fixed commit.
+Push the release commit to `main` and wait for its CI workflow to start, then tag that exact commit and push the tag. The release workflow waits for the newest `main` push CI run for the tagged commit and publishes only when it succeeds. It generates the GitHub release notes from conventional commits, then regenerates and commits `CHANGELOG.md` to `main`. If CI fails or no matching run exists, push a fix and create a new tag for the fixed commit.
+
+Run `task changelog` to preview or regenerate the changelog locally. Features, fixes, performance changes, refactors, documentation, and reverts are included; test, CI, backlog, and maintenance commits are omitted.
 
 For a release or locally labelled build:
 
@@ -70,6 +72,7 @@ mise exec go -- go build \
 ## Project checks
 
 ```sh
+task changelog
 task fix:staged
 task check:staged
 task check
@@ -82,12 +85,12 @@ task ci
 
 - `task fix:staged` formats staged Go files and re-stages the fixes.
 - `task check:staged` runs the pre-commit formatter and staged secret scan.
-- `task check` verifies Go formatting and runs `go vet ./...` and Staticcheck with the pinned development toolchain.
+- `task check` verifies changelog generation and Go formatting, then runs `go vet ./...` and Staticcheck with the pinned development toolchain.
 - `task test` runs `go test ./...`.
 - `task coverage` runs all tests with repository-wide coverage and prints the per-function report. Its coverage profile is written outside the repository at `/tmp/hum-coverage.out`.
 - `task security` scans the full Git history with gitleaks and runs `govulncheck ./...`; govulncheck fails only for vulnerabilities reachable from project code.
 - `task stress` repeatedly runs race-enabled daemon and child-process tests with shuffled ordering. It is intentionally separate from `task ci` and runs daily on Linux and macOS through `.github/workflows/stress.yaml`; the workflow also supports manual dispatch.
-- `task ci` independently runs the security gate, checks, tests, race-sensitive package tests, and the built-binary smoke test with Go 1.27.1 and Staticcheck 2026.2.1. GitHub Actions preserves those gates on Linux and macOS while running each OS's race tests concurrently with its other checks, restoring a per-job Go build and module cache keyed by OS, Go version, and `go.sum`; `GOFLAGS=-count=1` keeps test results from being reused.
+- `task ci` independently runs the security gate, checks, tests, race-sensitive package tests, and release-output smoke tests with Go 1.27.1 and Staticcheck 2026.2.1. The smoke step builds the binary and `hum(1)` manual before exercising the binary. GitHub Actions preserves those gates on Linux and macOS while running each OS's race tests concurrently with its other checks, restoring a per-job Go build and module cache keyed by OS, Go version, and `go.sum`; `GOFLAGS=-count=1` keeps test results from being reused.
 
 ## Commit messages
 
