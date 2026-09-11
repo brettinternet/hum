@@ -690,11 +690,14 @@ func TestLogsMatchContext(t *testing.T) {
 }
 
 func TestLogsFollow(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	runtimeDir := hum006ListLogsTempDir(t, "runtime")
 	hum006ListLogsStartDaemon(t, runtimeDir, 1024)
 	project := hum006ListLogsProject(t, "project")
 
-	selectScript := "printf 'stdout-first\\n'; printf 'stderr-first\\n' >&2; printf 'stdout-match\\n'; printf 'stderr-ignore\\n' >&2; printf 'stdout-last\\n'; sleep 5"
+	selectScript := "printf 'stdout-first\\n'; printf 'stderr-first\\n' >&2; printf 'stdout-match\\n'; printf 'stderr-ignore\\n' >&2; printf 'stdout-last\\n'; sleep 1"
 	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "select", "--detach", "--", "/bin/sh", "-c", selectScript); err != nil {
 		t.Fatalf("start selection process: %v (stdout=%q stderr=%q)", err, stdout, stderr)
 	}
@@ -900,7 +903,7 @@ func TestLogsFollow(t *testing.T) {
 		}
 	})
 
-	multiScript := "printf 'multi-first\\n'; sleep 1; printf 'multi-second\\n'; sleep 1"
+	multiScript := "printf 'multi-first\\n'; sleep .1; printf 'multi-second\\n'; sleep .1"
 	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "multi", "--detach", "--", "/bin/sh", "-c", multiScript); err != nil {
 		t.Fatalf("start multiple-follower process: %v (stdout=%q stderr=%q)", err, stdout, stderr)
 	}
@@ -1401,6 +1404,9 @@ func (w *hum006ListLogsFirstWrite) String() string {
 var _ io.Writer = (*hum006ListLogsFirstWrite)(nil)
 
 func TestLogsSince(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	t.Run("aggregate output and follow requests share the cutoff", func(t *testing.T) {
 		cutoff := time.Now().Add(-time.Minute).UnixNano()
 		base := daemon.OutputRequest{Cwd: t.TempDir(), SinceUnixNano: cutoff}
@@ -1461,7 +1467,7 @@ func TestLogsSince(t *testing.T) {
 	runtimeDir := hum006ListLogsTempDir(t, "since-runtime")
 	hum006ListLogsStartDaemon(t, runtimeDir, 1<<16)
 	project := hum006ListLogsProject(t, "since-project")
-	script := `printf 'old-since\n'; sleep 2; printf 'new-since\n'; sleep 5`
+	script := `printf 'old-since\n'; sleep 1.1; printf 'new-since\n'; sleep .1`
 	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "single", "--detach", "--", "/bin/sh", "-c", script); err != nil {
 		t.Fatalf("start single: %v (stdout=%q stderr=%q)", err, stdout, stderr)
 	}

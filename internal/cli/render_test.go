@@ -133,6 +133,7 @@ func TestColorPolicy(t *testing.T) {
 }
 
 func TestLifecycleColorMapping(t *testing.T) {
+	t.Parallel()
 	colors := colorPolicy{enabled: true}
 	processes := []app.Process{
 		{
@@ -240,6 +241,7 @@ func TestLifecycleColorMapping(t *testing.T) {
 }
 
 func TestAggregateLogPrefixColor(t *testing.T) {
+	t.Parallel()
 	colors := colorPolicy{enabled: true}
 	var stdout, stderr bytes.Buffer
 	renderer := &aggregateLogRenderer{
@@ -279,6 +281,7 @@ func TestAggregateLogPrefixColor(t *testing.T) {
 }
 
 func TestManifestLaunchTable(t *testing.T) {
+	t.Parallel()
 	pid := 42
 	launchCursor, readyCursor := uint64(3), uint64(5)
 	results := []manifestLaunchResult{
@@ -353,6 +356,7 @@ func TestProcessStopGraceCLIOutput(t *testing.T) {
 }
 
 func TestUncoloredOutputUnchanged(t *testing.T) {
+	t.Parallel()
 	process := app.Process{
 		Name: "api", Source: "manifest", Root: "/project", PID: 42, PGID: 42,
 		Cwd: "/project", Argv: []string{"echo", "hello world"},

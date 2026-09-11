@@ -9,6 +9,7 @@ import (
 )
 
 func TestRootCommandNoArgsShowsHelp(t *testing.T) {
+	t.Parallel()
 	var output, errorOutput bytes.Buffer
 
 	err := NewRootCommand("dev", "unknown", &output, &errorOutput).Run(context.Background(), []string{"hum"})
@@ -28,6 +29,7 @@ func TestRootCommandNoArgsShowsHelp(t *testing.T) {
 }
 
 func TestRootCommandVersion(t *testing.T) {
+	t.Parallel()
 	var output, errorOutput bytes.Buffer
 
 	err := NewRootCommand("build-42", "2026-09-02T12:00:00Z", &output, &errorOutput).Run(context.Background(), []string{"hum", "--version"})
@@ -46,6 +48,7 @@ func TestRootCommandVersion(t *testing.T) {
 }
 
 func TestRootCommandCanceledContext(t *testing.T) {
+	t.Parallel()
 	var output, errorOutput bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -60,6 +63,7 @@ func TestRootCommandCanceledContext(t *testing.T) {
 }
 
 func TestRootCommandUnknownCommand(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		args       []string
@@ -93,6 +97,7 @@ func TestRootCommandUnknownCommand(t *testing.T) {
 }
 
 func TestRootGlobalFlagsDocumentDefaultsAndEnv(t *testing.T) {
+	t.Parallel()
 	var output, errorOutput bytes.Buffer
 	if err := NewRootCommand("dev", "unknown", &output, &errorOutput).Run(context.Background(), []string{"hum", "--help"}); err != nil {
 		t.Fatalf("help: %v", err)

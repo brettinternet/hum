@@ -12,6 +12,7 @@ import (
 )
 
 func TestFlagAliases(t *testing.T) {
+	t.Parallel()
 	expected := map[string]map[string][]string{
 		"serve":    {"daemon": {"d"}},
 		"init":     {"force": nil, "json": {"j"}},
@@ -131,6 +132,7 @@ func TestFlagAliases(t *testing.T) {
 }
 
 func TestFlagAliasParity(t *testing.T) {
+	t.Parallel()
 	type parityCase struct {
 		command string
 		short   []string

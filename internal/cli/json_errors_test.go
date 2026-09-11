@@ -200,6 +200,7 @@ func TestJSONErrorClassificationIgnoresMessageText(t *testing.T) {
 }
 
 func TestJSONCommandValidationClassification(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string
@@ -227,6 +228,7 @@ func TestJSONCommandValidationClassification(t *testing.T) {
 }
 
 func TestJSONStreamingErrors(t *testing.T) {
+	t.Parallel()
 	for _, commandName := range []string{"start", "up"} {
 		t.Run(commandName+" appends error event after NDJSON", func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -293,6 +295,7 @@ func TestJSONStreamingErrors(t *testing.T) {
 }
 
 func TestJSONErrorModeDetection(t *testing.T) {
+	t.Parallel()
 	root := NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{})
 	jsonCommands := map[string]bool{
 		"init": true, "run": true, "start": true, "up": true, "down": true,
@@ -358,6 +361,7 @@ func TestJSONErrorModeDetection(t *testing.T) {
 }
 
 func TestHumanErrorsUnchanged(t *testing.T) {
+	t.Parallel()
 	t.Run("usage", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		root := NewRootCommand("test", "test", &stdout, &stderr)

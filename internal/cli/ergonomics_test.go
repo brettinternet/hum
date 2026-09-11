@@ -23,6 +23,7 @@ import (
 // hum006ListLogsRunAt/RunHere: the default handler calls os.Exit and silently
 // kills the test binary before any assertion runs.
 func TestStartupReconciliationWarnings(t *testing.T) {
+	t.Parallel()
 	warnings := []protocol.StartupWarning{{Project: "/project", Name: "api", Outcome: "reclaimed", Message: "old group stopped"}}
 	var stderr bytes.Buffer
 	if err := writeStartupWarnings(&stderr, warnings); err != nil {
@@ -197,6 +198,7 @@ func TestShutdownActiveProcessesHumanMessage(t *testing.T) {
 // --limit-bytes must not advertise a misleading "(default: 0)", and their
 // usage text must say what omitting them means.
 func TestLogsAndWaitFlagsHideDefault(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	root := NewRootCommand("test", "test", &stdout, &stderr)
 	if err := root.Run(context.Background(), []string{"hum", "logs", "--help"}); err != nil {
@@ -299,6 +301,7 @@ func TestRenderStatusHumanOmitsZeroPID(t *testing.T) {
 // gets an aligned header row via text/tabwriter, and the followers=N suffix
 // rule is preserved.
 func TestRenderListHumanHeaderAndAlignment(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	processes := []app.Process{
 		{Name: "a", State: app.StateRunning, PID: 1, Source: "hum.yaml", Argv: []string{"sh"}},

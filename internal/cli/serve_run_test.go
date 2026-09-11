@@ -393,6 +393,9 @@ func cliServeRunRuntimeDir(t *testing.T) string {
 }
 
 func TestForegroundServe(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	runtimeDir := cliServeRunRuntimeDir(t)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 
@@ -597,6 +600,9 @@ func TestServeDaemon(t *testing.T) {
 }
 
 func TestAutomaticDaemonStartup(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	t.Run("attached and detached run", func(t *testing.T) {
 		runtimeDir := cliServeRunRuntimeDir(t)
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
@@ -825,6 +831,9 @@ func TestVersionMismatch(t *testing.T) {
 }
 
 func TestAttachedRunOneIncarnation(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	t.Run("first entry of a silent record's successor is not swallowed", func(t *testing.T) {
 		runtimeDir := cliServeRunRuntimeDir(t)
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
@@ -1040,6 +1049,9 @@ func TestAttachedRunOneIncarnation(t *testing.T) {
 }
 
 func TestAttachedRunInterruptLifecycle(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	t.Run("queued SIGINT during start-to-follow handoff forwards and stays attached", func(t *testing.T) {
 		runtimeDir := cliServeRunRuntimeDir(t)
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
@@ -1426,6 +1438,9 @@ func TestAttachedRunInterruptLifecycle(t *testing.T) {
 }
 
 func TestAttachRunningSession(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	runtimeDir := cliServeRunRuntimeDir(t)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 	cliServeRunStartDaemon(t, runtimeDir)
@@ -1490,6 +1505,9 @@ func TestAttachRunningSession(t *testing.T) {
 }
 
 func TestAttachNeverStartsSession(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	runtimeDir := cliServeRunRuntimeDir(t)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 	cliServeRunStartDaemon(t, runtimeDir)
@@ -1540,6 +1558,9 @@ func TestAttachNeverStartsSession(t *testing.T) {
 }
 
 func TestAttachStreamsBurstWithoutAborting(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	runtimeDir := cliServeRunRuntimeDir(t)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 	cliServeRunStartDaemon(t, runtimeDir)
@@ -1599,6 +1620,9 @@ func TestAttachStreamsBurstWithoutAborting(t *testing.T) {
 }
 
 func TestAttachTail(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	runtimeDir := cliServeRunRuntimeDir(t)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 	if _, _, err := cliServeRunInvokeForTest("attach", "attach-tail", "--tail", "-1"); err == nil || !strings.Contains(err.Error(), "tail must not be negative") {
@@ -1697,6 +1721,9 @@ func TestAttachTail(t *testing.T) {
 }
 
 func TestDetachedAndObserverLifecycleUnchanged(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	runtimeDir := cliServeRunRuntimeDir(t)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 	cliServeRunStartDaemon(t, runtimeDir)

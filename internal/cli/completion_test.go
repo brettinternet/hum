@@ -43,6 +43,7 @@ func runNamePositionCompletionForTest(t *testing.T, args ...string) (string, str
 }
 
 func TestCompletionScripts(t *testing.T) {
+	t.Parallel()
 	for shell, marker := range map[string]string{
 		"bash": "__hum_bash_autocomplete",
 		"zsh":  "#compdef hum",

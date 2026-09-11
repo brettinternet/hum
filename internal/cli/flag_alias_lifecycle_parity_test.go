@@ -15,6 +15,9 @@ import (
 )
 
 func TestFlagAliasParityLifecycleCommands(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	t.Run("run detach daemon request and JSON output", func(t *testing.T) {
 		short := flagAliasLifecycleRun(t, "short", "-d", "--json")
 		long := flagAliasLifecycleRun(t, "long", "--detach", "--json")

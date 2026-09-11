@@ -14,6 +14,9 @@ import (
 )
 
 func TestTTYCLI(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	if err := manifestTTYUpgradeError(project.Definition{Name: "dev", TTY: true}, app.Process{Name: "dev", State: app.StateRunning, TTY: false}); err == nil || !strings.Contains(err.Error(), "stop it and rerun") {
 		t.Fatalf("running non-tty upgrade error = %v", err)
 	}

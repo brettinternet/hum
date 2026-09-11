@@ -14,6 +14,7 @@ import (
 )
 
 func TestGlobalScopeSelection(t *testing.T) {
+	t.Parallel()
 	root := NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{})
 	SetInvocationArgs(root, []string{"hum", "run", "--global", "proxy", "--detach", "--", "echo"})
 	if !rawScopeFlag(root, "global", "g") {
@@ -71,6 +72,7 @@ func TestGlobalScopeSelection(t *testing.T) {
 }
 
 func TestGlobalScopeDiscovery(t *testing.T) {
+	t.Parallel()
 	description := NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{}).Description
 	for _, phrase := range []string{"--project", "--global", "machine-wide"} {
 		if !strings.Contains(description, phrase) {

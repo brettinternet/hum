@@ -156,6 +156,7 @@ func manifestCLIRecoveryStubDaemon(t *testing.T, processes map[string]protocol.P
 }
 
 func TestUpAdapterParity(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	definition := project.Definition{
 		Name: "api", Source: "manifest", Cwd: ".", Argv: []string{"new"},
@@ -208,6 +209,7 @@ func TestUpAdapterParity(t *testing.T) {
 }
 
 func TestExecutableReadiness(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	argv := []string{"probe", "--service", "api"}
 	definition := project.Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"server"}, Ready: &project.ReadyDefinition{Exec: argv, Interval: 125 * time.Millisecond, Timeout: 2 * time.Second}}
@@ -652,6 +654,7 @@ processes:
 }
 
 func TestManifestReadinessSurvivesExitAfterMatch(t *testing.T) {
+	t.Parallel()
 	serverConn, clientConn := net.Pipe()
 	client := daemon.NewClient(clientConn)
 	t.Cleanup(func() {
@@ -762,6 +765,7 @@ func TestManifestReadinessSurvivesExitAfterMatch(t *testing.T) {
 // (state, pid, exit code) rather than the running snapshot recorded before
 // Wait observed the exit.
 func TestManifestReadinessRefreshesExitedSnapshot(t *testing.T) {
+	t.Parallel()
 	serverConn, clientConn := net.Pipe()
 	client := daemon.NewClient(clientConn)
 	t.Cleanup(func() {
@@ -1105,6 +1109,9 @@ processes:
 }
 
 func TestUpHumanProgress(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
 	t.Run("deterministic transition barriers", func(t *testing.T) {
 		definitions := []project.Definition{
 			{Name: "alpha", Argv: []string{"alpha"}, Ready: &project.ReadyDefinition{Match: "ready"}},

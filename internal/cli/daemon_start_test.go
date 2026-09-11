@@ -19,6 +19,7 @@ import (
 )
 
 func TestEnsureDaemonWaitsForSequentialRecovery(t *testing.T) {
+	t.Parallel()
 	groups := make([]daemon.RuntimeGroup, 0, 2)
 	done := make([]<-chan struct{}, 0, 2)
 	for _, name := range []string{"one", "two"} {
@@ -60,6 +61,7 @@ func TestEnsureDaemonWaitsForSequentialRecovery(t *testing.T) {
 }
 
 func TestEnsureDaemonCancellationReapsChild(t *testing.T) {
+	t.Parallel()
 	termMarker := filepath.Join(t.TempDir(), "term-observed")
 	group, groupDone := startCLIStaleGroup(t, "cancel", termMarker)
 	runtimeDir := cliServeRunRuntimeDir(t)
@@ -186,6 +188,7 @@ func waitCLIPath(t *testing.T, path string, timeout time.Duration) {
 }
 
 func TestEnsureDaemonFailsFastWhenChildExitsEarly(t *testing.T) {
+	t.Parallel()
 	runtimeDir := cliServeRunRuntimeDir(t)
 	groups := []daemon.RuntimeGroup{
 		{ProjectRoot: "/project", Name: "one", LeaderPID: 2147483644, PGID: 2147483644, StartIdentity: "dead:one"},
