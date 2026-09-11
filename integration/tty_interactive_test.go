@@ -36,7 +36,7 @@ func TestOneShotInputAnswersPrompt(t *testing.T) {
 	if answered.Err != nil || answered.Code != 0 || !strings.Contains(answered.Stdout, "wrote 4 bytes to prompt at launch cursor") {
 		t.Fatalf("answer prompt: %#v", answered)
 	}
-	testutil.WaitForFile(t, marker+".input", 5*time.Second)
+	testutil.WaitForText(t, marker+".input", "yes\n", 5*time.Second)
 	input, err := os.ReadFile(marker + ".input")
 	if err != nil || string(input) != "yes\n" {
 		t.Fatalf("fixture input=%q err=%v", input, err)

@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"hum/internal/testutil"
 )
 
 func TestMCPHelp(t *testing.T) {
@@ -87,6 +89,20 @@ func TestImplicitMixDiscoveryDoesNotExecuteProjectCode(t *testing.T) {
 	}
 }
 
+func waitForDiscoveryPID(t *testing.T, path string) int {
+	t.Helper()
+	testutil.WaitForText(t, path, "\n", 5*time.Second)
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read discovery pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(contents)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("parse discovery pid %q: %v", contents, err)
+	}
+	return pid
+}
+
 func TestMCPDiscoveryCancellationReapsCommand(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
@@ -105,24 +121,7 @@ func TestMCPDiscoveryCancellationReapsCommand(t *testing.T) {
 		result <- err
 	}()
 
-	var pid int
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		contents, err := os.ReadFile(pidPath)
-		if err == nil {
-			pid, err = strconv.Atoi(strings.TrimSpace(string(contents)))
-			if err != nil {
-				t.Fatalf("parse discovery pid: %v", err)
-			}
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if pid == 0 {
-		t.Fatal("MCP discovery command did not start")
-	}
-
-	cancelledAt := time.Now()
+	pid := waitForDiscoveryPID(t, pidPath)
 	cancel()
 	select {
 	case err := <-result:
@@ -131,9 +130,6 @@ func TestMCPDiscoveryCancellationReapsCommand(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("MCP discovery did not cancel within two seconds")
-	}
-	if elapsed := time.Since(cancelledAt); elapsed >= 2*time.Second {
-		t.Fatalf("MCP discovery cancellation took %s", elapsed)
 	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -163,24 +159,7 @@ func TestCLIDiscoveryCancellationReapsCommand(t *testing.T) {
 		result <- cliServeRunInvoke(ctx, []string{"list", "--json"}, &stdout, &stderr)
 	}()
 
-	var pid int
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		contents, err := os.ReadFile(pidPath)
-		if err == nil {
-			pid, err = strconv.Atoi(strings.TrimSpace(string(contents)))
-			if err != nil {
-				t.Fatalf("parse discovery pid: %v", err)
-			}
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if pid == 0 {
-		t.Fatal("CLI discovery command did not start")
-	}
-
-	cancelledAt := time.Now()
+	pid := waitForDiscoveryPID(t, pidPath)
 	cancel()
 	select {
 	case err := <-result:
@@ -189,9 +168,6 @@ func TestCLIDiscoveryCancellationReapsCommand(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("CLI discovery did not cancel within two seconds")
-	}
-	if elapsed := time.Since(cancelledAt); elapsed >= 2*time.Second {
-		t.Fatalf("CLI discovery cancellation took %s", elapsed)
 	}
 	process, err := os.FindProcess(pid)
 	if err != nil {

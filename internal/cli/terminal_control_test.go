@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,11 +16,11 @@ func TestLogsStripTerminalControl(t *testing.T) {
 	hum006ListLogsStartDaemon(t, runtimeDir, 4096)
 	project := hum006ListLogsProject(t, "terminal-control-project")
 
-	script := "printf '\\033[31mred\\033[0m\\r\\n'; printf '\\033]0;title\\a\\033[32mgreen\\033[0m\\r\\n'; sleep 2"
+	script := "printf '\\033[31mred\\033[0m\\r\\n'; printf '\\033]0;title\\a\\033[32mgreen\\033[0m\\r\\n'"
 	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "bounded", "--detach", "--", "/bin/sh", "-c", script); err != nil {
 		t.Fatalf("start bounded process: %v (stdout=%q stderr=%q)", err, stdout, stderr)
 	}
-	hum006ListLogsWaitForText(t, project, "bounded", "red\n")
+	hum006ListLogsWaitForText(t, project, "bounded", "green\n")
 
 	human, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "bounded")
 	if err != nil {
@@ -65,24 +67,53 @@ func TestLogsStripTerminalControl(t *testing.T) {
 		t.Fatalf("tail bounded entries = %#v, want stripped final line", tail.Entries)
 	}
 
-	followScript := "printf '\\033[31mreplay\\033[0m\\r\\n'; sleep .2; printf '\\033[32mlive\\033[0m\\r\\n'; sleep 1"
-	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "follow-raw", "--detach", "--", "/bin/sh", "-c", followScript); err != nil {
+	followGate := filepath.Join(t.TempDir(), "follow.release")
+	followScript := "printf '\\033[31minitial\\033[0m\\r\\n\\033[33mready\\033[0m\\r\\n'; while [ ! -f \"$1\" ]; do sleep .01; done; printf '\\033[32mlive\\033[0m\\r\\n'"
+	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "follow-raw", "--detach", "--", "/bin/sh", "-c", followScript, "terminal-follow", followGate); err != nil {
 		t.Fatalf("start follow process: %v (stdout=%q stderr=%q)", err, stdout, stderr)
 	}
-	hum006ListLogsWaitForText(t, project, "follow-raw", "replay\n")
-	followContext, cancelFollow := context.WithTimeout(context.Background(), 700*time.Millisecond)
-	followOutput, stderr, err := hum006ListLogsRunAt(t, project, followContext, "logs", "follow-raw", "--follow")
-	cancelFollow()
-	if err != nil {
-		t.Fatalf("raw follow logs: %v (stderr=%q)", err, stderr)
+	hum006ListLogsWaitForText(t, project, "follow-raw", "ready\n")
+
+	oldwd := hum006ListLogsEnterDir(t, project)
+	followContext, cancelFollow := context.WithCancel(context.Background())
+	var followStdout, followStderr manifestProgressCapture
+	followDone := make(chan error, 1)
+	go func() {
+		followDone <- NewRootCommand("test", "test", &followStdout, &followStderr).Run(followContext, []string{"hum", "logs", "follow-raw", "--follow"})
+	}()
+	if !followStdout.waitFor("\x1b[33mready\x1b[0m\r\n", 3*time.Second) {
+		cancelFollow()
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatalf("raw follow did not replay ready output: stdout=%q stderr=%q", followStdout.String(), followStderr.String())
 	}
-	if !strings.Contains(followOutput, "\x1b[31mreplay\x1b[0m\r\n") || !strings.Contains(followOutput, "\x1b[32mlive\x1b[0m\r\n") {
+	if err := os.WriteFile(followGate, []byte("release\n"), 0o600); err != nil {
+		cancelFollow()
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatal(err)
+	}
+	if !followStdout.waitFor("\x1b[32mlive\x1b[0m\r\n", 3*time.Second) {
+		cancelFollow()
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatalf("raw follow did not stream live output: stdout=%q stderr=%q", followStdout.String(), followStderr.String())
+	}
+	cancelFollow()
+	select {
+	case err := <-followDone:
+		if err != nil {
+			hum006ListLogsLeaveDir(t, oldwd)
+			t.Fatalf("raw follow logs: %v (stderr=%q)", err, followStderr.String())
+		}
+	case <-time.After(3 * time.Second):
+		hum006ListLogsLeaveDir(t, oldwd)
+		t.Fatal("raw follow did not stop after cancellation")
+	}
+	hum006ListLogsLeaveDir(t, oldwd)
+	followOutput := followStdout.String()
+	if !strings.Contains(followOutput, "\x1b[31minitial\x1b[0m\r\n") || !strings.Contains(followOutput, "\x1b[32mlive\x1b[0m\r\n") {
 		t.Fatalf("raw follow output = %q, want raw replay and live entries", followOutput)
 	}
 
-	attachedContext, cancelAttached := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	attachedOutput, stderr, err := hum006ListLogsRunAt(t, project, attachedContext, "run", "attached-raw", "--", "/bin/sh", "-c", "printf '\\033[36mattached\\033[0m\\r\\n'; sleep 1")
-	cancelAttached()
+	attachedOutput, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "attached-raw", "--", "/bin/sh", "-c", "printf '\\033[36mattached\\033[0m\\r\\n'")
 	if err != nil {
 		t.Fatalf("raw attached run: %v (stderr=%q)", err, stderr)
 	}

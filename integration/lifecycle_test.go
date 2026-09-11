@@ -48,7 +48,11 @@ func TestDaemonCrashReclaimsOrphans(t *testing.T) {
 		t.Fatalf("first launch: code=%d err=%v stdout=%q stderr=%q", first.Code, first.Err, first.Stdout, first.Stderr)
 	}
 	oldChildPID := lifecycleParseManagedPID(t, first.Stdout, "orphan")
-	testutil.WaitForFile(t, marker+".started", lifecycleTimeout)
+	testutil.WaitForText(t, marker+".started", "started", lifecycleTimeout)
+	observed := testutil.Run(t, hum, runtime.cwd, runtime.env, "wait", "orphan", "--match", "stderr:live with spaces", "--timeout", lifecycleTimeout.String())
+	if observed.Code != 0 || observed.Err != nil {
+		t.Fatalf("observe managed output before daemon crash: code=%d err=%v stdout=%q stderr=%q", observed.Code, observed.Err, observed.Stdout, observed.Stderr)
+	}
 	daemonPID = lifecycleReadPID(t, runtime.paths.PID)
 	if err := syscall.Kill(daemonPID, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill daemon: %v", err)
