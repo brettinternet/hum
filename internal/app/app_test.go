@@ -95,6 +95,8 @@ func (c *processStopGraceChild) Signal(signal os.Signal) error {
 	return nil
 }
 
+const processStopGraceWaitLimit = 5 * time.Second
+
 type processStopGraceTimers struct {
 	mu    sync.Mutex
 	ready *sync.Cond
@@ -114,10 +116,24 @@ func (t *processStopGraceTimers) after(duration time.Duration) <-chan time.Time 
 	t.mu.Unlock()
 	return channel
 }
+
+// wait blocks until a timer for duration is armed. It gives up after
+// processStopGraceWaitLimit so a regression fails the test instead of hanging
+// the package until its timeout.
 func (t *processStopGraceTimers) wait(duration time.Duration) bool {
+	start := time.Now()
+	deadline := time.AfterFunc(processStopGraceWaitLimit, func() {
+		t.mu.Lock()
+		t.ready.Broadcast()
+		t.mu.Unlock()
+	})
+	defer deadline.Stop()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for len(t.items[duration]) == 0 {
+		if time.Since(start) >= processStopGraceWaitLimit {
+			return false
+		}
 		t.ready.Wait()
 	}
 	return true
@@ -145,7 +161,9 @@ func (t *processStopGraceTimers) fireAll() {
 	}
 }
 
-func (c *processStopGraceChild) waitSignals(count int) {
+func (c *processStopGraceChild) waitSignals(t *testing.T, count int) {
+	t.Helper()
+	deadline := time.After(processStopGraceWaitLimit)
 	for {
 		c.mu.Lock()
 		ready := len(c.signals) >= count
@@ -153,7 +171,11 @@ func (c *processStopGraceChild) waitSignals(count int) {
 		if ready {
 			return
 		}
-		<-c.signaled
+		select {
+		case <-c.signaled:
+		case <-deadline:
+			t.Fatalf("child %d received %d signals, want at least %d", c.pid, len(c.gotSignals()), count)
+		}
 	}
 }
 
@@ -311,8 +333,8 @@ func TestProcessStopGraceOperations(t *testing.T) {
 		if !timers.wait(3 * time.Second) {
 			t.Fatal("shutdown did not arm the Supervisor default grace timer")
 		}
-		fourth.waitSignals(2)
-		fifth.waitSignals(1)
+		fourth.waitSignals(t, 2)
+		fifth.waitSignals(t, 1)
 		if signals := fourth.gotSignals(); len(signals) != 2 || signals[0] != syscall.SIGTERM || signals[1] != syscall.SIGKILL {
 			t.Fatalf("shutdown explicit-zero signals = %v, want TERM,KILL", signals)
 		}
