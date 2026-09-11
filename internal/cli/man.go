@@ -33,6 +33,8 @@ func WriteManPage(writer io.Writer, root *urfavecli.Command, date string) error 
 	writeManLiteral(&page, commandUsage(root))
 	writeManSection(&page, "DESCRIPTION")
 	writeManParagraphs(&page, manDescription(root.Description))
+	writeManQuickStart(&page)
+	writeManConfiguration(&page)
 
 	if flags := manCommandFlags(root); len(flags) > 0 {
 		writeManSection(&page, "GLOBAL OPTIONS")
@@ -71,7 +73,9 @@ func WriteManPage(writer io.Writer, root *urfavecli.Command, date string) error 
 	writeManDefinition(&page, "HUM_OUTPUT_BYTES", "Retained output bytes per process.")
 	writeManDefinition(&page, "HUM_COMPLETED_RECORDS", "Maximum completed process records retained.")
 	writeManSection(&page, "SEE ALSO")
-	writeManText(&page, "Project documentation: https://github.com/brettinternet/hum")
+	writeManDefinition(&page, "Project guide and examples", "https://github.com/brettinternet/hum")
+	writeManDefinition(&page, "Detailed behavior", "https://github.com/brettinternet/hum/blob/main/docs/design.md")
+	writeManDefinition(&page, "JSON interface", "https://github.com/brettinternet/hum/blob/main/docs/cli-json-v1.md")
 
 	_, err := io.Copy(writer, &page)
 	return err
@@ -101,22 +105,19 @@ func visibleManCommands(root *urfavecli.Command) []*urfavecli.Command {
 func writeManCommand(page *bytes.Buffer, command *urfavecli.Command) {
 	fmt.Fprintf(page, ".SS \"%s\"\n", roffQuote(strings.Join(command.Path(), " ")))
 	writeManLiteral(page, commandUsage(command))
-	writeManParagraphs(page, manDescription(command.Description))
+	writeManParagraphs(page, manCommandDescription(command))
 	if flags := manCommandFlags(command); len(flags) > 0 {
 		fmt.Fprintln(page, ".PP\nOptions:")
 		writeManFlags(page, flags)
 	}
-	if examples := manExamples(command.Description); len(examples) > 0 {
+	if examples := manCommandExamples(command); len(examples) > 0 {
 		fmt.Fprintln(page, ".PP\nExamples:")
 		writeManLiteral(page, strings.Join(examples, "\n"))
 	}
 }
 
 func manCommandFlags(command *urfavecli.Command) []urfavecli.Flag {
-	if len(command.Path()) == 1 {
-		return uniqueManFlags(command.VisibleFlags())
-	}
-	flags := cliCommandFlags(command)
+	flags := command.VisibleFlags()
 	if !command.HideHelp && urfavecli.HelpFlag != nil {
 		flags = append(flags, urfavecli.HelpFlag)
 	}
@@ -142,8 +143,10 @@ func uniqueManFlags(candidates []urfavecli.Flag) []urfavecli.Flag {
 
 func manDescription(description string) string {
 	if index := strings.Index(description, "\n\nExamples:"); index >= 0 {
-		return strings.TrimSpace(description[:index])
+		description = description[:index]
 	}
+	description = strings.ReplaceAll(description, "docs/design.md", "the detailed behavior guide in SEE ALSO")
+	description = strings.ReplaceAll(description, "docs/coding-agents.md", "the coding-agent guide in SEE ALSO")
 	return strings.TrimSpace(description)
 }
 
@@ -161,10 +164,77 @@ func manExamples(description string) []string {
 	return examples
 }
 
+func manCommandDescription(command *urfavecli.Command) string {
+	switch command.Name {
+	case "mcp":
+		return "Run a one-time Model Context Protocol server over standard input and output. Coding agents can manage processes with the same lifecycle operations as the CLI. See the coding-agent guide in SEE ALSO for tools, scopes, and errors."
+	case "run":
+		return "Run a named process and start the daemon if needed. A declared process needs only its name. For an ad-hoc process, put -- before its command. By default Hum shows its output and Ctrl+C stops it; --detach leaves it running in the background."
+	case "start":
+		return "Start named processes from hum.yaml or project discovery. Already-running processes are left alone. Unlike hum up, this command does not start dependencies. It waits for configured readiness checks unless --no-wait is used. Readiness confirms startup only; it does not monitor later health.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 exit before ready."
+	case "up":
+		return "Start every process in hum.yaml. Independent processes start together; dependent processes wait for their prerequisites to become ready. By default Hum follows process output. Use --detach to return after readiness or --no-wait to return after spawning.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 early exit or failed recovery; 130 interrupted startup."
+	case "logs":
+		return "Read retained output for one or more processes. Filters and limits apply separately to each process. Use --follow for new output; Ctrl+C stops following without stopping the process."
+	case "wait":
+		return "Wait for a process to exit, or use --match to wait for matching output. If the process is stopped, Hum waits for its next launch.\n\nExit codes: 0 matched or exited; 1 request or usage error; 2 timeout; 3 process exited before a match."
+	case "input":
+		return "Write one payload to a running process that has a TTY. Hum sends it once: it does not start the process, retry, save, or echo the input. --text sends exact text without adding a newline; --base64 accepts strict padded base64. Input fails while another client owns the TTY."
+	case "restart":
+		return "Gracefully stop and restart named processes. By default Hum waits for each process to become ready; --no-wait returns after spawning. A readiness failure does not prevent later names from restarting, but a request or validation error does.\n\nExit codes: 0 success; 1 request or validation error; 2 readiness timeout; 3 exit before ready."
+	default:
+		return manDescription(command.Description)
+	}
+}
+
+func manCommandExamples(command *urfavecli.Command) []string {
+	switch command.Name {
+	case "init":
+		return []string{"hum init", "hum init --json", "hum init --force"}
+	case "run":
+		return []string{"hum run api", "hum run api -- bun run api", "hum run api --detach -- bun run api", "hum --global run proxy --detach -- caddy run"}
+	case "start":
+		return []string{"hum start api", "hum start db api --timeout 45s", "hum --project ../service start api --json"}
+	case "up":
+		return []string{"hum up", "hum up --detach", "hum --project ../service up --timeout 45s --json"}
+	case "logs":
+		return []string{"hum logs api", "hum logs api --tail 50 --follow", "hum logs api --since 10m --match 'error|panic' --context 2", "hum --project ../service logs api --json"}
+	case "wait":
+		return []string{"hum wait api", "hum wait api --match 'ready on' --timeout 45s", "hum wait api --after-cursor 120 --match ready --json"}
+	case "input":
+		return []string{"hum input console --text \"yes\"", "hum input console --base64 eWVzCg==", "hum input console --text \"status\" --json"}
+	case "restart":
+		return []string{"hum restart api", "hum restart api web --timeout 45s", "hum --project ../service restart api --json"}
+	default:
+		return manExamples(command.Description)
+	}
+}
+
 func writeManHelpCommand(page *bytes.Buffer, rootName string) {
 	fmt.Fprintf(page, ".SS \"%s help\"\n", roffQuote(rootName))
 	writeManLiteral(page, rootName+" help [COMMAND]")
 	writeManText(page, "Show help for Hum or one command.")
+}
+
+func writeManQuickStart(page *bytes.Buffer) {
+	writeManSection(page, "QUICK START")
+	writeManText(page, "Create a manifest, start its processes in the background, inspect them, and follow one process:")
+	writeManLiteral(page, "hum init\nhum up --detach\nhum status\nhum logs api --follow")
+	writeManText(page, "Replace api with a process name shown by hum status.")
+	fmt.Fprintln(page, ".PP")
+	writeManText(page, "Run one command without a manifest:")
+	writeManLiteral(page, "hum run api -- bun run api")
+}
+
+func writeManConfiguration(page *bytes.Buffer) {
+	writeManSection(page, "CONFIGURATION")
+	writeManText(page, "hum init creates hum.yaml. A minimal manifest is:")
+	writeManLiteral(page, "version: 1\nprocesses:\n  api:\n    argv: [bun, run, api]")
+	fmt.Fprintln(page, ".PP")
+	writeManText(page, "A process can wait for another process to become ready and restart after failure:")
+	writeManLiteral(page, "version: 1\nprocesses:\n  db:\n    argv: [docker, compose, up, db]\n    ready:\n      match: ready\n  api:\n    argv: [bun, run, api]\n    after: [db]\n    ready:\n      match: Listening\n      timeout: 30s\n    restart: on-failure")
+	fmt.Fprintln(page, ".PP")
+	writeManText(page, "argv is executed directly without shell parsing. after names readiness dependencies. ready.match waits for matching output. The project guide includes every field and a complete hum.example.yaml.")
 }
 
 func commandUsage(command *urfavecli.Command) string {
@@ -190,7 +260,7 @@ func writeManFlags(page *bytes.Buffer, flags []urfavecli.Flag) {
 			continue
 		}
 		usage := doc.GetUsage()
-		if doc.IsDefaultVisible() && doc.GetDefaultText() != "" {
+		if doc.IsDefaultVisible() && doc.GetDefaultText() != "" && (doc.TakesValue() || doc.GetDefaultText() != "false") {
 			usage += " (default: " + doc.GetDefaultText() + ")"
 		}
 		writeManText(page, usage)

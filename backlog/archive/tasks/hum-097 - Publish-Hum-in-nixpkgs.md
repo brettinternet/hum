@@ -4,7 +4,7 @@ title: Publish Hum in nixpkgs
 status: In Progress
 assignee: []
 created_date: '2026-09-11 16:40'
-updated_date: '2026-09-11 20:24'
+updated_date: '2026-09-11 21:10'
 labels:
   - tooling
   - docs
@@ -62,3 +62,9 @@ Blocked before implementation: nixpkgs does not currently contain pkgs/by-name/h
 
 External contribution opened: NixOS/nixpkgs#562380. AC1 evidence: GitHub Actions run 34637814632 executed `nix build -L .#hum` successfully on x86_64-linux (ubuntu-24.04) and aarch64-darwin (macos-14). AC2 evidence: the same run executed `./result/bin/hum --version` successfully on both hosts and printed `hum version 0.9.1 (built 1970-01-01T00:00:00Z)`. AC3 evidence: the same run executed `nix run github:Mic92/nixpkgs-review -- wip` successfully on both hosts and reported `1 package built: hum`. Nixpkgs PR checks are green after adding required structured attributes. Waiting for upstream review and merge before documenting `nixpkgs#hum` in README.md.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cancelled on 2026-09-11. Closed NixOS/nixpkgs#562380 and stopped pursuing nixpkgs packaging because upstream merge effort and ongoing version maintenance are not justified for now.
+<!-- SECTION:FINAL_SUMMARY:END -->

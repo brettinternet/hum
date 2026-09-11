@@ -4,7 +4,7 @@ title: Publish Hum to the Arch User Repository
 status: To Do
 assignee: []
 created_date: '2026-09-11 16:40'
-updated_date: '2026-09-11 17:50'
+updated_date: '2026-09-11 21:14'
 labels:
   - tooling
   - docs
@@ -62,3 +62,9 @@ created: 2026-09-11 16:50
 Deferred because AUR account registration is currently disabled while maintainers respond to malicious activity. Resume when registration reopens or an existing trusted maintainer can publish hum-bin.
 ---
 <!-- COMMENTS:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cancelled on 2026-09-11. Stopped pursuing AUR packaging because publishing and maintaining another versioned distribution package is not justified for now.
+<!-- SECTION:FINAL_SUMMARY:END -->

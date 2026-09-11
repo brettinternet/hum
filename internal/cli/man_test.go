@@ -26,6 +26,8 @@ func TestWriteManPageCoversPublicCommandTree(t *testing.T) {
 	for _, want := range []string{
 		`.TH HUM 1 "2026-01-02" "hum 1.2.3 (built 2026-01-02T03:04:05Z)" "User Commands"`,
 		`.SH "GLOBAL OPTIONS"`,
+		`.SH "QUICK START"`,
+		`.SH "CONFIGURATION"`,
 		`.SH "COMMAND REFERENCE"`,
 		`.SH "FILES"`,
 		`.SH "ENVIRONMENT"`,
@@ -52,11 +54,30 @@ func TestWriteManPageCoversPublicCommandTree(t *testing.T) {
 		if index+2 < len(paths) {
 			end = `.SS "` + roffQuote(strings.Join(paths[index+2], " ")) + `"`
 		}
-		flags := cliCommandFlags(command)
+		flags := command.VisibleFlags()
 		if !command.HideHelp && urfavecli.HelpFlag != nil {
 			flags = append(flags, urfavecli.HelpFlag)
 		}
 		assertManFlags(t, page, heading, end, flags)
+	}
+
+	for _, want := range []string{
+		"hum init\nhum up \\-\\-detach\nhum status\nhum logs api \\-\\-follow",
+		"argv: [bun, run, api]",
+		"hum logs api \\-\\-since 10m \\-\\-match 'error|panic' \\-\\-context 2",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("man page missing practical example %q", want)
+		}
+	}
+	for _, heading := range []string{`.SS "hum init"`, `.SS "hum up"`} {
+		section := manTestSection(page, heading)
+		if strings.Contains(section, `\-\-global`) {
+			t.Errorf("%s exposes hidden --global flag", heading)
+		}
+	}
+	if strings.Contains(page, "(default: false)") {
+		t.Error("man page prints noisy false defaults")
 	}
 }
 
@@ -67,6 +88,18 @@ func TestRoffTextEscapesControlCharacters(t *testing.T) {
 	if got != want {
 		t.Fatalf("roffText() = %q, want %q", got, want)
 	}
+}
+
+func manTestSection(page, heading string) string {
+	start := strings.Index(page, heading)
+	if start < 0 {
+		return ""
+	}
+	section := page[start+len(heading):]
+	if end := strings.Index(section, `.SS "`); end >= 0 {
+		section = section[:end]
+	}
+	return section
 }
 
 func assertManFlags(t *testing.T, page, heading, nextHeading string, flags []urfavecli.Flag) {
