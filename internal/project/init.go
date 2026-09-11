@@ -183,8 +183,11 @@ func initCandidates(root string) ([]Definition, InitOutcome, string, error) {
 	return nil, "", "", err
 }
 
+const manifestSchemaDirective = "# yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json\n"
+
 func renderInitManifest(candidates []Definition, outcome InitOutcome, reason string) []byte {
 	var document strings.Builder
+	document.WriteString(manifestSchemaDirective)
 	if outcome == InitOutcomeTemplate {
 		fmt.Fprintf(&document, "# hum init did not generate a process entry: %s.\n", reason)
 		if len(candidates) == 0 {

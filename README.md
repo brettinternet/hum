@@ -56,6 +56,12 @@ hum up
 hum down
 ```
 
+`hum init` starts new manifests with a directive for the published
+[`hum.schema.json`](hum.schema.json), so compatible YAML editors load validation and completion
+automatically. For an existing manifest or an editor that ignores the directive, select the root
+`hum.schema.json` manually. The schema provides editor guidance; the Go manifest implementation is
+the authoritative parser.
+
 ## Start processes
 
 Without configuration, `hum up` finds conventional `dev` tasks in Mise, Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or a Mix project with a literal Phoenix dependency.

@@ -403,6 +403,11 @@ The nearest Git project root may contain one authoritative `hum.yaml`.
 - Discovery occurs only when the file is absent.
 - Alternate filenames are ignored.
 
+`hum init` puts the published root `hum.schema.json` directive first so compatible YAML editors
+configure validation and completion automatically. Existing manifests can select
+`hum.schema.json` manually in their editor. The schema is an editor contract; the Go
+implementation remains the authoritative parser for manifest behavior.
+
 ```yaml
 version: 1
 processes:

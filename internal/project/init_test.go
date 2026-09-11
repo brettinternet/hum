@@ -9,6 +9,62 @@ import (
 	"testing"
 )
 
+func TestInitManifestSchemaDirective(t *testing.T) {
+	tests := []struct {
+		name        string
+		prepare     func(t *testing.T, root string)
+		wantOutcome InitOutcome
+		wantCount   int
+	}{
+		{
+			name: "generated manifest",
+			prepare: func(t *testing.T, root string) {
+				writeDiscoveryFile(t, root, "package.json", `{"scripts":{"dev":"echo ready"}}`, 0o600)
+			},
+			wantOutcome: InitOutcomeGenerated,
+			wantCount:   1,
+		},
+		{
+			name:        "template manifest",
+			prepare:     func(*testing.T, string) {},
+			wantOutcome: InitOutcomeTemplate,
+			wantCount:   0,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			test.prepare(t, root)
+			installDiscoveryStubs(t, nil)
+			result, err := InitManifest(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Outcome != test.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", result.Outcome, test.wantOutcome)
+			}
+			manifest, err := os.ReadFile(filepath.Join(root, "hum.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(string(manifest), manifestSchemaDirective) {
+				t.Fatalf("manifest does not start with schema directive: %q", manifest)
+			}
+			if got := strings.Count(string(manifest), manifestSchemaID); got != 1 {
+				t.Fatalf("schema URL count = %d, want 1", got)
+			}
+
+			definitions, err := LoadDefinitions(root)
+			if err != nil {
+				t.Fatalf("generated manifest does not parse: %v", err)
+			}
+			if len(definitions) != test.wantCount {
+				t.Fatalf("definitions = %#v, want %d", definitions, test.wantCount)
+			}
+		})
+	}
+}
+
 func TestInitSingleCandidate(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
