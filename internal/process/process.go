@@ -297,6 +297,17 @@ func (c *Child) StartIdentity() string {
 // ProcessStartIdentity reads the host process-start identity for pid.
 func ProcessStartIdentity(pid int) (string, error) { return processStartIdentity(pid) }
 
+// ProcessGroupAlive reports whether a process group contains a non-zombie
+// member. Errors reading the host process table are treated conservatively as
+// alive so callers never declare an unobserved group reclaimed.
+func ProcessGroupAlive(pgid int) bool {
+	if pgid <= 0 {
+		return false
+	}
+	alive, err := processGroupAlive(pgid)
+	return err != nil || alive
+}
+
 // IsTTY reports whether the child owns a pseudo-terminal.
 func (c *Child) IsTTY() bool {
 	return c != nil && c.tty

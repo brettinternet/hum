@@ -551,11 +551,7 @@ func runtimeGroupVerification(group RuntimeGroup) error {
 }
 
 func runtimeGroupAlive(pgid int) bool {
-	if pgid <= 0 {
-		return false
-	}
-	err := syscall.Kill(-pgid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return process.ProcessGroupAlive(pgid)
 }
 
 func waitRuntimeGroupGone(pgid int, timeout time.Duration) bool {

@@ -112,6 +112,33 @@ func TestProcessStartIdentity(t *testing.T) {
 	}
 }
 
+func TestProcessGroupAliveIgnoresZombieMembers(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "while :; do sleep 1; done")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	pgid := cmd.Process.Pid
+	if !ProcessGroupAlive(pgid) {
+		t.Fatal("running process group reported gone")
+	}
+	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill process group: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for ProcessGroupAlive(pgid) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if ProcessGroupAlive(pgid) {
+		t.Fatal("zombie-only process group reported alive")
+	}
+}
+
 func runProcessHelper() {
 	switch os.Getenv(helperMode) {
 	case "literal":
