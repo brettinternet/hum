@@ -48,7 +48,7 @@ hum down
 
 ## Start processes
 
-Without configuration, `hum up` finds conventional `dev` tasks in Mise, Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or Phoenix.
+Without configuration, `hum up` finds conventional `dev` tasks in Mise, Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or a Mix project with a literal Phoenix dependency.
 
 For multiple processes, add `hum.yaml`:
 

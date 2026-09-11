@@ -77,9 +77,9 @@ Each tool rejects fields outside its advertised closed input schema before proje
 - A changed running or recovery-capable manifest record returns `definition_drift` with sorted
   `changed_fields` and `hum restart NAME` guidance; CLI `up` exits 1 for drift and it never
   satisfies an `after` dependency.
-- Readiness method (including the readiness matcher), match or exact exec argv, and normalized
-  restart policy are comparison boundaries; environment, exec interval, and readiness timeout are
-  not compared.
+- Readiness method (including the readiness matcher), match or exact exec argv, normalized restart
+  policy, and `stop_grace` are comparison boundaries; environment, exec interval, and readiness
+  timeout are not compared.
 - `ready.exec` is direct exact argv (never a shell). The first probe is immediate; failed attempts
   run serially with the configured interval (1s by default), using the launched cwd and environment.
   Only one bounded last-attempt diagnostic is exposed on terminal results; probe output is never
@@ -155,14 +155,14 @@ only other accepted value.
 - Spawn failures consume an attempt.
 - An automatic child alive for 30 seconds resets the counter; stop, down, restart, remove,
   shutdown, and a manual start cancel pending work.
-- Automatic launches retain their last argv, cwd, environment, readiness, and TTY, so explicitly
-  restart after changing a definition.
+- Automatic launches retain their last argv, cwd, environment, readiness, TTY, and stop grace, so
+  explicitly restart after changing a definition.
 - `start` and `up` report active/recovery-capable definition drift instead of silently adopting
   those edits; CLI `up` exits 1 and only `restart` adopts them.
 - Only restart applies a changed definition.
-- Readiness method, match or exact exec argv, and normalized restart policy are compared;
-  environment, exec interval, and readiness timeout are not. Exec probes use direct argv without a
-  shell, start immediately, retry serially at the interval (1s by default), inherit cwd/environment,
+- Readiness method, match or exact exec argv, normalized restart policy, and `stop_grace` are
+  compared; environment, exec interval, and readiness timeout are not. Exec probes use direct argv
+  without a shell, start immediately, retry serially at the interval (1s by default), inherit cwd/environment,
   retain only one bounded terminal diagnostic, and never retain probe output. This is startup gating,
   not liveness monitoring.
 - Read `restart`, `relaunches`, and `next_launch_at` in status/list snapshots.

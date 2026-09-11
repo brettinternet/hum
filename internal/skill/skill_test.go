@@ -229,12 +229,13 @@ func mustReadSkillFile(t *testing.T, path string) []byte {
 
 func TestScopeDocs(t *testing.T) {
 	// The plugin skill ships to agents alongside the embedded one, so scope,
-	// global-namespace, and foreground-run guidance must reach both.
+	// global-namespace, foreground-run, and current operational guidance must reach both.
 	for name, text := range map[string]string{"embedded": Content(), "plugin": string(mustReadSkillFile(t, "../../plugins/hum/skills/hum/SKILL.md"))} {
 		for _, phrase := range []string{
 			"canonical", "symlink", "worktree", "--project", "-C", "removed", "list --all", "scope", "project_root",
 			"--global", "-g", "ad-hoc",
 			"hum run NAME --detach -- COMMAND", "SIGHUP",
+			"ready.exec", "stop_grace", "--stream system", "--context",
 		} {
 			if !strings.Contains(text, phrase) {
 				t.Errorf("%s skill missing %q", name, phrase)

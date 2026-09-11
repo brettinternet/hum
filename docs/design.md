@@ -149,8 +149,8 @@ identity, readiness, cursors, and errors when applicable.
 - `up` uses lexical declaration order, attempts every entry, and applies this exit-code
   precedence: request error or `definition_drift` (1), early exit (3), timeout (2), success (0).
 - `definition_drift` includes sorted `changed_fields` for argv, canonical cwd, readiness
-  matcher, TTY, or normalized restart changes and never satisfies an `after` dependency; CLI `up`
-  exits 1 for drift.
+  method/match/exec argv, TTY, normalized restart policy, or `stop_grace` changes and never satisfies
+  an `after` dependency; CLI `up` exits 1 for drift.
 - A removed manifest-sourced running or recovery-capable record is emitted as
   `removed_definition` with stop/remove guidance such as `hum stop NAME` or `hum remove NAME`.
 - Removed records require an explicit stop or remove; the warning does not alter aggregate exit
@@ -617,13 +617,13 @@ every other value and non-string YAML scalar with file and entry context.
 - The generation token and supervisor lock linearize exit, timer claim, and operator intent, so
   stale timers never launch and a manual start/restart wins without two children.
 
-Automatic attempts reuse the last effective argv, cwd, environment, readiness, and TTY and do
-not reread the manifest.
+Automatic attempts reuse the last effective argv, cwd, environment, readiness, TTY, and stop grace
+and do not reread the manifest.
 
 - For a running, pending-recovery, or exhausted manifest record, `start` and `up` report
   `definition_drift` rather than silently adopting changed argv, canonical cwd, readiness method,
-  match or exact exec argv, TTY, or normalized restart policy; only explicit `restart` applies a
-  changed definition. Readiness timeout and exec interval are wait policy, not drift identity.
+  match or exact exec argv, TTY, normalized restart policy, or `stop_grace`; only explicit `restart`
+  applies a changed definition. Readiness timeout and exec interval are wait policy, not drift identity.
 - Readiness and client timeout do not trigger relaunch.
 - `restart`, `relaunches`, and optional whole-second `next_launch_at` appear in process, CLI
   JSON, and MCP snapshots.
@@ -673,10 +673,10 @@ The launching client supplies cwd and its full environment.
 - Resolved restarts use the current argv, cwd, readiness, and requesting client's environment,
   so definition edits take effect through explicit `restart`.
 - A running or recovery-capable manifest record with changed argv, canonical cwd, readiness
-  method (including the readiness matcher), exact exec argv, TTY, or normalized restart policy returns
-  `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance from `start` or
-  `up`; CLI exits 1 for this result and it is not silently replaced. Readiness timeout and exec
-  interval are wait policy, not drift identity.
+  method (including the readiness matcher), exact exec argv, TTY, normalized restart policy, or
+  `stop_grace` returns `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance
+  from `start` or `up`; CLI exits 1 for this result and it is not silently replaced. Readiness timeout
+  and exec interval are wait policy, not drift identity.
 
 ## MCP adapter
 
