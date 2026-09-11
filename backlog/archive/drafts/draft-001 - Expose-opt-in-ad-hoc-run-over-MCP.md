@@ -4,7 +4,7 @@ title: Expose opt-in ad hoc run over MCP
 status: Draft
 assignee: []
 created_date: '2026-09-05 15:39'
-updated_date: '2026-09-05 15:39'
+updated_date: '2026-09-11 17:56'
 labels:
   - mcp
   - security
@@ -55,3 +55,12 @@ Non-goals: enabling run by default; changing the bundled plugin default; shell c
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+created: 2026-09-11 17:56
+---
+Archived 2026-09-11 after backlog refinement. Decision: not pursued. hum mcp is stdio-only, so any client reaching it already launched a local subprocess and therefore has local execution; the only 'MCP but no shell' client is one whose harness deliberately withheld shell access, and an opt-in run tool would become the bypass for that policy. It also contradicts the shipped skill, which states the MCP server intentionally has no arbitrary-command tool and forbids raw hum run, and it would force a bespoke retry/idempotency design for lost MCP responses. Remote sandboxed agents cannot reach the local socket and remote transport is a non-goal. The reviewable path remains: a human adds the definition to hum.yaml and the agent calls start. Revisit only with a concrete local client that has hum MCP access, no process execution, and an operator who explicitly wants execution granted through hum.
+---
+<!-- COMMENTS:END -->
