@@ -1,10 +1,10 @@
 ---
 id: HUM-098
 title: Keep the hum.yaml schema in lockstep with the parser
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-11 17:04'
-updated_date: '2026-09-11 17:49'
+updated_date: '2026-09-11 18:30'
 labels:
   - config
   - docs
@@ -41,19 +41,42 @@ Non-goals: SchemaStore registration; generating the schema from Go types; a `hum
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/project -run '^TestManifestSchemaContract$' -count=1 -v` exits 0 and proves the schema and parser accept the same top-level, process, and readiness keys, plus representative strictness, process-name, duration, and exactly-one-readiness-probe cases.
-- [ ] #2 AC2 — `python3 -m json.tool hum.schema.json` exits 0 and prints valid formatted JSON, and a Python assertion over the parsed document confirms draft 2020-12, the root raw-GitHub identifier, and strict additional-property rules at the manifest, process, and readiness levels.
-- [ ] #3 AC3 — `go test ./internal/project ./internal/cli ./integration -run 'Test.*Init.*Schema' -count=1 -v` exits 0 and proves both generated and template manifests start with the root schema URL and still parse and run normally.
-- [ ] #4 AC4 — `rg -n 'hum.schema.json|authoritative parser' README.md docs/design.md` exits 0 and the matched documentation explains automatic editor setup, manual schema selection, and that the Go parser is authoritative.
-- [ ] #5 AC5 — `task test` and `task check` both exit 0 with no deleted, skipped, or weakened tests.
+- [x] #1 AC1 — `go test ./internal/project -run '^TestManifestSchemaContract$' -count=1 -v` exits 0 and proves the schema and parser accept the same top-level, process, and readiness keys, plus representative strictness, process-name, duration, and exactly-one-readiness-probe cases.
+- [x] #2 AC2 — `python3 -m json.tool hum.schema.json` exits 0 and prints valid formatted JSON, and a Python assertion over the parsed document confirms draft 2020-12, the root raw-GitHub identifier, and strict additional-property rules at the manifest, process, and readiness levels.
+- [x] #3 AC3 — `go test ./internal/project ./internal/cli ./integration -run 'Test.*Init.*Schema' -count=1 -v` exits 0 and proves both generated and template manifests start with the root schema URL and still parse and run normally.
+- [x] #4 AC4 — `rg -n 'hum.schema.json|authoritative parser' README.md docs/design.md` exits 0 and the matched documentation explains automatic editor setup, manual schema selection, and that the Go parser is authoritative.
+- [x] #5 AC5 — `task test` and `task check` both exit 0 with no deleted, skipped, or weakened tests.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation commit c7f4364780799aba4ba4e2f5e2a1aa202cb2ce59 merged fast-forward to main.
+
+AC#1 — PASS: `go test ./internal/project -run "^TestManifestSchemaContract$" -count=1 -v` exited 0; key parity, strict objects, names, compound/positive durations, and exactly-one readiness probes passed.
+AC#2 — PASS: `python3 -m json.tool hum.schema.json` exited 0; Python assertions confirmed draft 2020-12, the root raw-GitHub identifier, and false additionalProperties at manifest, process, and readiness levels.
+AC#3 — PASS: `go test ./internal/project ./internal/cli ./integration -run "Test.*Init.*Schema" -count=1 -v` exited 0; generated and template manifests start with the published directive and parse successfully.
+AC#4 — PASS: `rg -n "hum.schema.json|authoritative parser" README.md docs/design.md` exited 0; both documents cover automatic editor setup, manual selection, and parser authority.
+AC#5 — PASS: `task test` and `task check` exited 0.
+DoD#1 — PASS: `task ci` exited 0 on commit c7f4364, including security, vulnerability, static, test, race, build, and smoke gates.
+DoD#3 — PASS: independent verifier returned PASS for AC1-AC5 and found no defects.
+DoD#4 — PASS: implementation touched only README.md, docs/design.md, and internal/project/.
+DoD#5 — PASS: no test was deleted, skipped, or weakened.
+DoD#6 — PASS: no protected gate file was modified.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added a dependency-free parser/schema contract test, made generated and template hum init manifests opt into the published schema, and documented automatic/manual editor setup with parser authority. All focused, project, CI, and independent verification checks passed; commit c7f4364 merged to main.
+<!-- SECTION:FINAL_SUMMARY:END -->
