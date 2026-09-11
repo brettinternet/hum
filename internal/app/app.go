@@ -909,6 +909,7 @@ func (s *Supervisor) startExecutableReadiness(rec *record, incarnation uint64) {
 				tracker.mu.Lock()
 				tracker.ready = true
 				tracker.at = s.now()
+				tracker.diagnostic = ""
 				tracker.mu.Unlock()
 				return
 			}

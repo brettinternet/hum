@@ -476,19 +476,23 @@ func TestExecutableReadiness(t *testing.T) {
 	if p.Readiness == nil || p.Readiness.Method != "exec" || p.Readiness.Cursor != nil {
 		t.Fatalf("initial readiness = %#v", p.Readiness)
 	}
-	if err := os.WriteFile(marker, []byte("ok"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// At least one probe attempt must fail before the marker exists so the
+	// ready snapshot proves the failure diagnostic is cleared on success.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		current, getErr := s.Get(root, "exec-ready")
-		if getErr == nil && current.Readiness != nil && current.Readiness.State == ReadinessReady {
-			return
+		if getErr == nil && current.Readiness != nil && current.Readiness.Diagnostic != "" {
+			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	current, _ := s.Get(root, "exec-ready")
-	t.Fatalf("readiness did not become ready: %#v", current.Readiness)
+	if err := os.WriteFile(marker, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ready := waitForReadinessState(t, s, root, "exec-ready", ReadinessReady)
+	if ready.Readiness.Diagnostic != "" {
+		t.Fatalf("ready readiness retained failure diagnostic %q", ready.Readiness.Diagnostic)
+	}
 }
 
 func TestExecutableReadinessProbeSchedulingAndEnvironment(t *testing.T) {
