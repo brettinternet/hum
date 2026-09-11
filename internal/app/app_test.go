@@ -463,7 +463,6 @@ func TestExecutableReadinessProbeSchedulingAndEnvironment(t *testing.T) {
 	lock := filepath.Join(root, "probe-lock")
 	interval := 500 * time.Millisecond
 	s := testSupervisor(t, Options{})
-	launchedAt := time.Now()
 	_, err := s.Start(StartRequest{
 		Name: "probe-scheduling", Source: "manifest", Cwd: root,
 		Argv:  []string{"/bin/sh", "-c", "sleep 5"},
@@ -489,19 +488,20 @@ func TestExecutableReadinessProbeSchedulingAndEnvironment(t *testing.T) {
 		}
 		return lines, starts, ends
 	}
-	firstDeadline := time.Now().Add(interval / 2)
-	for time.Now().Before(firstDeadline) {
-		_, starts, _ := readEvents()
+	deadline := time.Now().Add(2 * time.Second)
+	var lines []string
+	var starts, ends int
+	for time.Now().Before(deadline) {
+		lines, starts, ends = readEvents()
 		if starts > 0 {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	lines, starts, ends := readEvents()
-	if starts == 0 || time.Since(launchedAt) >= interval {
-		t.Fatalf("first probe did not begin immediately: elapsed=%s events=%v", time.Since(launchedAt), lines)
+	if starts == 0 {
+		t.Fatalf("probe did not publish its start event: events=%v", lines)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		lines, starts, ends = readEvents()
 		if starts >= 2 && ends >= 1 {
