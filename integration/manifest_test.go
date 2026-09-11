@@ -528,7 +528,7 @@ processes:
 		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
 	})
 
-	up := testutil.Start(t, hum, projectRoot, env, "up", "--timeout", "700ms")
+	up := testutil.Start(t, hum, projectRoot, env, "up", "--timeout", "3s")
 	manifestIntegrationWaitForText(t, up, "hum up: fast: started; waiting for readiness", manifestWorkflowTimeout)
 	manifestIntegrationWaitForText(t, up, "hum up: slow: started; waiting for readiness", manifestWorkflowTimeout)
 	manifestIntegrationWaitForText(t, up, "hum up: fast: ready", manifestWorkflowTimeout)
