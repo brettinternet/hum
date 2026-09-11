@@ -104,6 +104,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
 
 	want := map[string]bool{
+		"version":  true,
 		"serve":    true,
 		"init":     true,
 		"mcp":      true,
@@ -147,6 +148,7 @@ func TestHelpWordBudgets(t *testing.T) {
 		limit int
 	}{
 		{name: "", limit: 250},
+		{name: "version", limit: 200},
 		{name: "serve", limit: 200},
 		{name: "init", limit: 200},
 		{name: "mcp", limit: 200},
@@ -188,6 +190,7 @@ func TestHelpAdvertisesOnlySupportedScopeFlags(t *testing.T) {
 		wantProject bool
 		wantGlobal  bool
 	}{
+		{name: "version"},
 		{name: "serve"},
 		{name: "mcp"},
 		{name: "skill"},

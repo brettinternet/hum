@@ -14,6 +14,7 @@ import (
 func TestFlagAliases(t *testing.T) {
 	t.Parallel()
 	expected := map[string]map[string][]string{
+		"version":  {"json": {"j"}},
 		"serve":    {"daemon": {"d"}},
 		"init":     {"force": nil, "json": {"j"}},
 		"run":      {"detach": {"d"}, "json": {"j"}, "tty": nil},

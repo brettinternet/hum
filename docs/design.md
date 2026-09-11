@@ -30,6 +30,7 @@ MCP ─┘                       └─> stable outcomes
 ## CLI
 
 ```text
+hum version [--json]
 hum [--project DIR|-C DIR] init [--force] [--json]
 hum serve [--daemon]
 hum [--project DIR|-C DIR] start <name>... [--no-wait] [--timeout DURATION] [--json]
@@ -100,8 +101,8 @@ worktree when DIR exactly matches a canonical root retained by the daemon.
   unlaunched declarations.
 - Guidance and stable next-command fields preserve a canonical shell-safe absolute `--project`
   selector, including paths with spaces.
-- `serve`, `shutdown`, `mcp`, and `skill` reject an explicit project selector because their
-  scope is daemon-global, request-scoped, or static.
+- `version`, `serve`, `shutdown`, `mcp`, and `skill` reject explicit project and global selectors
+  because their scope is build-static, daemon-global, request-scoped, or static.
 - Command-local `-d` remains `serve --daemon` and `run --detach`, and now also selects `up --detach`.
 
 Human-readable output is the default.
@@ -122,8 +123,11 @@ exits, errors, timeouts, definition drift, exhausted recovery, and dependency-sk
 
 The public version 1 CLI JSON and NDJSON contract is defined in
 [`docs/cli-json-v1.md`](cli-json-v1.md). Every covered top-level object has
-`schema_version: 1`. The CLI contract is independent of MCP and the private daemon protocol; local
-clients must not consume the daemon socket as a public interface.
+`schema_version: 1`. `hum version --json` prints
+`{"schema_version":1,"version":"<version>","build_time":"<time>"}` without resolving a project or
+contacting the daemon, so clients can discover this capability before trusting field semantics. The
+CLI contract is independent of MCP and the private daemon protocol; local clients must not consume
+the daemon socket as a public interface.
 
 JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus
 identity, readiness, cursors, and errors when applicable.
