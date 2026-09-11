@@ -455,6 +455,12 @@ func (c *Child) ResizeContext(ctx context.Context, columns, rows uint16) error {
 	return ctx.Err()
 }
 
+// LeaderDone is closed as soon as the process-group leader has been reaped,
+// before descendant and output cleanup completes.
+func (c *Child) LeaderDone() <-chan struct{} {
+	return c.leaderDone
+}
+
 // HasSurvivingDescendants reports whether the process-group leader has been
 // reaped while another member of the original process group remains alive.
 func (c *Child) HasSurvivingDescendants() bool {

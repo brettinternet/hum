@@ -316,6 +316,12 @@ type IdentityChild interface {
 	StartIdentity() string
 }
 
+// LeaderChild exposes the process-group leader's exit independently from
+// descendant and output cleanup.
+type LeaderChild interface {
+	LeaderDone() <-chan struct{}
+}
+
 // DescendantChild exposes the intermediate lifecycle window after the recorded
 // group leader exits while another member of its process group remains alive.
 type DescendantChild interface {
@@ -3489,16 +3495,22 @@ func (s *Supervisor) SignalControlScoped(scope, cwd, name string, sig os.Signal)
 }
 
 // expireControlIntent limits a forwarded control signal to the exit it can
-// reasonably have caused. A child that survives the ordinary stop grace has
-// resumed autonomous operation, so a later failure must follow restart policy.
+// reasonably have caused. A child whose leader survives the ordinary stop
+// grace has resumed autonomous operation, so a later failure must follow
+// restart policy. Production children publish leader exit before descendant
+// and output cleanup; legacy test children use full completion as a fallback.
 func (s *Supervisor) expireControlIntent(rec *record, child Child, incarnation, generation uint64) {
+	exit := child.Done()
+	if child, ok := child.(LeaderChild); ok {
+		exit = child.LeaderDone()
+	}
 	s.mu.RLock()
 	grace := rec.stopGrace
 	s.mu.RUnlock()
 	timer := s.after(grace)
 	go func() {
 		select {
-		case <-child.Done():
+		case <-exit:
 			return
 		case <-timer:
 		case <-s.timersDone:
@@ -3507,7 +3519,7 @@ func (s *Supervisor) expireControlIntent(rec *record, child Child, incarnation, 
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		select {
-		case <-child.Done():
+		case <-exit:
 			return
 		default:
 		}

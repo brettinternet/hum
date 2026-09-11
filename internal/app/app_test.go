@@ -1083,6 +1083,17 @@ func (c *signalPolicyChild) Signal(sig os.Signal) error {
 }
 func (c *signalPolicyChild) release() { c.once.Do(func() { close(c.done) }) }
 
+type leaderSignalPolicyChild struct {
+	*signalPolicyChild
+	leaderDone chan struct{}
+	leaderOnce sync.Once
+}
+
+func (c *leaderSignalPolicyChild) LeaderDone() <-chan struct{} { return c.leaderDone }
+func (c *leaderSignalPolicyChild) exitLeader() {
+	c.leaderOnce.Do(func() { close(c.leaderDone) })
+}
+
 func (c *esrchChild) PID() int  { return 1234 }
 func (c *esrchChild) PGID() int { return 1234 }
 func (c *esrchChild) Done() <-chan struct{} {
@@ -2679,6 +2690,43 @@ func TestControlSignalSuppressesOnFailureRestart(t *testing.T) {
 	}
 	if model.State != StateExited || model.ExitCode != 17 || model.NextLaunchAt != nil || model.Relaunches != 0 {
 		t.Fatalf("controlled exit = %+v, want terminal 17 with no successor", model)
+	}
+}
+
+func TestControlSignalLeaderExitSuppressesRestartDuringCleanup(t *testing.T) {
+	root := makeProject(t, false)
+	graceTimer := make(chan time.Time, 1)
+	child := &leaderSignalPolicyChild{
+		signalPolicyChild: &signalPolicyChild{pid: 4104, exitCode: 17, done: make(chan struct{})},
+		leaderDone:        make(chan struct{}),
+	}
+	s := testSupervisor(t, Options{
+		StopGrace: 20 * time.Millisecond,
+		After: func(time.Duration) <-chan time.Time {
+			return graceTimer
+		},
+		StartProcess: func(process.Spec) (Child, error) {
+			return child, nil
+		},
+	})
+	if _, err := s.Start(StartRequest{
+		Name: "leader-exit", Root: root, Cwd: root, Argv: []string{"fake"}, Source: "manifest", Restart: RestartOnFailure,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SignalControl(root, "leader-exit", syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	child.exitLeader()
+	graceTimer <- time.Now()
+	child.release()
+	waitSubscriptionSignal(t, recordDone(t, s, root, "leader-exit"), "leader-exit cleanup")
+	model, err := s.Get(root, "leader-exit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.State != StateExited || model.ExitCode != 17 || model.NextLaunchAt != nil || model.Relaunches != 0 {
+		t.Fatalf("leader-exit cleanup = %+v, want terminal 17 with no successor", model)
 	}
 }
 
