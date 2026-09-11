@@ -1,10 +1,10 @@
 ---
 id: HUM-079
 title: Reduce CLI test critical-path latency
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-10 20:09'
-updated_date: '2026-09-10 20:35'
+updated_date: '2026-09-11 04:03'
 labels:
   - tooling
 dependencies:
@@ -39,18 +39,35 @@ Non-goals: deleting or skipping tests; weakening assertions; shortening correctn
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 At both `BASE_SHA` and the candidate revision on the same runner, `for run_number in 1 2 3; do /usr/bin/time -p mise exec go -- go test -count=1 ./internal/cli; done` exits 0 for all six runs; the recorded candidate median `real` time is no more than 70% of the base median.
-- [ ] #2 At both `BASE_SHA` and the candidate revision on the same runner, `/usr/bin/time -p mise exec go -- go test -race -count=1 ./internal/cli` exits 0; the recorded candidate `real` time is no more than 75% of the base time.
-- [ ] #3 `mise exec go -- go test -shuffle=on -count=3 ./internal/cli` exits 0, demonstrating that the optimization introduced no ordering dependency.
-- [ ] #4 `task ci` exits 0 with no CLI test deleted, skipped, or assertion weakened.
+- [x] #1 At both `BASE_SHA` and the candidate revision on the same runner, `for run_number in 1 2 3; do /usr/bin/time -p mise exec go -- go test -count=1 ./internal/cli; done` exits 0 for all six runs; the recorded candidate median `real` time is no more than 70% of the base median.
+- [x] #2 At both `BASE_SHA` and the candidate revision on the same runner, `/usr/bin/time -p mise exec go -- go test -race -count=1 ./internal/cli` exits 0; the recorded candidate `real` time is no more than 75% of the base time.
+- [x] #3 `mise exec go -- go test -shuffle=on -count=3 ./internal/cli` exits 0, demonstrating that the optimization introduced no ordering dependency.
+- [x] #4 `task ci` exits 0 with no CLI test deleted, skipped, or assertion weakened.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation commit: 3390a99 (base a94b5a41d2a19674e332823a95920ec47bd917ea).
+AC#1: `for run_number in 1 2 3; do /usr/bin/time -p mise exec go -- go test -count=1 ./internal/cli; done` passed at base and candidate on the same runner. Base real: 63.11s, 63.07s, 59.83s (median 63.07s). Candidate real: 36.70s, 33.83s, 36.88s (median 36.70s, 58.2% of base).
+AC#2: `/usr/bin/time -p mise exec go -- go test -race -count=1 ./internal/cli` passed at base and candidate on the same runner. Base real: 113.96s. Candidate real: 60.99s (53.5% of base). Later final samples passed at 51.39s and independent 55.73s.
+AC#3: `mise exec go -- go test -shuffle=on -count=3 ./internal/cli` passed.
+AC#4: `task ci` passed on final rebased commit 3390a99. No tests were deleted or skipped and no assertions were weakened.
+Review: independent verifier returned PASS for AC1-AC4 and DOD1-DOD6 after the blocked-writer timing assertion was restored. Diff is limited to declared `internal/cli/*_test.go` paths.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Reduced CLI test critical-path latency by running process-global tests in isolated parallel child test processes, parallelizing safe in-process tests, and shortening non-assertive fixture sleeps. Normal median fell from 63.07s to 36.70s; race time fell from 113.96s to 60.99s. Final `task ci` and independent verification passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
