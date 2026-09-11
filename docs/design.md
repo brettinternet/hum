@@ -481,10 +481,12 @@ The nearest Git project root may contain one authoritative `hum.yaml`.
 - Discovery occurs only when the file is absent.
 - Alternate filenames are ignored.
 
-`hum init` puts the published root `hum.schema.json` directive first so compatible YAML editors
-configure validation and completion automatically. Existing manifests can select
-`hum.schema.json` manually in their editor. The schema is an editor contract; the Go
-implementation remains the authoritative parser for manifest behavior.
+SchemaStore-aware editors automatically load the published root `hum.schema.json` for `hum.yaml`.
+The inline schema directive is optional in those editors and remains supported. `hum init` puts the
+directive first so other compatible YAML editors configure validation and completion
+automatically. Existing manifests in editors without SchemaStore support can select
+`hum.schema.json` manually. The schema is an editor contract; the Go implementation remains the
+authoritative parser for manifest behavior.
 
 ```yaml
 version: 1

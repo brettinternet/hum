@@ -75,11 +75,12 @@ hum up
 hum down
 ```
 
-`hum init` starts new manifests with a directive for the published
-[`hum.schema.json`](hum.schema.json), so compatible YAML editors load validation and completion
-automatically. For an existing manifest or an editor that ignores the directive, select the root
-`hum.schema.json` manually. The schema provides editor guidance; the Go manifest implementation is
-the authoritative parser.
+SchemaStore-aware editors automatically load the published [`hum.schema.json`](hum.schema.json)
+for files named `hum.yaml`; the inline directive is optional in those editors and remains
+supported. `hum init` includes the directive so other compatible YAML editors also load validation
+and completion automatically. For an existing manifest in an editor without SchemaStore support,
+select the root `hum.schema.json` manually. The schema provides editor guidance; the Go manifest
+implementation is the authoritative parser.
 
 ## Start processes
 
