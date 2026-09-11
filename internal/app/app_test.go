@@ -2790,6 +2790,53 @@ func TestControlSignalLeaderExitSuppressesRestartDuringCleanup(t *testing.T) {
 	}
 }
 
+// signalGoneChild reports the process as already gone when signaled while
+// its exit has not yet been reconciled, modelling an incarnation that exited
+// on its own an instant before a control signal reached it.
+type signalGoneChild struct {
+	*signalPolicyChild
+}
+
+func (c *signalGoneChild) Signal(sig os.Signal) error {
+	_ = c.signalPolicyChild.Signal(sig)
+	return syscall.ESRCH
+}
+
+func TestControlSignalOnExitedChildKeepsOnFailureRestart(t *testing.T) {
+	root := makeProject(t, false)
+	first := &signalGoneChild{signalPolicyChild: &signalPolicyChild{pid: 4106, exitCode: 17, done: make(chan struct{})}}
+	launches := 0
+	s := testSupervisor(t, Options{
+		StopGrace: 20 * time.Millisecond,
+		After:     func(time.Duration) <-chan time.Time { return make(chan time.Time) },
+		StartProcess: func(process.Spec) (Child, error) {
+			launches++
+			if launches == 1 {
+				return first, nil
+			}
+			return newSubscriptionChild(4107, 0, time.Now(), ""), nil
+		},
+	})
+	if _, err := s.Start(StartRequest{
+		Name: "gone", Root: root, Cwd: root, Argv: []string{"fake"}, Source: "manifest", Restart: RestartOnFailure,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var notRunning *NotRunningError
+	if err := s.SignalControl(root, "gone", syscall.SIGINT); !errors.As(err, &notRunning) {
+		t.Fatalf("control signal to exited child = %v, want NotRunningError", err)
+	}
+	first.release()
+	waitSubscriptionSignal(t, recordDone(t, s, root, "gone"), "gone autonomous failure")
+	model, err := s.Get(root, "gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.State != StateExited || model.ExitCode != 17 || model.NextLaunchAt == nil || model.Relaunches != 0 {
+		t.Fatalf("gone exit = %+v, want terminal 17 with a scheduled successor", model)
+	}
+}
+
 func TestControlSignalSurvivorResumesOnFailureRestart(t *testing.T) {
 	root := makeProject(t, false)
 	graceTimer := make(chan time.Time, 1)

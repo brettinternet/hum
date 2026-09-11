@@ -3487,6 +3487,14 @@ func (s *Supervisor) SignalControlScoped(scope, cwd, name string, sig os.Signal)
 	s.mu.Unlock()
 	if err := child.Signal(sig); err != nil {
 		if signalMeansDone(err) {
+			// The incarnation exited on its own before the signal landed, so
+			// the exit must follow restart policy. Revert the intent unless
+			// reconcile already consumed it or a newer control replaced it.
+			s.mu.Lock()
+			if s.records[rec.key] == rec && rec.child == child && rec.incarnation == incarnation && rec.controlIntentGeneration == generation && !rec.terminal && !rec.operatorStop && !rec.restarting {
+				rec.controlIntent = false
+			}
+			s.mu.Unlock()
 			return &NotRunningError{Root: rec.root, Name: rec.name}
 		}
 		return err
