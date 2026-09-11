@@ -60,12 +60,13 @@ func startShell(s *Supervisor, root, name, script string) (Process, error) {
 }
 
 type processStopGraceChild struct {
-	pid     int
-	done    chan struct{}
-	once    sync.Once
-	mu      sync.Mutex
-	signals []os.Signal
-	result  process.Result
+	pid      int
+	done     chan struct{}
+	signaled chan struct{}
+	once     sync.Once
+	mu       sync.Mutex
+	signals  []os.Signal
+	result   process.Result
 }
 
 func (c *processStopGraceChild) PID() int              { return c.pid }
@@ -85,6 +86,9 @@ func (c *processStopGraceChild) Signal(signal os.Signal) error {
 	c.mu.Lock()
 	c.signals = append(c.signals, signal)
 	c.mu.Unlock()
+	if c.signaled != nil {
+		c.signaled <- struct{}{}
+	}
 	if signal == syscall.SIGKILL {
 		c.once.Do(func() { close(c.done) })
 	}
@@ -93,31 +97,30 @@ func (c *processStopGraceChild) Signal(signal os.Signal) error {
 
 type processStopGraceTimers struct {
 	mu    sync.Mutex
+	ready *sync.Cond
 	items map[time.Duration][]chan time.Time
 }
 
 func newProcessStopGraceTimers() *processStopGraceTimers {
-	return &processStopGraceTimers{items: make(map[time.Duration][]chan time.Time)}
+	timers := &processStopGraceTimers{items: make(map[time.Duration][]chan time.Time)}
+	timers.ready = sync.NewCond(&timers.mu)
+	return timers
 }
 func (t *processStopGraceTimers) after(duration time.Duration) <-chan time.Time {
 	channel := make(chan time.Time, 1)
 	t.mu.Lock()
 	t.items[duration] = append(t.items[duration], channel)
+	t.ready.Broadcast()
 	t.mu.Unlock()
 	return channel
 }
 func (t *processStopGraceTimers) wait(duration time.Duration) bool {
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		t.mu.Lock()
-		ready := len(t.items[duration]) > 0
-		t.mu.Unlock()
-		if ready {
-			return true
-		}
-		time.Sleep(time.Millisecond)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for len(t.items[duration]) == 0 {
+		t.ready.Wait()
 	}
-	return false
+	return true
 }
 func (t *processStopGraceTimers) fire(duration time.Duration) bool {
 	t.mu.Lock()
@@ -129,6 +132,29 @@ func (t *processStopGraceTimers) fire(duration time.Duration) bool {
 	t.items[duration] = items[1:]
 	items[0] <- time.Now()
 	return true
+}
+
+func (t *processStopGraceTimers) fireAll() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for duration, items := range t.items {
+		for _, item := range items {
+			item <- time.Now()
+		}
+		delete(t.items, duration)
+	}
+}
+
+func (c *processStopGraceChild) waitSignals(count int) {
+	for {
+		c.mu.Lock()
+		ready := len(c.signals) >= count
+		c.mu.Unlock()
+		if ready {
+			return
+		}
+		<-c.signaled
+	}
 }
 
 func (c *processStopGraceChild) gotSignals() []os.Signal {
@@ -207,7 +233,7 @@ func TestProcessStopGraceLifecycle(t *testing.T) {
 
 func TestProcessStopGraceOperations(t *testing.T) {
 	newChild := func(pid int) *processStopGraceChild {
-		return &processStopGraceChild{pid: pid, done: make(chan struct{})}
+		return &processStopGraceChild{pid: pid, done: make(chan struct{}), signaled: make(chan struct{}, 8)}
 	}
 	zero := time.Duration(0)
 	longGrace := 4 * time.Second
@@ -222,6 +248,12 @@ func TestProcessStopGraceOperations(t *testing.T) {
 			index++
 			return child, nil
 		}})
+		t.Cleanup(func() {
+			timers.fireAll()
+			for _, child := range []*processStopGraceChild{first, second, third, fourth, fifth} {
+				child.finish()
+			}
+		})
 		if _, err := s.Start(StartRequest{Name: "replace", Root: root, Cwd: root, Argv: []string{"old"}, StopGrace: &zero}); err != nil {
 			t.Fatal(err)
 		}
@@ -279,6 +311,8 @@ func TestProcessStopGraceOperations(t *testing.T) {
 		if !timers.wait(3 * time.Second) {
 			t.Fatal("shutdown did not arm the Supervisor default grace timer")
 		}
+		fourth.waitSignals(2)
+		fifth.waitSignals(1)
 		if signals := fourth.gotSignals(); len(signals) != 2 || signals[0] != syscall.SIGTERM || signals[1] != syscall.SIGKILL {
 			t.Fatalf("shutdown explicit-zero signals = %v, want TERM,KILL", signals)
 		}
