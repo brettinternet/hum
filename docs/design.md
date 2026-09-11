@@ -136,6 +136,68 @@ the selected scope with `hum list --json`, preserves its canonical absolute `pro
 only exact-argv public CLI commands with an explicit `--project`; it never connects to the private
 daemon socket.
 
+## Lifecycle event interface decision
+
+### Evidence from HUM-092
+
+The Herdr adapter needs the latest state to label a process and offer sensible actions; intermediate
+`starting`, exit, and recovery transitions would only animate that picker. Each picker invocation
+gets a fresh versioned `list --json` snapshot. A selected mutation then runs as a separate exact-argv
+Hum command against the process name and explicit canonical project, so Hum revalidates current
+state and reports a race as the command result. The picker exits after the action, and reopening it is
+a fresh snapshot. No observed operator workflow requires every intermediate transition.
+
+The adapter tests reproduce capability negotiation, running-versus-stopped action selection,
+multiple process records in one canonical project, rejection of mixed project roots, and preservation
+of explicit project scope and exact argv. Separate Herdr workspaces therefore remain separate Hum
+project scopes. Cancellation leaves no subscription to clean up: the picker owns no background poll,
+and process panes replace the adapter with the selected `logs --follow` or `attach` client, whose
+lifetime Herdr owns independently of the supervised process.
+
+A local 50-sample warm benchmark of the shipped adapter's complete discovery path (one
+`version --json` subprocess plus one `list --json` subprocess) used generated manifests and the
+built Hum binary. Median/p95 elapsed time was 11.86/12.54 ms for 1 process, 12.19/12.84 ms for 25,
+and 13.16/14.08 ms for 100. A direct `list --json` at 100 processes was 7.40/7.78 ms median/p95.
+This is cheap enough for on-demand refresh and leaves periodic refresh available if Herdr later wants
+fresher decoration.
+
+### Polling and race analysis
+
+A snapshot can become stale immediately after it is read. That can make an offered action
+inconvenient—for example, showing Attach just after a process exits—but it does not authorize an
+operation from cached state: `start`, `stop`, `restart`, `remove`, and `attach` resolve the named
+process again. The command either applies to current state or returns an error that reopening the
+picker resolves. Fast transitions can be absent from two snapshots, but their resulting state is in
+the next snapshot; HUM-092 has no audit, notification, or orchestration requirement that depends on
+the omitted transition.
+
+For a known process, `logs --follow` supplies live retained output and lifecycle system entries,
+while bounded `logs --after-cursor` and `wait --after-cursor` support replay or waiting. They do not
+find newly added, renamed, or removed names, but the picker only needs those names when it next
+opens. Rapid polling was rejected as unnecessary work rather than as unsafe; a project-wide stream
+was rejected because it would add retention and reconnect obligations without fixing demonstrated
+behavior. Direct private-daemon access and callbacks running plugin code inside Hum remain rejected
+boundary violations.
+
+Reconsider this decision when a representative external adapter demonstrates at least one of these
+conditions: a correct operation cannot be recovered by command-time state validation plus a fresh
+snapshot; every transition must be observed across disconnects; or the p95 complete discovery time
+exceeds 100 ms for 100 declared processes on a supported workstation and the required refresh
+cadence is one second or less. Record the reproducer and measurements before proposing a contract.
+
+### Backpressure and cursor semantics
+
+Any future lifecycle contract must remain local, bounded, versioned, and out-of-process while the
+daemon socket remains private. The smallest acceptable shape would be project-scoped bounded reads
+and bounded waits after an opaque cursor, not an indefinite global stream. It must define total order
+within a project, retention limits, an explicit truncation response when a cursor is too old, and the
+cursor returned after each page. Reconnect resumes after the last committed cursor; daemon restart
+must either preserve that ordering and cursor domain or explicitly invalidate the cursor. Limits must
+bound response entries and bytes, and slow consumers must page retained data or receive truncation
+rather than create daemon-side queues. No implementation draft is warranted by HUM-092.
+
+Decision: defer
+
 JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus
 identity, readiness, cursors, and errors when applicable.
 
