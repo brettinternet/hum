@@ -4,12 +4,13 @@ title: Publish a versioned CLI machine-output contract
 status: To Do
 assignee: []
 created_date: '2026-09-06 19:10'
-updated_date: '2026-09-11 16:58'
+updated_date: '2026-09-11 17:03'
 labels:
   - cli
   - json
   - integration
   - contract
+milestone: m-5
 dependencies:
   - HUM-092
 references:
@@ -17,6 +18,7 @@ references:
   - docs/design.md
 modified_files:
   - internal/cli/
+  - internal/mcp/
   - cmd/hum/
   - integration/
   - docs/cli-json-v1.md
@@ -31,83 +33,13 @@ type: enhancement
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Outcome: external local clients can depend on a documented, discoverable version 1 contract for Hum's CLI JSON and NDJSON output instead of parsing human output or consuming the private daemon protocol.
 
-## Why this exists
+Scope: cover every command that supports `--json`, excluding attached `hum run`, whose documented output remains raw child output. Add `schema_version: 1` to every covered top-level JSON object and NDJSON record, including success, lifecycle-result, log, and terminal error records. Document framing, field requiredness and optionality, ordering guarantees, exit-code interaction, and a compatibility policy: version 1 may add optional object fields and new enum values but may not remove or rename fields, change field types or meanings, or change record framing. Lock representative command outputs to the contract with executable tests. Preserve current payload shapes apart from the additive version field.
 
-“Hum emits JSON” is not yet a complete integration promise. A consumer can parse today's output and still break if a later release renames `state`, changes a field type, changes one JSON document into multiple records, reorders lifecycle results, or changes cursor meaning. This task makes machine output a deliberate public subprocess contract and locks it with tests.
+This work follows HUM-092 so the first real external adapter determines which details require normative documentation. The public boundary is the CLI process interface; MCP retains its own schemas and the daemon socket remains private.
 
-HUM-092 is the first real consumer. Its picker parses `list --json`; lifecycle actions may parse `start`, `restart`, `stop`, and `remove` results; logs and attach remain terminal panes and do not need to parse human output. Completing HUM-092 first provides concrete feedback, while this task keeps one consistent version marker across every CLI `--json` surface rather than creating versioned and unversioned islands.
+Implementation guidance (2026-09-11 refinement): `internal/mcp/tools.go` already declares JSON Schemas for process snapshots, launch, stop, restart, signal, output, wait, and input results, and CLI aggregate JSON already shares the MCP `{"processes":[...]}` collection shape. Treat those schemas as the single source of field names and types: derive the documented version 1 contract from them and add a dependency-free parity test proving that each covered CLI JSON record's key set is declared by the corresponding MCP schema, documenting any deliberate divergence (for example the CLI `{"error":{...}}` envelope) explicitly. Do not maintain a second hand-written field list. Exporting the schema tables for the test may touch `internal/mcp/`, but MCP wire behavior must not change.
 
-## JSON, NDJSON, and the envelope
-
-A bounded command emits one complete JSON document and exits. Proposed `list --json` shape:
-
-```json
-{
-  "schema_version": 1,
-  "processes": [
-    {"name": "api", "state": "running", "pid": 48102}
-  ]
-}
-```
-
-A streaming or incremental command emits NDJSON: one independently parseable JSON object per line. Proposed `up --json` shape:
-
-```json
-{"schema_version":1,"name":"database","outcome":"already_running"}
-{"schema_version":1,"name":"api","outcome":"started"}
-{"schema_version":1,"name":"web","outcome":"started"}
-```
-
-A proposed output event remains one line:
-
-```json
-{"schema_version":1,"op":"event","type":"output","name":"api","entries":[{"cursor":42,"stream":"stdout","text":"ready\n"}]}
-```
-
-Here “envelope” means the existing top-level response object or NDJSON record. Add `schema_version: 1` directly to it. Do not introduce a disruptive wrapper such as `{"schema_version":1,"data":{...}}`; preserve existing payload shapes apart from the additive version field. Nested process and entry objects do not each repeat the schema version.
-
-Standalone and streamed errors are versioned too, for example:
-
-```json
-{"schema_version":1,"error":{"code":"daemon_unavailable","message":"..."}}
-{"schema_version":1,"op":"event","type":"error","name":"api","error":{"code":"daemon_unavailable","message":"..."}}
-```
-
-## Scope
-
-Cover every command that supports `--json`, including success, aggregate, lifecycle-result, bounded-log, stream, warning, and terminal-error records. Attached `hum run` is the explicit exception: its documented output remains raw child stdout/stderr. Human-readable output and exit codes remain unchanged. MCP retains its separately advertised schemas and receives no `schema_version` change from this work.
-
-Create `docs/cli-json-v1.md` as the normative contract. For each command, document whether it emits one JSON document or NDJSON, required and optional fields, field types and units, timestamps, cursor semantics, ordering guarantees, warning/error placement, and interaction with process exit status. Cross-link the contract from README.md and docs/design.md while keeping the daemon protocol private.
-
-## Consumer example
-
-A client should be able to do the equivalent of:
-
-```python
-result = subprocess.run(
-    ["hum", "--project", project_root, "list", "--json"],
-    capture_output=True,
-    text=True,
-    check=True,
-)
-document = json.loads(result.stdout)
-if document.get("schema_version") != 1:
-    raise UnsupportedHumOutputVersion()
-for process in document["processes"]:
-    render(process["name"], process["state"])
-```
-
-For NDJSON, read stdout line-by-line, parse each line independently, verify `schema_version`, dispatch on known record types/outcomes, and handle unknown values explicitly.
-
-## Version 1 compatibility rules
-
-Within schema version 1, Hum may add optional object fields and new enum/outcome values. It may not remove or rename documented fields, change their types or meanings, change JSON versus NDJSON framing, or weaken documented ordering/cursor guarantees. Consumers must ignore unknown optional fields and safely handle unknown enum values. An incompatible change requires a new schema version and a documented migration path.
-
-Implementation should use the smallest typed CLI-only mechanism for the version field and avoid generic JSON map rewriting. Contract tests should validate representative shapes and invariants rather than freeze dynamic values such as PIDs and timestamps.
-
-## Non-goals
-
-A runtime plugin system; a public Go API; public daemon socket access; remote transport; MCP schema or behavior changes; versioning human-readable output; stabilizing undocumented internal fields; adding lifecycle operations; or requiring consumers to link Go code.
+Non-goals: a runtime plugin system; a public Go API; public daemon socket access; remote transport; MCP schema or behavior changes; versioning human-readable output; stabilizing undocumented internal fields; or adding new lifecycle operations.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

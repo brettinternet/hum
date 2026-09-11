@@ -4,12 +4,13 @@ title: Decide whether Hum needs a bounded lifecycle event interface
 status: To Do
 assignee: []
 created_date: '2026-09-11 16:27'
-updated_date: '2026-09-11 16:58'
+updated_date: '2026-09-11 17:02'
 labels:
   - architecture
   - integration
   - events
   - product-boundary
+milestone: m-5
 dependencies:
   - HUM-092
   - HUM-093

@@ -4,13 +4,16 @@ title: Publish Hum in nixpkgs
 status: To Do
 assignee: []
 created_date: '2026-09-11 16:40'
+updated_date: '2026-09-11 17:03'
 labels:
   - tooling
   - docs
+milestone: m-5
 dependencies: []
 references:
   - 'https://github.com/NixOS/nixpkgs/blob/master/CONTRIBUTING.md'
   - 'https://nixos.org/manual/nixpkgs/stable/'
+  - .github/workflows/release.yaml
 modified_files:
   - README.md
 priority: low
@@ -21,7 +24,9 @@ ordinal: 69800
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Nix and NixOS users currently have no package attribute for Hum. Scope: contribute and maintain a top-level nixpkgs hum package sourced from immutable tagged releases (or the corresponding tagged source), cover Hum’s supported Linux and macOS architectures, and document installation after the package is available. Non-goals: a first-party flake, a binary cache, a NixOS service module, or changing Hum runtime behavior. External delivery artifact: the package expression, maintainer metadata, and tests required by the upstream nixpkgs contribution.
+Nix and NixOS users currently have no package attribute for Hum. Scope: contribute and maintain a top-level nixpkgs hum package built from the tagged source with `buildGoModule` (nixpkgs policy prefers reproducible source builds over repackaged release binaries), cover Hum's supported Linux and macOS architectures, and document installation after the package is available. Non-goals: a first-party flake, a binary cache, a NixOS service module, or changing Hum runtime behavior. External delivery artifact: the package expression, maintainer metadata, and tests required by the upstream nixpkgs contribution.
+
+Packaging notes (2026-09-11): the module path is `hum` and the binary is `./cmd/hum`; set `ldflags` to `-s -w -X main.buildVersion=${version}` so `hum --version` reports the release rather than `dev`. `CGO_ENABLED=0` matches the release workflow. A `versionCheckHook` or `testers.testVersion` satisfies the nixpkgs test requirement.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

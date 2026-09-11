@@ -4,11 +4,12 @@ title: Publish Hum to the Arch User Repository
 status: To Do
 assignee: []
 created_date: '2026-09-11 16:40'
-updated_date: '2026-09-11 16:50'
+updated_date: '2026-09-11 17:02'
 labels:
   - tooling
   - docs
   - deferred
+milestone: m-5
 dependencies: []
 references:
   - 'https://wiki.archlinux.org/title/AUR_submission_guidelines'
