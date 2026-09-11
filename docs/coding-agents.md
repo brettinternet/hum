@@ -1,5 +1,7 @@
 # Coding-agent setup
 
+For silent services use `ready.exec` with an exact non-empty argv; hum never invokes it through a shell. The first probe runs immediately after launch and retries serially after failures at the positive `interval` (default 1s), up to `timeout` (default 30s). It inherits the supervised cwd/environment, retains one bounded terminal diagnostic, and is startup gating rather than liveness monitoring. Changing method or argv is `readiness_exec` drift; interval and timeout do not cause drift.
+
 ## Install the Codex plugin
 
 The plugin bundles the hum workflow skill and MCP registration. Install `hum`
@@ -75,8 +77,13 @@ Each tool rejects fields outside its advertised closed input schema before proje
 - A changed running or recovery-capable manifest record returns `definition_drift` with sorted
   `changed_fields` and `hum restart NAME` guidance; CLI `up` exits 1 for drift and it never
   satisfies an `after` dependency.
-- The readiness matcher and normalized restart policy are comparison boundaries; environment and
-  readiness timeout are not compared.
+- Readiness method (including the readiness matcher), match or exact exec argv, and normalized
+  restart policy are comparison boundaries; environment, exec interval, and readiness timeout are
+  not compared.
+- `ready.exec` is direct exact argv (never a shell). The first probe is immediate; failed attempts
+  run serially with the configured interval (1s by default), using the launched cwd and environment.
+  Only one bounded last-attempt diagnostic is exposed on terminal results; probe output is never
+  retained. Readiness gates startup and `after`, not liveness monitoring.
 - A removed manifest-sourced running or recovery-capable record returns `removed_definition`
   with `hum stop NAME` or `hum remove NAME` guidance; it is lexical and does not change
   aggregate status, and ad-hoc/discovered records are excluded; removed records require an
@@ -153,8 +160,11 @@ only other accepted value.
 - `start` and `up` report active/recovery-capable definition drift instead of silently adopting
   those edits; CLI `up` exits 1 and only `restart` adopts them.
 - Only restart applies a changed definition.
-- The readiness matcher and normalized restart policy are compared; environment and readiness
-  timeout are not.
+- Readiness method, match or exact exec argv, and normalized restart policy are compared;
+  environment, exec interval, and readiness timeout are not. Exec probes use direct argv without a
+  shell, start immediately, retry serially at the interval (1s by default), inherit cwd/environment,
+  retain only one bounded terminal diagnostic, and never retain probe output. This is startup gating,
+  not liveness monitoring.
 - Read `restart`, `relaunches`, and `next_launch_at` in status/list snapshots.
 - Followers stay attached and bounded logs retain failure and relaunch boundaries.
 - Always read the failing incarnation's retained output with `logs` before editing again.

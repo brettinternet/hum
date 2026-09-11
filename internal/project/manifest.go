@@ -48,8 +48,10 @@ var (
 		"stop_grace": {},
 	}
 	readyFields = map[string]struct{}{
-		"match":   {},
-		"timeout": {},
+		"match":    {},
+		"exec":     {},
+		"interval": {},
+		"timeout":  {},
 	}
 )
 
@@ -71,11 +73,13 @@ type Definition struct {
 	StopGrace *time.Duration
 }
 
-// ReadyDefinition describes the output expression and timeout used to
-// determine whether a manifest process is ready.
+// ReadyDefinition describes the output expression or direct executable and
+// timeout used to determine whether a manifest process is ready.
 type ReadyDefinition struct {
-	Match   string
-	Timeout time.Duration
+	Match    string
+	Exec     []string
+	Interval time.Duration
+	Timeout  time.Duration
 }
 
 // LoadDefinitions reads the one supported project manifest, hum.yaml, below
@@ -399,36 +403,56 @@ func parseReady(filename, context string, node *yaml.Node) (*ReadyDefinition, er
 	for _, entry := range entries {
 		fields[entry.name] = entry.value
 	}
-	matchNode, ok := fields["match"]
-	if !ok {
-		return nil, manifestError(filename, readyContext, "missing key %q", "match")
+	matchNode, hasMatch := fields["match"]
+	execNode, hasExec := fields["exec"]
+	if hasMatch == hasExec {
+		return nil, manifestError(filename, readyContext, "requires exactly one of %q or %q", "match", "exec")
 	}
-	if !isStringScalar(matchNode) {
-		return nil, manifestError(filename, readyContext, "match must be a string")
+	definition := &ReadyDefinition{Timeout: defaultReadyTimeout}
+	if hasMatch {
+		if !isStringScalar(matchNode) {
+			return nil, manifestError(filename, readyContext, "match must be a string")
+		}
+		definition.Match = matchNode.Value
+		if _, err := regexp.Compile(definition.Match); err != nil {
+			return nil, manifestError(filename, readyContext, "invalid match regular expression %q: %v", definition.Match, err)
+		}
+	} else {
+		definition.Exec, err = parseArgv(filename, readyContext+".exec", execNode)
+		if err != nil {
+			return nil, err
+		}
+		definition.Interval = time.Second
+		if intervalNode, ok := fields["interval"]; ok {
+			if !isStringScalar(intervalNode) {
+				return nil, manifestError(filename, readyContext, "interval must be a duration string")
+			}
+			parsed, parseErr := time.ParseDuration(intervalNode.Value)
+			if parseErr != nil || parsed <= 0 {
+				return nil, manifestError(filename, readyContext, "interval must be a positive duration")
+			}
+			definition.Interval = parsed
+		}
 	}
-	match := matchNode.Value
-	if _, err := regexp.Compile(match); err != nil {
-		return nil, manifestError(filename, readyContext, "invalid match regular expression %q: %v", match, err)
-	}
-
-	timeout := defaultReadyTimeout
 	if timeoutNode, ok := fields["timeout"]; ok {
 		if !isStringScalar(timeoutNode) {
 			return nil, manifestError(filename, readyContext, "timeout must be a duration string")
 		}
-		parsed, err := time.ParseDuration(timeoutNode.Value)
-		if err != nil {
-			return nil, manifestError(filename, readyContext, "invalid timeout %q: %v", timeoutNode.Value, err)
+		parsed, parseErr := time.ParseDuration(timeoutNode.Value)
+		if parseErr != nil {
+			return nil, manifestError(filename, readyContext, "invalid timeout %q: %v", timeoutNode.Value, parseErr)
 		}
-		if parsed < 0 {
-			return nil, manifestError(filename, readyContext, "timeout must not be negative")
-		}
-		if parsed == 0 {
+		if parsed <= 0 {
 			return nil, manifestError(filename, readyContext, "timeout must be positive")
 		}
-		timeout = parsed
+		definition.Timeout = parsed
 	}
-	return &ReadyDefinition{Match: match, Timeout: timeout}, nil
+	if hasMatch {
+		if _, hasInterval := fields["interval"]; hasInterval {
+			return nil, manifestError(filename, readyContext, "interval is only valid with exec")
+		}
+	}
+	return definition, nil
 }
 
 func normalizeCwd(root, filename, context, value string) (string, error) {

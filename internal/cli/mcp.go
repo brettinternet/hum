@@ -29,7 +29,7 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 			"A process handed off by hum run is available as ad_hoc while its daemon retains the record; daemon shutdown or replacement loses that launch definition. " +
 			"Bounded child-output logs and matches use terminal-control-stripped text, while system entries, stored bytes, cursors, and limit accounting remain raw; there is no --raw flag or other raw opt-out. Logs match context expands eligible entries from one immutable snapshot before tail and whole-entry bounds. " +
 			"MCP wait timeout results include process_observed from the same daemon wait request without an extra round trip; false includes no-process guidance. " +
-			"Explicit definitions use deterministic argv-based environment activation with the MCP server environment. " +
+			"Explicit definitions use deterministic argv-based environment activation with the MCP server environment. ready.exec uses exact direct argv without a shell, probes immediately, retries serially after failures at the configured interval (1s by default), inherits launched cwd/environment, retains only a bounded terminal diagnostic, and never retains probe output; readiness gates startup rather than liveness. " +
 			"The twelve tools are start, up, down, list, status, logs, wait, input, restart, stop, remove, and signal; run, serve, and shutdown are not MCP tools.",
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 			if err := rejectProjectOverride(cmd, "mcp"); err != nil {
@@ -171,7 +171,7 @@ func mcpProcess(process app.Process) protocol.Process {
 		result.NextCursor = &cursor
 	}
 	if process.Readiness != nil {
-		readiness := &protocol.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
+		readiness := &protocol.Readiness{Method: process.Readiness.Method, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
 		if process.Readiness.Cursor != nil {
 			cursor := protocol.Cursor(*process.Readiness.Cursor)
 			readiness.Cursor = &cursor

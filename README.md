@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Keep project processes running between commands with bounded logs, readiness, dependencies, JSON/MCP output, and TTY input.
+Keep processes running between commands. `hum` gives users bounded logs, readiness checks, dependencies, JSON/MCP output, and controlled TTY input.
 
 ```text
 hum.yaml ──> hum daemon ──> db ──> api ──> web
@@ -25,7 +25,7 @@ To build from a checkout, see [development setup](docs/development.md).
 
 ## Quickstart
 
-Try a clock process in a fresh directory:
+Try a portable clock process in a directory:
 
 ```sh
 mkdir hum-quickstart && cd hum-quickstart
@@ -92,7 +92,7 @@ hum stop web
 hum down
 ```
 
-`start` is explicit and does not start dependencies. `down` stops project processes concurrently. See [design and command semantics](docs/design.md) for validation details.
+`start` is explicit and does not start dependencies. `ready.exec` runs exact argv without a shell; immediate serial retries (1s default) inherit cwd/env, retain bounded diagnostics, and gate startup—not liveness. `down` stops project processes concurrently. See [design and command semantics](docs/design.md) for validation details.
 
 ### Operate from anywhere
 

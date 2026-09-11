@@ -54,19 +54,26 @@ type Definition struct {
 	StopGrace *time.Duration
 }
 
-// ReadinessConfig describes the output expression used by a definition.
+// ReadinessConfig describes output matching or a direct executable.
 type ReadinessConfig struct {
-	Match   string
-	Timeout time.Duration
+	Method   string
+	Match    string
+	Argv     []string
+	Interval time.Duration
+	Timeout  time.Duration
 }
 
 // Readiness is the response-safe readiness state carried by a process
 // snapshot.
 type Readiness struct {
-	State  string
-	Cursor *uint64
-	Time   time.Time
-	Match  string
+	Method     string
+	Argv       []string
+	Interval   time.Duration
+	State      string
+	Cursor     *uint64
+	Time       time.Time
+	Match      string
+	Diagnostic string
 }
 
 // SignalInfo identifies the canonical signal that terminated a process.
@@ -314,6 +321,7 @@ func NormalizeProcess(process Process) Process {
 	}
 	if process.Readiness != nil {
 		readiness := *process.Readiness
+		readiness.Argv = append([]string(nil), readiness.Argv...)
 		if readiness.Cursor != nil {
 			cursor := *readiness.Cursor
 			readiness.Cursor = &cursor
@@ -328,6 +336,7 @@ func copyDefinition(definition Definition) Definition {
 	definition.After = append([]string(nil), definition.After...)
 	if definition.Ready != nil {
 		ready := *definition.Ready
+		ready.Argv = append([]string(nil), ready.Argv...)
 		definition.Ready = &ready
 	}
 	if definition.StopGrace != nil {
@@ -362,10 +371,22 @@ func DefinitionMatchesProcess(definition Definition, process Process) bool {
 }
 
 func processReadinessMatch(process Process) (bool, string) {
-	if process.Readiness == nil || process.Readiness.State == ReadinessRunningUnverified {
+	if process.Readiness == nil || process.Readiness.State == ReadinessRunningUnverified || process.Readiness.Method == "exec" {
 		return false, ""
 	}
 	return true, process.Readiness.Match
+}
+func readinessMethod(config *ReadinessConfig) string {
+	if config == nil {
+		return ""
+	}
+	if config.Method != "" {
+		return config.Method
+	}
+	if len(config.Argv) != 0 {
+		return "exec"
+	}
+	return "match"
 }
 
 // DefinitionChangedFields returns sorted identity fields that differ between
@@ -379,11 +400,26 @@ func DefinitionChangedFields(root string, definition Definition, process Process
 		changed = append(changed, "cwd")
 	}
 	definitionReady, definitionMatch := false, ""
+	definitionMethod := readinessMethod(definition.Ready)
 	if definition.Ready != nil {
 		definitionReady, definitionMatch = true, definition.Ready.Match
 	}
 	processReady, processMatch := processReadinessMatch(process)
-	if definitionReady != processReady || definitionMatch != processMatch {
+	processMethod := ""
+	var processArgv []string
+	if process.Readiness != nil {
+		processMethod = readinessMethod(&ReadinessConfig{Method: process.Readiness.Method, Match: process.Readiness.Match, Argv: process.Readiness.Argv})
+		processArgv = process.Readiness.Argv
+	}
+	var definitionArgv []string
+	if definition.Ready != nil {
+		definitionArgv = definition.Ready.Argv
+	}
+	if definitionMethod == "exec" || processMethod == "exec" {
+		if definitionMethod != processMethod || !slices.Equal(definitionArgv, processArgv) {
+			changed = append(changed, "readiness_exec")
+		}
+	} else if definitionReady != processReady || definitionMatch != processMatch {
 		changed = append(changed, "readiness_match")
 	}
 	if definition.StopGrace == nil {
@@ -566,6 +602,12 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 	markExited := func() (Result, error) { return refresh("exited_before_ready") }
 	markTimedOut := func() (Result, error) { return refresh("timed_out") }
 
+	if process.Readiness != nil && process.Readiness.State == ReadinessReady {
+		if !readinessBeforeDeadline(process.Readiness, deadline) {
+			return markTimedOut()
+		}
+		return result, nil
+	}
 	if process.State != "running" {
 		return markExited()
 	}
@@ -574,9 +616,8 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 	}
 	switch process.Readiness.State {
 	case ReadinessReady:
-		if !readinessBeforeDeadline(process.Readiness, deadline) {
-			return markTimedOut()
-		}
+		// Handled above so that a ready terminal snapshot is accepted when its
+		// readiness was recorded before this wait's deadline.
 		return result, nil
 	case ReadinessRunningUnverified:
 		return result, nil
@@ -584,6 +625,38 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 		// Continue below using the expression recorded on this incarnation.
 	default:
 		return result, nil
+	}
+	if process.Readiness.Method == "exec" || readinessMethod(definition.Ready) == "exec" {
+		for {
+			current, err := getCurrent()
+			if err != nil {
+				return result, err
+			}
+			// Incarnation identity is checked before readiness: a successor's
+			// ready state must never satisfy this launch gate.
+			if !sameProcessIncarnation(observed, current) {
+				return ResultForProcess(definition, current, "exited_before_ready"), nil
+			}
+			if current.Readiness != nil && current.Readiness.State == ReadinessReady {
+				if !readinessBeforeDeadline(current.Readiness, deadline) {
+					return ResultForProcess(definition, current, "timed_out"), nil
+				}
+				return ResultForProcess(definition, current, initialOutcome), nil
+			}
+			if current.State != "running" {
+				return ResultForProcess(definition, current, "exited_before_ready"), nil
+			}
+			if time.Until(deadline) <= 0 {
+				return markTimedOut()
+			}
+			timer := time.NewTimer(min(time.Until(deadline), 25*time.Millisecond))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return result, ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
 	recordedMatch := process.Readiness.Match
 
@@ -872,6 +945,7 @@ func copyReadinessConfig(config *ReadinessConfig) *ReadinessConfig {
 		return nil
 	}
 	copy := *config
+	copy.Argv = append([]string(nil), config.Argv...)
 	return &copy
 }
 

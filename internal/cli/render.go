@@ -207,6 +207,7 @@ func buildListTable(processes []app.Process, all bool) listTable {
 				row = append(row, plainListCell(fmt.Sprintf("ready_cursor=%d", *readyCursor)))
 			}
 		}
+		appendReadinessDetailCells(&row, process)
 		if process.Exit != nil && process.Exit.Signal != nil {
 			row = append(row, plainListCell("exit: "+signalHumanText(process.Exit.Signal.Name, process.Exit.Signal.Number)))
 		}
@@ -258,62 +259,72 @@ type listJSON struct {
 }
 
 type listProcessJSON struct {
-	Name               string           `json:"name"`
-	Source             string           `json:"source"`
-	Scope              string           `json:"scope"`
-	Root               string           `json:"root"`
-	ProjectRoot        string           `json:"project_root,omitempty"`
-	TTY                bool             `json:"tty"`
-	PID                int              `json:"pid"`
-	PGID               int              `json:"pgid"`
-	Cwd                string           `json:"cwd"`
-	Argv               []string         `json:"argv"`
-	Start              time.Time        `json:"start"`
-	LaunchCursor       protocol.Cursor  `json:"launch_cursor"`
-	NextCursor         *protocol.Cursor `json:"next_cursor,omitempty"`
-	State              string           `json:"state"`
-	Exit               *protocol.Exit   `json:"exit,omitempty"`
-	ExitCode           int              `json:"exit_code,omitempty"`
-	ExitedAt           time.Time        `json:"exited_at,omitempty"`
-	RestartCount       int              `json:"restart_count,omitempty"`
-	Followers          int              `json:"followers"`
-	Restart            string           `json:"restart"`
-	Relaunches         int              `json:"relaunches"`
-	StopGrace          string           `json:"stop_grace"`
-	StopGraceInherited bool             `json:"stop_grace_inherited"`
-	NextLaunchAt       *time.Time       `json:"next_launch_at,omitempty"`
-	Readiness          string           `json:"readiness,omitempty"`
-	ReadyCursor        *protocol.Cursor `json:"ready_cursor,omitempty"`
+	Name                string           `json:"name"`
+	Source              string           `json:"source"`
+	Scope               string           `json:"scope"`
+	Root                string           `json:"root"`
+	ProjectRoot         string           `json:"project_root,omitempty"`
+	TTY                 bool             `json:"tty"`
+	PID                 int              `json:"pid"`
+	PGID                int              `json:"pgid"`
+	Cwd                 string           `json:"cwd"`
+	Argv                []string         `json:"argv"`
+	Start               time.Time        `json:"start"`
+	LaunchCursor        protocol.Cursor  `json:"launch_cursor"`
+	NextCursor          *protocol.Cursor `json:"next_cursor,omitempty"`
+	State               string           `json:"state"`
+	Exit                *protocol.Exit   `json:"exit,omitempty"`
+	ExitCode            int              `json:"exit_code,omitempty"`
+	ExitedAt            time.Time        `json:"exited_at,omitempty"`
+	RestartCount        int              `json:"restart_count,omitempty"`
+	Followers           int              `json:"followers"`
+	Restart             string           `json:"restart"`
+	Relaunches          int              `json:"relaunches"`
+	StopGrace           string           `json:"stop_grace"`
+	StopGraceInherited  bool             `json:"stop_grace_inherited"`
+	NextLaunchAt        *time.Time       `json:"next_launch_at,omitempty"`
+	Readiness           string           `json:"readiness,omitempty"`
+	ReadinessMatch      string           `json:"readiness_match,omitempty"`
+	ReadinessMethod     string           `json:"readiness_method,omitempty"`
+	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
+	ReadyCursor         *protocol.Cursor `json:"ready_cursor,omitempty"`
 }
 
 // statusJSON is the stable, response-safe representation used by status.
 // Keep this type separate from protocol.Process so status output does not
 // expose protocol-only fields.
 type statusJSON struct {
-	Name               string                    `json:"name"`
-	Source             string                    `json:"source,omitempty"`
-	Scope              string                    `json:"scope"`
-	ProjectRoot        string                    `json:"project_root,omitempty"`
-	TTY                bool                      `json:"tty"`
-	PID                int                       `json:"pid"`
-	PGID               int                       `json:"pgid"`
-	Cwd                string                    `json:"cwd"`
-	Argv               []string                  `json:"argv"`
-	StartedAt          string                    `json:"started_at"`
-	State              string                    `json:"state"`
-	Readiness          string                    `json:"readiness,omitempty"`
-	ReadyCursor        *protocol.Cursor          `json:"ready_cursor,omitempty"`
-	ExitStatus         *int                      `json:"exit_status"`
-	Signal             *protocol.SignalInfo      `json:"signal,omitempty"`
-	RestartCount       int                       `json:"restart_count"`
-	Followers          int                       `json:"followers"`
-	Restart            string                    `json:"restart"`
-	Relaunches         int                       `json:"relaunches"`
-	StopGrace          string                    `json:"stop_grace"`
-	StopGraceInherited bool                      `json:"stop_grace_inherited"`
-	NextLaunchAt       *time.Time                `json:"next_launch_at,omitempty"`
-	NextCursor         protocol.Cursor           `json:"next_cursor"`
-	Warnings           []protocol.StartupWarning `json:"warnings,omitempty"`
+	Name                string                    `json:"name"`
+	Source              string                    `json:"source,omitempty"`
+	Scope               string                    `json:"scope"`
+	ProjectRoot         string                    `json:"project_root,omitempty"`
+	TTY                 bool                      `json:"tty"`
+	PID                 int                       `json:"pid"`
+	PGID                int                       `json:"pgid"`
+	Cwd                 string                    `json:"cwd"`
+	Argv                []string                  `json:"argv"`
+	StartedAt           string                    `json:"started_at"`
+	State               string                    `json:"state"`
+	Readiness           string                    `json:"readiness,omitempty"`
+	ReadinessMatch      string                    `json:"readiness_match,omitempty"`
+	ReadinessMethod     string                    `json:"readiness_method,omitempty"`
+	ReadinessArgv       []string                  `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration             `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string                    `json:"readiness_diagnostic,omitempty"`
+	ReadyCursor         *protocol.Cursor          `json:"ready_cursor,omitempty"`
+	ExitStatus          *int                      `json:"exit_status"`
+	Signal              *protocol.SignalInfo      `json:"signal,omitempty"`
+	RestartCount        int                       `json:"restart_count"`
+	Followers           int                       `json:"followers"`
+	Restart             string                    `json:"restart"`
+	Relaunches          int                       `json:"relaunches"`
+	StopGrace           string                    `json:"stop_grace"`
+	StopGraceInherited  bool                      `json:"stop_grace_inherited"`
+	NextLaunchAt        *time.Time                `json:"next_launch_at,omitempty"`
+	NextCursor          protocol.Cursor           `json:"next_cursor"`
+	Warnings            []protocol.StartupWarning `json:"warnings,omitempty"`
 }
 
 func statusJSONFor(process app.Process) statusJSON {
@@ -343,6 +354,7 @@ func statusJSONFor(process app.Process) statusJSON {
 		NextCursor:         protocol.Cursor(process.NextCursor),
 	}
 	result.Readiness, result.ReadyCursor = processReadinessFields(process)
+	result.ReadinessMatch, result.ReadinessMethod, result.ReadinessArgv, result.ReadinessInterval, result.ReadinessDiagnostic = processReadinessMetadata(process)
 	if result.Argv == nil {
 		result.Argv = []string{}
 	}
@@ -376,17 +388,22 @@ type stopResult struct {
 }
 
 type restartResult struct {
-	Name         string           `json:"name"`
-	Source       string           `json:"source,omitempty"`
-	Argv         []string         `json:"argv"`
-	PID          int              `json:"pid"`
-	Restarts     int              `json:"restarts"`
-	LaunchCursor protocol.Cursor  `json:"launch_cursor"`
-	Restart      string           `json:"restart"`
-	Relaunches   int              `json:"relaunches"`
-	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
-	Readiness    string           `json:"readiness,omitempty"`
-	ReadyCursor  *protocol.Cursor `json:"ready_cursor,omitempty"`
+	Name                string           `json:"name"`
+	Source              string           `json:"source,omitempty"`
+	Argv                []string         `json:"argv"`
+	PID                 int              `json:"pid"`
+	Restarts            int              `json:"restarts"`
+	LaunchCursor        protocol.Cursor  `json:"launch_cursor"`
+	Restart             string           `json:"restart"`
+	Relaunches          int              `json:"relaunches"`
+	NextLaunchAt        *time.Time       `json:"next_launch_at,omitempty"`
+	Readiness           string           `json:"readiness,omitempty"`
+	ReadinessMatch      string           `json:"readiness_match,omitempty"`
+	ReadinessMethod     string           `json:"readiness_method,omitempty"`
+	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
+	ReadyCursor         *protocol.Cursor `json:"ready_cursor,omitempty"`
 }
 
 type legacyRestartResult struct {
@@ -489,6 +506,7 @@ func processJSON(process app.Process) listProcessJSON {
 		result.NextCursor = &nextCursor
 	}
 	result.Readiness, result.ReadyCursor = processReadinessFields(process)
+	result.ReadinessMatch, result.ReadinessMethod, result.ReadinessArgv, result.ReadinessInterval, result.ReadinessDiagnostic = processReadinessMetadata(process)
 	if result.Argv == nil {
 		result.Argv = []string{}
 	}
@@ -746,6 +764,28 @@ func writeCursorTrailer(w io.Writer, result output.ReadResult) error {
 	return err
 }
 
+func appendReadinessDetailCells(row *listRow, process app.Process) {
+	if row == nil || process.Readiness == nil || process.Source == "" || process.Source == "ad_hoc" {
+		return
+	}
+	readiness := process.Readiness
+	if readiness.Match != "" {
+		*row = append(*row, plainListCell("readiness_match="+readiness.Match))
+	}
+	if readiness.Method != "" {
+		*row = append(*row, plainListCell("readiness_method="+readiness.Method))
+	}
+	if len(readiness.Argv) != 0 {
+		*row = append(*row, plainListCell("readiness_argv="+shellJoin(readiness.Argv)))
+	}
+	if readiness.Interval != 0 {
+		*row = append(*row, plainListCell("readiness_interval="+readiness.Interval.String()))
+	}
+	if readiness.Diagnostic != "" {
+		*row = append(*row, plainListCell("readiness_diagnostic="+manifestProgressText(readiness.Diagnostic)))
+	}
+}
+
 func renderListHuman(w io.Writer, processes []app.Process, all bool, roots ...string) error {
 	return renderListHumanWithPolicy(w, processes, all, colorPolicyForWriter(w), roots...)
 }
@@ -804,9 +844,19 @@ func renderStatusSummaryHumanWithPolicy(w io.Writer, processes []app.Process, po
 		_, err := fmt.Fprintln(w, message)
 		return err
 	}
+	showReadiness := false
+	for _, process := range processes {
+		if process.Readiness != nil && process.Source != "" && process.Source != "ad_hoc" && (process.Readiness.Method == "exec" || len(process.Readiness.Argv) != 0 || process.Readiness.Interval != 0 || process.Readiness.Diagnostic != "") {
+			showReadiness = true
+			break
+		}
+	}
 	header := listRow{
 		styledListCell("NAME", ansiBold), styledListCell("STATE", ansiBold), styledListCell("PID", ansiBold),
 		styledListCell("READINESS", ansiBold), styledListCell("RESTART", ansiBold), styledListCell("FOLLOWERS", ansiBold),
+	}
+	if showReadiness {
+		header = append(header, styledListCell("READINESS_DETAILS", ansiBold))
 	}
 	table := listTable{header: header, rows: make([]listRow, 0, len(processes))}
 	for _, process := range processes {
@@ -826,6 +876,12 @@ func renderStatusSummaryHumanWithPolicy(w io.Writer, processes []app.Process, po
 			plainListCell(string(effectiveProcessRestart(process))),
 			plainListCell(strconv.Itoa(process.Followers)),
 		})
+		if showReadiness {
+			detail := listRow{}
+			appendReadinessDetailCells(&detail, process)
+			parts := listRowText(detail)
+			table.rows[len(table.rows)-1] = append(table.rows[len(table.rows)-1], plainListCell(strings.Join(parts, " ")))
+		}
 	}
 	return writeLifecycleTable(w, table, policy)
 }
@@ -1066,15 +1122,21 @@ func manifestProgressText(value string) string {
 }
 
 func buildManifestLaunchTable(results []manifestLaunchResult) listTable {
-	table := listTable{
-		header: listRow{
-			styledListCell("NAME", ansiBold),
-			styledListCell("RESULT", ansiBold),
-			styledListCell("STATE", ansiBold),
-			styledListCell("PID", ansiBold),
-		},
-		rows: make([]listRow, 0, len(results)),
+	showReadiness := false
+	for _, result := range results {
+		if result.ReadinessMethod == "exec" || len(result.ReadinessArgv) != 0 || result.ReadinessInterval != 0 || result.ReadinessDiagnostic != "" {
+			showReadiness = true
+			break
+		}
 	}
+	header := listRow{
+		styledListCell("NAME", ansiBold), styledListCell("RESULT", ansiBold),
+		styledListCell("STATE", ansiBold), styledListCell("PID", ansiBold),
+	}
+	if showReadiness {
+		header = append(header, styledListCell("READINESS", ansiBold))
+	}
+	table := listTable{header: header, rows: make([]listRow, 0, len(results))}
 	for _, result := range results {
 		state := result.State
 		if state == "" {
@@ -1088,12 +1150,44 @@ func buildManifestLaunchTable(results []manifestLaunchResult) listTable {
 		if result.ExitCode != nil {
 			exitCode = *result.ExitCode
 		}
-		table.rows = append(table.rows, listRow{
+		row := listRow{
 			plainListCell(result.Name),
 			styledListCell(manifestOutcomeLabel(result.Outcome), manifestOutcomeStyle(result.Outcome)),
 			styledListCell(state, processStateStyle(app.State(result.State), exitCode)),
 			plainListCell(pid),
-		})
+		}
+		if showReadiness {
+			detail := ""
+			if result.ReadinessMethod != "" {
+				detail += "method=" + result.ReadinessMethod
+			}
+			if len(result.ReadinessArgv) != 0 {
+				if detail != "" {
+					detail += " "
+				}
+				detail += "argv=" + shellJoin(result.ReadinessArgv)
+			}
+			if result.ReadinessInterval != 0 {
+				if detail != "" {
+					detail += " "
+				}
+				detail += "interval=" + result.ReadinessInterval.String()
+			}
+			if result.ReadinessMatch != "" {
+				if detail != "" {
+					detail += " "
+				}
+				detail += "match=" + result.ReadinessMatch
+			}
+			if result.ReadinessDiagnostic != "" {
+				if detail != "" {
+					detail += " "
+				}
+				detail += "diagnostic=" + manifestProgressText(result.ReadinessDiagnostic)
+			}
+			row = append(row, plainListCell(detail))
+		}
+		table.rows = append(table.rows, row)
 	}
 	return table
 }
@@ -1171,6 +1265,18 @@ func renderManifestLaunchHumanWithPolicy(w io.Writer, result manifestLaunchResul
 	}
 	if result.ReadinessConfigured {
 		line += " readiness_match=" + result.ReadinessMatch
+	}
+	if result.ReadinessMethod != "" {
+		line += " readiness_method=" + result.ReadinessMethod
+	}
+	if len(result.ReadinessArgv) != 0 {
+		line += " readiness_argv=" + shellJoin(result.ReadinessArgv)
+	}
+	if result.ReadinessInterval != 0 {
+		line += " readiness_interval=" + result.ReadinessInterval.String()
+	}
+	if result.ReadinessDiagnostic != "" {
+		line += " readiness_diagnostic=" + manifestProgressText(result.ReadinessDiagnostic)
 	}
 	if result.ReadyCursor != nil {
 		line += fmt.Sprintf(" ready_cursor=%d", *result.ReadyCursor)
@@ -1259,6 +1365,21 @@ func renderRestartHuman(w io.Writer, result restartResult) error {
 			}
 		}
 	}
+	if result.ReadinessMatch != "" {
+		line += " readiness_match=" + result.ReadinessMatch
+	}
+	if result.ReadinessMethod != "" {
+		line += " readiness_method=" + result.ReadinessMethod
+	}
+	if len(result.ReadinessArgv) != 0 {
+		line += " readiness_argv=" + shellJoin(result.ReadinessArgv)
+	}
+	if result.ReadinessInterval != 0 {
+		line += " readiness_interval=" + result.ReadinessInterval.String()
+	}
+	if result.ReadinessDiagnostic != "" {
+		line += " readiness_diagnostic=" + manifestProgressText(result.ReadinessDiagnostic)
+	}
 	_, err := fmt.Fprintln(w, line)
 	return err
 }
@@ -1337,6 +1458,31 @@ func renderStatusHumanWithPolicy(w io.Writer, process app.Process, colors colorP
 			if _, err := fmt.Fprintf(w, "ready_cursor: %d\n", *status.ReadyCursor); err != nil {
 				return err
 			}
+		}
+	}
+	if status.ReadinessMatch != "" {
+		if _, err := fmt.Fprintf(w, "readiness_match: %s\n", status.ReadinessMatch); err != nil {
+			return err
+		}
+	}
+	if status.ReadinessMethod != "" {
+		if _, err := fmt.Fprintf(w, "readiness_method: %s\n", status.ReadinessMethod); err != nil {
+			return err
+		}
+	}
+	if len(status.ReadinessArgv) != 0 {
+		if _, err := fmt.Fprintf(w, "readiness_argv: %s\n", shellJoin(status.ReadinessArgv)); err != nil {
+			return err
+		}
+	}
+	if status.ReadinessInterval != 0 {
+		if _, err := fmt.Fprintf(w, "readiness_interval: %s\n", status.ReadinessInterval); err != nil {
+			return err
+		}
+	}
+	if status.ReadinessDiagnostic != "" {
+		if _, err := fmt.Fprintf(w, "readiness_diagnostic: %s\n", manifestProgressText(status.ReadinessDiagnostic)); err != nil {
+			return err
 		}
 	}
 	if status.ExitStatus != nil {

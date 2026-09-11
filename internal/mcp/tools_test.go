@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"hum/internal/daemon"
+	"hum/internal/orchestrate"
 	"hum/internal/output"
 	"hum/internal/protocol"
 )
@@ -83,29 +84,31 @@ func (r blockingResolver) Resolve(context.Context, string) (Resolution, error) {
 }
 
 type fakeClient struct {
-	mu              sync.Mutex
-	processes       map[string]protocol.Process
-	output          protocol.OutputResult
-	waitResult      protocol.WaitResponse
-	startErr        map[string]error
-	stopErr         map[string]error
-	starts          []protocol.StartRequest
-	lists           []protocol.ListRequest
-	gets            []protocol.GetRequest
-	outputs         []protocol.OutputRequest
-	waits           []protocol.WaitRequest
-	inputs          []InputRequest
-	inputResult     InputResult
-	inputErr        error
-	stops           []protocol.StopRequest
-	restarts        []protocol.RestartRequest
-	signals         []protocol.SignalRequest
-	signalResult    protocol.SignalResult
-	signalErr       error
-	waitHook        func(protocol.WaitRequest)
-	keepStarting    bool
-	waited          map[string]bool
-	readyBeforeWait bool
+	mu                     sync.Mutex
+	processes              map[string]protocol.Process
+	output                 protocol.OutputResult
+	waitResult             protocol.WaitResponse
+	startErr               map[string]error
+	stopErr                map[string]error
+	starts                 []protocol.StartRequest
+	lists                  []protocol.ListRequest
+	gets                   []protocol.GetRequest
+	outputs                []protocol.OutputRequest
+	waits                  []protocol.WaitRequest
+	inputs                 []InputRequest
+	inputResult            InputResult
+	inputErr               error
+	stops                  []protocol.StopRequest
+	restarts               []protocol.RestartRequest
+	signals                []protocol.SignalRequest
+	signalResult           protocol.SignalResult
+	signalErr              error
+	waitHook               func(protocol.WaitRequest)
+	keepStarting           bool
+	waited                 map[string]bool
+	readyBeforeWait        bool
+	readinessDiagnostic    string
+	retainReadinessOnStart bool
 }
 
 func (f *fakeClient) Close() error { return nil }
@@ -120,9 +123,15 @@ func (f *fakeClient) Start(_ context.Context, req protocol.StartRequest) (protoc
 	if req.StopGrace != nil {
 		p.StopGrace = *req.StopGrace
 	}
-
+	if req.Ready == nil && f.retainReadinessOnStart {
+		if retained := f.processes[req.Name].Readiness; retained != nil {
+			copy := *retained
+			copy.Argv = append([]string(nil), retained.Argv...)
+			p.Readiness = &copy
+		}
+	}
 	if req.Ready != nil {
-		p.Readiness = &protocol.Readiness{State: protocol.ReadinessStarting, Match: req.Ready.Match}
+		p.Readiness = &protocol.Readiness{Method: req.Ready.Method, Argv: append([]string(nil), req.Ready.Argv...), Interval: req.Ready.Interval, State: protocol.ReadinessStarting, Match: req.Ready.Match, Diagnostic: f.readinessDiagnostic}
 	}
 	f.processes[req.Name] = p
 	return p, nil
@@ -159,7 +168,7 @@ func (f *fakeClient) Get(_ context.Context, req protocol.GetRequest) (protocol.P
 		return p, nil
 	}
 	if p.Readiness != nil && !f.keepStarting && (f.readyBeforeWait || f.waited[req.Name]) {
-		p.Readiness = &protocol.Readiness{State: protocol.ReadinessReady, Cursor: p.NextCursor, Match: p.Readiness.Match}
+		p.Readiness = &protocol.Readiness{Method: p.Readiness.Method, Argv: append([]string(nil), p.Readiness.Argv...), Interval: p.Readiness.Interval, State: protocol.ReadinessReady, Cursor: p.NextCursor, Match: p.Readiness.Match, Diagnostic: p.Readiness.Diagnostic}
 	}
 	return p, nil
 }
@@ -245,7 +254,7 @@ func (f *fakeClient) Restart(_ context.Context, req protocol.RestartRequest) (pr
 		p.Argv = append([]string(nil), req.Argv...)
 		p.Readiness = nil
 		if req.Ready != nil {
-			p.Readiness = &protocol.Readiness{State: protocol.ReadinessStarting, Match: req.Ready.Match}
+			p.Readiness = &protocol.Readiness{Method: req.Ready.Method, Argv: append([]string(nil), req.Ready.Argv...), Interval: req.Ready.Interval, State: protocol.ReadinessStarting, Match: req.Ready.Match, Diagnostic: f.readinessDiagnostic}
 		}
 	}
 	f.processes[req.Name] = p
@@ -1127,6 +1136,153 @@ func TestErrorMapping(t *testing.T) {
 		if _, callErr := s.callTool(context.Background(), tool, arguments); callErr != nil {
 			t.Errorf("%s should succeed without daemon: %v", tool, callErr)
 		}
+	}
+}
+
+func TestRetainedExecutableReadinessStartWaitsWithoutOutput(t *testing.T) {
+	retained := protocol.Process{
+		Name: "removed", Source: "manifest", State: "exited", Cwd: "/work", Argv: []string{"server"}, LaunchCursor: 11,
+		Readiness: &protocol.Readiness{Method: "exec", Argv: []string{"probe", "--service", "removed"}, Interval: 10 * time.Millisecond, State: protocol.ReadinessStarting, Diagnostic: "status 1"},
+	}
+	client := &fakeClient{processes: map[string]protocol.Process{"removed": retained}, readyBeforeWait: true, retainReadinessOnStart: true}
+	server, root, _ := newTestServer(t, nil, client)
+	value, err := server.start(context.Background(), Resolution{Root: root, Scope: protocol.ScopeProject}, commonInput{Name: "removed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := value.(launchResult)
+	if !ok || result.Process == nil || result.Outcome != "started" {
+		t.Fatalf("retained start result = %#v", value)
+	}
+	readiness := result.Process.Readiness
+	if readiness == nil || readiness.State != protocol.ReadinessReady || readiness.Method != "exec" || !reflect.DeepEqual(readiness.Argv, retained.Readiness.Argv) || readiness.Interval != retained.Readiness.Interval || readiness.Diagnostic != retained.Readiness.Diagnostic {
+		t.Fatalf("retained start readiness = %#v, want durable executable readiness", readiness)
+	}
+	if len(client.waits) != 0 {
+		t.Fatalf("retained executable readiness used output waits: %#v", client.waits)
+	}
+
+	noWaitClient := &fakeClient{processes: map[string]protocol.Process{"removed": retained}, readyBeforeWait: true, retainReadinessOnStart: true}
+	noWaitServer, noWaitRoot, _ := newTestServer(t, nil, noWaitClient)
+	value, err = noWaitServer.start(context.Background(), Resolution{Root: noWaitRoot, Scope: protocol.ScopeProject}, commonInput{Name: "removed", NoWait: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noWaitResult, ok := value.(launchResult)
+	if !ok || noWaitResult.Outcome != "started" || noWaitResult.Process == nil || noWaitResult.Process.Readiness == nil || noWaitResult.Process.Readiness.State != protocol.ReadinessStarting {
+		t.Fatalf("retained no_wait start result = %#v", value)
+	}
+	if len(noWaitClient.waits) != 0 {
+		t.Fatalf("retained no_wait issued output waits: %#v", noWaitClient.waits)
+	}
+}
+
+func TestExecutableReadiness(t *testing.T) {
+	root := t.TempDir()
+	argv := []string{"probe", "--service", "api"}
+	ready := &protocol.ReadinessConfig{Method: "exec", Argv: argv, Interval: 20 * time.Millisecond, Timeout: time.Second}
+	definitions := []Definition{{Name: "api", Source: "manifest", Argv: []string{"server"}, Cwd: root, Ready: ready}}
+	client := &fakeClient{readyBeforeWait: true, readinessDiagnostic: "status 1"}
+	server, resolvedRoot, _ := newTestServer(t, definitions, client)
+	input := commonInput{Name: "api"}
+
+	value, err := server.start(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startResult, ok := value.(launchResult)
+	if !ok || startResult.Process == nil || startResult.Process.Readiness == nil {
+		t.Fatalf("MCP start result=%#v", value)
+	}
+	if startResult.Outcome != "started" || startResult.Process.Readiness.Method != "exec" || !reflect.DeepEqual(startResult.Process.Readiness.Argv, argv) || startResult.Process.Readiness.Interval != ready.Interval || startResult.Process.Readiness.State != protocol.ReadinessReady {
+		t.Fatalf("MCP start result=%#v, want ready executable snapshot", startResult)
+	}
+	if len(client.waits) != 0 {
+		t.Fatalf("MCP exec readiness issued output waits: %#v", client.waits)
+	}
+
+	upValue, err := server.up(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upResults, ok := upValue.([]launchResult)
+	if !ok || len(upResults) != 1 || upResults[0].Outcome != "already_running" || upResults[0].Process == nil || upResults[0].Process.Readiness == nil || upResults[0].Process.Readiness.Method != "exec" {
+		t.Fatalf("MCP up result=%#v, want parity with start", upValue)
+	}
+
+	restartValue, err := server.restart(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartResult, ok := restartValue.(restartResult)
+	if !ok || restartResult.Outcome != "restarted" || restartResult.Readiness != protocol.ReadinessReady || len(client.restarts) != 1 || client.restarts[0].Ready == nil || client.restarts[0].Ready.Method != "exec" || !reflect.DeepEqual(client.restarts[0].Ready.Argv, argv) {
+		t.Fatalf("MCP restart result=%#v request=%#v, want executable readiness parity", restartValue, client.restarts)
+	}
+	if len(client.waits) != 0 {
+		t.Fatalf("MCP restart exec readiness issued output waits: %#v", client.waits)
+	}
+	assertReadiness := func(label string, process protocol.Process) {
+		t.Helper()
+		if process.Readiness == nil || process.Readiness.Method != "exec" || !reflect.DeepEqual(process.Readiness.Argv, argv) || process.Readiness.Interval != ready.Interval || process.Readiness.Diagnostic != "status 1" {
+			t.Fatalf("MCP %s process=%#v, want executable readiness fields", label, process)
+		}
+	}
+	assertReadiness("start", *startResult.Process)
+	if upResults[0].Process == nil {
+		t.Fatalf("MCP up result=%#v, missing process", upResults[0])
+	}
+	assertReadiness("up", *upResults[0].Process)
+	if restartResult.ReadinessMethod != "exec" || !reflect.DeepEqual(restartResult.ReadinessArgv, argv) || restartResult.ReadinessInterval != ready.Interval || restartResult.ReadinessDiagnostic != "status 1" {
+		t.Fatalf("MCP restart result=%#v, want executable readiness fields", restartResult)
+	}
+	statusValue, err := server.status(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusProcess, ok := statusValue.(protocol.Process)
+	if !ok {
+		t.Fatalf("MCP status result type=%T, want protocol.Process", statusValue)
+	}
+	assertReadiness("status", statusProcess)
+	listValue, err := server.list(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, ok := listValue.([]protocol.Process)
+	if !ok {
+		t.Fatalf("MCP list result type=%T, want []protocol.Process", listValue)
+	}
+	var listedAPI protocol.Process
+	for _, process := range listed {
+		if process.Name == "api" {
+			listedAPI = process
+			break
+		}
+	}
+	if listedAPI.Name == "" {
+		t.Fatalf("MCP list result=%#v, missing api", listed)
+	}
+	assertReadiness("list", listedAPI)
+
+	execDriftDefinition := definitions[0]
+	execDriftDefinition.Ready = &protocol.ReadinessConfig{Method: "exec", Argv: []string{"probe", "different"}, Interval: ready.Interval, Timeout: ready.Timeout}
+	execDrift := orchestrate.DefinitionDriftResult(resolvedRoot, mcpDefinition(execDriftDefinition), orchestrateProcess(*startResult.Process))
+	if execDrift.Outcome != "definition_drift" || !reflect.DeepEqual(execDrift.ChangedFields, []string{"readiness_exec"}) {
+		t.Fatalf("MCP executable readiness drift=%#v, want readiness_exec", execDrift)
+	}
+	matchDefinition := Definition{Name: "api", Source: "manifest", Argv: []string{"server"}, Cwd: root, Ready: &protocol.ReadinessConfig{Method: "match", Match: "ready"}}
+	matchProcess := protocol.Process{Name: "api", Source: "manifest", Root: resolvedRoot, Cwd: root, Argv: []string{"server"}, State: "running", StopGraceInherited: true, Readiness: &protocol.Readiness{Method: "match", Match: "ready", State: protocol.ReadinessStarting}}
+	matchDrift := orchestrate.DefinitionDriftResult(resolvedRoot, mcpDefinition(matchDefinition), orchestrateProcess(matchProcess))
+	if len(matchDrift.ChangedFields) != 0 {
+		t.Fatalf("unchanged MCP match readiness drift=%#v, want no changed fields", matchDrift)
+	}
+	matchToExec := orchestrate.DefinitionDriftResult(resolvedRoot, mcpDefinition(definitions[0]), orchestrateProcess(matchProcess))
+	if !reflect.DeepEqual(matchToExec.ChangedFields, []string{"readiness_exec"}) {
+		t.Fatalf("MCP match-to-exec readiness drift=%#v, want readiness_exec", matchToExec)
+	}
+	execToMatch := orchestrate.DefinitionDriftResult(resolvedRoot, mcpDefinition(matchDefinition), orchestrateProcess(*startResult.Process))
+	if !reflect.DeepEqual(execToMatch.ChangedFields, []string{"readiness_exec"}) {
+		t.Fatalf("MCP exec-to-match readiness drift=%#v, want readiness_exec", execToMatch)
 	}
 }
 

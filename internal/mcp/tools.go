@@ -254,10 +254,14 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	restartProps := cloneProperties(waitProps)
 	restartProps["name"] = nameExisting
 	readiness := objectSchema(map[string]any{
-		"state":  stringProperty("starting, ready, or running_unverified; recovery records retain starting with their configured matcher"),
-		"cursor": map[string]any{"type": "integer", "minimum": 0},
-		"time":   map[string]any{"type": "string"},
-		"match":  map[string]any{"type": "string"},
+		"method":     map[string]any{"type": "string", "enum": []string{"match", "exec"}, "description": "Configured startup readiness method."},
+		"argv":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Exact direct argv for exec readiness; no shell is used."},
+		"interval":   map[string]any{"type": "integer", "minimum": 0, "description": "Retry interval in nanoseconds; exec defaults to 1 second."},
+		"state":      stringProperty("starting, ready, or running_unverified; readiness gates startup and is not liveness monitoring"),
+		"cursor":     map[string]any{"type": "integer", "minimum": 0},
+		"time":       map[string]any{"type": "string"},
+		"match":      map[string]any{"type": "string"},
+		"diagnostic": map[string]any{"type": "string", "description": "Bounded terminal diagnostic from the last failed exec attempt; probe output is not retained."},
 	}, "state")
 	signalInfo := objectSchema(map[string]any{
 		"name":   map[string]any{"type": "string", "description": "Canonical SIG-prefixed signal name."},
@@ -318,6 +322,10 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"stop_grace":           map[string]any{"type": "integer", "minimum": 0},
 		"stop_grace_inherited": map[string]any{"type": "boolean"},
 		"next_launch_at":       map[string]any{"type": "string"},
+		"readiness_method":     map[string]any{"type": "string", "enum": []string{"match", "exec"}},
+		"readiness_argv":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"readiness_interval":   map[string]any{"type": "integer", "minimum": 0},
+		"readiness_diagnostic": map[string]any{"type": "string"},
 	}, "name", "outcome", "readiness", "pid", "launch_cursor")
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
@@ -393,15 +401,15 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}, "project_root", "name")
 	logsSchema["dependentRequired"] = map[string]any{"context": []string{"match"}}
 	definitions := []toolDefinition{
-		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; it never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
-		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
+		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. It never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
+		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output.  independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop every running runtime record in the selected scope and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
-		{Name: "list", Description: "Merge resolved definitions with daemon runtime records in the selected scope, including ad_hoc records; use all from project scope to discover every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
-		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record; this tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
+		{Name: "list", Description: "Merge resolved definitions with daemon runtime records in the selected scope, including readiness method, exact exec argv, interval, and bounded terminal diagnostic plus match output, and including ad_hoc records; use all from project scope to discover every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
+		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record with readiness method, exact exec argv, interval, and bounded terminal diagnostic when configured; match readiness retains match and cursor. This tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
 		{Name: "logs", Description: "Read one immutable bounded cursor-based output snapshot for an existing declared or ad_hoc runtime record. stream selects stdout, stderr, supervision-only system entries, or both; both includes all three streams. match selects entries and context expands each match by eligible entries on both sides; windows merge in cursor order before tail and whole-entry bounds. Context requires match and is unavailable for live following. since_ms uses one request-time cutoff and composes with stream and cursor boundaries. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: logsSchema, OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms. Timeout results include process_observed from the same daemon wait request without an extra round trip; false means no runtime record for NAME was observed and includes actionable guidance.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Write one exact, bounded payload to an already-running TTY incarnation at its initial launch cursor with at-most-once behavior; never starts, waits, queues, retries, resends, retains, or explicitly echoes input and fails immediately on ownership conflict.", InputSchema: inputSchema, OutputSchema: inputResult},
-		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
+		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification. Results expose readiness method, exact argv, interval, and bounded terminal diagnostic while preserving match output. exec uses direct argv without a shell, starts immediately, retries serially after failures, inherits cwd/environment, and never retains probe output; readiness gates startup, not liveness. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
 		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record while preserving its supervision session.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
 		{Name: "remove", Description: "Stop and discard one named runtime supervision session, or every runtime session in the selected scope when all is true. Bulk removal is lexical, never spans scopes, and does not target unlaunched declarations.", InputSchema: removeSchema, OutputSchema: map[string]any{"type": "object", "oneOf": []any{stop, collectionResults(stop)}}},
 		{Name: "signal", Description: "Send one observational signal to a running declared or ad_hoc process group without changing stop intent or automatic relaunch policy. Signal names are case-insensitive with an optional SIG prefix, and positive decimal values are accepted only when they map to the supported named signal table; the result is canonical and reports sent.", InputSchema: signalSchema, OutputSchema: signalResult},
@@ -600,7 +608,14 @@ func mcpDefinition(definition Definition) orchestrate.Definition {
 		Restart: effectiveRestart(definition.Restart), StopGrace: definition.StopGrace,
 	}
 	if definition.Ready != nil {
-		shared.Ready = &orchestrate.ReadinessConfig{Match: definition.Ready.Match, Timeout: definition.Ready.Timeout}
+		method := definition.Ready.Method
+		if method == "" {
+			method = "match"
+			if len(definition.Ready.Argv) != 0 {
+				method = "exec"
+			}
+		}
+		shared.Ready = &orchestrate.ReadinessConfig{Method: method, Match: definition.Ready.Match, Argv: append([]string(nil), definition.Ready.Argv...), Interval: definition.Ready.Interval, Timeout: definition.Ready.Timeout}
 	}
 	return shared
 }
@@ -625,7 +640,7 @@ func orchestrateProcess(process protocol.Process) orchestrate.Process {
 		}
 	}
 	if process.Readiness != nil {
-		readiness := &orchestrate.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
+		readiness := &orchestrate.Readiness{Method: process.Readiness.Method, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
 		if process.Readiness.Cursor != nil {
 			cursor := uint64(*process.Readiness.Cursor)
 			readiness.Cursor = &cursor
@@ -656,7 +671,7 @@ func protocolProcess(process orchestrate.Process) protocol.Process {
 		}
 	}
 	if process.Readiness != nil {
-		readiness := &protocol.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
+		readiness := &protocol.Readiness{Method: process.Readiness.Method, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
 		if process.Readiness.Cursor != nil {
 			cursor := protocol.Cursor(*process.Readiness.Cursor)
 			readiness.Cursor = &cursor
@@ -685,6 +700,16 @@ func stoppedProcess(root string, definition Definition) protocol.Process {
 	process := protocol.Process{Name: definition.Name, Source: definition.Source, Root: root, TTY: definition.TTY, Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: "stopped", Restart: effectiveRestart(definition.Restart), StopGraceInherited: definition.StopGrace == nil}
 	if definition.StopGrace != nil {
 		process.StopGrace = *definition.StopGrace
+	}
+	if definition.Ready != nil {
+		method := definition.Ready.Method
+		if method == "" {
+			method = "match"
+			if len(definition.Ready.Argv) != 0 {
+				method = "exec"
+			}
+		}
+		process.Readiness = &protocol.Readiness{Method: method, Match: definition.Ready.Match, Argv: append([]string(nil), definition.Ready.Argv...), Interval: definition.Ready.Interval}
 	}
 	return process
 }
@@ -945,7 +970,7 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 		Start: func(ctx context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
 			var ready *protocol.ReadinessConfig
 			if request.Ready != nil {
-				ready = &protocol.ReadinessConfig{Match: request.Ready.Match, Timeout: request.Ready.Timeout}
+				ready = &protocol.ReadinessConfig{Method: request.Ready.Method, Match: request.Ready.Match, Argv: append([]string(nil), request.Ready.Argv...), Interval: request.Ready.Interval, Timeout: request.Ready.Timeout}
 			}
 			current, err := client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Scope: resolution.Scope, Name: request.Name, Argv: append([]string(nil), request.Argv...), Cwd: request.Cwd, Root: request.Root, Env: append([]string(nil), request.Env...), Source: request.Source, Ready: ready, TTY: request.TTY, Restart: request.Restart, StopGrace: request.StopGrace})
 			return orchestrateProcess(current), err
@@ -1031,6 +1056,16 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 			mapped := mapError(err)
 			return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process definition or retained session %q not found", input.Name), Details: mapped.Details}
 		}
+		// A retained record does not have a resolved Definition, so retain its
+		// readiness expression before Start replaces the incarnation. The daemon
+		// snapshot is the durable source of this configuration for ad-hoc and
+		// removed manifest records.
+		var retainedReady *protocol.Readiness
+		if process.Readiness != nil {
+			readiness := *process.Readiness
+			readiness.Argv = append([]string(nil), process.Readiness.Argv...)
+			retainedReady = &readiness
+		}
 		outcome := "already_running"
 		if !protocol.IsActiveState(process.State) {
 			process, err = client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Name: input.Name, Scope: resolution.Scope, Cwd: process.Cwd, Root: resolution.Root, TTY: process.TTY})
@@ -1038,6 +1073,38 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 				return nil, mapError(err)
 			}
 			outcome = "started"
+			// Older/alternate daemon responses may omit the newly-started
+			// readiness state even though the retained snapshot carried the
+			// launch configuration. Reattach only the response-safe fields so the
+			// durable readiness wait still observes this incarnation.
+			if process.Readiness == nil && retainedReady != nil {
+				process.Readiness = &protocol.Readiness{
+					Method: retainedReady.Method, Argv: append([]string(nil), retainedReady.Argv...),
+					Interval: retainedReady.Interval, State: protocol.ReadinessStarting,
+					Match: retainedReady.Match, Diagnostic: retainedReady.Diagnostic,
+				}
+			}
+		}
+		if !input.NoWait && process.Readiness != nil && (process.Readiness.State == protocol.ReadinessStarting || process.Readiness.State == protocol.ReadinessReady) {
+			method := process.Readiness.Method
+			if method == "" {
+				method = "match"
+				if len(process.Readiness.Argv) != 0 {
+					method = "exec"
+				}
+			}
+			definition := Definition{
+				Name: input.Name, Source: process.Source, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
+				Ready: &protocol.ReadinessConfig{Method: method, Match: process.Readiness.Match, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval},
+			}
+			timeout, timeoutErr := readinessTimeout(input.TimeoutMS, definition)
+			if timeoutErr != nil {
+				return nil, timeoutErr
+			}
+			process, outcome, err = s.mcpWaitForReadiness(ctx, client, resolution, definition, process, outcome, timeout)
+			if err != nil {
+				return nil, mapError(err)
+			}
 		}
 		process = normalizeProcess(process)
 		return launchResult{Name: input.Name, Outcome: outcome, Process: &process}, nil
@@ -1570,31 +1637,36 @@ func (s *Server) signal(ctx context.Context, resolution Resolution, input common
 }
 
 type restartResult struct {
-	Name               string           `json:"name"`
-	Outcome            string           `json:"outcome"`
-	Readiness          string           `json:"readiness"`
-	PID                int              `json:"pid"`
-	LaunchCursor       protocol.Cursor  `json:"launch_cursor"`
-	Message            string           `json:"message,omitempty"`
-	Source             string           `json:"source,omitempty"`
-	Root               string           `json:"root"`
-	TTY                bool             `json:"tty"`
-	PGID               int              `json:"pgid"`
-	Cwd                string           `json:"cwd"`
-	Argv               []string         `json:"argv"`
-	Start              time.Time        `json:"start"`
-	NextCursor         *protocol.Cursor `json:"next_cursor,omitempty"`
-	State              string           `json:"state"`
-	Exit               *protocol.Exit   `json:"exit,omitempty"`
-	ExitCode           int              `json:"exit_code,omitempty"`
-	ExitedAt           time.Time        `json:"exited_at,omitempty"`
-	RestartCount       int              `json:"restart_count,omitempty"`
-	Followers          int              `json:"followers"`
-	Restart            string           `json:"restart"`
-	Relaunches         int              `json:"relaunches"`
-	StopGrace          time.Duration    `json:"stop_grace"`
-	StopGraceInherited bool             `json:"stop_grace_inherited"`
-	NextLaunchAt       *time.Time       `json:"next_launch_at,omitempty"`
+	Name                string           `json:"name"`
+	Outcome             string           `json:"outcome"`
+	Readiness           string           `json:"readiness"`
+	ReadinessMatch      string           `json:"readiness_match,omitempty"`
+	ReadinessMethod     string           `json:"readiness_method,omitempty"`
+	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
+	PID                 int              `json:"pid"`
+	LaunchCursor        protocol.Cursor  `json:"launch_cursor"`
+	Message             string           `json:"message,omitempty"`
+	Source              string           `json:"source,omitempty"`
+	Root                string           `json:"root"`
+	TTY                 bool             `json:"tty"`
+	PGID                int              `json:"pgid"`
+	Cwd                 string           `json:"cwd"`
+	Argv                []string         `json:"argv"`
+	Start               time.Time        `json:"start"`
+	NextCursor          *protocol.Cursor `json:"next_cursor,omitempty"`
+	State               string           `json:"state"`
+	Exit                *protocol.Exit   `json:"exit,omitempty"`
+	ExitCode            int              `json:"exit_code,omitempty"`
+	ExitedAt            time.Time        `json:"exited_at,omitempty"`
+	RestartCount        int              `json:"restart_count,omitempty"`
+	Followers           int              `json:"followers"`
+	Restart             string           `json:"restart"`
+	Relaunches          int              `json:"relaunches"`
+	StopGrace           time.Duration    `json:"stop_grace"`
+	StopGraceInherited  bool             `json:"stop_grace_inherited"`
+	NextLaunchAt        *time.Time       `json:"next_launch_at,omitempty"`
 }
 
 func restartResultForProcess(process protocol.Process, name, outcome, message string) restartResult {
@@ -1625,6 +1697,13 @@ func restartResultForProcess(process protocol.Process, name, outcome, message st
 		StopGrace:          process.StopGrace,
 		StopGraceInherited: process.StopGraceInherited,
 		NextLaunchAt:       process.NextLaunchAt,
+	}
+	if process.Readiness != nil {
+		result.ReadinessMatch = process.Readiness.Match
+		result.ReadinessMethod = process.Readiness.Method
+		result.ReadinessArgv = append([]string(nil), process.Readiness.Argv...)
+		result.ReadinessInterval = process.Readiness.Interval
+		result.ReadinessDiagnostic = process.Readiness.Diagnostic
 	}
 	if result.Argv == nil {
 		result.Argv = []string{}
@@ -1671,7 +1750,18 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 	request := protocol.RestartRequest{Op: protocol.OpRestart, Name: name, Scope: resolution.Scope, Cwd: resolution.Root}
 	if declared {
 		request.Root, request.Cwd, request.Update = resolution.Root, definition.Cwd, true
-		request.Argv, request.Env, request.Source, request.Ready, request.TTY = append([]string(nil), definition.Argv...), s.environment(), definition.Source, definition.Ready, definition.TTY
+		request.Argv, request.Env, request.Source, request.TTY = append([]string(nil), definition.Argv...), s.environment(), definition.Source, definition.TTY
+		if definition.Ready != nil {
+			ready := *definition.Ready
+			ready.Argv = append([]string(nil), definition.Ready.Argv...)
+			if ready.Method == "" {
+				ready.Method = "match"
+				if len(ready.Argv) != 0 {
+					ready.Method = "exec"
+				}
+			}
+			request.Ready = &ready
+		}
 		request.Restart = effectiveRestart(definition.Restart)
 		request.StopGrace = definition.StopGrace
 	}
@@ -1687,7 +1777,16 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 		definition.Ready = &protocol.ReadinessConfig{Match: process.Readiness.Match}
 	}
 	if definition.Ready != nil && process.Readiness == nil && process.State == "running" {
-		process.Readiness = &protocol.Readiness{State: protocol.ReadinessStarting, Match: definition.Ready.Match}
+		process.Readiness = &protocol.Readiness{
+			Method: definition.Ready.Method, Argv: append([]string(nil), definition.Ready.Argv...),
+			Interval: definition.Ready.Interval, State: protocol.ReadinessStarting, Match: definition.Ready.Match,
+		}
+		if process.Readiness.Method == "" {
+			process.Readiness.Method = "match"
+			if len(process.Readiness.Argv) != 0 {
+				process.Readiness.Method = "exec"
+			}
+		}
 	}
 
 	outcome := "restarted"

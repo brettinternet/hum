@@ -429,6 +429,429 @@ func TestProcessStopGraceOperations(t *testing.T) {
 	})
 }
 
+func TestExecutableReadiness(t *testing.T) {
+	root := makeProject(t, false)
+	marker := filepath.Join(root, "ready")
+	s := testSupervisor(t, Options{MaxLineBytes: 32})
+	p, err := s.Start(StartRequest{Name: "exec-ready", Source: "manifest", Cwd: root,
+		Argv: []string{"/bin/sh", "-c", "sleep 5"}, Env: []string{"PATH=/usr/bin:/bin", "PROBE_MARKER=" + marker},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "test -f $PROBE_MARKER"}, Interval: 10 * time.Millisecond, Timeout: time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Readiness == nil || p.Readiness.Method != "exec" || p.Readiness.Cursor != nil {
+		t.Fatalf("initial readiness = %#v", p.Readiness)
+	}
+	if err := os.WriteFile(marker, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current, getErr := s.Get(root, "exec-ready")
+		if getErr == nil && current.Readiness != nil && current.Readiness.State == ReadinessReady {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	current, _ := s.Get(root, "exec-ready")
+	t.Fatalf("readiness did not become ready: %#v", current.Readiness)
+}
+
+func TestExecutableReadinessProbeSchedulingAndEnvironment(t *testing.T) {
+	root := makeProject(t, false)
+	events := filepath.Join(root, "probe-events")
+	lock := filepath.Join(root, "probe-lock")
+	interval := 500 * time.Millisecond
+	s := testSupervisor(t, Options{})
+	launchedAt := time.Now()
+	_, err := s.Start(StartRequest{
+		Name: "probe-scheduling", Source: "manifest", Cwd: root,
+		Argv:  []string{"/bin/sh", "-c", "sleep 5"},
+		Env:   []string{"PATH=/usr/bin:/bin", "EXEC_ENV=service-value", "PROBE_EVENTS=" + events, "PROBE_LOCK=" + lock},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", `stamp() { /bin/date +%s%N; }; started=$(stamp); if test -e "$PROBE_LOCK"; then overlap=1; else overlap=0; fi; : > "$PROBE_LOCK"; printf 'start|%s|%s|%s|%s\n' "$started" "$(/bin/pwd -P)" "$EXEC_ENV" "$overlap" >> "$PROBE_EVENTS"; sleep .03; finished=$(stamp); printf 'end|%s\n' "$finished" >> "$PROBE_EVENTS"; rm -f "$PROBE_LOCK"; exit 1`}, Interval: interval, Timeout: 800 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readEvents := func() ([]string, int, int) {
+		data, readErr := os.ReadFile(events)
+		if readErr != nil {
+			return nil, 0, 0
+		}
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		starts, ends := 0, 0
+		for _, line := range lines {
+			if strings.HasPrefix(line, "start|") {
+				starts++
+			} else if strings.HasPrefix(line, "end|") {
+				ends++
+			}
+		}
+		return lines, starts, ends
+	}
+	firstDeadline := time.Now().Add(interval / 2)
+	for time.Now().Before(firstDeadline) {
+		_, starts, _ := readEvents()
+		if starts > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	lines, starts, ends := readEvents()
+	if starts == 0 || time.Since(launchedAt) >= interval {
+		t.Fatalf("first probe did not begin immediately: elapsed=%s events=%v", time.Since(launchedAt), lines)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		lines, starts, ends = readEvents()
+		if starts >= 2 && ends >= 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if starts < 2 || ends < 1 {
+		t.Fatalf("probe attempts did not complete serially: starts=%d ends=%d events=%v", starts, ends, lines)
+	}
+	if err := s.Stop(context.Background(), root, "probe-scheduling"); err != nil {
+		t.Fatal(err)
+	}
+	var endAt int64
+	var startsAt []int64
+	for _, line := range lines {
+		fields := strings.Split(line, "|")
+		if len(fields) < 2 {
+			continue
+		}
+		stamp, parseErr := strconv.ParseInt(fields[1], 10, 64)
+		if parseErr != nil {
+			continue
+		}
+		switch fields[0] {
+		case "start":
+			if len(fields) != 5 {
+				t.Fatalf("start event=%q, want cwd and inherited environment", line)
+			}
+			startsAt = append(startsAt, stamp)
+			if fields[2] != root || fields[3] != "service-value" || fields[4] != "0" {
+				t.Fatalf("probe context=%q, want cwd=%q env=%q and no overlap", line, root, "service-value")
+			}
+		case "end":
+			endAt = stamp
+		}
+	}
+	if len(startsAt) < 2 || endAt == 0 || startsAt[1] < endAt+interval.Nanoseconds() {
+		t.Fatalf("probe retry interval: starts=%v end=%d interval=%s", startsAt, endAt, interval)
+	}
+}
+
+func TestExecutableReadinessConcurrentOutputCapture(t *testing.T) {
+	diagnostic, err := runReadinessProbe(context.Background(), []string{"/bin/sh", "-c", "printf stdout; printf stderr >&2; exit 1"}, t.TempDir(), []string{"PATH=/usr/bin:/bin"}, 256)
+	if err == nil || !strings.Contains(diagnostic, "stdout") || !strings.Contains(diagnostic, "stderr") {
+		t.Fatalf("diagnostic=%q err=%v, want concurrent stdout and stderr", diagnostic, err)
+	}
+}
+
+func waitExecutableProbePID(t *testing.T, path string, count int) []int {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			lines := strings.Fields(string(data))
+			pids := make([]int, 0, len(lines))
+			for _, line := range lines {
+				pid, parseErr := strconv.Atoi(line)
+				if parseErr == nil {
+					pids = append(pids, pid)
+				}
+			}
+			if len(pids) >= count {
+				return pids
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("probe pid file %q did not contain %d pids", path, count)
+	return nil
+}
+
+func waitExecutableProbeGroupGone(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(-pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("probe process group %d survived cancellation", pid)
+}
+
+func TestExecutableReadinessStopCancelsBeforeSupervisedExit(t *testing.T) {
+	root := makeProject(t, false)
+	pidFile := filepath.Join(root, "probe-pids")
+	s := testSupervisor(t, Options{StopGrace: 200 * time.Millisecond})
+	_, err := s.Start(StartRequest{
+		Name: "slow-stop", Source: "manifest", Cwd: root,
+		Argv: []string{"/bin/sh", "-c", "trap '' TERM; sleep 30"}, Env: []string{"PATH=/usr/bin:/bin", "PROBE_PID_FILE=" + pidFile},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo $$ >> \"$PROBE_PID_FILE\"; exec sleep 30"}, Timeout: 2 * time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pids := waitExecutableProbePID(t, pidFile, 1)
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- s.Stop(context.Background(), root, "slow-stop") }()
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(-pids[0], 0); errors.Is(err, syscall.ESRCH) {
+			select {
+			case err := <-stopDone:
+				if err != nil {
+					t.Fatalf("stop: %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("stop did not finish after probe cancellation")
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("probe process group %d was not canceled promptly while supervised process ignored TERM", pids[0])
+}
+
+func TestExecutableReadinessProbeCleansDescendantsAfterExit(t *testing.T) {
+	root := t.TempDir()
+	pidFile := filepath.Join(root, "descendant-pid")
+	_, err := runReadinessProbe(context.Background(), []string{"/bin/sh", "-c", "(sleep 30 >/dev/null 2>&1) & echo $! > \"$DESCENDANT_PID_FILE\"; exit 0"}, root, []string{"PATH=/usr/bin:/bin", "DESCENDANT_PID_FILE=" + pidFile}, 256)
+	if err != nil {
+		t.Fatalf("probe returned error: %v", err)
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read descendant pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("parse descendant pid %q: %v", data, err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("probe descendant %d survived direct probe completion", pid)
+}
+
+func TestExecutableReadinessProcessExitCancellation(t *testing.T) {
+	root := makeProject(t, false)
+	pidFile := filepath.Join(root, "probe-pids")
+	s := testSupervisor(t, Options{})
+	_, err := s.Start(StartRequest{
+		Name: "exit-cancel", Source: "manifest", Cwd: root,
+		Argv: []string{"/bin/sh", "-c", "sleep .1; exit 7"}, Env: []string{"PATH=/usr/bin:/bin", "PROBE_PID_FILE=" + pidFile},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo $$ >> \"$PROBE_PID_FILE\"; exec sleep 30"}, Timeout: 2 * time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pids := waitExecutableProbePID(t, pidFile, 1)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current, getErr := s.Get(root, "exit-cancel")
+		if getErr == nil && current.State == StateExited {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	current, getErr := s.Get(root, "exit-cancel")
+	if getErr != nil || current.State != StateExited {
+		t.Fatalf("process did not exit: %#v err=%v", current, getErr)
+	}
+	waitExecutableProbeGroupGone(t, pids[0])
+}
+
+func TestExecutableReadinessTimeoutCancellation(t *testing.T) {
+	root := makeProject(t, false)
+	pidFile := filepath.Join(root, "probe-pids")
+	s := testSupervisor(t, Options{})
+	_, err := s.Start(StartRequest{
+		Name: "timeout-cancel", Source: "manifest", Cwd: root,
+		Argv: []string{"/bin/sh", "-c", "sleep 1"}, Env: []string{"PATH=/usr/bin:/bin", "PROBE_PID_FILE=" + pidFile},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo $$ >> \"$PROBE_PID_FILE\"; exec sleep 30"}, Timeout: 200 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pids := waitExecutableProbePID(t, pidFile, 1)
+	waitExecutableProbeGroupGone(t, pids[0])
+	if err := s.Stop(context.Background(), root, "timeout-cancel"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecutableReadinessStopCancellation(t *testing.T) {
+	root := makeProject(t, false)
+	pidFile := filepath.Join(root, "probe-pids")
+	s := testSupervisor(t, Options{})
+	_, err := s.Start(StartRequest{
+		Name: "stop-cancel", Source: "manifest", Cwd: root,
+		Argv: []string{"/bin/sh", "-c", "sleep 5"}, Env: []string{"PATH=/usr/bin:/bin", "PROBE_PID_FILE=" + pidFile},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo $$ >> \"$PROBE_PID_FILE\"; exec sleep 30"}, Timeout: 2 * time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pids := waitExecutableProbePID(t, pidFile, 1)
+	if err := s.Stop(context.Background(), root, "stop-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutableProbeGroupGone(t, pids[0])
+}
+
+func TestExecutableReadinessRestartCancellation(t *testing.T) {
+	root := makeProject(t, false)
+	pidFile := filepath.Join(root, "probe-pids")
+	s := testSupervisor(t, Options{})
+	_, err := s.Start(StartRequest{
+		Name: "restart-cancel", Source: "manifest", Cwd: root,
+		Argv: []string{"/bin/sh", "-c", "sleep 5"}, Env: []string{"PATH=/usr/bin:/bin", "PROBE_PID_FILE=" + pidFile},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo $$ >> \"$PROBE_PID_FILE\"; exec sleep 30"}, Timeout: 2 * time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := waitExecutableProbePID(t, pidFile, 1)[0]
+	if _, err := s.Restart(context.Background(), root, "restart-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	pids := waitExecutableProbePID(t, pidFile, 2)
+	waitExecutableProbeGroupGone(t, first)
+	if err := s.Stop(context.Background(), root, "restart-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutableProbeGroupGone(t, pids[1])
+}
+
+func TestExecutableReadinessShutdownCancellation(t *testing.T) {
+	root := makeProject(t, false)
+	pidFile := filepath.Join(root, "probe-pids")
+	s := testSupervisor(t, Options{})
+	_, err := s.Start(StartRequest{
+		Name: "shutdown-cancel", Source: "manifest", Cwd: root,
+		Argv: []string{"/bin/sh", "-c", "sleep 5"}, Env: []string{"PATH=/usr/bin:/bin", "PROBE_PID_FILE=" + pidFile},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo $$ >> \"$PROBE_PID_FILE\"; exec sleep 30"}, Timeout: 2 * time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := waitExecutableProbePID(t, pidFile, 1)[0]
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutableProbeGroupGone(t, pid)
+}
+
+func TestExecutableReadinessAutomaticRelaunchIncarnationIsolation(t *testing.T) {
+	root := makeProject(t, false)
+	pidFile := filepath.Join(root, "probe-pids")
+	s := testSupervisor(t, Options{})
+	_, err := s.Start(StartRequest{
+		Name: "relaunch-isolation", Source: "manifest", Cwd: root, Restart: RestartOnFailure,
+		Argv: []string{"/bin/sh", "-c", "sleep .1; exit 7"}, Env: []string{"PATH=/usr/bin:/bin", "PROBE_PID_FILE=" + pidFile},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo $$ >> \"$PROBE_PID_FILE\"; exec sleep 30"}, Timeout: 3 * time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pids := waitExecutableProbePID(t, pidFile, 2)
+	if pids[0] == pids[1] {
+		t.Fatalf("automatic relaunch reused probe pid %d", pids[0])
+	}
+	waitExecutableProbeGroupGone(t, pids[0])
+	current, err := s.Get(root, "relaunch-isolation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Readiness == nil || current.Readiness.State == ReadinessReady {
+		t.Fatalf("old incarnation readiness leaked into successor: %#v", current.Readiness)
+	}
+	if err := s.Stop(context.Background(), root, "relaunch-isolation"); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutableProbeGroupGone(t, pids[1])
+}
+
+func TestExecutableReadinessRetainsDiagnosticAndValidatesMethods(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{MaxLineBytes: 24})
+	started, err := s.Start(StartRequest{
+		Name: "diagnostic", Source: "manifest", Cwd: root,
+		Argv: []string{"/bin/sh", "-c", "sleep 5"}, Env: []string{"PATH=/usr/bin:/bin"},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "printf probe-diagnostic-which-is-long; exit 1"}, Interval: 5 * time.Millisecond, Timeout: 100 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Readiness == nil || started.Readiness.Method != "exec" {
+		t.Fatalf("initial readiness = %#v", started.Readiness)
+	}
+	var diagnostic string
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current, getErr := s.Get(root, "diagnostic")
+		if getErr == nil && current.Readiness != nil && current.Readiness.Diagnostic != "" {
+			diagnostic = current.Readiness.Diagnostic
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if diagnostic == "" || len(diagnostic) > 24 {
+		t.Fatalf("running diagnostic = %q (len=%d), want one bounded diagnostic", diagnostic, len(diagnostic))
+	}
+	if err := s.Stop(context.Background(), root, "diagnostic"); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := s.Get(root, "diagnostic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.Readiness == nil || stopped.Readiness.Diagnostic != diagnostic {
+		t.Fatalf("terminal readiness = %#v, want retained diagnostic %q", stopped.Readiness, diagnostic)
+	}
+	store, err := s.Output(root, "diagnostic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readResult, err := store.Read(output.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range readResult.Entries {
+		if strings.Contains(entry.Text, "probe-diagnostic") {
+			t.Fatalf("probe output retained in supervised output: %#v", entry)
+		}
+	}
+
+	for _, test := range []struct {
+		name    string
+		ready   *ReadinessConfig
+		wantErr bool
+	}{
+		{name: "explicit-match-with-argv", ready: &ReadinessConfig{Method: "match", Match: "ready", Argv: []string{"probe"}}, wantErr: true},
+		{name: "explicit-match-with-interval", ready: &ReadinessConfig{Method: "match", Match: "ready", Interval: time.Second}, wantErr: true},
+		{name: "explicit-exec-with-match", ready: &ReadinessConfig{Method: "exec", Match: "ready", Argv: []string{"probe"}}, wantErr: true},
+		{name: "inferred-both", ready: &ReadinessConfig{Match: "ready", Argv: []string{"probe"}}, wantErr: true},
+	} {
+		_, startErr := s.Start(StartRequest{Name: test.name, Source: "manifest", Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 1"}, Ready: test.ready})
+		if (startErr != nil) != test.wantErr {
+			t.Fatalf("%s error=%v, wantErr=%v", test.name, startErr, test.wantErr)
+		}
+	}
+}
+
 func TestSupervisorGlobalScope(t *testing.T) {
 	first, second, missing := makeProject(t, false), makeProject(t, true), makeProject(t, false)
 	s := testSupervisor(t, Options{})

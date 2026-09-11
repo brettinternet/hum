@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -36,20 +37,24 @@ type manifestTestDefinition struct {
 // and up use one JSON object per declared name, while optional process identity
 // fields are useful when present but are not part of every outcome.
 type manifestLaunchResult struct {
-	Name           string          `json:"name"`
-	Outcome        string          `json:"outcome"`
-	Source         string          `json:"source"`
-	Argv           []string        `json:"argv"`
-	State          string          `json:"state,omitempty"`
-	PID            *int            `json:"pid,omitempty"`
-	LaunchCursor   *uint64         `json:"launch_cursor,omitempty"`
-	Readiness      string          `json:"readiness,omitempty"`
-	ReadinessMatch string          `json:"readiness_match,omitempty"`
-	ReadyCursor    *uint64         `json:"ready_cursor,omitempty"`
-	BlockedBy      []string        `json:"blocked_by,omitempty"`
-	ChangedFields  []string        `json:"changed_fields,omitempty"`
-	Guidance       string          `json:"guidance,omitempty"`
-	Error          json.RawMessage `json:"error,omitempty"`
+	Name                string          `json:"name"`
+	Outcome             string          `json:"outcome"`
+	Source              string          `json:"source"`
+	Argv                []string        `json:"argv"`
+	State               string          `json:"state,omitempty"`
+	PID                 *int            `json:"pid,omitempty"`
+	LaunchCursor        *uint64         `json:"launch_cursor,omitempty"`
+	Readiness           string          `json:"readiness,omitempty"`
+	ReadinessMatch      string          `json:"readiness_match,omitempty"`
+	ReadinessMethod     string          `json:"readiness_method,omitempty"`
+	ReadinessArgv       []string        `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration   `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string          `json:"readiness_diagnostic,omitempty"`
+	ReadyCursor         *uint64         `json:"ready_cursor,omitempty"`
+	BlockedBy           []string        `json:"blocked_by,omitempty"`
+	ChangedFields       []string        `json:"changed_fields,omitempty"`
+	Guidance            string          `json:"guidance,omitempty"`
+	Error               json.RawMessage `json:"error,omitempty"`
 }
 
 type manifestProcess struct {
@@ -61,11 +66,160 @@ type manifestProcess struct {
 	LaunchCursor uint64   `json:"launch_cursor"`
 	State        string   `json:"state"`
 	Readiness    string   `json:"readiness,omitempty"`
+	Relaunches   int      `json:"relaunches,omitempty"`
 	ReadyCursor  *uint64  `json:"ready_cursor,omitempty"`
 }
 
 type manifestListResponse struct {
 	Processes []manifestProcess `json:"processes"`
+}
+
+func TestExecutableReadiness(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := testutil.BuildHum(t)
+	fixture := testutil.BuildFixture(t)
+	projectRoot := t.TempDir()
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
+
+	probeSource := filepath.Join(t.TempDir(), "readiness-probe.go")
+	probe, err := os.Create(probeSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := probe.WriteString(`package main
+
+import (
+	"os"
+)
+
+func main() {
+	if len(os.Args) != 2 {
+		os.Exit(2)
+	}
+	if _, err := os.Stat(os.Args[1]); err != nil {
+		os.Exit(1)
+	}
+	if err := os.WriteFile(os.Args[1]+".probed", []byte("ready"), 0600); err != nil {
+		os.Exit(3)
+	}
+}
+`); err != nil {
+		_ = probe.Close()
+		t.Fatal(err)
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	probeBinary := filepath.Join(t.TempDir(), "readiness-probe")
+	build := exec.Command("go", "build", "-o", probeBinary, probeSource)
+	buildOutput, err := build.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build readiness probe: %v\n%s", err, buildOutput)
+	}
+	missing := testutil.Run(t, probeBinary, projectRoot, env, filepath.Join(projectRoot, "service.started"))
+	if missing.Code != 1 || missing.Err == nil {
+		t.Fatalf("initial probe = code %d err=%v, want nonzero before marker", missing.Code, missing.Err)
+	}
+
+	manifest := fmt.Sprintf(`version: 1
+processes:
+  service:
+    argv: [%s, stream, %s]
+    ready:
+      exec: [%s, %s]
+      interval: 10ms
+  dependent:
+    argv: [%s, stream, %s]
+    after: [service]
+    ready:
+      exec: [%s, %s]
+      interval: 10ms
+`, yamlQuote(fixture), yamlQuote(filepath.Join(projectRoot, "service")), yamlQuote(probeBinary), yamlQuote(filepath.Join(projectRoot, "service.started")), yamlQuote(fixture), yamlQuote(filepath.Join(projectRoot, "dependent")), yamlQuote(probeBinary), yamlQuote(filepath.Join(projectRoot, "dependent.started")))
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = testutil.Run(t, hum, projectRoot, env, "stop", "dependent")
+		_ = testutil.Run(t, hum, projectRoot, env, "stop", "service")
+		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
+	})
+
+	up := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if up.Code != 0 || up.Err != nil || up.Stderr != "" {
+		t.Fatalf("executable-readiness up = code %d err=%v stdout=%q stderr=%q", up.Code, up.Err, up.Stdout, up.Stderr)
+	}
+	results := manifestDecodeLaunchResults(t, up.Stdout)
+	if len(results) != 2 {
+		t.Fatalf("executable-readiness results=%#v, want service and dependent", results)
+	}
+	byName := make(map[string]manifestLaunchResult, len(results))
+	for _, result := range results {
+		byName[result.Name] = result
+	}
+	for _, name := range []string{"service", "dependent"} {
+		result, ok := byName[name]
+		if !ok || result.Outcome != "started" || result.Readiness != "ready" {
+			t.Fatalf("%s launch=%#v, want started/ready executable result", name, result)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "service.started")); err != nil {
+		t.Fatalf("service marker: %v", err)
+	}
+	dependentMarker := filepath.Join(projectRoot, "dependent.started")
+	dependentInfo, err := os.Stat(dependentMarker)
+	if err != nil {
+		t.Fatalf("dependent marker: %v", err)
+	}
+	serviceProbeInfo, err := os.Stat(filepath.Join(projectRoot, "service.started.probed"))
+	if err != nil {
+		t.Fatalf("service probe marker: %v", err)
+	}
+	if !serviceProbeInfo.ModTime().Before(dependentInfo.ModTime()) {
+		t.Fatalf("dependent started before service probe completed: probe=%s dependent=%s", serviceProbeInfo.ModTime(), dependentInfo.ModTime())
+	}
+
+	// A retained manifest definition must start a fresh executable probe for
+	// every automatic relaunch, rather than inheriting a cleared incarnation's
+	// tracker. The fixture exits twice before remaining alive on its third
+	// launch; its marker is created before each probe runs.
+	relaunchMarker := filepath.Join(projectRoot, "relaunch-count")
+	relaunchManifest := manifest + fmt.Sprintf(`
+  relaunch:
+    argv: [%s, relaunch, %s]
+    ready:
+      exec: [%s, %s]
+      interval: 10ms
+    restart: on-failure
+`, yamlQuote(fixture), yamlQuote(relaunchMarker), yamlQuote(probeBinary), yamlQuote(relaunchMarker))
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(relaunchManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := testutil.Run(t, hum, projectRoot, env, "start", "--json", "--no-wait", "relaunch")
+	if start.Code != 0 || start.Err != nil || start.Stderr != "" {
+		t.Fatalf("automatic relaunch start = code %d err=%v stdout=%q stderr=%q", start.Code, start.Err, start.Stdout, start.Stderr)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		status := testutil.Run(t, hum, projectRoot, env, "status", "--json", "relaunch")
+		if status.Code == 0 {
+			var process manifestProcess
+			if err := json.Unmarshal([]byte(strings.TrimSpace(status.Stdout)), &process); err == nil && process.State == "running" && process.Readiness == "ready" && process.Relaunches >= 2 {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	status := testutil.Run(t, hum, projectRoot, env, "status", "--json", "relaunch")
+	t.Fatalf("automatic relaunch did not become ready: %q (stderr=%q)", status.Stdout, status.Stderr)
+}
+
+func yamlQuote(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func TestUpReportsManifestRuntimeDrift(t *testing.T) {

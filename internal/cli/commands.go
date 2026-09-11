@@ -99,7 +99,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum start NAME... [--no-wait] [--timeout DURATION] [--json]",
 			ArgsUsage:     "NAME...",
 			ShellComplete: completeProcessNames,
-			Description:   "Idempotently ensure named sessions are running from hum.yaml or conventional discovery; start never pulls in prerequisites and waits for readiness unless --no-wait. See docs/design.md for outcome details. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.\n\nExamples:\n  hum start api",
+			Description:   "Idempotently ensure named sessions are running from hum.yaml or conventional discovery; start never pulls in prerequisites and waits for readiness unless --no-wait. ready.exec uses exact argv with no shell; probes are immediate-first, serial, 1s by default, inherit cwd/environment, retain bounded diagnostics, and gate startup—not liveness; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.\n\nExamples:\n  hum start api",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn; default waits for readiness"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "readiness limit; omit for the manifest timeout"},
@@ -115,7 +115,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:       "ensure manifest processes are running",
 			UsageText:   "hum up [--detach] [--no-wait] [--timeout DURATION] [--json]",
 			ArgsUsage:   "",
-			Description: "Resolve manifest processes, launch independent roots concurrently, gate dependents on readiness, and continue after failures; --detach waits then returns, while --no-wait returns after spawn. See docs/design.md for recovery details. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C interrupts startup.\n\nExamples:\n  hum up",
+			Description: "Resolve manifest processes, launch independent roots concurrently, gate dependents on readiness, and continue after failures; --detach waits; --no-wait returns after spawn. ready.exec exact argv, no shell; immediate serial 1s retries inherit cwd/env, bounded diagnostics, startup gate—not liveness; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C interrupts startup.\n\nExamples:\n  hum up",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "wait for readiness and return instead of following process output"},
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn without following output; default waits for readiness"},
@@ -250,7 +250,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum restart NAME... [--no-wait] [--timeout DURATION] [--json]",
 			ArgsUsage:     "NAME...",
 			ShellComplete: completeProcessNames,
-			Description:   "Apply a graceful stop and relaunch by name; restart is not the daemon. A positive --timeout is per-name and --no-wait skips readiness; readiness failures let later names continue, but request or validation errors stop the remaining restarts; only successful attempts report a new PID. Exit codes: 0 success; exit 1 for request or validation error; exit 2 for readiness timeout; exit 3 for exited before readiness.\n\nExamples:\n  hum restart api",
+			Description:   "Apply a graceful stop and relaunch by name; restart is not the daemon. A positive --timeout is per-name and --no-wait skips readiness; readiness failures let later names continue, but request or validation errors stop the remaining restarts; ready.exec exact argv, no shell; immediate serial 1s retries inherit cwd/env, bounded diagnostics, startup gate—not liveness. Exit codes: 0 success; exit 1 for request or validation error; exit 2 for readiness timeout; exit 3 for exited before readiness.\n\nExamples:\n  hum restart api",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn; default waits for readiness"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "readiness limit; omit for the manifest timeout"},
@@ -2389,19 +2389,24 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 // use restart for launch inspection; the outcome/readiness fields describe the
 // replacement incarnation observed by this invocation.
 type restartOutputResult struct {
-	Name         string           `json:"name"`
-	Outcome      string           `json:"outcome"`
-	Readiness    string           `json:"readiness"`
-	PID          int              `json:"pid"`
-	LaunchCursor protocol.Cursor  `json:"launch_cursor"`
-	Message      string           `json:"message,omitempty"`
-	Source       string           `json:"source,omitempty"`
-	Argv         []string         `json:"argv"`
-	Restarts     int              `json:"restarts"`
-	Restart      string           `json:"restart"`
-	Relaunches   int              `json:"relaunches"`
-	NextLaunchAt *time.Time       `json:"next_launch_at,omitempty"`
-	ReadyCursor  *protocol.Cursor `json:"ready_cursor,omitempty"`
+	Name                string           `json:"name"`
+	Outcome             string           `json:"outcome"`
+	Readiness           string           `json:"readiness"`
+	ReadinessMatch      string           `json:"readiness_match,omitempty"`
+	ReadinessMethod     string           `json:"readiness_method,omitempty"`
+	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
+	PID                 int              `json:"pid"`
+	LaunchCursor        protocol.Cursor  `json:"launch_cursor"`
+	Message             string           `json:"message,omitempty"`
+	Source              string           `json:"source,omitempty"`
+	Argv                []string         `json:"argv"`
+	Restarts            int              `json:"restarts"`
+	Restart             string           `json:"restart"`
+	Relaunches          int              `json:"relaunches"`
+	NextLaunchAt        *time.Time       `json:"next_launch_at,omitempty"`
+	ReadyCursor         *protocol.Cursor `json:"ready_cursor,omitempty"`
 }
 
 func restartOutputFromProcess(process app.Process, definition project.Definition, outcome, message string) restartOutputResult {
@@ -2419,6 +2424,7 @@ func restartOutputFromProcess(process app.Process, definition project.Definition
 		Relaunches:   process.Relaunches,
 		NextLaunchAt: process.NextLaunchAt,
 	}
+	result.ReadinessMatch, result.ReadinessMethod, result.ReadinessArgv, result.ReadinessInterval, result.ReadinessDiagnostic = processReadinessMetadata(process)
 	if result.Name == "" {
 		result.Name = definition.Name
 	}
@@ -2440,16 +2446,19 @@ func restartOutputFromProcess(process app.Process, definition project.Definition
 
 func restartOutputFromManifest(result manifestLaunchResult, process app.Process, message string) restartOutputResult {
 	output := restartOutputResult{
-		Name:         result.Name,
-		Outcome:      result.Outcome,
-		Readiness:    result.Readiness,
-		Message:      message,
-		Source:       result.Source,
-		Argv:         append([]string(nil), result.Argv...),
-		Restarts:     process.RestartCount,
-		Restart:      result.Restart,
-		Relaunches:   result.Relaunches,
-		NextLaunchAt: result.NextLaunchAt,
+		Name:           result.Name,
+		Outcome:        result.Outcome,
+		Readiness:      result.Readiness,
+		Message:        message,
+		Source:         result.Source,
+		Argv:           append([]string(nil), result.Argv...),
+		Restarts:       process.RestartCount,
+		Restart:        result.Restart,
+		Relaunches:     result.Relaunches,
+		NextLaunchAt:   result.NextLaunchAt,
+		ReadinessMatch: result.ReadinessMatch, ReadinessMethod: result.ReadinessMethod,
+		ReadinessArgv: append([]string(nil), result.ReadinessArgv...), ReadinessInterval: result.ReadinessInterval,
+		ReadinessDiagnostic: result.ReadinessDiagnostic,
 	}
 	if result.PID != nil {
 		output.PID = *result.PID
@@ -2509,7 +2518,9 @@ func renderRestartOutputHuman(writer io.Writer, result restartOutputResult) erro
 		Name: legacy.Name, Source: result.Source, Argv: append([]string(nil), result.Argv...), PID: legacy.PID,
 		Restarts: legacy.Restarts, LaunchCursor: legacy.LaunchCursor, Restart: result.Restart,
 		Relaunches: result.Relaunches, NextLaunchAt: result.NextLaunchAt, Readiness: result.Readiness,
-		ReadyCursor: result.ReadyCursor,
+		ReadinessMatch: result.ReadinessMatch, ReadinessMethod: result.ReadinessMethod,
+		ReadinessArgv: append([]string(nil), result.ReadinessArgv...), ReadinessInterval: result.ReadinessInterval,
+		ReadinessDiagnostic: result.ReadinessDiagnostic, ReadyCursor: result.ReadyCursor,
 	}
 	var base bytes.Buffer
 	if err := renderRestartHuman(&base, legacyOutput); err != nil {
@@ -2525,6 +2536,18 @@ func renderRestartOutputHuman(writer io.Writer, result restartOutputResult) erro
 	}
 	if result.ReadyCursor != nil && !strings.Contains(line, " ready_cursor=") {
 		line += fmt.Sprintf(" ready_cursor=%d", *result.ReadyCursor)
+	}
+	if result.ReadinessMethod != "" && !strings.Contains(line, " readiness_method=") {
+		line += " readiness_method=" + result.ReadinessMethod
+	}
+	if len(result.ReadinessArgv) != 0 && !strings.Contains(line, " readiness_argv=") {
+		line += " readiness_argv=" + shellJoin(result.ReadinessArgv)
+	}
+	if result.ReadinessInterval != 0 && !strings.Contains(line, " readiness_interval=") {
+		line += " readiness_interval=" + result.ReadinessInterval.String()
+	}
+	if result.ReadinessDiagnostic != "" && !strings.Contains(line, " readiness_diagnostic=") {
+		line += " readiness_diagnostic=" + manifestProgressText(result.ReadinessDiagnostic)
 	}
 	if result.Message != "" {
 		line += " message=" + result.Message
@@ -2631,6 +2654,14 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		}
 		if definition.Ready == nil && process.Readiness != nil && (process.Readiness.State == app.ReadinessStarting || process.Readiness.State == app.ReadinessReady) {
 			definition.Ready = &project.ReadyDefinition{Match: process.Readiness.Match}
+		}
+		if definition.Ready != nil && process.Readiness == nil && process.State == app.StateRunning {
+			method := "match"
+			readyArgv := append([]string(nil), definition.Ready.Exec...)
+			if len(readyArgv) != 0 {
+				method = "exec"
+			}
+			process.Readiness = &app.Readiness{Method: method, Argv: readyArgv, Interval: definition.Ready.Interval, Match: definition.Ready.Match, State: app.ReadinessStarting}
 		}
 
 		var result restartOutputResult

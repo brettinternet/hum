@@ -13,8 +13,9 @@ import (
 // Version is the current private protocol version. Version 16 added attached-
 // run launch/follow scoping and control-intent signal requests; version 17 added
 // the explicit global process namespace; version 18 added bounded match context;
-// version 19 adds per-process stop grace.
-const Version = 19
+// version 19 added per-process stop grace; version 20 adds executable readiness
+// configuration and durable readiness diagnostics.
+const Version = 20
 
 const (
 	ScopeProject = "project"
@@ -231,12 +232,14 @@ func (r *ShutdownRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ReadinessConfig describes an output expression used to mark a resolved
-// process ready. Timeout is represented as a Go duration on the in-process
-// API and uses the standard duration JSON number on the wire.
+// ReadinessConfig describes output matching or a direct executable. Timeout
+// and interval use the standard duration JSON number on the wire.
 type ReadinessConfig struct {
-	Match   string        `json:"match"`
-	Timeout time.Duration `json:"timeout"`
+	Method   string        `json:"method,omitempty"`
+	Match    string        `json:"match,omitempty"`
+	Argv     []string      `json:"argv,omitempty"`
+	Interval time.Duration `json:"interval,omitempty"`
+	Timeout  time.Duration `json:"timeout"`
 }
 
 // StartRequest asks the daemon to launch one direct-argv process. Env is sent
@@ -1012,10 +1015,14 @@ type Exit struct {
 // output cursor. Recovery-capable terminal records retain Match so clients can
 // reconcile the effective declaration without exposing the environment.
 type Readiness struct {
-	State  string    `json:"state"`
-	Cursor *Cursor   `json:"cursor,omitempty"`
-	Time   time.Time `json:"time,omitempty"`
-	Match  string    `json:"match,omitempty"`
+	Method     string        `json:"method,omitempty"`
+	Argv       []string      `json:"argv,omitempty"`
+	Interval   time.Duration `json:"interval,omitempty"`
+	State      string        `json:"state"`
+	Cursor     *Cursor       `json:"cursor,omitempty"`
+	Time       time.Time     `json:"time,omitempty"`
+	Match      string        `json:"match,omitempty"`
+	Diagnostic string        `json:"diagnostic,omitempty"`
 }
 
 const (

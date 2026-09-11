@@ -2,6 +2,8 @@
 
 ## Scope
 
+Executable readiness is a startup gate: `ready.exec` is a non-empty exact argv executed directly without a shell. The first probe is immediate, then failed attempts retry serially after a positive `interval` (default 1s) until `timeout` (default 30s). Probes inherit cwd and environment; only one bounded terminal diagnostic is retained. This is not liveness monitoring. Method/argv changes report `readiness_exec`; interval and timeout are wait policy.
+
 hum is a local process supervisor for humans and coding agents.
 
 - A private Unix-socket daemon owns named process groups and bounded output independently of
@@ -201,8 +203,8 @@ Human `hum up` has an attached interactive mode and bounded startup progress.
   launched children remain supervised.
 - Readiness progress writes newline-terminated startup transitions to stderr. The final stdout
   summary is a compact `NAME`, `RESULT`, `STATE`, and `PID` table in lexical declaration order;
-  diagnostic fields such as launch and readiness cursors and the readiness matcher remain
-  available in `up --json` rather than expanding human output.
+  readiness match/cursor and exec method/argv/interval details are available in JSON and, when
+  configured, human output; terminal exec diagnostics are bounded and probe output is not retained.
 - Progress follows temporal transition completion rather than lexical declaration order, is
   serialized as complete lines, and uses at most two lines per declaration: one
   launch, observation, error, or dependency-blocked line and, only for a declaration that
@@ -272,8 +274,9 @@ session.
 - If only a retained ad hoc record exists, it reuses its exact argv, cwd, and environment.
 - Daemon replacement loses ad hoc definitions, so evicted records cannot be restarted.
 - After each successful replacement, it uses the shared readiness classification path: a
-  configured matcher must become ready, while a process without a matcher is reported as
-  `running_unverified`.
+  configured matcher or direct exec probe must become ready, while a process without readiness is
+  reported as `running_unverified`. Exec probes use exact argv without a shell, start immediately,
+  retry serially after failures at the interval (1s default), and inherit cwd/environment.
 - By default `restart` waits per name; `--no-wait` returns after spawn, and `--timeout` accepts
   a positive per-name duration measured from that name's launch.
 - Readiness failures are reported; remaining names continue.
@@ -413,6 +416,11 @@ processes:
     ready:
       match: "Listening"
       timeout: 30s
+  health:
+    argv: [bun, run, api]
+    ready:
+      exec: [./bin/health, api]
+      interval: 1s # First probe is immediate; retries are serial.
   web:
     argv: [bun, run, dev]
     cwd: web
@@ -428,7 +436,13 @@ Each entry requires a safe name and a non-empty string argv.
 - Optional `cwd` is root-relative and must exist and remain beneath the root after lexical and
   symlink resolution.
 - `ready.match` is a regular expression; `ready.timeout` is a positive duration defaulting to 30
-  seconds.
+  seconds. Alternatively, `ready.exec` is an exact non-empty argv sequence run directly without a
+  shell; `ready` requires exactly one of `match` or `exec`.
+- An exec probe runs immediately after launch, then retries serially after each failed attempt at
+  `interval` (a positive duration defaulting to 1s). It inherits the supervised process cwd and
+  launch environment. Failed probes do not enter the process output store; only one bounded
+  last-attempt terminal diagnostic is retained.
+- Readiness is a startup gate for `after` and launch commands, not continuous liveness monitoring.
 - Optional `after` is a list of same-manifest process names.
 - Names must be unique, cannot self-reference, and must point to definitions that declare
   `ready`; absent `after` is empty.
@@ -584,8 +598,8 @@ Each durable named session has one cursor sequence across stdout, stderr, and in
 - Ctrl+C detaches only the observer.
 - `wait` without an explicit cursor waits for the next incarnation when stopped or unlaunched
   and remains bounded (30 seconds by default).
-- Ordinary exited and ad hoc records omit readiness; terminal recovery records retain their
-  configured readiness matcher for drift classification.
+- Ad hoc records omit readiness; terminal manifest records retain their configured readiness
+  method, matcher or exact exec argv, interval, and bounded diagnostic for drift classification.
 
 ### Crash relaunch policy
 
@@ -607,9 +621,9 @@ Automatic attempts reuse the last effective argv, cwd, environment, readiness, a
 not reread the manifest.
 
 - For a running, pending-recovery, or exhausted manifest record, `start` and `up` report
-  `definition_drift` rather than silently adopting changed argv, canonical cwd, readiness
-  matcher, TTY, or normalized restart policy; only explicit `restart` applies a changed
-  definition.
+  `definition_drift` rather than silently adopting changed argv, canonical cwd, readiness method,
+  match or exact exec argv, TTY, or normalized restart policy; only explicit `restart` applies a
+  changed definition. Readiness timeout and exec interval are wait policy, not drift identity.
 - Readiness and client timeout do not trigger relaunch.
 - `restart`, `relaunches`, and optional whole-second `next_launch_at` appear in process, CLI
   JSON, and MCP snapshots.
@@ -619,8 +633,10 @@ not reread the manifest.
 - Pending and exhausted records resist completed-record eviction.
 - Followers stay attached through the exit/wait boundary, backoff, and exhaustion; bounded logs
   retain child failures and the `relaunching` and `gave up` system boundaries.
-- Recovery snapshots retain the response-safe readiness matcher without exposing environment so
-  drift can be classified after exit.
+- Recovery snapshots retain the response-safe readiness method, match or exact exec argv, interval,
+  and bounded terminal diagnostic without exposing environment so drift can be classified after exit.
+  Exec probes run directly without a shell using inherited cwd/environment, start immediately, retry
+  serially, and never retain probe output. Readiness is startup gating, not liveness monitoring.
 - Agents should read the failing incarnation's retained output before editing again.
 
 ## Daemon and environments
@@ -657,9 +673,10 @@ The launching client supplies cwd and its full environment.
 - Resolved restarts use the current argv, cwd, readiness, and requesting client's environment,
   so definition edits take effect through explicit `restart`.
 - A running or recovery-capable manifest record with changed argv, canonical cwd, readiness
-  matcher, TTY, or normalized restart policy returns `definition_drift` with sorted
-  `changed_fields` and `hum restart NAME` guidance from `start` or `up`; CLI exits 1 for this
-  result and it is not silently replaced.
+  method (including the readiness matcher), exact exec argv, TTY, or normalized restart policy returns
+  `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance from `start` or
+  `up`; CLI exits 1 for this result and it is not silently replaced. Readiness timeout and exec
+  interval are wait policy, not drift identity.
 
 ## MCP adapter
 

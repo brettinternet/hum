@@ -11,6 +11,37 @@ import (
 	"time"
 )
 
+func TestExecutableReadinessRoundTrip(t *testing.T) {
+	if Version != 20 {
+		t.Fatalf("protocol version = %d, want executable-readiness version 20", Version)
+	}
+	argv := []string{"task", "health", "api"}
+	request := StartRequest{Op: OpStart, Name: "api", Argv: []string{"api"}, Cwd: "/tmp", Ready: &ReadinessConfig{Method: "exec", Argv: argv, Interval: time.Second, Timeout: 30 * time.Second}}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded StartRequest
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Ready == nil || decoded.Ready.Method != "exec" || !reflect.DeepEqual(decoded.Ready.Argv, argv) || decoded.Ready.Interval != time.Second {
+		t.Fatalf("request readiness=%#v", decoded.Ready)
+	}
+	process := Process{Name: "api", Readiness: &Readiness{Method: "exec", Argv: argv, Interval: time.Second, State: ReadinessStarting, Diagnostic: "probe exit: status 1"}}
+	encoded, err = json.Marshal(process)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var round Process
+	if err := json.Unmarshal(encoded, &round); err != nil {
+		t.Fatal(err)
+	}
+	if round.Readiness == nil || round.Readiness.Method != "exec" || !reflect.DeepEqual(round.Readiness.Argv, argv) || round.Readiness.Diagnostic == "" {
+		t.Fatalf("process readiness=%#v", round.Readiness)
+	}
+}
+
 func TestProcessFollowerCountRoundTrip(t *testing.T) {
 	encoded, err := json.Marshal(Process{Name: "watched", Followers: 3})
 	if err != nil {
@@ -158,7 +189,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":19}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":20}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -751,7 +782,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":19}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":20}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError

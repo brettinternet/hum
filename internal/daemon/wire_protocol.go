@@ -20,7 +20,7 @@ func appReadinessConfigFromProtocol(config *protocol.ReadinessConfig) *app.Readi
 	if config == nil {
 		return nil
 	}
-	return &app.ReadinessConfig{Match: config.Match, Timeout: config.Timeout}
+	return &app.ReadinessConfig{Method: config.Method, Match: config.Match, Argv: append([]string(nil), config.Argv...), Interval: config.Interval, Timeout: config.Timeout}
 }
 
 func writeProtocolError(encoder *protocol.Encoder, op protocol.Operation, err error) error {
@@ -137,7 +137,7 @@ func appProcessFromProtocol(item protocol.Process) app.Process {
 		RestartCount: item.RestartCount, Followers: item.Followers, Restart: app.RestartPolicy(item.Restart), StopGrace: item.StopGrace, StopGraceInherited: item.StopGraceInherited, Relaunches: item.Relaunches, NextLaunchAt: item.NextLaunchAt,
 	}
 	if item.Readiness != nil {
-		result.Readiness = &app.Readiness{State: item.Readiness.State, Cursor: cursorFromProtocol(item.Readiness.Cursor), Time: item.Readiness.Time, Match: item.Readiness.Match}
+		result.Readiness = &app.Readiness{Method: item.Readiness.Method, Argv: append([]string(nil), item.Readiness.Argv...), Interval: item.Readiness.Interval, State: item.Readiness.State, Cursor: cursorFromProtocol(item.Readiness.Cursor), Time: item.Readiness.Time, Match: item.Readiness.Match, Diagnostic: item.Readiness.Diagnostic}
 	}
 	if item.NextCursor != nil {
 		result.NextCursor = output.Cursor(*item.NextCursor)
@@ -162,7 +162,7 @@ func protocolProcessFromApp(item app.Process) protocol.Process {
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start, LaunchCursor: protocol.Cursor(item.LaunchCursor), State: string(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount, Followers: item.Followers, Restart: string(item.Restart), StopGrace: item.StopGrace, StopGraceInherited: item.StopGraceInherited, Relaunches: item.Relaunches, NextLaunchAt: item.NextLaunchAt}
 	if item.Readiness != nil {
-		result.Readiness = &protocol.Readiness{State: item.Readiness.State, Cursor: protocolCursor(item.Readiness.Cursor), Time: item.Readiness.Time, Match: item.Readiness.Match}
+		result.Readiness = &protocol.Readiness{Method: item.Readiness.Method, Argv: append([]string(nil), item.Readiness.Argv...), Interval: item.Readiness.Interval, State: item.Readiness.State, Cursor: protocolCursor(item.Readiness.Cursor), Time: item.Readiness.Time, Match: item.Readiness.Match, Diagnostic: item.Readiness.Diagnostic}
 	}
 	if item.Exit != nil {
 		result.Exit = &protocol.Exit{Code: item.Exit.ExitCode, Error: errorString(item.Exit.Err), Time: item.Exit.ExitedAt}

@@ -14,6 +14,13 @@ processes:
       timeout: 30s # Defaults to 30s.
     restart: on-failure # Defaults to never.
     stop_grace: 2s # Omit to inherit the daemon default; 0s sends SIGKILL immediately after the TERM check.
+  health:
+    argv: [bun, run, api]
+    ready:
+      # Exact argv runs directly without a shell, using the process cwd/env.
+      exec: [task, health, api]
+      interval: 1s # First attempt is immediate; retries are serial after failure.
+      # Failed probe output is not retained; terminal diagnostics are bounded.
   web:
     argv: [bun, run, dev]
     # cwd is relative to the project root.

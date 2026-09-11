@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -62,6 +63,35 @@ func TestProcessStopGraceDaemonManifestFallback(t *testing.T) {
 	inherited := start("inherited")
 	if inherited.StopGrace != 3*time.Second || !inherited.StopGraceInherited {
 		t.Fatalf("manifest fallback inherited = %#v", inherited)
+	}
+}
+
+func TestExecutableReadiness(t *testing.T) {
+	if protocol.Version != 20 {
+		t.Fatalf("wire protocol version=%d, want 20 for executable readiness", protocol.Version)
+	}
+	argv := []string{"probe", "--service", "api"}
+	config := &protocol.ReadinessConfig{Method: "exec", Argv: argv, Interval: 250 * time.Millisecond, Timeout: 3 * time.Second}
+	appConfig := appReadinessConfigFromProtocol(config)
+	if appConfig == nil || appConfig.Method != "exec" || !reflect.DeepEqual(appConfig.Argv, argv) || appConfig.Interval != config.Interval || appConfig.Timeout != config.Timeout {
+		t.Fatalf("protocol to app readiness config=%#v, want argv/interval/timeout round trip", appConfig)
+	}
+	appProcess := app.Process{
+		Name: "api", Source: "manifest", Root: "/project", Cwd: "/project", Argv: []string{"server"}, State: app.StateRunning,
+		Readiness: &app.Readiness{Method: "exec", Argv: argv, Interval: config.Interval, State: app.ReadinessStarting, Diagnostic: "probe exited with status 1"},
+	}
+	wire := protocolProcessFromApp(appProcess)
+	encoded, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded protocol.Process
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	got := appProcessFromProtocol(decoded)
+	if got.Readiness == nil || got.Readiness.Method != "exec" || !reflect.DeepEqual(got.Readiness.Argv, argv) || got.Readiness.Interval != config.Interval || got.Readiness.State != app.ReadinessStarting || got.Readiness.Diagnostic != appProcess.Readiness.Diagnostic || got.Readiness.Cursor != nil {
+		t.Fatalf("wire readiness=%#v, want executable state and diagnostic without cursor", got.Readiness)
 	}
 }
 

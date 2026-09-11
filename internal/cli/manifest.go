@@ -78,7 +78,11 @@ func readinessConfig(definition project.Definition) *protocol.ReadinessConfig {
 	if definition.Ready == nil {
 		return nil
 	}
-	return &protocol.ReadinessConfig{Match: definition.Ready.Match, Timeout: definition.Ready.Timeout}
+	method := "match"
+	if len(definition.Ready.Exec) != 0 {
+		method = "exec"
+	}
+	return &protocol.ReadinessConfig{Method: method, Match: definition.Ready.Match, Argv: append([]string(nil), definition.Ready.Exec...), Interval: definition.Ready.Interval, Timeout: definition.Ready.Timeout}
 }
 
 func restartPolicy(definition project.Definition) string {
@@ -111,22 +115,30 @@ func effectiveProcessRestart(process app.Process) app.RestartPolicy {
 }
 
 func manifestProcess(definition project.Definition, root string) app.Process {
-	grace := time.Duration(0)
-	inherited := definition.StopGrace == nil
-	if definition.StopGrace != nil {
-		grace = *definition.StopGrace
+	process := app.Process{
+		Name: definition.Name, Source: definition.Source, Root: root, TTY: definition.TTY,
+		Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: app.State("stopped"),
+		Restart: app.RestartPolicy(restartPolicy(definition)),
+		StopGrace: func() time.Duration {
+			if definition.StopGrace != nil {
+				return *definition.StopGrace
+			}
+			return 0
+		}(),
+		StopGraceInherited: definition.StopGrace == nil,
 	}
-	return app.Process{
-		Name:      definition.Name,
-		Source:    definition.Source,
-		Root:      root,
-		TTY:       definition.TTY,
-		Cwd:       definition.Cwd,
-		Argv:      append([]string(nil), definition.Argv...),
-		State:     app.State("stopped"),
-		Restart:   app.RestartPolicy(restartPolicy(definition)),
-		StopGrace: grace, StopGraceInherited: inherited,
+	if definition.Ready != nil {
+		method := "match"
+		readyArgv := definition.Ready.Exec
+		if len(readyArgv) != 0 {
+			method = "exec"
+		}
+		process.Readiness = &app.Readiness{
+			Method: method, Argv: append([]string(nil), readyArgv...),
+			Interval: definition.Ready.Interval, Match: definition.Ready.Match,
+		}
 	}
+	return process
 }
 
 func mergeManifestProcesses(manifest manifestState, running []app.Process) []app.Process {
@@ -170,6 +182,10 @@ type manifestLaunchResult struct {
 	Readiness           string               `json:"readiness,omitempty"`
 	ReadinessMatch      string               `json:"readiness_match,omitempty"`
 	ReadinessConfigured bool                 `json:"-"`
+	ReadinessMethod     string               `json:"readiness_method,omitempty"`
+	ReadinessArgv       []string             `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration        `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string               `json:"readiness_diagnostic,omitempty"`
 	ReadyCursor         *uint64              `json:"ready_cursor,omitempty"`
 	BlockedBy           []string             `json:"blocked_by,omitempty"`
 	ExistingState       string               `json:"existing_state,omitempty"`
@@ -259,6 +275,12 @@ func manifestLaunchResultFor(definition project.Definition, process app.Process,
 	if process.Readiness != nil && process.Readiness.State != app.ReadinessRunningUnverified {
 		result.ReadinessMatch = process.Readiness.Match
 		result.ReadinessConfigured = true
+		if process.Readiness.Method == "exec" {
+			result.ReadinessMethod = process.Readiness.Method
+			result.ReadinessArgv = append([]string(nil), process.Readiness.Argv...)
+			result.ReadinessInterval = process.Readiness.Interval
+			result.ReadinessDiagnostic = process.Readiness.Diagnostic
+		}
 	}
 	if process.State != app.StateRunning {
 		return result
@@ -290,7 +312,11 @@ func cliOrchestrateDefinition(definition project.Definition) orchestrate.Definit
 		Restart: restartPolicy(definition), StopGrace: definition.StopGrace,
 	}
 	if definition.Ready != nil {
-		shared.Ready = &orchestrate.ReadinessConfig{Match: definition.Ready.Match, Timeout: definition.Ready.Timeout}
+		method := "match"
+		if len(definition.Ready.Exec) != 0 {
+			method = "exec"
+		}
+		shared.Ready = &orchestrate.ReadinessConfig{Method: method, Match: definition.Ready.Match, Argv: append([]string(nil), definition.Ready.Exec...), Interval: definition.Ready.Interval, Timeout: definition.Ready.Timeout}
 	}
 	return shared
 }
@@ -318,7 +344,7 @@ func cliOrchestrateProcess(process app.Process) orchestrate.Process {
 		}
 	}
 	if process.Readiness != nil {
-		readiness := &orchestrate.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
+		readiness := &orchestrate.Readiness{Method: process.Readiness.Method, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
 		if process.Readiness.Cursor != nil {
 			cursor := uint64(*process.Readiness.Cursor)
 			readiness.Cursor = &cursor
@@ -352,7 +378,7 @@ func cliAppProcess(process orchestrate.Process) app.Process {
 		result.Exit = exit
 	}
 	if process.Readiness != nil {
-		readiness := &app.Readiness{State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match}
+		readiness := &app.Readiness{Method: process.Readiness.Method, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
 		if process.Readiness.Cursor != nil {
 			cursor := output.Cursor(*process.Readiness.Cursor)
 			readiness.Cursor = &cursor
@@ -431,11 +457,27 @@ func cliSharedLaunchResult(definition project.Definition, result manifestLaunchR
 			snapshot.Restart = app.RestartPolicy(result.Restart)
 		}
 		if result.Readiness != "" || result.ReadinessConfigured {
+			// Reconstruct the complete readiness snapshot used by the shared
+			// orchestrator. In particular, exec readiness must not become a
+			// match-only record while a CLI up operation is refreshing it.
+			previous := snapshot.Readiness
 			snapshot.Readiness = nil
 			if result.ReadinessConfigured || result.Readiness == app.ReadinessStarting || result.Readiness == app.ReadinessReady {
-				readiness := &app.Readiness{State: result.Readiness, Match: result.ReadinessMatch}
+				readiness := &app.Readiness{
+					Method: result.ReadinessMethod, Argv: append([]string(nil), result.ReadinessArgv...),
+					Interval: result.ReadinessInterval, State: result.Readiness,
+					Match: result.ReadinessMatch, Diagnostic: result.ReadinessDiagnostic,
+				}
+				// Readiness time is not emitted in manifestLaunchResult, but it is
+				// available on the existing process snapshot when this is a refresh.
+				if previous != nil {
+					readiness.Time = previous.Time
+				}
 				if result.ReadyCursor != nil {
 					cursor := output.Cursor(*result.ReadyCursor)
+					readiness.Cursor = &cursor
+				} else if previous != nil && previous.Cursor != nil {
+					cursor := *previous.Cursor
 					readiness.Cursor = &cursor
 				}
 				snapshot.Readiness = readiness
@@ -573,7 +615,7 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 		Start: func(ctx context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
 			var ready *protocol.ReadinessConfig
 			if request.Ready != nil {
-				ready = &protocol.ReadinessConfig{Match: request.Ready.Match, Timeout: request.Ready.Timeout}
+				ready = &protocol.ReadinessConfig{Method: request.Ready.Method, Match: request.Ready.Match, Argv: append([]string(nil), request.Ready.Argv...), Interval: request.Ready.Interval, Timeout: request.Ready.Timeout}
 			}
 			current, err := client.Start(ctx, daemon.StartRequest{
 				Name: request.Name, Source: request.Source, Root: request.Root, Cwd: request.Cwd,
@@ -657,4 +699,15 @@ func processReadinessFields(process app.Process) (string, *protocol.Cursor) {
 		cursor = &value
 	}
 	return process.Readiness.State, cursor
+}
+
+// processReadinessMetadata exposes the configured readiness expression without
+// conflating it with the current lifecycle state. This keeps terminal and
+// stopped manifest snapshots useful while preserving match output for clients.
+func processReadinessMetadata(process app.Process) (match, method string, argv []string, interval time.Duration, diagnostic string) {
+	if process.Readiness == nil || process.Source == "" || process.Source == "ad_hoc" {
+		return "", "", nil, 0, ""
+	}
+	readiness := process.Readiness
+	return readiness.Match, readiness.Method, append([]string(nil), readiness.Argv...), readiness.Interval, readiness.Diagnostic
 }

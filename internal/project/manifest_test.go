@@ -61,6 +61,56 @@ func TestStopGraceManifest(t *testing.T) {
 }
 
 func durationPtr(value time.Duration) *time.Duration { return &value }
+func TestExecutableReadinessManifest(t *testing.T) {
+	cases := []struct {
+		name, ready string
+		wantErr     bool
+	}{
+		{"match", "match: ready", false},
+		{"exec", "exec: [task, health]", false},
+		{"positive durations", "exec: [task, health]\n      interval: 250ms\n      timeout: 2.5s", false},
+		{"both", "match: ready\n      exec: [task]", true},
+		{"neither", "timeout: 1s", true},
+		{"empty argv", "exec: []", true},
+		{"empty arg", `exec: [""]`, true},
+		{"match interval", "match: ready\n      interval: 1s", true},
+		{"zero interval", "exec: [task]\n      interval: 0s", true},
+		{"zero timeout", "exec: [task]\n      timeout: 0s", true},
+		{"negative timeout", "match: ready\n      timeout: -1s", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTestManifest(t, root, "version: 1\nprocesses:\n  web:\n    argv: [server]\n    ready:\n      "+tc.ready+"\n")
+			defs, err := LoadDefinitions(root)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v, wantErr=%v", err, tc.wantErr)
+			}
+			if err == nil {
+				if tc.name == "exec" {
+					if !reflect.DeepEqual(defs[0].Ready.Exec, []string{"task", "health"}) {
+						t.Fatalf("exec argv=%#v, want exact parsed argv", defs[0].Ready.Exec)
+					}
+				}
+				if tc.name == "positive durations" {
+					if defs[0].Ready.Interval != 250*time.Millisecond || defs[0].Ready.Timeout != 2500*time.Millisecond {
+						t.Fatalf("durations=%s/%s", defs[0].Ready.Interval, defs[0].Ready.Timeout)
+					}
+				} else if defs[0].Ready.Timeout != 30*time.Second {
+					t.Fatalf("timeout=%s", defs[0].Ready.Timeout)
+				}
+				if tc.name == "exec" && defs[0].Ready.Interval != time.Second {
+					t.Fatalf("interval=%s", defs[0].Ready.Interval)
+				}
+			}
+		})
+	}
+	root := t.TempDir()
+	writeTestManifest(t, root, "version: 1\nprocesses:\n  db:\n    argv: [db]\n    ready:\n      exec: [health, db]\n  api:\n    argv: [api]\n    after: [db]\n")
+	if _, err := LoadDefinitions(root); err != nil {
+		t.Fatalf("exec readiness dependency: %v", err)
+	}
+}
 
 func TestLoadDefinitionsManifest(t *testing.T) {
 	root := t.TempDir()

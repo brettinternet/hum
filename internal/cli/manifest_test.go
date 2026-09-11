@@ -188,11 +188,112 @@ func TestUpAdapterParity(t *testing.T) {
 		t.Fatalf("CLI adapter retained skipped snapshot=%#v", retainedRoundTrip)
 	}
 
-	stale := app.Process{Name: "api", Source: "manifest", Argv: []string{"api"}, State: app.StateRunning, PID: 41, Restart: app.RestartNever, StopGraceInherited: true}
+	readiness := manifestLaunchResult{
+		Name: "web", Outcome: "started", Source: "manifest", Argv: []string{"web"}, State: string(app.StateRunning), PID: func() *int { value := 41; return &value }(),
+		Readiness: app.ReadinessStarting, ReadinessConfigured: true, ReadinessMethod: "exec",
+		ReadinessArgv: []string{"probe", "--service", "web"}, ReadinessInterval: 125 * time.Millisecond,
+		ReadinessDiagnostic: "status 1", ReadyCursor: func() *uint64 { value := uint64(17); return &value }(),
+	}
+	readinessRoundTrip := cliManifestLaunchResult(project.Definition{Name: "web"}, cliSharedLaunchResult(project.Definition{Name: "web"}, readiness, nil))
+	if readinessRoundTrip.ReadinessMethod != readiness.ReadinessMethod || !reflect.DeepEqual(readinessRoundTrip.ReadinessArgv, readiness.ReadinessArgv) || readinessRoundTrip.ReadinessInterval != readiness.ReadinessInterval || readinessRoundTrip.ReadinessDiagnostic != readiness.ReadinessDiagnostic || readinessRoundTrip.ReadyCursor == nil || *readinessRoundTrip.ReadyCursor != 17 {
+		t.Fatalf("CLI adapter readiness snapshot=%#v", readinessRoundTrip)
+	}
+
+	stale := app.Process{Name: "api", Source: "manifest", Argv: []string{"api"}, State: app.StateRunning, PID: 41, Restart: app.RestartNever}
 	freshExit := manifestLaunchResult{Name: "api", Outcome: "exited_before_ready", Source: "manifest", Argv: []string{"api"}, State: string(app.StateExited), Restart: string(app.RestartNever), ExitCode: &exitCode}
 	freshRoundTrip := cliManifestLaunchResult(definition, cliSharedLaunchResult(definition, freshExit, &stale))
 	if freshRoundTrip.State != string(app.StateExited) || freshRoundTrip.PID != nil || freshRoundTrip.ExitCode == nil || *freshRoundTrip.ExitCode != exitCode {
 		t.Fatalf("CLI adapter fresh readiness snapshot=%#v", freshRoundTrip)
+	}
+}
+
+func TestExecutableReadiness(t *testing.T) {
+	root := t.TempDir()
+	argv := []string{"probe", "--service", "api"}
+	definition := project.Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"server"}, Ready: &project.ReadyDefinition{Exec: argv, Interval: 125 * time.Millisecond, Timeout: 2 * time.Second}}
+	sharedDefinition := cliOrchestrateDefinition(definition)
+	if sharedDefinition.Ready == nil || sharedDefinition.Ready.Method != "exec" || !reflect.DeepEqual(sharedDefinition.Ready.Argv, argv) || sharedDefinition.Ready.Interval != definition.Ready.Interval {
+		t.Fatalf("CLI readiness definition=%#v, want executable argv and interval", sharedDefinition.Ready)
+	}
+
+	startRequest := orchestrate.StartRequest{}
+	started := orchestrate.Ensure(context.Background(), root, sharedDefinition, []string{"PROBE=1"}, false, orchestrate.EnsureOperations{
+		Get: func(context.Context, string, string) (orchestrate.Process, error) {
+			return orchestrate.Process{}, protocol.NewWireError(protocol.ErrorNotFound, "not found", nil)
+		},
+		IsNotFound: func(error) bool { return true },
+		Start: func(_ context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
+			startRequest = request
+			return orchestrate.Process{Name: "api", Source: "manifest", Root: root, Cwd: root, Argv: []string{"server"}, State: "running", PID: 42, LaunchCursor: 7, Readiness: &orchestrate.Readiness{Method: "exec", Argv: argv, Interval: definition.Ready.Interval, State: orchestrate.ReadinessStarting}}, nil
+		},
+	})
+	if started.Result.Outcome != "started" || startRequest.Ready == nil || startRequest.Ready.Method != "exec" || !reflect.DeepEqual(startRequest.Ready.Argv, argv) || startRequest.Ready.Interval != definition.Ready.Interval {
+		t.Fatalf("CLI start result=%#v request=%#v, want executable readiness propagated", started.Result, startRequest)
+	}
+
+	current := cliOrchestrateProcess(app.Process{Name: "api", Source: "manifest", Root: root, Cwd: root, Argv: []string{"server"}, State: app.StateRunning, PID: 42, LaunchCursor: 7, StopGraceInherited: true, Readiness: &app.Readiness{Method: "exec", Argv: argv, Interval: definition.Ready.Interval, State: app.ReadinessStarting, Diagnostic: "status 1"}})
+	waits := 0
+	result, err := orchestrate.WaitForReadiness(context.Background(), root, sharedDefinition, current, "started", time.Second, orchestrate.ReadinessOperations{
+		Get: func(context.Context, string, string) (orchestrate.Process, error) {
+			current.Readiness.State = orchestrate.ReadinessReady
+			return current, nil
+		},
+		Wait: func(context.Context, orchestrate.WaitRequest) (orchestrate.WaitResult, error) {
+			waits++
+			return orchestrate.WaitResult{}, nil
+		},
+	})
+	if err != nil || waits != 0 || result.Outcome != "started" || result.Process == nil || result.Process.Readiness.State != orchestrate.ReadinessReady {
+		t.Fatalf("CLI readiness result=%#v err=%v waits=%d, want ready without output wait", result, err, waits)
+	}
+
+	for path, outcome := range map[string]string{"start": "started", "up": "already_running", "restart": "restarted"} {
+		launch := manifestLaunchResultFor(definition, cliAppProcess(*result.Process), outcome)
+		encoded, err := json.Marshal(launch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"readiness_method":"exec"`, `"readiness_argv":["probe","--service","api"]`, `"readiness_interval":125000000`, `"readiness_diagnostic":"status 1"`} {
+			if !strings.Contains(string(encoded), want) {
+				t.Fatalf("CLI %s result=%s, missing %s", path, encoded, want)
+			}
+		}
+	}
+	snapshot := cliAppProcess(current)
+	for name, value := range map[string]string{
+		"status": func() string { data, _ := json.Marshal(statusJSONFor(snapshot)); return string(data) }(),
+		"list":   func() string { data, _ := json.Marshal(processJSON(snapshot)); return string(data) }(),
+		"restart": func() string {
+			data, _ := json.Marshal(restartOutputFromProcess(snapshot, definition, "restarted", ""))
+			return string(data)
+		}(),
+	} {
+		for _, want := range []string{`"readiness_method":"exec"`, `"readiness_argv":["probe","--service","api"]`, `"readiness_interval":125000000`, `"readiness_diagnostic":"status 1"`} {
+			if !strings.Contains(value, want) {
+				t.Fatalf("CLI %s result=%s, missing %s", name, value, want)
+			}
+		}
+	}
+
+	driftDefinition := sharedDefinition
+	driftDefinition.Ready = &orchestrate.ReadinessConfig{Method: "exec", Argv: []string{"probe", "--service", "different"}, Interval: definition.Ready.Interval, Timeout: definition.Ready.Timeout}
+	execDrift := orchestrate.DefinitionDriftResult(root, driftDefinition, current)
+	if execDrift.Outcome != "definition_drift" || !reflect.DeepEqual(execDrift.ChangedFields, []string{"readiness_exec"}) {
+		t.Fatalf("CLI executable readiness drift=%#v, want readiness_exec", execDrift)
+	}
+	matchDefinition := project.Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"server"}, Ready: &project.ReadyDefinition{Match: "ready"}}
+	matchProcess := app.Process{Name: "api", Source: "manifest", Root: root, Cwd: root, Argv: []string{"server"}, State: app.StateRunning, StopGraceInherited: true, Readiness: &app.Readiness{Method: "match", Match: "ready", State: app.ReadinessStarting}}
+	matchDrift := orchestrate.DefinitionDriftResult(root, cliOrchestrateDefinition(matchDefinition), cliOrchestrateProcess(matchProcess))
+	if len(matchDrift.ChangedFields) != 0 {
+		t.Fatalf("unchanged match readiness drift=%#v, want no changed fields", matchDrift)
+	}
+	matchToExec := orchestrate.DefinitionDriftResult(root, sharedDefinition, cliOrchestrateProcess(matchProcess))
+	if !reflect.DeepEqual(matchToExec.ChangedFields, []string{"readiness_exec"}) {
+		t.Fatalf("CLI match-to-exec readiness drift=%#v, want readiness_exec", matchToExec)
+	}
+	execToMatch := orchestrate.DefinitionDriftResult(root, cliOrchestrateDefinition(matchDefinition), current)
+	if !reflect.DeepEqual(execToMatch.ChangedFields, []string{"readiness_exec"}) {
+		t.Fatalf("CLI exec-to-match readiness drift=%#v, want readiness_exec", execToMatch)
 	}
 }
 

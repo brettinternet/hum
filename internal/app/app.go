@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -53,6 +54,63 @@ func validRestartPolicy(policy RestartPolicy) bool {
 	return policy == "" || policy == RestartNever || policy == RestartOnFailure
 }
 
+func validateReadinessConfig(input *ReadinessConfig) (*ReadinessConfig, *regexp.Regexp, error) {
+	if input == nil {
+		return nil, nil, nil
+	}
+	config := *input
+	config.Argv = append([]string(nil), input.Argv...)
+	if config.Method == "" {
+		if config.Match != "" && len(config.Argv) != 0 {
+			return nil, nil, fmt.Errorf("%w: readiness requires exactly one method", ErrInvalidRequest)
+		}
+		if len(config.Argv) != 0 {
+			config.Method = "exec"
+		} else {
+			config.Method = "match"
+		}
+	}
+	if config.Method == "exec" {
+		if config.Match != "" {
+			return nil, nil, fmt.Errorf("%w: readiness exec cannot include match", ErrInvalidRequest)
+		}
+		if len(config.Argv) == 0 {
+			return nil, nil, fmt.Errorf("%w: readiness exec argv must not be empty", ErrInvalidRequest)
+		}
+		for i, arg := range config.Argv {
+			if arg == "" {
+				return nil, nil, fmt.Errorf("%w: readiness exec argv[%d] must not be empty", ErrInvalidRequest, i)
+			}
+		}
+		if config.Interval == 0 {
+			config.Interval = time.Second
+		}
+		if config.Interval <= 0 {
+			return nil, nil, fmt.Errorf("%w: readiness interval must be positive", ErrInvalidRequest)
+		}
+	} else if config.Method != "match" {
+		return nil, nil, fmt.Errorf("%w: unknown readiness method %q", ErrInvalidRequest, config.Method)
+	} else if len(config.Argv) != 0 {
+		return nil, nil, fmt.Errorf("%w: readiness match cannot include exec argv", ErrInvalidRequest)
+	} else if config.Interval != 0 {
+		return nil, nil, fmt.Errorf("%w: readiness interval requires exec readiness", ErrInvalidRequest)
+	}
+	if config.Timeout == 0 {
+		config.Timeout = 30 * time.Second
+	}
+	if config.Timeout <= 0 {
+		return nil, nil, fmt.Errorf("%w: readiness timeout must be positive", ErrInvalidRequest)
+	}
+	if config.Method == "match" {
+		compiled, err := regexp.Compile(config.Match)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: readiness match: %v", ErrInvalidRequest, err)
+		}
+		return &config, compiled, nil
+	}
+	return &config, nil, nil
+}
+
 func effectiveRestartPolicy(policy RestartPolicy) RestartPolicy {
 	if policy == "" {
 		return RestartNever
@@ -67,22 +125,27 @@ func restartPolicyForSource(source string, policy RestartPolicy) RestartPolicy {
 	return effectiveRestartPolicy(policy)
 }
 
-// ReadinessConfig describes an output expression used to mark a manifest
-// process ready. Match is compiled once when the process is admitted.
+// ReadinessConfig describes either output matching or a direct executable
+// used to mark a manifest process ready.
 type ReadinessConfig struct {
-	Match   string
-	Timeout time.Duration
+	Method   string
+	Match    string
+	Argv     []string
+	Interval time.Duration
+	Timeout  time.Duration
 }
 
 // Readiness is the response-safe readiness state of a running resolved
-// process or a terminal record that can still relaunch. Cursor is the first
-// matching output cursor for this incarnation; Match remains available on
-// terminal recovery records for definition reconciliation.
+// process or a terminal record. Exec readiness has no output cursor.
 type Readiness struct {
-	State  string
-	Cursor *output.Cursor
-	Time   time.Time
-	Match  string
+	Method     string
+	Argv       []string
+	Interval   time.Duration
+	State      string
+	Cursor     *output.Cursor
+	Time       time.Time
+	Match      string
+	Diagnostic string
 }
 
 const (
@@ -774,6 +837,219 @@ func (t *readinessTracker) close() {
 	})
 }
 
+// executableReadinessTracker owns probes for exactly one process incarnation.
+// Probe output is deliberately kept outside the supervised output store.
+type executableReadinessTracker struct {
+	argv       []string
+	interval   time.Duration
+	maxBytes   int
+	mu         sync.RWMutex
+	ready      bool
+	at         time.Time
+	diagnostic string
+	cancel     context.CancelFunc
+	done       chan struct{}
+}
+
+func (t *executableReadinessTracker) snapshot() (bool, time.Time, string) {
+	if t == nil {
+		return false, time.Time{}, ""
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.ready, t.at, t.diagnostic
+}
+func (t *executableReadinessTracker) stop() {
+	if t != nil && t.cancel != nil {
+		t.cancel()
+	}
+}
+
+func (s *Supervisor) startExecutableReadiness(rec *record, incarnation uint64) {
+	// Admission and tracker installation must be one registry transaction. A
+	// read lock here would allow stop/restart to detach the old tracker while
+	// this launch installs a new one.
+	s.mu.Lock()
+	if s.records[rec.key] != rec || rec.terminal || rec.incarnation != incarnation || rec.readyConfig == nil || len(rec.readyConfig.Argv) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	config := *rec.readyConfig
+	argv := append([]string(nil), config.Argv...)
+	env := append([]string(nil), rec.env...)
+	cwd := rec.cwd
+	limit := s.maxLineBytes
+	parent, cancel := context.WithTimeout(context.Background(), config.Timeout)
+	tracker := &executableReadinessTracker{argv: argv, interval: config.Interval, maxBytes: limit, cancel: cancel, done: make(chan struct{})}
+	rec.execTracker = tracker
+	s.mu.Unlock()
+	go func() {
+		defer close(tracker.done)
+		defer cancel()
+		first := true
+		for {
+			if !first {
+				timer := time.NewTimer(tracker.interval)
+				select {
+				case <-parent.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+			first = false
+			diagnostic, exitErr := runReadinessProbe(parent, argv, cwd, env, limit)
+			if exitErr == nil {
+				tracker.mu.Lock()
+				tracker.ready = true
+				tracker.at = s.now()
+				tracker.mu.Unlock()
+				return
+			}
+			// Cancellation is lifecycle control, not a failed probe attempt;
+			// preserve the last completed diagnostic while stopping a run.
+			if parent.Err() != nil {
+				return
+			}
+			tracker.mu.Lock()
+			tracker.diagnostic = diagnostic
+			tracker.mu.Unlock()
+			select {
+			case <-parent.Done():
+				return
+			default:
+			}
+		}
+	}()
+}
+
+func runReadinessProbe(parent context.Context, argv []string, cwd string, env []string, maxBytes int) (string, error) {
+	if err := parent.Err(); err != nil {
+		return "", err
+	}
+	if len(argv) == 0 {
+		return "probe start: empty argv", errors.New("empty argv")
+	}
+	executable := argv[0]
+	if filepath.Base(executable) == executable {
+		pathEnv, hasPath := "", false
+		for _, item := range env {
+			key, value, ok := strings.Cut(item, "=")
+			if ok && key == "PATH" {
+				pathEnv, hasPath = value, true
+			}
+		}
+		if !hasPath {
+			err := &exec.Error{Name: executable, Err: exec.ErrNotFound}
+			return capProbeDiagnostic(fmt.Sprintf("probe start: %v", err), maxBytes), err
+		}
+		targetDir := cwd
+		if targetDir == "" {
+			var err error
+			targetDir, err = os.Getwd()
+			if err != nil {
+				return capProbeDiagnostic(fmt.Sprintf("probe start: %v", err), maxBytes), err
+			}
+		}
+		found := false
+		for _, directory := range filepath.SplitList(pathEnv) {
+			if directory == "" {
+				directory = targetDir
+			} else if !filepath.IsAbs(directory) {
+				directory = filepath.Join(targetDir, directory)
+			}
+			candidate := filepath.Join(directory, executable)
+			if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() && info.Mode().Perm()&0111 != 0 {
+				resolved, absErr := filepath.Abs(candidate)
+				if absErr != nil {
+					return capProbeDiagnostic(fmt.Sprintf("probe start: %v", absErr), maxBytes), absErr
+				}
+				executable = resolved
+				found = true
+				break
+			}
+		}
+		if !found {
+			err := &exec.Error{Name: argv[0], Err: exec.ErrNotFound}
+			return capProbeDiagnostic(fmt.Sprintf("probe start: %v", err), maxBytes), err
+		}
+	}
+	cmd := exec.Command(executable, argv[1:]...)
+	cmd.Args = append([]string(nil), argv...)
+	cmd.Dir, cmd.Env = cwd, append([]string(nil), env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var capture limitedProbeBuffer
+	capture.limit = maxBytes
+	cmd.Stdout, cmd.Stderr = &capture, &capture
+	if err := cmd.Start(); err != nil {
+		return capProbeDiagnostic(fmt.Sprintf("probe start: %v", err), maxBytes), err
+	}
+	pid := cmd.Process.Pid
+	killDone := make(chan struct{})
+	var killOnce sync.Once
+	killGroup := func() {
+		killOnce.Do(func() {
+			// Setpgid above makes the direct probe the group leader. The group
+			// remains owned by this invocation while descendants exist, so a
+			// post-Wait group kill removes descendants without signalling the
+			// supervised process or an unrelated process in the usual PID reuse
+			// case. The once also closes the cancellation/cleanup race.
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		})
+	}
+	go func() {
+		select {
+		case <-parent.Done():
+			killGroup()
+		case <-killDone:
+		}
+	}()
+	err := cmd.Wait()
+	killGroup()
+	close(killDone)
+	if parent.Err() != nil {
+		return "", parent.Err()
+	}
+	if err != nil {
+		message := fmt.Sprintf("probe exit: %v", err)
+		if capture.String() != "" {
+			message += ": " + capture.String()
+		}
+		return capProbeDiagnostic(message, maxBytes), err
+	}
+	return "", nil
+}
+
+type limitedProbeBuffer struct {
+	mu    sync.Mutex
+	bytes []byte
+	limit int
+}
+
+func (b *limitedProbeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.limit > len(b.bytes) {
+		n := b.limit - len(b.bytes)
+		if n > len(p) {
+			n = len(p)
+		}
+		b.bytes = append(b.bytes, p[:n]...)
+	}
+	return len(p), nil
+}
+func (b *limitedProbeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.bytes)
+}
+func capProbeDiagnostic(value string, max int) string {
+	if max > 0 && len(value) > max {
+		return value[:max]
+	}
+	return value
+}
+
 // record contains private relaunch state in addition to the immutable public
 // snapshot. It is never returned to callers.
 type record struct {
@@ -789,6 +1065,7 @@ type record struct {
 	readyConfig         *ReadinessConfig
 	readyPattern        *regexp.Regexp
 	tracker             *readinessTracker
+	execTracker         *executableReadinessTracker
 	tty                 bool
 	restart             RestartPolicy
 	stopGrace           time.Duration
@@ -816,6 +1093,13 @@ type record struct {
 	// restarts. Each incarnation owns one tracker; an old tracker can never
 	// update a later launch.
 	incarnation uint64
+
+	// Exec readiness is retained independently of the active probe tracker.
+	// Reconciliation clears the tracker after an incarnation exits, but
+	// terminal snapshots still need its bounded last diagnostic.
+	execReady      bool
+	execReadyAt    time.Time
+	execDiagnostic string
 
 	child         Child
 	pid           int
@@ -886,6 +1170,9 @@ func (s *Supervisor) transitionRunningLocked(rec *record, child Child, startedAt
 	rec.incarnation++
 	s.processObservations[rec.key]++
 	rec.tracker = tracker
+	rec.execReady = false
+	rec.execReadyAt = time.Time{}
+	rec.execDiagnostic = ""
 }
 
 // transitionTerminalLocked records the immutable result for one incarnation.
@@ -1495,12 +1782,11 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	var readyConfig *ReadinessConfig
 	var readyPattern *regexp.Regexp
 	if req.Ready != nil {
-		config := *req.Ready
-		compiled, compileErr := regexp.Compile(config.Match)
-		if compileErr != nil {
-			return Process{}, fmt.Errorf("%w: readiness match: %v", ErrInvalidRequest, compileErr)
+		var readinessErr error
+		readyConfig, readyPattern, readinessErr = validateReadinessConfig(req.Ready)
+		if readinessErr != nil {
+			return Process{}, readinessErr
 		}
-		readyConfig, readyPattern = &config, compiled
 	}
 
 	s.mu.Lock()
@@ -1709,7 +1995,12 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		input.beginIncarnation()
 	}
 	started := rec.snapshotLocked()
+	incarnation := rec.incarnation
+	execReady := rec.readyConfig != nil && rec.readyConfig.Method == "exec"
 	s.mu.Unlock()
+	if execReady {
+		s.startExecutableReadiness(rec, incarnation)
+	}
 	if input != nil {
 		input.emit(InputEvent{State: InputRunning, LaunchCursor: launchCursor, TTY: tty})
 	}
@@ -1821,13 +2112,11 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 			updatedEnv = []string{}
 		}
 		if update.Ready != nil {
-			config := *update.Ready
-			compiled, compileErr := regexp.Compile(config.Match)
-			if compileErr != nil {
-				return Process{}, fmt.Errorf("%w: readiness match: %v", ErrInvalidRequest, compileErr)
+			var readinessErr error
+			updatedReady, updatedPattern, readinessErr = validateReadinessConfig(update.Ready)
+			if readinessErr != nil {
+				return Process{}, readinessErr
 			}
-			updatedReady = &config
-			updatedPattern = compiled
 		}
 		updatedTTY = update.TTY
 		if update.TTYSize != nil {
@@ -2010,7 +2299,11 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 		input.beginIncarnation()
 	}
 	restarted := rec.snapshotLocked()
+	incarnation := rec.incarnation
 	s.mu.Unlock()
+	if rec.readyConfig != nil && rec.readyConfig.Method == "exec" {
+		s.startExecutableReadiness(rec, incarnation)
+	}
 	if input != nil {
 		input.emit(InputEvent{State: InputRunning, LaunchCursor: launchCursor, TTY: tty})
 	}
@@ -2078,6 +2371,13 @@ func (s *Supervisor) reconcile(rec *record) {
 	}
 	transitionTerminalLocked(rec, result)
 	store := rec.store
+	execTracker := rec.execTracker
+	if execTracker != nil {
+		execTracker.stop()
+		<-execTracker.done
+		rec.execReady, rec.execReadyAt, rec.execDiagnostic = execTracker.snapshot()
+	}
+	rec.execTracker = nil
 	terminalProcess := rec.snapshotLocked()
 	republish := rec.pendingExit
 	rec.pendingExit = false
@@ -2451,12 +2751,11 @@ func (s *Supervisor) PrepareTTYScoped(scope string, req StartRequest) error {
 		var readyConfig *ReadinessConfig
 		var readyPattern *regexp.Regexp
 		if req.Ready != nil {
-			config := *req.Ready
-			compiled, compileErr := regexp.Compile(config.Match)
-			if compileErr != nil {
-				return fmt.Errorf("%w: readiness match: %v", ErrInvalidRequest, compileErr)
+			var readinessErr error
+			readyConfig, readyPattern, readinessErr = validateReadinessConfig(req.Ready)
+			if readinessErr != nil {
+				return readinessErr
 			}
-			readyConfig, readyPattern = &config, compiled
 		}
 		rec.argv = append([]string(nil), req.Argv...)
 		rec.source = req.Source
@@ -3264,6 +3563,13 @@ func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
 	// that already terminated autonomously remains exited.
 	s.cancelRelaunchLocked(rec, true)
 	rec.controlIntent = !rec.terminal || rec.persisting
+	// Stop is an incarnation boundary for readiness as well as the supervised
+	// process. Cancel the probe while holding the registry lock, before
+	// signaling or waiting on the child, so a slow or non-cooperating child
+	// cannot keep an exec probe alive until terminal reconciliation.
+	if rec.execTracker != nil {
+		rec.execTracker.stop()
+	}
 	if rec.terminal || rec.child == nil {
 		if rec.persisting {
 			s.mu.Unlock()
@@ -3418,12 +3724,20 @@ func (s *Supervisor) RemoveScoped(ctx context.Context, scope, cwd, name string) 
 	}
 	tracker := rec.tracker
 	rec.tracker = nil
+	execTracker := rec.execTracker
+	rec.execTracker = nil
+	if execTracker != nil {
+		execTracker.stop()
+	}
 	rec.readyConfig, rec.readyPattern = nil, nil
 	rec.input = nil
 	rec.store, rec.env, rec.argv, rec.child = nil, nil, nil, nil
 	s.mu.Unlock()
 	if tracker != nil {
 		tracker.close()
+	}
+	if execTracker != nil {
+		<-execTracker.done
 	}
 	if input != nil {
 		closeInputLease(input)
@@ -3574,25 +3888,41 @@ func (r *record) snapshotLocked() Process {
 		switch {
 		case r.readyConfig == nil:
 			model.Readiness = &Readiness{State: ReadinessRunningUnverified}
+		case r.readyConfig.Method == "exec":
+			ready, at, diagnostic := r.execTracker.snapshot()
+			if r.execTracker == nil {
+				ready, at, diagnostic = r.execReady, r.execReadyAt, r.execDiagnostic
+			}
+			model.Readiness = &Readiness{Method: "exec", Argv: append([]string(nil), r.readyConfig.Argv...), Interval: r.readyConfig.Interval, State: ReadinessStarting, Time: at, Diagnostic: diagnostic}
+			if ready {
+				model.Readiness.State = ReadinessReady
+			}
 		default:
 			ready, cursor, at := r.tracker.snapshot()
 			if ready {
-				model.Readiness = &Readiness{
-					State: ReadinessReady, Cursor: &cursor, Time: at,
-					Match: r.readyConfig.Match,
-				}
+				model.Readiness = &Readiness{Method: "match", State: ReadinessReady, Cursor: &cursor, Time: at, Match: r.readyConfig.Match}
 			} else {
-				model.Readiness = &Readiness{
-					State: ReadinessStarting, Match: r.readyConfig.Match,
-				}
+				model.Readiness = &Readiness{Method: "match", State: ReadinessStarting, Match: r.readyConfig.Match}
 			}
 		}
 	}
 	// Keep the effective readiness matcher on terminal records that can still
 	// relaunch. It is needed to reconcile the retained launch specification
 	// without exposing the launch environment.
-	if r.terminal && (r.relaunchPending || r.relaunchExhausted) && r.readyConfig != nil {
-		model.Readiness = &Readiness{State: ReadinessStarting, Match: r.readyConfig.Match}
+	if r.terminal && r.readyConfig != nil {
+		if r.readyConfig.Method == "exec" {
+			ready, at, diagnostic := r.execTracker.snapshot()
+			if r.execTracker == nil {
+				ready, at, diagnostic = r.execReady, r.execReadyAt, r.execDiagnostic
+			}
+			state := ReadinessStarting
+			if ready {
+				state = ReadinessReady
+			}
+			model.Readiness = &Readiness{Method: "exec", Argv: append([]string(nil), r.readyConfig.Argv...), Interval: r.readyConfig.Interval, State: state, Time: at, Diagnostic: diagnostic}
+		} else if r.relaunchPending || r.relaunchExhausted {
+			model.Readiness = &Readiness{Method: "match", State: ReadinessStarting, Match: r.readyConfig.Match}
+		}
 	}
 	if r.terminal && r.state == StateExited {
 		// Exit details describe an autonomous terminal incarnation. An

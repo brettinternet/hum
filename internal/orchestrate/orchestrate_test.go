@@ -25,6 +25,82 @@ func TestProcessStopGraceDefinitionDrift(t *testing.T) {
 	}
 }
 
+func TestExecutableReadiness(t *testing.T) {
+	root := t.TempDir()
+	calls := 0
+	initial := Process{Name: "api", Source: "manifest", Root: root, Cwd: root, PID: 9, LaunchCursor: 2, State: "running", Readiness: &Readiness{Method: "exec", Argv: []string{"health", "api"}, Interval: time.Second, State: ReadinessStarting}}
+	current := initial
+	result, err := WaitForReadiness(context.Background(), root, Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, Ready: &ReadinessConfig{Method: "exec", Argv: []string{"health", "api"}}}, initial, "started", time.Second, ReadinessOperations{
+		Get: func(context.Context, string, string) (Process, error) {
+			calls++
+			if calls > 1 {
+				current.Readiness = &Readiness{Method: "exec", Argv: []string{"health", "api"}, State: ReadinessReady, Time: time.Now()}
+			}
+			return current, nil
+		},
+		Wait: func(context.Context, WaitRequest) (WaitResult, error) {
+			t.Fatal("exec readiness must not issue output wait")
+			return WaitResult{}, nil
+		},
+	})
+	if err != nil || result.Outcome != "started" || result.Process == nil || result.Process.Readiness.State != ReadinessReady {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+
+	initial.Readiness = &Readiness{Method: "exec", Argv: []string{"health", "api"}, Interval: time.Second, State: ReadinessStarting}
+	for _, test := range []struct {
+		name       string
+		state      string
+		readyTime  time.Time
+		launch     Process
+		wantResult string
+	}{
+		{name: "ExecutableReadinessTerminalReadyBeforeDeadline", state: "exited", readyTime: time.Now(), wantResult: "started"},
+		{name: "ExecutableReadinessReadyAfterDeadline", state: "exited", readyTime: time.Now().Add(time.Second), wantResult: "timed_out"},
+		{name: "ExecutableReadinessSuccessorReadyDoesNotMatch", state: "running", readyTime: time.Now(), launch: Process{PID: 10, LaunchCursor: 3}, wantResult: "exited_before_ready"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			launch := initial
+			current := initial
+			current.State = test.state
+			current.Readiness = &Readiness{Method: "exec", Argv: initial.Readiness.Argv, State: ReadinessReady, Time: test.readyTime}
+			if test.launch.PID != 0 {
+				current.PID, current.LaunchCursor = test.launch.PID, test.launch.LaunchCursor
+			}
+			result, err := WaitForReadiness(context.Background(), root, Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, Ready: &ReadinessConfig{Method: "exec", Argv: initial.Readiness.Argv}}, launch, "started", 100*time.Millisecond, ReadinessOperations{
+				Get: func(context.Context, string, string) (Process, error) { return current, nil },
+			})
+			if err != nil || result.Outcome != test.wantResult {
+				t.Fatalf("result=%#v err=%v, want %q", result, err, test.wantResult)
+			}
+		})
+	}
+
+	t.Run("ExecutableReadinessCallerDeadlineCancels", func(t *testing.T) {
+		waiting := initial
+		waiting.Readiness = &Readiness{Method: "exec", Argv: []string{"health", "api"}, State: ReadinessStarting}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		_, err := WaitForReadiness(ctx, root, Definition{Name: "api", Ready: &ReadinessConfig{Method: "exec", Argv: []string{"probe"}}}, waiting, "started", time.Second, ReadinessOperations{
+			Get: func(context.Context, string, string) (Process, error) { return waiting, nil },
+		})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err=%v, want caller deadline cancellation", err)
+		}
+	})
+
+	t.Run("ExecutableReadinessTimeoutReturnsTimedOut", func(t *testing.T) {
+		waiting := initial
+		waiting.Readiness = &Readiness{Method: "exec", Argv: []string{"health", "api"}, State: ReadinessStarting}
+		result, err := WaitForReadiness(context.Background(), root, Definition{Name: "api", Ready: &ReadinessConfig{Method: "exec", Argv: []string{"probe"}}}, waiting, "started", 5*time.Millisecond, ReadinessOperations{
+			Get: func(context.Context, string, string) (Process, error) { return waiting, nil },
+		})
+		if err != nil || result.Outcome != "timed_out" {
+			t.Fatalf("result=%#v err=%v, want timed_out", result, err)
+		}
+	})
+}
+
 func TestOrchestrateUp(t *testing.T) {
 	root := t.TempDir()
 	t.Run("readiness success timeout early exit", func(t *testing.T) {
