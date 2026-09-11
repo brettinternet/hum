@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -441,10 +443,29 @@ func waitJSONFor(result app.WaitResult) protocol.WaitResponse {
 	return response
 }
 
+const cliMachineOutputSchemaVersion = 1
+
 func encodeJSON(w io.Writer, value any) error {
-	encoder := json.NewEncoder(w)
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
 	encoder.SetEscapeHTML(false)
-	return encoder.Encode(value)
+	if err := encoder.Encode(value); err != nil {
+		return err
+	}
+	document := bytes.TrimSpace(encoded.Bytes())
+	if len(document) < 2 || document[0] != '{' || document[len(document)-1] != '}' {
+		return errors.New("CLI machine output must be a JSON object")
+	}
+
+	versioned := make([]byte, 0, len(document)+24)
+	versioned = fmt.Appendf(versioned, `{"schema_version":%d`, cliMachineOutputSchemaVersion)
+	if len(document) > 2 {
+		versioned = append(versioned, ',')
+		versioned = append(versioned, document[1:len(document)-1]...)
+	}
+	versioned = append(versioned, '}', '\n')
+	_, err := w.Write(versioned)
+	return err
 }
 
 type jsonErrorEnvelope struct {

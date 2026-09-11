@@ -189,6 +189,13 @@ Ad-hoc sessions are selected by name. The default stream `both` includes stdout,
 
 Human output uses `[NAME]` prefixes. JSON output uses named NDJSON events. Logs `next` is the consumed cursor; process `next_cursor` is the next cursor to assign.
 
+## JSON and NDJSON
+
+Every supported CLI `--json` result and NDJSON record includes `schema_version: 1`. See the
+[version 1 CLI machine-output contract](docs/cli-json-v1.md) for covered commands, required and
+optional fields, framing, ordering, exit-code interaction, Compatibility rules, and the boundary
+from Hum's private daemon protocol. Attached `hum run` remains raw child output and does not use the CLI JSON contract.
+
 ## Shell completion
 
 Completion is opt-in and does not start a daemon:
