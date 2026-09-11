@@ -656,6 +656,7 @@ func TestManifestWorkflow(t *testing.T) {
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_OUTPUT_BYTES=65536", "HUM_STOP_GRACE=1s")
 	t.Cleanup(func() {
 		_ = os.WriteFile(filepath.Join(projectRoot, "alpha-gate"), []byte("release\n"), 0o600)
+		_ = os.WriteFile(filepath.Join(projectRoot, "alpha-exit-gate"), []byte("release\n"), 0o600)
 		for _, name := range []string{"alpha-ready", "gamma-retained", "zeta-plain", "ad-hoc", "beta-fail"} {
 			_ = testutil.Run(t, hum, projectRoot, env, "stop", name)
 		}
@@ -663,6 +664,7 @@ func TestManifestWorkflow(t *testing.T) {
 	})
 
 	alphaGate := filepath.Join(projectRoot, "alpha-gate")
+	alphaExitGate := filepath.Join(projectRoot, "alpha-exit-gate")
 	gate := filepath.Join(projectRoot, "retained-gate")
 	betaMarker := filepath.Join(projectRoot, "beta")
 	adHocMarker := filepath.Join(projectRoot, "ad-hoc")
@@ -679,9 +681,9 @@ func TestManifestWorkflow(t *testing.T) {
 		},
 		{
 			Name: "alpha-ready",
-			// Keep the process producing output briefly after the match so exit
-			// cannot win the readiness observation under a loaded CI runner.
-			Argv:  []string{fixture, "burst", alphaGate, "100"},
+			// Hold the process after it emits the match so exit cannot win the
+			// readiness observation under a loaded CI runner.
+			Argv:  []string{fixture, "burst", alphaGate, "100", alphaExitGate},
 			Ready: &manifestTestReady{Match: `stdout:0056`},
 		},
 		{

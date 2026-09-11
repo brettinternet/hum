@@ -27,9 +27,10 @@ modes:
   relaunch <marker>
       Increment <marker>, fail the first two launches, then print ready and
       remain alive until SIGTERM.
-  burst <gate> <count>
+  burst <gate> <count> [exit-gate]
       Emit alternating stdout:NNNN and stderr:NNNN lines, wait for <gate>
-      after the first half, then emit the remaining lines.
+      after the first half, then emit the remaining lines. When supplied,
+      wait for <exit-gate> before exiting.
   terminal <gate>
       Emit colour, OSC, and CRLF output, wait for <gate>, then emit a live line.
   prompt <marker>
@@ -89,14 +90,18 @@ func run(args []string) (int, error) {
 		}
 		return runRelaunch(args[1])
 	case "burst":
-		if len(args) != 3 || args[1] == "" {
-			return 0, errors.New("burst requires a gate path and positive count")
+		if (len(args) != 3 && len(args) != 4) || args[1] == "" || (len(args) == 4 && args[3] == "") {
+			return 0, errors.New("burst requires a gate path, positive count, and optional exit gate path")
 		}
 		count, err := strconv.Atoi(args[2])
 		if err != nil || count <= 0 {
 			return 0, errors.New("burst count must be a positive integer")
 		}
-		return runBurst(args[1], count)
+		exitGate := ""
+		if len(args) == 4 {
+			exitGate = args[3]
+		}
+		return runBurst(args[1], count, exitGate)
 	case "terminal":
 		if len(args) != 2 || args[1] == "" {
 			return 0, errors.New("terminal requires exactly one non-empty gate path")
@@ -251,7 +256,7 @@ func runStream(marker string) (int, error) {
 	return 0, nil
 }
 
-func runBurst(gate string, count int) (int, error) {
+func runBurst(gate string, count int, exitGate string) (int, error) {
 	half := count / 2
 	if err := writeBurstLines(0, half); err != nil {
 		return 0, err
@@ -261,6 +266,11 @@ func runBurst(gate string, count int) (int, error) {
 	}
 	if err := writeBurstLines(half, count); err != nil {
 		return 0, err
+	}
+	if exitGate != "" {
+		if err := waitForFile(exitGate, 0); err != nil {
+			return 0, fmt.Errorf("wait for burst exit gate: %w", err)
+		}
 	}
 	return 0, nil
 }
