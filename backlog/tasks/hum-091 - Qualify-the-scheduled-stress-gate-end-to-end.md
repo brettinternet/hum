@@ -1,10 +1,10 @@
 ---
 id: HUM-091
 title: Qualify the scheduled stress gate end to end
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-11 01:51'
-updated_date: '2026-09-11 13:49'
+updated_date: '2026-09-11 14:27'
 labels:
   - tooling
 dependencies:
@@ -47,19 +47,19 @@ Modified files: none expected; provider evidence only.
 <!-- AC:BEGIN -->
 - [x] #1 task stress exits 0 on three consecutive invocations at the candidate revision and all three wall times are recorded in Implementation Notes.
 - [x] #2 With task stress running concurrently, mise exec go -- go test -race -count=20 -run 'TestLogsSince|TestManifestWorkflow|TestNDJSONFollow|TestControlSignalDaemonRoundTripSuppressesRestart|TestControlSignalSurvivorResumesOnFailureRestart|TestInputCommand|TestShutdown|TestFlagAliasParityReadCommands' ./integration ./internal/cli ./internal/daemon ./internal/app ./internal/mcp exits 0.
-- [ ] #3 gh workflow run stress.yaml followed by gh run watch for the dispatched run exits 0 with successful Linux and macOS jobs.
+- [x] #3 gh workflow run stress.yaml followed by gh run watch for the dispatched run exits 0 with successful Linux and macOS jobs.
 - [x] #4 gh pr comment 1 --body '@dependabot rebase' is followed through completion and PR #1 CI succeeds; the run URL and result are recorded in Implementation Notes.
 - [x] #5 rg -n 'stress' Taskfile.dist.yaml .github/workflows/ci.yaml matches only Taskfile.dist.yaml and task ci exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -73,4 +73,12 @@ AC#5 — PASS: `rg -n 'stress' Taskfile.dist.yaml .github/workflows/ci.yaml` mat
 Delivery state — no production or test files changed. HUM-087 was reopened with the exact failure and next action; rerun AC#3 and final `task ci` after HUM-087 is complete.
 
 AC#3 — BLOCKED/FAIL on candidate d33a5aa: gh workflow run stress.yaml dispatched https://github.com/brettinternet/hum/actions/runs/34605158013 and gh run watch 34605158013 --exit-status exited 1. Linux passed; macOS timed out after 10m in TestProcessStopGraceOperations/restart_remove_replacement_and_shutdown_use_record_values because the synthetic 3s grace timer was not observed within its 1s polling window, after which cleanup blocked on the unfired timer. Reopened owning prerequisite HUM-085 with a deterministic synchronization and failure-cleanup acceptance criterion; rerun AC#3 and final task ci after HUM-085 completes.
+
+AC#3 — PASS on candidate d9d22e7: gh workflow run stress.yaml dispatched https://github.com/brettinternet/hum/actions/runs/34608807684; gh run watch 34608807684 --exit-status exited 0, and gh run view confirmed successful Linux and macOS stress jobs. Final gate — rg -n 'stress' Taskfile.dist.yaml .github/workflows/ci.yaml matched only Taskfile.dist.yaml:73 and task ci exited 0 on d9d22e7. Independent verifier PASS for AC#1–AC#5 and DoD#1–DoD#6; it confirmed earlier qualification candidate efcacb1 is an ancestor of d9d22e7, remote and Dependabot runs succeeded, qualification changes were provider metadata only, no tests were deleted/skipped/weakened, and no protected gate files changed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Qualified the stress gate end to end. Three local stress runs, the concurrent flaky-test race selection, Dependabot CI, final task ci, and remote Linux/macOS stress run 34608807684 all passed; prerequisite synchronization defects discovered during qualification were fixed and independently verified.
+<!-- SECTION:FINAL_SUMMARY:END -->
