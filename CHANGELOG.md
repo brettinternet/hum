@@ -2,7 +2,7 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
-## Unreleased
+## [v0.10.0](https://github.com/brettinternet/hum/compare/v0.9.1...v0.10.0) - 2026-09-11
 
 ### Added
 
@@ -10,6 +10,10 @@ Notable changes to hum are documented here. This file is generated from conventi
 - Add verified curl installer
 - Add Herdr process plugin
 - **cli:** Add version capability command
+
+### Fixed
+
+- **cli:** Preserve scope details in root help
 
 ### Documentation
 
