@@ -1038,7 +1038,7 @@ func hum006ListLogsTempDir(t *testing.T, prefix string) string {
 	if err != nil {
 		t.Fatalf("create temporary directory: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Cleanup(func() { cliServeRunCleanupRuntime(t, dir) })
 	return dir
 }
 

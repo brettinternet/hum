@@ -69,8 +69,18 @@ func TestEnsureDaemonCancellationReapsChild(t *testing.T) {
 	cfg := cliDaemonTestConfig(runtimeDir, 3*time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
+	startupDone := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-startupDone:
+		case <-time.After(5 * time.Second):
+			t.Errorf("ensure daemon startup did not stop during cleanup")
+		}
+	})
 	startedAt := time.Now()
 	go func() {
+		defer close(startupDone)
 		_, err := ensureDaemon(ctx, cfg)
 		result <- err
 	}()

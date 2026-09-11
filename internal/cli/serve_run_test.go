@@ -24,6 +24,7 @@ import (
 	"github.com/creack/pty"
 	urfavecli "github.com/urfave/cli/v3"
 	"hum/internal/app"
+	"hum/internal/config"
 	"hum/internal/daemon"
 	"hum/internal/process"
 	"hum/internal/project"
@@ -31,8 +32,9 @@ import (
 )
 
 const (
-	cliServeRunHelperMarker = "__hum_cli_serve_run_helper__"
-	cliServeRunChildFlag    = "-test.run=TestAttachedRun"
+	cliServeRunHelperMarker  = "__hum_cli_serve_run_helper__"
+	cliServeRunChildFlag     = "-test.run=TestAttachedRun"
+	cliRuntimeCleanupTimeout = 2*config.DefaultStopGrace + 5*time.Second
 )
 
 // TestMain lets the acceptance tests use this test binary as a real child
@@ -388,8 +390,50 @@ func cliServeRunRuntimeDir(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("create runtime directory: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Cleanup(func() { cliServeRunCleanupRuntime(t, dir) })
 	return dir
+}
+
+func cliServeRunCleanupRuntime(t *testing.T, runtimeDir string) {
+	t.Helper()
+	paths := daemon.NewRuntimePaths(runtimeDir)
+	pid := 0
+	if data, err := os.ReadFile(paths.PID); err == nil {
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cliRuntimeCleanupTimeout)
+	defer cancel()
+	shutdownRequested := false
+	if client, err := daemon.DialRuntime(ctx, paths); err == nil {
+		shutdownRequested = true
+		shutdownErr := client.Shutdown(ctx, daemon.ShutdownRequest{Force: true})
+		_ = client.Close()
+		if shutdownErr != nil {
+			t.Errorf("clean up daemon runtime %s: %v", runtimeDir, shutdownErr)
+			return
+		}
+	}
+	_, socketErr := os.Stat(paths.Socket)
+	if pid > 0 && (shutdownRequested || socketErr == nil) {
+		deadline := time.Now().Add(5 * time.Second)
+		for cliServeRunProcessAlive(pid) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if pid > 0 && pid != os.Getpid() && cliServeRunProcessAlive(pid) {
+		t.Errorf("daemon PID %d remained alive for runtime %s", pid, runtimeDir)
+		return
+	}
+	_ = os.RemoveAll(runtimeDir)
+}
+
+func cliServeRunProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func TestForegroundServe(t *testing.T) {

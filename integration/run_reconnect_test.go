@@ -278,6 +278,20 @@ func TestAttachedRunForegroundLifecycle(t *testing.T) {
 		if daemonPID <= 0 {
 			t.Fatalf("daemon pid = %d", daemonPID)
 		}
+		managed := runitListProcess(t, scenario, "transported")
+		t.Cleanup(func() {
+			recovered := testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, "serve", "--daemon")
+			if recovered.Code != 0 {
+				t.Errorf("recover daemon after transport-loss test: code=%d err=%v stdout=%q stderr=%q", recovered.Code, recovered.Err, recovered.Stdout, recovered.Stderr)
+				return
+			}
+			shutdown := testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, "shutdown", "--stop-processes")
+			if shutdown.Code != 0 {
+				t.Errorf("shutdown recovered daemon after transport-loss test: code=%d err=%v stdout=%q stderr=%q", shutdown.Code, shutdown.Err, shutdown.Stdout, shutdown.Stderr)
+				return
+			}
+			testutil.WaitForProcessGone(t, managed.PID, runitWaitTimeout)
+		})
 		if err := syscall.Kill(daemonPID, syscall.SIGKILL); err != nil {
 			t.Fatal(err)
 		}
@@ -458,7 +472,7 @@ func runitNewScenario(t *testing.T) runitScenario {
 	t.Helper()
 	runtimeDir := testutil.RuntimeDir(t)
 	clientDir := t.TempDir()
-	return runitScenario{
+	scenario := runitScenario{
 		hum:        integrationHum(t),
 		fixture:    integrationFixture(t),
 		runtimeDir: runtimeDir,
@@ -469,6 +483,8 @@ func runitNewScenario(t *testing.T) runitScenario {
 			"HUM_TEST_EMPTY=",
 		),
 	}
+	runitCleanup(t, scenario)
+	return scenario
 }
 
 func runitCleanup(t *testing.T, scenario runitScenario, names ...string) {
