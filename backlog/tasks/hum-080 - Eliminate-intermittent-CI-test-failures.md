@@ -1,10 +1,10 @@
 ---
 id: HUM-080
 title: Eliminate intermittent CI test failures
-status: In Progress
+status: To Do
 assignee: []
 created_date: '2026-09-10 20:35'
-updated_date: '2026-09-10 20:53'
+updated_date: '2026-09-11 01:42'
 labels:
   - tooling
   - integration
@@ -73,3 +73,11 @@ Non-goals: deleting, skipping, or auto-retrying tests; adding `-count` retries t
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-09-11 smallest-diff checkpoint: retained only task stress, the scheduled stress workflow, and the shutdown EPERM teardown-race fix with deterministic TERM/KILL regression coverage. Reverted separable fixes and recorded them as HUM-086 through HUM-090. Commit bf2884c. Final bounded verification: task check:staged PASS; mise exec go -- go test -race -count=100 -run 'TestStopTreatsESRCHAsExited|TestStopTreatsSignalErrorFollowedByExitAsStopped|TestShutdownProcessTrees|TestShutdownCompletesAfterCanceledContext' ./internal/app PASS; rg -n 'stress' Taskfile.dist.yaml .github/workflows/ci.yaml matched only Taskfile.dist.yaml; git diff --cached --check PASS. Earlier broader candidate (before shrinking) passed task ci and three stress runs, but those results do not attest the final smallest diff. Remaining HUM-080 blockers: AC#1 and AC#2 are not established on bf2884c because stress exposed separable flakes now tracked in HUM-086 through HUM-090; AC#3 requires the workflow on remote main and was not run because no push was authorized. Dependabot PR #1 was not rebased for the same reason. internal/process/ was outside the declared modified-file list during exploration but is absent from the finalized diff.
+
+Integration correction: rebase onto current main rewrote bf2884c as 7b89f30; main was fast-forwarded locally to 7b89f30. No post-rebase tests were run per user instruction.
+<!-- SECTION:NOTES:END -->
