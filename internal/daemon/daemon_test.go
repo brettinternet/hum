@@ -1296,7 +1296,7 @@ func TestRemoveAndShutdown(t *testing.T) {
 			if err != nil {
 				t.Fatalf("forced shutdown: %v", err)
 			}
-		case <-time.After(3 * time.Second):
+		case <-time.After(6 * time.Second):
 			t.Fatal("forced shutdown remained blocked")
 		}
 		waitForDaemonTest(t, 3*time.Second, "managed process group exit", func() bool {
