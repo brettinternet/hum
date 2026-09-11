@@ -412,7 +412,7 @@ func TestJSONErrorDocs(t *testing.T) {
 	doc := strings.ToLower(string(design))
 	for _, phrase := range []string{
 		"daemon_unavailable", "manifest_invalid", "newline-terminated", "stdout", "stderr",
-		"start`/`up", "logs --follow", "terminal", "attached `run --json`", "payload text",
+		"start`/`up", "logs --follow", "terminal", "attached `run` does not support cli json mode", "payload text",
 	} {
 		if !strings.Contains(doc, phrase) {
 			t.Errorf("design docs missing %q", phrase)

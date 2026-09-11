@@ -417,7 +417,7 @@ func TestUncoloredOutputUnchanged(t *testing.T) {
 	if strings.Contains(listJSONOutput.String(), "\x1b[") {
 		t.Fatalf("list JSON contains ANSI: %q", listJSONOutput.String())
 	}
-	wantListJSON := `{"processes":[{"name":"api","source":"manifest","scope":"project","root":"/project","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"start":"2026-01-01T02:03:04Z","launch_cursor":3,"next_cursor":4,"state":"running","exited_at":"0001-01-01T00:00:00Z","followers":0,"restart":"never","relaunches":0,"stop_grace":"0s","stop_grace_inherited":false,"readiness":"ready","ready_cursor":5}]}` + "\n"
+	wantListJSON := `{"schema_version":1,"processes":[{"name":"api","source":"manifest","scope":"project","root":"/project","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"start":"2026-01-01T02:03:04Z","launch_cursor":3,"next_cursor":4,"state":"running","exited_at":"0001-01-01T00:00:00Z","followers":0,"restart":"never","relaunches":0,"stop_grace":"0s","stop_grace_inherited":false,"readiness":"ready","ready_cursor":5}]}` + "\n"
 	if listJSONOutput.String() != wantListJSON {
 		t.Fatalf("list JSON = %q, want %q", listJSONOutput.String(), wantListJSON)
 	}
@@ -428,7 +428,7 @@ func TestUncoloredOutputUnchanged(t *testing.T) {
 	if strings.Contains(statusJSONOutput.String(), "\x1b[") {
 		t.Fatalf("status JSON contains ANSI: %q", statusJSONOutput.String())
 	}
-	wantStatusJSON := `{"name":"api","source":"manifest","scope":"project","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"started_at":"2026-01-01T02:03:04Z","state":"running","readiness":"ready","ready_cursor":5,"exit_status":null,"restart_count":0,"followers":0,"restart":"never","relaunches":0,"stop_grace":"0s","stop_grace_inherited":false,"next_cursor":4}` + "\n"
+	wantStatusJSON := `{"schema_version":1,"name":"api","source":"manifest","scope":"project","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"started_at":"2026-01-01T02:03:04Z","state":"running","readiness":"ready","ready_cursor":5,"exit_status":null,"restart_count":0,"followers":0,"restart":"never","relaunches":0,"stop_grace":"0s","stop_grace_inherited":false,"next_cursor":4}` + "\n"
 	if statusJSONOutput.String() != wantStatusJSON {
 		t.Fatalf("status JSON = %q, want %q", statusJSONOutput.String(), wantStatusJSON)
 	}
@@ -439,7 +439,7 @@ func TestUncoloredOutputUnchanged(t *testing.T) {
 	if strings.Contains(upJSONOutput.String(), "\x1b[") {
 		t.Fatalf("up JSON contains ANSI: %q", upJSONOutput.String())
 	}
-	wantUpJSON := `{"name":"api","outcome":"started","source":"manifest","argv":["echo","hello world"],"pid":42,"launch_cursor":3,"readiness":"ready","ready_cursor":5,"restart":"","relaunches":0}` + "\n"
+	wantUpJSON := `{"schema_version":1,"name":"api","outcome":"started","source":"manifest","argv":["echo","hello world"],"pid":42,"launch_cursor":3,"readiness":"ready","ready_cursor":5,"restart":"","relaunches":0}` + "\n"
 	if upJSONOutput.String() != wantUpJSON {
 		t.Fatalf("up JSON = %q, want %q", upJSONOutput.String(), wantUpJSON)
 	}

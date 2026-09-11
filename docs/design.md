@@ -120,6 +120,11 @@ exits, errors, timeouts, definition drift, exhausted recovery, and dependency-sk
 - Only renderer-owned lifecycle labels and aggregate log prefixes are styled; names outside log
   prefixes, paths, messages, and child output remain unchanged.
 
+The public version 1 CLI JSON and NDJSON contract is defined in
+[`docs/cli-json-v1.md`](cli-json-v1.md). Every covered top-level object has
+`schema_version: 1`. The CLI contract is independent of MCP and the private daemon protocol; local
+clients must not consume the daemon socket as a public interface.
+
 JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus
 identity, readiness, cursors, and errors when applicable.
 
@@ -134,8 +139,8 @@ identity, readiness, cursors, and errors when applicable.
   earlier events when a later failure occurs; they do not buffer the stream.
 - This contract applies only when standalone `--json` or the documented `-j` appears before the
   payload separator.
-- Attached `run --json` is the exception: it remains raw child output, including child stderr,
-  and payload text that merely resembles `--json` is not a JSON mode request.
+- Attached `run` does not support CLI JSON mode and remains raw child output, including child stderr;
+  payload text that merely resembles `--json` is not a JSON mode request.
 
 | JSON error code | Meaning |
 | --- | --- |
@@ -155,8 +160,8 @@ identity, readiness, cursors, and errors when applicable.
   `removed_definition` with stop/remove guidance such as `hum stop NAME` or `hum remove NAME`.
 - Removed records require an explicit stop or remove; the warning does not alter aggregate exit
   status.
-- Attached `run --json` still streams raw child output; `logs --json --follow` emits bounded
-  NDJSON events.
+- Attached `run` still streams raw child output and is outside the JSON contract;
+  `logs --json --follow` emits bounded NDJSON events.
 - `logs` accepts optional, repeatable names in selection order.
 - `--stream system` selects only hum-generated supervision entries. The default `both` includes
   stdout, stderr, and system for bounded and follow reads.
