@@ -29,7 +29,10 @@ Install on macOS with [Homebrew](https://brew.sh/):
 ```sh
 brew trust --formula brettinternet/tap/hum
 brew install brettinternet/tap/hum
+man hum
 ```
+
+Homebrew installs the generated `hum(1)` manual. Release archives also include `hum.1` for other package integrations.
 
 Or download and verify the latest macOS or Linux release directly:
 

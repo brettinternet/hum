@@ -16,6 +16,7 @@ AGENTS.local.md
 
 # Go outputs
 /bin/
+/dist/
 coverage.out
 
 # System

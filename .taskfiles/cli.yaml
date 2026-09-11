@@ -26,6 +26,12 @@ tasks:
     desc: Run hum from source
     cmd: mise exec go -- go run ./cmd/hum {{.CLI_ARGS}}
 
+  man:
+    desc: Generate the hum(1) manual page in dist
+    cmds:
+      - mkdir -p dist
+      - mise exec go -- go run ./cmd/hum-man --version "${VERSION:-dev}" --build-time "${BUILD_TIME:-unknown}" --date "${DATE:-$(date -u +%Y-%m-%d)}" > dist/hum.1
+
   check:
     desc: Run source checks
     cmds:
