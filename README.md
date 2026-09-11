@@ -177,7 +177,21 @@ codex plugin marketplace add .
 codex plugin add hum@hum
 ```
 
-`hum mcp` exposes project processes, bounded output, and one-shot TTY input. Separate worktrees run independently:
+`hum mcp` exposes project processes, bounded output, and one-shot TTY input.
+
+```json
+// .mcp.json
+{
+  "mcpServers": {
+    "hum": {
+      "command": "hum",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Separate worktrees run independently:
 
 ```sh
 cd .worktrees/agent-a
