@@ -409,7 +409,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		Name:      "hum",
 		Usage:     "A local development process supervisor",
 		UsageText: "hum [global options] [command [command options]]",
-		Description: "Supervise processes. Start hum.yaml with hum up or ad-hoc work with hum run; inspect with hum logs. Use --project or --global to select scope; see docs/design.md.\n\n" +
+		Description: "Supervise local development processes. Start hum.yaml with hum up or ad-hoc work with hum run; inspect with hum logs. Use --project for projects or --global for machine-wide scope; see docs/design.md.\n\n" +
 			"Examples:\n" +
 			"  hum up",
 		Version:                         version + " (built " + buildTime + ")",
