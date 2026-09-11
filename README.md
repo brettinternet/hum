@@ -220,12 +220,23 @@ hum completion fish > ~/.config/fish/completions/hum.fish
 
 ## Coding agents
 
-With `hum` on `PATH`:
+With `hum` on `PATH`, install the Claude Code plugin:
+
+```sh
+claude plugin marketplace add brettinternet/hum
+claude plugin install hum@hum
+```
+
+Or install the Codex plugin from a checkout:
 
 ```sh
 codex plugin marketplace add .
 codex plugin add hum@hum
 ```
+
+The plugins bundle the hum skill and MCP registration. If plugin installation is
+unavailable, register `hum mcp` manually as described in the
+[coding-agent setup](docs/coding-agents.md).
 
 `hum mcp` exposes project processes, bounded output, and one-shot TTY input.
 

@@ -1,0 +1,12 @@
+{
+  "name": "hum",
+  "version": "0.1.0",
+  "description": "Manage project development processes through hum.",
+  "author": {
+    "name": "brettinternet",
+    "url": "https://github.com/brettinternet"
+  },
+  "homepage": "https://github.com/brettinternet/hum",
+  "repository": "https://github.com/brettinternet/hum",
+  "keywords": ["development", "processes", "mcp"]
+}

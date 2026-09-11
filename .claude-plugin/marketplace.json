@@ -1,0 +1,13 @@
+{
+  "name": "hum",
+  "description": "Hum coding-agent integration.",
+  "owner": {
+    "name": "brettinternet"
+  },
+  "plugins": [
+    {
+      "name": "hum",
+      "source": "./plugins/hum"
+    }
+  ]
+}

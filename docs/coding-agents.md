@@ -2,21 +2,31 @@
 
 For silent services use `ready.exec` with an exact non-empty argv; hum never invokes it through a shell. The first probe runs immediately after launch and retries serially after failures at the positive `interval` (default 1s), up to `timeout` (default 30s). It inherits the supervised cwd/environment, retains one bounded terminal diagnostic, and is startup gating rather than liveness monitoring. Changing method or argv is `readiness_exec` drift; interval and timeout do not cause drift.
 
-## Install the Codex plugin
+## Install the Claude Code plugin
 
 The plugin bundles the hum workflow skill and MCP registration. Install `hum`
-on `PATH`, then from a hum repository checkout run:
+on `PATH`, then run:
+
+```sh
+claude plugin marketplace add brettinternet/hum
+claude plugin install hum@hum
+```
+
+Start a new Claude Code session after installation. The plugin runs `hum mcp`,
+so the executable must remain available on `PATH` in Claude Code's environment.
+
+## Install the Codex plugin
+
+With `hum` on `PATH`, run these commands from a hum repository checkout:
 
 ```sh
 codex plugin marketplace add .
 codex plugin add hum@hum
 ```
 
-Start a new Codex session after installation. The plugin runs `hum mcp`, so the
-executable must remain available on `PATH` in Codex's environment.
+Start a new Codex session after installation.
 
-Use the manual MCP registration below for other coding agents or when plugin
-installation is unavailable.
+Use the manual MCP registration below when plugin installation is unavailable.
 
 `hum mcp` is an MCP server over stdio. Register it once by pointing the client
 directly at the `hum` executable. Use an absolute path; do not wrap the command
