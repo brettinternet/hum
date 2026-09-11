@@ -18,6 +18,10 @@ Start and stop a dependency-ordered stack
 
 [![Demo of hum starting a stack by readiness, recovering failed work, and stopping every process](docs/demo-up-down.gif)](docs/demo-up-down.tape)
 
+Let a coding agent diagnose a failed process from its retained logs
+
+[![Demo of Codex using hum MCP to read a failed process's logs and identify its missing environment variable](docs/demo-codex.gif)](docs/demo-codex.tape)
+
 ## Install
 
 Install releases with [mise](https://mise.jdx.dev/):
