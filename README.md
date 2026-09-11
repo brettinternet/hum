@@ -10,7 +10,13 @@ hum.yaml ──> hum daemon ──> db ──> api ──> web
                   └── bounded logs <── CLI / coding agents
 ```
 
-[![Demo of hum supervising a process, retaining its logs, and stopping it](docs/demo.gif)](docs/demo.tape)
+Run a process and follow its retained logs
+
+[![Demo of hum supervising an ad-hoc clock process while another terminal follows its logs](docs/demo.gif)](docs/demo.tape)
+
+Start and stop a dependency-ordered stack
+
+[![Demo of hum starting a stack by readiness, recovering failed work, and stopping every process](docs/demo-up-down.gif)](docs/demo-up-down.tape)
 
 ## Install
 
