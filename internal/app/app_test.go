@@ -1037,6 +1037,7 @@ type signalErrorOnExitChild struct {
 	once          sync.Once
 	signals       int
 	closeOnSignal int
+	signalErr     error
 }
 
 func (c *signalErrorOnExitChild) PID() int              { return 1235 }
@@ -1051,7 +1052,7 @@ func (c *signalErrorOnExitChild) Signal(os.Signal) error {
 	if c.signals == c.closeOnSignal {
 		c.once.Do(func() { close(c.done) })
 	}
-	return syscall.EPERM
+	return c.signalErr
 }
 
 type signalPolicyChild struct {
@@ -1778,7 +1779,11 @@ func TestStopTreatsSignalErrorFollowedByExitAsStopped(t *testing.T) {
 	for _, closeOnSignal := range []int{1, 2} {
 		t.Run(fmt.Sprintf("signal_%d", closeOnSignal), func(t *testing.T) {
 			root := makeProject(t, false)
-			child := &signalErrorOnExitChild{done: make(chan struct{}), closeOnSignal: closeOnSignal}
+			child := &signalErrorOnExitChild{
+				done:          make(chan struct{}),
+				closeOnSignal: closeOnSignal,
+				signalErr:     syscall.EPERM,
+			}
 			s := testSupervisor(t, Options{
 				StopGrace: 0,
 				StartProcess: func(process.Spec) (Child, error) {
@@ -1792,6 +1797,27 @@ func TestStopTreatsSignalErrorFollowedByExitAsStopped(t *testing.T) {
 				t.Fatalf("stop after signal error and terminal reconciliation = %v, want nil", err)
 			}
 		})
+	}
+}
+
+func TestStopPreservesKillErrorAfterExit(t *testing.T) {
+	root := makeProject(t, false)
+	child := &signalErrorOnExitChild{
+		done:          make(chan struct{}),
+		closeOnSignal: 2,
+		signalErr:     syscall.EACCES,
+	}
+	s := testSupervisor(t, Options{
+		StopGrace: 0,
+		StartProcess: func(process.Spec) (Child, error) {
+			return child, nil
+		},
+	})
+	if _, err := s.Start(StartRequest{Name: "teardown", Cwd: root, Argv: []string{"/bin/true"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(context.Background(), root, "teardown"); !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("stop after KILL error and terminal reconciliation = %v, want EACCES", err)
 	}
 }
 
