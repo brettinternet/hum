@@ -37,7 +37,7 @@ hum [--project DIR|-C DIR] start <name>... [--no-wait] [--timeout DURATION] [--j
 hum [--project DIR|-C DIR] up [--detach] [--no-wait] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] down [--json]
 hum run [--project DIR|-C DIR] <name> [--detach] [--tty] [--json] [-- <command> [args...]]
-hum [--project DIR|-C DIR] list [--all] [--json]
+hum [--project DIR|-C DIR] list [--all] [--full] [--json]
 hum [--project DIR|-C DIR] status [<name>] [--json]
 hum [--project DIR|-C DIR] attach <name> [--tail N]
 hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|system|both] [--tail N] [--after-cursor N]
@@ -201,8 +201,9 @@ Decision: defer
 JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus
 identity, readiness, cursors, and errors when applicable.
 
-- Human `status` always prints `followers`; human `list` adds `followers=N` only to followed
-  records, leaving ordinary unfollowed list output unchanged.
+- Human `status` always prints `followers`. Human `list` defaults to `name`, `state`, and `PID`;
+  `list --full` includes source, argv, readiness, followers for followed records, TTY, exit signal,
+  and restart details. JSON list output always retains the complete process snapshot.
 - JSON-capable commands classify failures as `usage`, `daemon_unavailable`, `manifest_invalid`,
   or `internal` and emit one newline-terminated `{"error":{"code":"...","message":"..."}}`
   object on stdout when no JSON has been written.

@@ -1762,9 +1762,9 @@ processes:
 		t.Fatalf("read-only manifest list touched runtime directory: %v", err)
 	}
 
-	stdout, stderr, err = stopShutdownRun(t, "list")
+	stdout, stderr, err = stopShutdownRun(t, "list", "--full")
 	if err != nil {
-		t.Fatalf("human manifest list: %v (stderr: %s)", err, stderr)
+		t.Fatalf("full human manifest list: %v (stderr: %s)", err, stderr)
 	}
 	if !strings.Contains(stdout, "source=manifest") || !strings.Contains(stdout, "argv=go run ./api --port=8080") {
 		t.Fatalf("human manifest list omitted source/argv: %s", stdout)

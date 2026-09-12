@@ -328,7 +328,9 @@ Each TTY has one input owner. Input is sent once, never queued or echoed. `logs 
 ```sh
 hum status                            # nearest Git root
 hum -C ../other-worktree status       # another project, even if removed
-hum list --all                        # every scope
+hum list                              # compact name, state, and PID
+hum list --full                       # all human-readable process details
+hum list --all                        # every scope; combine with --full if needed
 hum -g run proxy -- caddy run         # machine-wide ad-hoc session
 hum signal proxy HUP --global         # global selector after positionals
 ```

@@ -587,9 +587,10 @@ func TestLifecycleHelp(t *testing.T) {
 				"read-only",
 				"does not start an empty daemon",
 				"--all",
-				"every project",
-				"followers count",
-				"unfollowed human output is unchanged",
+				"every scope",
+				"--full",
+				"name, state, and pid",
+				"json output always includes all fields",
 			},
 		},
 		{

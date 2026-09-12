@@ -174,29 +174,36 @@ type listTable struct {
 	rows   []listRow
 }
 
-func buildListTable(processes []app.Process, all bool) listTable {
-	header := listRow{styledListCell("NAME", ansiBold), styledListCell("STATE", ansiBold), styledListCell("PID", ansiBold), styledListCell("SOURCE", ansiBold), styledListCell("ARGV", ansiBold)}
+func buildListTable(processes []app.Process, all, full bool) listTable {
+	header := listRow{styledListCell("NAME", ansiBold), styledListCell("STATE", ansiBold), styledListCell("PID", ansiBold)}
+	if full {
+		header = append(header, styledListCell("SOURCE", ansiBold), styledListCell("ARGV", ansiBold))
+	}
 	if all {
-		header = listRow{styledListCell("ROOT", ansiBold), styledListCell("NAME", ansiBold), styledListCell("STATE", ansiBold), styledListCell("PID", ansiBold), styledListCell("SOURCE", ansiBold), styledListCell("ARGV", ansiBold)}
+		header = append(listRow{styledListCell("ROOT", ansiBold)}, header...)
 	}
 	table := listTable{header: header, rows: make([]listRow, 0, len(processes))}
 	for _, process := range processes {
-		readiness, readyCursor := processReadinessFields(process)
 		pid := ""
 		if process.PID != 0 {
-			pid = fmt.Sprintf("PID %d", process.PID)
-		}
-		state := styledListCell(string(process.State), processStateStyle(process.State, process.ExitCode))
-		row := listRow{
-			plainListCell(process.Name), state, plainListCell(pid),
-			plainListCell("source=" + process.Source), plainListCell("argv=" + shellJoin(process.Argv)),
-		}
-		if all {
-			row = listRow{
-				plainListCell(process.Root), plainListCell(process.Name), state, plainListCell(pid),
-				plainListCell("source=" + process.Source), plainListCell("argv=" + shellJoin(process.Argv)),
+			pid = strconv.Itoa(process.PID)
+			if full {
+				pid = "PID " + pid
 			}
 		}
+		state := styledListCell(string(process.State), processStateStyle(process.State, process.ExitCode))
+		row := listRow{plainListCell(process.Name), state, plainListCell(pid)}
+		if full {
+			row = append(row, plainListCell("source="+process.Source), plainListCell("argv="+shellJoin(process.Argv)))
+		}
+		if all {
+			row = append(listRow{plainListCell(process.Root)}, row...)
+		}
+		if !full {
+			table.rows = append(table.rows, row)
+			continue
+		}
+		readiness, readyCursor := processReadinessFields(process)
 		if process.Followers > 0 {
 			row = append(row, plainListCell(fmt.Sprintf("followers=%d", process.Followers)))
 		}
@@ -807,11 +814,11 @@ func appendReadinessDetailCells(row *listRow, process app.Process) {
 	}
 }
 
-func renderListHuman(w io.Writer, processes []app.Process, all bool, roots ...string) error {
-	return renderListHumanWithPolicy(w, processes, all, colorPolicyForWriter(w), roots...)
+func renderListHuman(w io.Writer, processes []app.Process, all, full bool, roots ...string) error {
+	return renderListHumanWithPolicy(w, processes, all, full, colorPolicyForWriter(w), roots...)
 }
 
-func renderListHumanWithPolicy(w io.Writer, processes []app.Process, all bool, policy colorPolicy, roots ...string) error {
+func renderListHumanWithPolicy(w io.Writer, processes []app.Process, all, full bool, policy colorPolicy, roots ...string) error {
 	if len(processes) == 0 {
 		message := stopUnavailableMessage
 		if len(roots) != 0 && roots[0] != "" {
@@ -843,13 +850,13 @@ func renderListHumanWithPolicy(w io.Writer, processes []app.Process, all bool, p
 			} else if _, err := fmt.Fprintf(w, "Project: %s (hum --project %s)\n", root, shellEscape(root)); err != nil {
 				return err
 			}
-			if err := writeLifecycleTable(w, buildListTable(groups[root], false), policy); err != nil {
+			if err := writeLifecycleTable(w, buildListTable(groups[root], false, full), policy); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	return writeLifecycleTable(w, buildListTable(processes, false), policy)
+	return writeLifecycleTable(w, buildListTable(processes, false, full), policy)
 }
 
 func renderStatusSummaryHuman(w io.Writer, processes []app.Process, roots ...string) error {

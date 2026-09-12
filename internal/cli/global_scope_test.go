@@ -81,7 +81,7 @@ func TestGlobalScopeDiscovery(t *testing.T) {
 	}
 	processes := []app.Process{{Name: "proxy", Scope: app.ScopeProject, Root: "/project", State: app.StateRunning}, {Name: "proxy", Scope: app.ScopeGlobal, State: app.StateRunning}}
 	var human bytes.Buffer
-	if err := renderListHuman(&human, processes, true); err != nil {
+	if err := renderListHuman(&human, processes, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if output := human.String(); !strings.Contains(output, "Global: (hum --global)") || !strings.Contains(output, "Project: /project") {

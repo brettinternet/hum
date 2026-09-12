@@ -158,12 +158,13 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		{
 			Name:        "list",
 			Usage:       "list supervised processes",
-			UsageText:   "hum list [--all] [--json]",
+			UsageText:   "hum list [--all] [--full] [--json]",
 			ArgsUsage:   "",
-			Description: "List is read-only and does not start an empty daemon. The default is the automatic current canonical scope; use --all for every project scope (grouped by canonical root with copyable --project selectors); followed records show their followers count, while unfollowed human output is unchanged.\n\nExamples:\n  hum list\n  hum list --all\n  hum list --json",
+			Description: "List is read-only and does not start an empty daemon. Human output defaults to name, state, and PID; use --full for source, argv, readiness, followers, TTY, exit signal, and restart details, or --all for every scope grouped by canonical root. JSON output always includes all fields.\n\nExamples:\n  hum list\n  hum list --full\n  hum list --all",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "all", Aliases: []string{"a"}, DefaultText: "false", Usage: "include every project; default is the current project"},
-				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
+				&urfavecli.BoolFlag{Name: "all", Aliases: []string{"a"}, DefaultText: "false", Usage: "include every scope; default is the current project"},
+				&urfavecli.BoolFlag{Name: "full", DefaultText: "false", Usage: "include all human-readable details; default is name, state, and PID"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write all fields as JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
@@ -910,7 +911,7 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			root = selection.root
 		}
 	}
-	return renderListHuman(writer, processes, cmd.Bool("all"), root)
+	return renderListHuman(writer, processes, cmd.Bool("all"), cmd.Bool("full"), root)
 }
 
 func projectProcessList(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, all bool) ([]app.Process, []protocol.StartupWarning, error) {

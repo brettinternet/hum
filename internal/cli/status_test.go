@@ -184,7 +184,7 @@ func TestStatusListFollowers(t *testing.T) {
 	if err != nil || stderr != "" || statusDecodeJSON(t, jsonStatus).Followers != 1 {
 		t.Fatalf("followed status JSON = %q, stderr %q, err %v", jsonStatus, stderr, err)
 	}
-	listHuman, stderr, err := stopShutdownRun(t, "list", "--all")
+	listHuman, stderr, err := stopShutdownRun(t, "list", "--all", "--full")
 	if err != nil || stderr != "" || !strings.Contains(listHuman, "followers=1") {
 		t.Fatalf("followed list --all = %q, stderr %q, err %v", listHuman, stderr, err)
 	}

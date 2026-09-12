@@ -175,7 +175,7 @@ func TestDiscoveredList(t *testing.T) {
 	if _, _, err := stopShutdownRun(t, "start", "--no-wait", "dev"); err != nil {
 		t.Fatalf("start discovered process for list: %v", err)
 	}
-	stdout, stderr, err = stopShutdownRun(t, "list")
+	stdout, stderr, err = stopShutdownRun(t, "list", "--full")
 	if err != nil {
 		t.Fatalf("discovered human list: %v (stderr: %s)", err, stderr)
 	}

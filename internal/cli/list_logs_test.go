@@ -78,7 +78,7 @@ func TestSignalExitRendering(t *testing.T) {
 	}
 
 	var human bytes.Buffer
-	if err := renderListHuman(&human, []app.Process{process}, false); err != nil {
+	if err := renderListHuman(&human, []app.Process{process}, false, true); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(human.String(), "exit: signal SIGTERM (15)") {
@@ -156,6 +156,21 @@ func TestList(t *testing.T) {
 	if strings.Contains(current, "worker") {
 		t.Fatalf("current-project list = %q, unexpectedly contains worker", current)
 	}
+	for _, detail := range []string{"SOURCE", "ARGV", "source=", "argv=", "readiness="} {
+		if strings.Contains(current, detail) {
+			t.Fatalf("compact current-project list = %q, unexpectedly contains %q", current, detail)
+		}
+	}
+
+	full, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "list", "--full")
+	if err != nil {
+		t.Fatalf("list current project in full: %v (stderr=%q)", err, stderr)
+	}
+	for _, detail := range []string{"SOURCE", "ARGV", "source=ad_hoc", "argv=/bin/sh"} {
+		if !strings.Contains(full, detail) {
+			t.Fatalf("full current-project list = %q, missing %q", full, detail)
+		}
+	}
 
 	all, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "list", "--all")
 	if err != nil {
@@ -173,6 +188,9 @@ func TestList(t *testing.T) {
 	}
 	currentProcesses := hum006ListLogsProcessObjects(t, currentJSON)
 	hum006ListLogsAssertProcessNames(t, currentProcesses, []string{"api"}, []string{"worker"})
+	if !strings.Contains(currentJSON, `"source":"ad_hoc"`) || !strings.Contains(currentJSON, `"argv":["/bin/sh"`) {
+		t.Fatalf("compact-default list JSON = %q, want all process details", currentJSON)
+	}
 
 	allJSON, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "list", "--all", "--json")
 	if err != nil {

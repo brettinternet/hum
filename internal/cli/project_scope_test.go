@@ -106,7 +106,7 @@ func TestCrossWorktreeScopeDiscovery(t *testing.T) {
 		{Name: "web", Scope: "project", Root: "/work/linked", State: app.StateRunning},
 	}
 	var human bytes.Buffer
-	if err := renderListHuman(&human, processes, true); err != nil {
+	if err := renderListHuman(&human, processes, true, false); err != nil {
 		t.Fatal(err)
 	}
 	output := human.String()

@@ -151,7 +151,7 @@ func TestLifecycleColorMapping(t *testing.T) {
 		{Name: "failed-name", Source: "manifest", Root: "/tmp/project", State: app.StateExited, ExitCode: 7, Argv: []string{"echo", "child text"}},
 	}
 	var list bytes.Buffer
-	if err := renderListHumanWithPolicy(&list, processes, false, colors); err != nil {
+	if err := renderListHumanWithPolicy(&list, processes, false, true, colors); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
@@ -165,7 +165,7 @@ func TestLifecycleColorMapping(t *testing.T) {
 		}
 	}
 	var plainList bytes.Buffer
-	if err := renderListHumanWithPolicy(&plainList, processes, false, colorPolicy{}); err != nil {
+	if err := renderListHumanWithPolicy(&plainList, processes, false, true, colorPolicy{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := stripRenderANSI(list.String()); got != plainList.String() {
@@ -365,12 +365,20 @@ func TestUncoloredOutputUnchanged(t *testing.T) {
 		Readiness: &app.Readiness{State: app.ReadinessReady, Cursor: outputCursorPointer(5)},
 	}
 	var list bytes.Buffer
-	if err := renderListHuman(&list, []app.Process{process}, false); err != nil {
+	if err := renderListHuman(&list, []app.Process{process}, false, false); err != nil {
 		t.Fatal(err)
 	}
-	wantList := "NAME  STATE    PID     SOURCE           ARGV\napi   running  PID 42  source=manifest  argv=echo 'hello world'  readiness=ready  ready_cursor=5\n"
+	wantList := "NAME  STATE    PID\napi   running  42\n"
 	if list.String() != wantList {
-		t.Fatalf("uncolored list = %q, want %q", list.String(), wantList)
+		t.Fatalf("compact uncolored list = %q, want %q", list.String(), wantList)
+	}
+	list.Reset()
+	if err := renderListHuman(&list, []app.Process{process}, false, true); err != nil {
+		t.Fatal(err)
+	}
+	wantList = "NAME  STATE    PID     SOURCE           ARGV\napi   running  PID 42  source=manifest  argv=echo 'hello world'  readiness=ready  ready_cursor=5\n"
+	if list.String() != wantList {
+		t.Fatalf("full uncolored list = %q, want %q", list.String(), wantList)
 	}
 
 	var summary bytes.Buffer

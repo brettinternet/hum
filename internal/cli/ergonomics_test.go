@@ -253,7 +253,7 @@ func TestUpDescriptionNoDuplicateClause(t *testing.T) {
 func TestRenderListHumanOmitsZeroPID(t *testing.T) {
 	var buf bytes.Buffer
 	stopped := []app.Process{{Name: "dev", State: app.State("stopped"), Source: "hum.yaml", Argv: []string{"sh"}}}
-	if err := renderListHuman(&buf, stopped, false); err != nil {
+	if err := renderListHuman(&buf, stopped, false, false); err != nil {
 		t.Fatalf("render stopped: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
@@ -269,7 +269,7 @@ func TestRenderListHumanOmitsZeroPID(t *testing.T) {
 
 	buf.Reset()
 	running := []app.Process{{Name: "dev", State: app.StateRunning, PID: 42, Source: "hum.yaml", Argv: []string{"sh"}}}
-	if err := renderListHuman(&buf, running, false); err != nil {
+	if err := renderListHuman(&buf, running, false, false); err != nil {
 		t.Fatalf("render running: %v", err)
 	}
 	if !strings.Contains(buf.String(), "42") {
@@ -307,7 +307,7 @@ func TestRenderListHumanHeaderAndAlignment(t *testing.T) {
 		{Name: "a", State: app.StateRunning, PID: 1, Source: "hum.yaml", Argv: []string{"sh"}},
 		{Name: "much-longer-name", State: app.StateExited, PID: 12345, Source: "ad_hoc", Argv: []string{"sh", "-c", "true"}},
 	}
-	if err := renderListHuman(&buf, processes, false); err != nil {
+	if err := renderListHuman(&buf, processes, false, true); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
@@ -325,7 +325,7 @@ func TestRenderListHumanHeaderAndAlignment(t *testing.T) {
 
 	buf.Reset()
 	followed := []app.Process{{Name: "a", State: app.StateRunning, PID: 1, Source: "hum.yaml", Argv: []string{"sh"}, Followers: 2}}
-	if err := renderListHuman(&buf, followed, false); err != nil {
+	if err := renderListHuman(&buf, followed, false, true); err != nil {
 		t.Fatalf("render followed: %v", err)
 	}
 	if !strings.Contains(buf.String(), "followers=2") {
