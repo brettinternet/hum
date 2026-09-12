@@ -217,6 +217,22 @@ func TestAlternateManifestFileFlagCoverage(t *testing.T) {
 		t.Fatalf("alternate completion: err=%v names=%v", err, completionNames)
 	}
 
+	stdout, stderr, err := stopShutdownRun(t, "run", "retained", "--file", "hum.dev.yaml", "--detach", "--json", "--", "/bin/sh", "-c", "sleep 30")
+	if err != nil {
+		t.Fatalf("alternate ad-hoc run: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	stdout, stderr, err = stopShutdownRun(t, "start", "retained", "--file", "hum.dev.yaml", "--no-wait", "--json")
+	if err != nil || !strings.Contains(stdout, `"outcome":"already_running"`) {
+		t.Fatalf("alternate retained-record fallback: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if err := os.WriteFile(manifestPath, []byte("not: a valid manifest\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err = stopShutdownRun(t, "down", "--file", "hum.dev.yaml", "--json")
+	if err != nil || !strings.Contains(stdout, `"name":"retained"`) {
+		t.Fatalf("alternate runtime-only down parsed or filtered manifest: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+
 	for _, commandName := range []string{"version", "serve", "init", "skill", "shutdown"} {
 		commandRoot := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
 		err := commandRoot.Run(context.Background(), []string{"hum", commandName, "--file", manifestPath})

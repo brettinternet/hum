@@ -127,6 +127,24 @@ func TestAlternateManifestSelection(t *testing.T) {
 	if _, err := ResolveManifestPath(root, root, escaped); err == nil {
 		t.Fatal("symlink-escaped alternate manifest unexpectedly succeeded")
 	}
+	insideLink := filepath.Join(root, "manifest-link.yaml")
+	if err := os.Symlink(alternate, insideLink); err != nil {
+		t.Fatal(err)
+	}
+	linked, err := ResolveManifestPath(root, root, insideLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linked.Relative != "hum.dev.yaml" || linked.Source != "manifest:hum.dev.yaml" {
+		t.Fatalf("symlink source identity = %#v", linked)
+	}
+	directory := filepath.Join(root, "manifest-dir")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveManifestPath(root, root, directory); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("non-regular manifest error = %v", err)
+	}
 }
 
 func TestExplicitManifestSelection(t *testing.T) {

@@ -81,12 +81,12 @@ func TestAlternateManifestSelection(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	defaultManifest := "version: 1\nprocesses:\n  default:\n    argv: [/bin/sh, -c, 'printf default-log; sleep 30']\n"
+	defaultManifest := "version: 1\nprocesses:\n  default:\n    argv: [/bin/sh, -c, 'printf default-log; sleep 30']\n  shared:\n    argv: [/bin/sh, -c, 'printf default-shared; sleep 30']\n"
 	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(defaultManifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	alternate := filepath.Join(projectRoot, "hum.dev.yaml")
-	alternateManifest := "version: 1\nprocesses:\n  dev:\n    argv: [/bin/sh, -c, 'printf dev-log; sleep 30']\n    cwd: .\n  retained:\n    argv: [/bin/sh, -c, 'printf alternate-declaration; sleep 30']\n  stopped:\n    argv: [/bin/sh, -c, 'sleep 30']\n"
+	alternateManifest := "version: 1\nprocesses:\n  dev:\n    argv: [/bin/sh, -c, 'printf dev-log; sleep 30']\n    cwd: .\n  shared:\n    argv: [/bin/sh, -c, 'printf alternate-shared; sleep 30']\n  retained:\n    argv: [/bin/sh, -c, 'printf alternate-declaration; sleep 30']\n  stopped:\n    argv: [/bin/sh, -c, 'sleep 30']\n"
 	if err := os.WriteFile(alternate, []byte(alternateManifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +98,14 @@ func TestAlternateManifestSelection(t *testing.T) {
 	defaultStarted := testutil.Run(t, hum, projectRoot, env, "start", "default", "--no-wait", "--json")
 	if defaultStarted.Code != 0 || defaultStarted.Err != nil {
 		t.Fatalf("default start: code=%d err=%v stdout=%q stderr=%q", defaultStarted.Code, defaultStarted.Err, defaultStarted.Stdout, defaultStarted.Stderr)
+	}
+	sharedStarted := testutil.Run(t, hum, projectRoot, env, "start", "shared", "--no-wait", "--json")
+	if sharedStarted.Code != 0 || sharedStarted.Err != nil {
+		t.Fatalf("default shared start: code=%d err=%v stdout=%q stderr=%q", sharedStarted.Code, sharedStarted.Err, sharedStarted.Stdout, sharedStarted.Stderr)
+	}
+	sharedConflict := testutil.Run(t, hum, projectRoot, env, "start", "shared", "--file", "hum.dev.yaml", "--no-wait", "--json")
+	if sharedConflict.Code == 0 || sharedConflict.Err == nil || !strings.Contains(sharedConflict.Stdout, `"outcome":"definition_drift"`) || !strings.Contains(sharedConflict.Stdout, `"source":"manifest"`) || !strings.Contains(sharedConflict.Stdout, "--file hum.dev.yaml restart shared") {
+		t.Fatalf("cross-manifest shared identity: code=%d err=%v stdout=%q stderr=%q", sharedConflict.Code, sharedConflict.Err, sharedConflict.Stdout, sharedConflict.Stderr)
 	}
 	started := testutil.Run(t, hum, projectRoot, env, "start", "dev", "--file", alternate, "--no-wait", "--json")
 	if started.Code != 0 || started.Err != nil || !strings.Contains(started.Stdout, `"source":"manifest:hum.dev.yaml"`) {
@@ -154,7 +162,7 @@ func TestAlternateManifestSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	down := testutil.Run(t, hum, projectRoot, env, "down", "--file", alternate, "--json")
-	if down.Code != 0 || down.Err != nil || !strings.Contains(down.Stdout, `"name":"default"`) || !strings.Contains(down.Stdout, `"name":"dev"`) || !strings.Contains(down.Stdout, `"name":"retained"`) {
+	if down.Code != 0 || down.Err != nil || !strings.Contains(down.Stdout, `"name":"default"`) || !strings.Contains(down.Stdout, `"name":"dev"`) || !strings.Contains(down.Stdout, `"name":"retained"`) || !strings.Contains(down.Stdout, `"name":"shared"`) {
 		t.Fatalf("project-wide runtime-only down parsed or filtered by alternate manifest: code=%d err=%v stdout=%q stderr=%q", down.Code, down.Err, down.Stdout, down.Stderr)
 	}
 }

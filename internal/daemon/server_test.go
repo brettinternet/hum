@@ -15,7 +15,7 @@ import (
 func TestAlternateManifestStopGrace(t *testing.T) {
 	root := t.TempDir()
 	argv := []string{os.Args[0], "-test.run=^$"}
-	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  web:\n    argv: [echo]\n    stop_grace: 900ms\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  web:\n    argv: [echo]\n    stop_grace: 900ms\n  default:\n    argv: [echo]\n    stop_grace: 900ms\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "hum.dev.yaml"), []byte("version: 1\nprocesses:\n  web:\n    argv: [echo]\n    stop_grace: 125ms\n"), 0o600); err != nil {
@@ -37,6 +37,14 @@ func TestAlternateManifestStopGrace(t *testing.T) {
 	}
 	if restarted.Process.StopGrace != 125*time.Millisecond || restarted.Process.StopGraceInherited {
 		t.Fatalf("alternate restart stop grace = %#v", restarted.Process)
+	}
+	defaultResponse, _ := server.dispatch(&protocol.Request{Op: protocol.OpStart, Start: &protocol.StartRequest{Op: protocol.OpStart, Name: "default", Scope: protocol.ScopeProject, Root: root, Cwd: root, Argv: argv, Source: "manifest"}})
+	defaultStarted, ok := defaultResponse.(protocol.StartResponse)
+	if !ok || defaultStarted.Process == nil {
+		t.Fatalf("default start response = %#v", defaultResponse)
+	}
+	if defaultStarted.Process.StopGrace != 900*time.Millisecond || defaultStarted.Process.StopGraceInherited {
+		t.Fatalf("default manifest behavior changed = %#v", defaultStarted.Process)
 	}
 }
 

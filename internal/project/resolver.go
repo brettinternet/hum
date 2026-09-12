@@ -236,14 +236,11 @@ func ResolveManifestPath(invocationDir, projectRoot, filename string) (ManifestS
 	if !pathWithin(resolvedRoot, resolved) {
 		return ManifestSelection{}, fmt.Errorf("manifest file %q is outside project root %q", filename, resolvedRoot)
 	}
-	relative, err := filepath.Rel(resolvedRoot, candidate)
+	// Identity follows the resolved file so symlink spellings cannot create
+	// multiple source identities for the same manifest.
+	relative, err := filepath.Rel(resolvedRoot, resolved)
 	if err != nil || filepath.IsAbs(relative) || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
-		// For inferred projects candidate can be a symlink spelling; expose the
-		// resolved, safe relative identity rather than an absolute path.
-		relative, err = filepath.Rel(resolvedRoot, resolved)
-		if err != nil || filepath.IsAbs(relative) || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
-			return ManifestSelection{}, fmt.Errorf("manifest file %q is outside project root %q", filename, resolvedRoot)
-		}
+		return ManifestSelection{}, fmt.Errorf("manifest file %q is outside project root %q", filename, resolvedRoot)
 	}
 	relative = filepath.ToSlash(filepath.Clean(relative))
 	return ManifestSelection{Root: resolvedRoot, Path: resolved, Relative: relative, Source: "manifest:" + relative}, nil
