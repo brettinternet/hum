@@ -1,10 +1,10 @@
 ---
 id: HUM-105
-title: Match hum.*.yaml variants in the SchemaStore catalog entry
+title: Match alternate Hum manifest filenames in SchemaStore
 status: To Do
 assignee: []
 created_date: '2026-09-12 01:34'
-updated_date: '2026-09-12 01:34'
+updated_date: '2026-09-12 01:43'
 labels:
   - docs
   - integration
@@ -27,20 +27,23 @@ ordinal: 77800
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: SchemaStore-aware editors validate and autocomplete alternate manifests named `hum.<variant>.yaml` (HUM-103 convention) without an inline schema directive.
+Outcome: SchemaStore-aware editors validate and autocomplete the alternate manifest filenames supported by Hum without an inline schema directive.
 
-Scope: open and land a pull request against SchemaStore/schemastore changing the merged `hum` catalog entry from HUM-101 (SchemaStore/schemastore#6344) so `fileMatch` is `["hum.yaml", "hum.*.yaml"]`. Keep the external `url`. Once the production catalog serves the change, note in README.md and docs/design.md that variant manifests are covered.
+Scope:
+- After HUM-103 lands, create the `hum-alternate-manifest-file-match` branch in the existing SchemaStore fork and open a follow-up pull request against SchemaStore/schemastore. Change only the merged `hum` catalog entry introduced by SchemaStore/schemastore#6344 so `fileMatch` is `["hum.yaml", "hum.*.yaml", "*.hum.yaml", "hum.yml", "*.hum.yml"]`; preserve its external `url`.
+- Record the follow-up pull request URL in References. Keep this task In Progress through upstream review, merge, and production-catalog propagation.
+- Only after the production catalog serves every match, update README.md and docs/design.md to state that SchemaStore-aware editors cover the documented alternate filenames.
 
-External completion boundary: the task remains In Progress until the upstream pull request is merged and the production catalog serves the updated entry.
+External completion boundary: merge of the follow-up pull request and production propagation are required outcomes, not human-verification notes.
 
-Non-goals: schema content changes; matching `*.hum.yaml` or other patterns; editor-specific configuration.
+Non-goals: schema content changes; filename patterns beyond the five listed matches; editor-specific configuration; changing the HUM-101 pull request.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `gh pr view PR_NUMBER --repo SchemaStore/schemastore --json state --jq .state` prints `MERGED`.
-- [ ] #2 AC2 — `curl -fsSL https://www.schemastore.org/api/json/catalog.json | python3 -c 'import json,sys; c=json.load(sys.stdin); e=next(x for x in c["schemas"] if x.get("name")=="hum"); assert "hum.yaml" in e["fileMatch"] and "hum.*.yaml" in e["fileMatch"]'` exits 0.
-- [ ] #3 AC3 — `rg -n 'hum\.\*\.yaml|hum\.<variant>\.yaml' README.md docs/design.md` exits 0 and the matched text states variant manifests are validated by SchemaStore-aware editors.
+- [ ] #1 AC1 — `gh pr list --repo SchemaStore/schemastore --head hum-alternate-manifest-file-match --state merged --json state,files --jq '.[0] | [.state, ([.files[].path] | join(","))] | @tsv'` prints `MERGED<TAB>src/api/json/catalog.json` for the follow-up pull request whose URL is recorded in References.
+- [ ] #2 AC2 — `curl -fsSL https://www.schemastore.org/api/json/catalog.json | python3 -c 'import json,sys; entry=next(item for item in json.load(sys.stdin)["schemas"] if item.get("name")=="hum"); assert entry["fileMatch"] == ["hum.yaml", "hum.*.yaml", "*.hum.yaml", "hum.yml", "*.hum.yml"]'` exits 0, proving the production entry has exactly the five intended matches.
+- [ ] #3 AC3 — `for hum_doc in README.md docs/design.md; do for hum_match in 'hum.*.yaml' '*.hum.yaml' 'hum.yml' '*.hum.yml'; do rg -Fq -- "$hum_match" "$hum_doc" || exit 1; done; done` exits 0, and both documents state that SchemaStore-aware editors validate every listed alternate filename pattern.
 <!-- AC:END -->
 
 ## Definition of Done

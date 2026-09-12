@@ -4,7 +4,7 @@ title: Accept an explicit manifest in MCP definition-resolving tools
 status: To Do
 assignee: []
 created_date: '2026-09-12 01:34'
-updated_date: '2026-09-12 01:34'
+updated_date: '2026-09-12 01:39'
 labels: []
 dependencies:
   - HUM-103
@@ -23,23 +23,25 @@ ordinal: 76800
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: MCP clients gain parity with the CLI `--file/-F` selector from HUM-103 by passing an optional `manifest` path to the project tools that resolve or merge definitions.
+Outcome: MCP clients gain parity with HUM-103 when a tool actually resolves or merges project definitions, by passing an optional `manifest` path.
 
 Scope:
-- Add an optional `manifest` string input only to `start`, `up`, `restart`, `list`, `status`, and `logs`. Relative paths resolve from the required `project_root`; absolute paths must remain within it. Omission retains `hum.yaml`/discovery behavior. Explicit selection loads only that file with the same rejection rules as the CLI (missing, non-regular, directory, symlink-escaped, outside-root) before daemon contact.
-- Runtime-only tools (`down`, `stop`, `remove`, `signal`, `wait`, `input`) and global scope do not accept `manifest`; the input is rejected with the existing structured error shape.
-- Reuse the path-aware loader from HUM-103 through `internal/cli/mcp.go`; do not duplicate resolution in `internal/mcp/tools.go`.
-- Preserve project-root namespace, environment inheritance, bounded responses, structured error behavior, and the private daemon protocol. Sources remain `manifest:<relative path>`.
-- Update MCP tool descriptions and docs/coding-agents.md.
+- Add an optional `manifest` string input to `start`, `up`, `restart`, and `list`. `status` and `logs` address existing runtime records and therefore do not accept it.
+- Relative paths resolve from the required `project_root`; absolute paths must remain within it. Omission retains `hum.yaml`/conventional discovery. Explicit selection loads exactly that file, with the HUM-103 missing, non-regular, directory, symlink-escape, and outside-root rejection before daemon contact.
+- `start` and `restart` use definitions from the selected file but preserve the existing retained-record fallback when the requested name is not declared. `up` starts only selected declarations and reports retained manifest records absent from that file through the existing removed-definition behavior. `list` merges selected stopped declarations with all retained records in the project; retained records win by name.
+- Reject `manifest` on `down`, `status`, `logs`, `wait`, `input`, `stop`, `remove`, and `signal`, and whenever `scope` is `global`, with the existing `invalid_request` tool-error shape.
+- Extend the resolver boundary implemented by `internal/cli/mcp.go`; keep path validation and definition loading in the HUM-103 project/CLI loader rather than duplicating filesystem resolution in `internal/mcp/tools.go`.
+- Preserve the project-root namespace, project-root-relative child cwd, environment inheritance, bounded responses, private daemon protocol, and stable `manifest:<project-root-relative path>` source.
+- Update MCP tool schemas/descriptions and docs/coding-agents.md.
 
-Non-goals: per-manifest namespaces; manifests outside `project_root`; changing daemon protocol; CLI changes.
+Non-goals: aggregate MCP logs; stopped-declaration support in MCP status; per-manifest namespaces; manifests outside `project_root`; daemon protocol changes; CLI behavior.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/mcp -run 'Test.*ManifestSelection' -count=1 -v` exits 0 and prints PASS for omitted and explicit `manifest` on start/up/restart/list/status/logs, project-root-relative resolution, exact-file/no-discovery behavior, outside-root and symlink-escape rejection before daemon contact, rejection on runtime-only tools and global scope, and unchanged project namespace and bounded response contracts.
-- [ ] #2 AC2 — `go test ./integration -run TestMCPAlternateManifest -count=1 -v` exits 0 and prints PASS after one real daemon serves a CLI-started `hum.yaml` record and an MCP `up` with `manifest: hum.dev.yaml` in the same project namespace.
-- [ ] #3 AC3 — `task cli:check && task test` exits 0 after tool descriptions and docs/coding-agents.md document the `manifest` input, its resolution rules, and the tools that reject it.
+- [ ] #1 AC1 — `go test ./internal/cli ./internal/mcp -run "Test.*ManifestSelection" -count=1 -v` exits 0 and prints PASS for resolver-adapter and tool-schema/handler coverage of omitted and explicit `manifest` on start/up/restart/list, project-root-relative and absolute-inside-root resolution, exact-file/no-discovery behavior, rejection before daemon contact, retained-record fallback/precedence, removed-definition results, stable source identity, and unchanged bounded response contracts.
+- [ ] #2 AC2 — `go test ./integration -run TestMCPAlternateManifest -count=1 -v` exits 0 and prints PASS after one real daemon serves default-manifest and alternate-manifest definitions in one project namespace, list merges the selected declarations with retained records, and runtime-only/global calls reject `manifest` as `invalid_request`.
+- [ ] #3 AC3 — `task cli:check && task test` exits 0 after MCP schemas, tool descriptions, and docs/coding-agents.md document `manifest` resolution, retained-record behavior, and the exact tools/scopes that accept or reject it.
 <!-- AC:END -->
 
 ## Definition of Done
