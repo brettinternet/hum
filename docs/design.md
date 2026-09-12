@@ -566,8 +566,8 @@ allow blank lines, full-line comments, optional `export` plus horizontal
 whitespace, horizontal whitespace around `=`, and empty values. The first `=`
 splits an assignment. Unquoted values trim horizontal edges; `#` begins a
 comment only at value start or after horizontal whitespace. Whole single-quoted
-values are literal. Whole double-quoted values support only `\\`, `\\"`, `\\n`,
-`\\r`, and `\\t`; only horizontal whitespace and a comment may follow the close.
+values are literal. Whole double-quoted values support only `\\`, `\"`, `\n`,
+`\r`, and `\t`; only horizontal whitespace and a comment may follow the close.
 BOM, NUL, invalid UTF-8, physical multiline values, malformed quotes,
 unsupported escapes, duplicate names, and expansion-shaped text (`$NAME`,
 `${...}`, `$()`, or backticks) are rejected. YAML `env` strings remain literal

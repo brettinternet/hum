@@ -59,9 +59,13 @@ func TestManifestSchemaContract(t *testing.T) {
 	envNames := schemaObject(t, processEnvironment, "propertyNames")
 	assertSchemaString(t, envNames, "pattern", environmentKeyPattern.String())
 	envValues := schemaObject(t, processEnvironment, "additionalProperties")
-	if variants, ok := envValues["anyOf"].([]any); !ok || len(variants) != 2 {
+	variants, ok := envValues["anyOf"].([]any)
+	if !ok || len(variants) != 2 {
 		t.Fatalf("process.env values schema = %#v", envValues)
 	}
+	envValuePattern, _ := variants[0].(map[string]any)["pattern"].(string)
+	assertNULOnlyPattern(t, "process.env value", envValuePattern, "", "plain", "line\nbreak")
+	assertNULOnlyPattern(t, "environment.files item", filePattern, "sub/.env", "line\nbreak")
 
 	readiness := schemaObject(t, schema, "$defs", "readiness")
 	assertClosedSchemaObject(t, "readiness", readiness)
@@ -245,4 +249,26 @@ func schemaDurationMatches(pattern, value string) bool {
 	}
 	goPattern := strings.Replace(pattern, "(?=.*[1-9])", "", 1)
 	return regexp.MustCompile(goPattern).MatchString(value)
+}
+
+// assertNULOnlyPattern proves a schema pattern rejects only NUL, so editors do
+// not flag values the strict parser accepts (a `.`-based lookahead would
+// wrongly reject newlines).
+func assertNULOnlyPattern(t *testing.T, name, pattern string, accepted ...string) {
+	t.Helper()
+	if !strings.Contains(pattern, "[^\\u0000]") {
+		t.Fatalf("%s pattern %q must exclude only NUL via a character class", name, pattern)
+	}
+	// Go regexp lacks ECMA lookahead, so drop the leading path guards and keep
+	// the NUL-exclusion body under test.
+	body := regexp.MustCompile(`\(\?![^)]*\)`).ReplaceAllString(pattern, "")
+	compiled := regexp.MustCompile(strings.ReplaceAll(body, "\\u0000", "\\x{0}"))
+	for _, value := range accepted {
+		if !compiled.MatchString(value) {
+			t.Errorf("%s pattern rejected %q, which the parser accepts", name, value)
+		}
+		if compiled.MatchString(value + "\x00") {
+			t.Errorf("%s pattern accepted a NUL in %q", name, value)
+		}
+	}
 }

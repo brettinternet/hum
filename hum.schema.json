@@ -17,7 +17,7 @@
       "additionalProperties": false,
       "properties": {
         "inherit": {"type": "boolean", "default": true},
-        "files": {"type": "array", "maxItems": 16, "items": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!\\.$)(?!.*\\u0000).+"}}
+        "files": {"type": "array", "maxItems": 16, "items": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!\\.$)[^\\u0000]+$"}}
       }
     },
     "processes": {
@@ -85,7 +85,7 @@
           "description": "Per-process environment values; null unsets an inherited key.",
           "type": "object",
           "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
-          "additionalProperties": {"anyOf": [{"type": "string", "pattern": "^(?!.*\\u0000).*$"}, {"type": "null"}]}
+          "additionalProperties": {"anyOf": [{"type": "string", "pattern": "^[^\\u0000]*$"}, {"type": "null"}]}
         }
       }
     },

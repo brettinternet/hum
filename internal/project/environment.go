@@ -33,7 +33,7 @@ type EnvironmentSpec struct {
 // EnvironmentAssignment is one parsed assignment in an environment file.
 type EnvironmentAssignment struct{ Key, Value string }
 
-var environmentKeyPattern = regexpMustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var environmentKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ParseEnvironmentFile parses the deliberately small, non-expanding env-file
 // grammar used by hum. Error text never includes an input value.
@@ -194,8 +194,6 @@ func isEnvNameStart(c byte) bool { return c == '_' || c >= 'A' && c <= 'Z' || c 
 func envFileError(path string, line int, message string) error {
 	return fmt.Errorf("%s:%d: %s", path, line, message)
 }
-
-func regexpMustCompile(pattern string) *regexp.Regexp { return regexp.MustCompile(pattern) }
 
 // PreparedEnvironment contains one invocation's immutable file snapshot.
 type PreparedEnvironment struct {

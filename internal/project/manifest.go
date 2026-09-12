@@ -391,13 +391,13 @@ func parseProcess(root, filename, context string, node *yaml.Node, manifestEnvir
 	}
 	var environment *EnvironmentSpec
 	if manifestEnvironment != nil {
-		copy := *manifestEnvironment
-		copy.Files = append([]string(nil), manifestEnvironment.Files...)
-		copy.Values = processEnvironment
-		if copy.Values == nil {
-			copy.Values = map[string]*string{}
+		merged := *manifestEnvironment
+		merged.Files = append([]string(nil), manifestEnvironment.Files...)
+		merged.Values = processEnvironment
+		if merged.Values == nil {
+			merged.Values = map[string]*string{}
 		}
-		environment = &copy
+		environment = &merged
 	} else if processEnvironment != nil {
 		environment = &EnvironmentSpec{Inherit: true, Values: processEnvironment}
 	}
