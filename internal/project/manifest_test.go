@@ -13,6 +13,20 @@ import (
 func TestManifestEnvironmentContract(t *testing.T) {
 	root := t.TempDir()
 
+	t.Run("yaml syntax errors keep the line and drop content", func(t *testing.T) {
+		writeTestManifest(t, root, "version: 1\nenvironment:\n  files: [.env]\nprocesses:\n  api:\n    argv: [api]\n    env:\n      TOKEN: sk-live-SENTINEL\n\tBAD: x\n")
+		_, err := LoadDefinitions(root)
+		if err == nil {
+			t.Fatal("expected a YAML syntax error")
+		}
+		if !strings.Contains(err.Error(), "invalid YAML at line 8") {
+			t.Fatalf("error = %v, want the offending line", err)
+		}
+		if strings.Contains(err.Error(), "SENTINEL") {
+			t.Fatalf("error leaked manifest content: %v", err)
+		}
+	})
+
 	t.Run("complete manifest", func(t *testing.T) {
 		writeTestManifest(t, root, "version: 1\nenvironment:\n  inherit: false\n  files: [.env]\nprocesses:\n  api:\n    argv: [bun, run, api]\n    env:\n      PORT: \"3000\"\n      EMPTY: \"\"\n      LITERAL: '$NAME'\n      OLD_URL: null\n")
 		defs, err := LoadDefinitions(root)

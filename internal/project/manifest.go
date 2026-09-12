@@ -151,7 +151,7 @@ func loadDefinitionsFile(root, filename, display, source string) ([]Definition, 
 		if errors.Is(err, io.EOF) {
 			return nil, manifestError(display, "manifest", "document is empty")
 		}
-		return nil, manifestError(display, "manifest", "invalid YAML")
+		return nil, invalidYAMLError(display, err)
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err == nil {
@@ -193,6 +193,19 @@ func loadDefinitionsFile(root, filename, display, source string) ([]Definition, 
 		return nil, manifestError(display, "manifest", "missing key %q", "processes")
 	}
 	return parseProcesses(root, display, processesNode, source, environment)
+}
+
+var yamlLinePattern = regexp.MustCompile(`^yaml: line ([0-9]+):`)
+
+// invalidYAMLError reports a syntax failure with only its line number.
+// Decoding into a yaml.Node yields scanner and parser errors, which carry no
+// scalar content, but the library text is never forwarded so no future message
+// can leak an environment value from the manifest.
+func invalidYAMLError(filename string, err error) error {
+	if match := yamlLinePattern.FindStringSubmatch(err.Error()); match != nil {
+		return manifestError(filename, "manifest", "invalid YAML at line %s", match[1])
+	}
+	return manifestError(filename, "manifest", "invalid YAML")
 }
 
 func parseVersion(filename string, node *yaml.Node) error {

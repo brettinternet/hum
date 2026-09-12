@@ -818,7 +818,9 @@ snapshots or caches.
 Configured environment metadata is never returned or enumerated, and protocol
 responses still prohibit an `env` key. Parsing and preflight diagnostics may
 identify a valid key, path, process, and line but not values, raw input, or a
-decode error containing a value. User argv and existing runtime errors remain
+decode error containing a value. A YAML syntax failure reports only its line
+number; the parser never forwards library error text, so a future message
+cannot leak manifest content. User argv and existing runtime errors remain
 outside that guarantee. Child output is unredacted. A failing `ready.exec`
 captures bounded stdout/stderr in its retained terminal diagnostic, not in the
 normal supervised log store; that untrusted text can appear in status, JSON, or
