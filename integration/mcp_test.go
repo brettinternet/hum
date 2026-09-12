@@ -484,3 +484,56 @@ func upParityStrings(t *testing.T, object map[string]any, key string) []string {
 	}
 	return values
 }
+
+func TestMCPAlternateManifest(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := integrationHum(t)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := testutil.RuntimeEnv(testutil.RuntimeDir(t), "HUM_STOP_GRACE=1s")
+	t.Cleanup(func() { _ = testutil.Run(t, hum, root, env, "shutdown", "--stop-processes") })
+	defaultManifest := "version: 1\nprocesses:\n  api:\n    argv: [/bin/sh, -c, 'sleep 30']\n"
+	alternateManifest := "version: 1\nprocesses:\n  api:\n    argv: [/bin/sh, -c, 'sleep 30']\n  worker:\n    argv: [/bin/sh, -c, 'sleep 30']\n"
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(defaultManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hum.dev.yaml"), []byte(alternateManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := newMCPTestSession(t, hum, root, env)
+	started, isErr := session.call(t, "start", root, map[string]any{"name": "api", "no_wait": true})
+	if isErr || (!strings.Contains(string(started), `"outcome":"started"`) && !strings.Contains(string(started), `"outcome":"running_unverified"`)) {
+		t.Fatalf("default start=%s error=%v", started, isErr)
+	}
+	listed, isErr := session.call(t, "list", root, map[string]any{"manifest": "hum.dev.yaml"})
+	if isErr {
+		t.Fatalf("alternate list=%s error=%v", listed, isErr)
+	}
+	var listedProcesses []map[string]any
+	if err := json.Unmarshal(listed, &listedProcesses); err != nil {
+		t.Fatalf("decode alternate list=%s: %v", listed, err)
+	}
+	if len(listedProcesses) != 2 {
+		t.Fatalf("alternate list=%s, want retained api plus worker", listed)
+	}
+	for _, process := range listedProcesses {
+		name, _ := process["name"].(string)
+		source, _ := process["source"].(string)
+		if name == "api" && source != "manifest" {
+			t.Fatalf("retained api source=%q, want manifest: %s", source, listed)
+		}
+		if name == "worker" && source != "manifest:hum.dev.yaml" {
+			t.Fatalf("selected worker source=%q, want manifest:hum.dev.yaml: %s", source, listed)
+		}
+	}
+	invalid, isErr := session.callStructured(t, "status", root, map[string]any{"name": "api", "manifest": "hum.dev.yaml"})
+	if !isErr || !strings.Contains(string(invalid), "invalid_request") {
+		t.Fatalf("runtime manifest rejection=%s error=%v", invalid, isErr)
+	}
+	global := session.request(t, "tools/call", map[string]any{"name": "list", "arguments": map[string]any{"scope": "global", "manifest": "hum.dev.yaml"}})
+	if !global.Result.IsError || !strings.Contains(string(global.Result.Structured), "invalid_request") {
+		t.Fatalf("global manifest rejection=%#v", global)
+	}
+}

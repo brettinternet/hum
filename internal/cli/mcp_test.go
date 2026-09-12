@@ -186,3 +186,57 @@ func TestMCPConcurrencyDescription(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPManifestSelection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  default:\n    argv: [default]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hum.dev.yaml"), []byte("version: 1\nprocesses:\n  dev:\n    argv: [dev]\n    cwd: sub\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resolver := mcpResolver{}
+	selected, err := resolver.Resolve(context.Background(), root)
+	if err != nil || len(selected.Definitions) != 1 || selected.Definitions[0].Name != "default" {
+		t.Fatalf("omitted manifest = %#v, err=%v", selected, err)
+	}
+	selected, err = resolver.ResolveManifest(context.Background(), root, "hum.dev.yaml")
+	if err != nil || len(selected.Definitions) != 1 || selected.Definitions[0].Name != "dev" || selected.Definitions[0].Source != "manifest:hum.dev.yaml" || selected.Definitions[0].Cwd != filepath.Join(selected.Root, "sub") {
+		t.Fatalf("explicit manifest = %#v, err=%v", selected, err)
+	}
+	absolute, err := resolver.ResolveManifest(context.Background(), root, filepath.Join(root, "hum.dev.yaml"))
+	if err != nil || absolute.Definitions[0].Source != "manifest:hum.dev.yaml" {
+		t.Fatalf("absolute manifest = %#v, err=%v", absolute, err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(outside, []byte("version: 1\nprocesses: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.ResolveManifest(context.Background(), root, outside); err == nil {
+		t.Fatal("outside manifest accepted")
+	}
+	t.Run("explicit selection disables discovery", func(t *testing.T) {
+		discoveryRoot := t.TempDir()
+		sentinel := filepath.Join(discoveryRoot, "discovery-ran")
+		bin := t.TempDir()
+		mise := filepath.Join(bin, "mise")
+		if err := os.WriteFile(mise, []byte(fmt.Sprintf("#!/bin/sh\ntouch %q\nprintf '%s'\n", sentinel, `[{"name":"dev"}]`)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin)
+		explicit := filepath.Join(discoveryRoot, "hum.alt.yaml")
+		if err := os.WriteFile(explicit, []byte("version: 1\nprocesses:\n  alt:\n    argv: [alt]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		resolved, err := resolver.ResolveManifest(context.Background(), discoveryRoot, explicit)
+		if err != nil || len(resolved.Definitions) != 1 || resolved.Definitions[0].Name != "alt" {
+			t.Fatalf("explicit resolution=%#v err=%v", resolved, err)
+		}
+		if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("explicit resolution invoked discovery: %v", err)
+		}
+	})
+}

@@ -13,6 +13,7 @@ import (
 	mcpserver "hum/internal/mcp"
 	"hum/internal/output"
 	"hum/internal/process"
+	"hum/internal/project"
 	"hum/internal/protocol"
 
 	urfavecli "github.com/urfave/cli/v3"
@@ -56,19 +57,41 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 type mcpResolver struct{}
 
 func (mcpResolver) Resolve(ctx context.Context, root string) (mcpserver.Resolution, error) {
-	manifest, err := loadManifestOrEmpty(ctx, root)
-	if err != nil {
-		return mcpserver.Resolution{}, err
+	return mcpResolver{}.ResolveManifest(ctx, root, "")
+}
+
+func (mcpResolver) ResolveManifest(ctx context.Context, root, filename string) (mcpserver.Resolution, error) {
+	var (
+		rootPath string
+		defs     []project.Definition
+		err      error
+	)
+	if filename == "" {
+		manifest, loadErr := loadManifestOrEmpty(ctx, root)
+		if loadErr != nil {
+			return mcpserver.Resolution{}, loadErr
+		}
+		rootPath, defs = manifest.root, manifest.defs
+	} else {
+		selection, selectionErr := project.ResolveManifestPath(root, root, filename)
+		if selectionErr != nil {
+			return mcpserver.Resolution{}, selectionErr
+		}
+		defs, err = project.ResolveExplicitDefinitions(ctx, selection)
+		if err != nil {
+			return mcpserver.Resolution{}, err
+		}
+		rootPath = selection.Root
 	}
-	definitions := make([]mcpserver.Definition, 0, len(manifest.defs))
-	for _, definition := range manifest.defs {
+	definitions := make([]mcpserver.Definition, 0, len(defs))
+	for _, definition := range defs {
 		definitions = append(definitions, mcpserver.Definition{
 			Name: definition.Name, Source: definition.Source,
 			Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd,
 			Ready: readinessConfig(definition), After: append([]string{}, definition.After...), TTY: definition.TTY, Restart: restartPolicy(definition),
 		})
 	}
-	return mcpserver.Resolution{Root: manifest.root, Definitions: definitions}, nil
+	return mcpserver.Resolution{Root: rootPath, Definitions: definitions}, nil
 }
 
 func mcpClientFactory(cfg config.Config) mcpserver.ClientFactory {

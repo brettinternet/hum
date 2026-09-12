@@ -113,6 +113,12 @@ type Resolver interface {
 	Resolve(context.Context, string) (Resolution, error)
 }
 
+// manifestResolver is implemented by resolvers that can load a selected
+// manifest without duplicating filesystem or loader behavior in MCP.
+type manifestResolver interface {
+	ResolveManifest(context.Context, string, string) (Resolution, error)
+}
+
 // Client is the protocol-only daemon surface used by MCP. Production wiring wraps the CLI daemon client.
 type Client interface {
 	Start(context.Context, protocol.StartRequest) (protocol.Process, error)
@@ -244,8 +250,10 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	root := stringProperty("Absolute path to an existing project directory; hum resolves its nearest Git root or uses the directory itself.")
 	nameResolved := stringProperty("Declared or conventionally discovered process name.")
 	nameExisting := stringProperty("Name of any existing project runtime record, including an ad_hoc process launched by hum run.")
+	manifest := map[string]any{"type": "string", "minLength": 1, "description": "Optional manifest path; relative paths resolve from project_root, absolute paths must remain inside it, and explicit selection disables conventional discovery."}
 	waitProps := map[string]any{
 		"project_root": root,
+		"manifest":     manifest,
 		"no_wait":      map[string]any{"type": "boolean", "description": "Return after launch instead of waiting for readiness."},
 		"timeout_ms":   map[string]any{"type": "integer", "minimum": 1, "description": "Readiness timeout in milliseconds; defaults to 30000."},
 	}
@@ -377,7 +385,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	upSchema["required"] = []string{"project_root"}
 	delete(upSchema, "allOf")
 	upSchema["properties"].(map[string]any)["scope"] = map[string]any{"type": "string", "const": protocol.ScopeProject, "default": protocol.ScopeProject, "description": "Process namespace; up supports project scope only."}
-	listSchema := objectSchema(map[string]any{"project_root": root, "all": map[string]any{"type": "boolean", "description": "Include every project scope from project scope; default is false."}}, "project_root")
+	listSchema := objectSchema(map[string]any{"project_root": root, "manifest": manifest, "all": map[string]any{"type": "boolean", "description": "Include every project scope from project scope; default is false."}}, "project_root")
 	listSchema["allOf"] = append(listSchema["allOf"].([]any), map[string]any{
 		"not": map[string]any{
 			"required": []string{"scope", "all"},
@@ -401,15 +409,15 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}, "project_root", "name")
 	logsSchema["dependentRequired"] = map[string]any{"context": []string{"match"}}
 	definitions := []toolDefinition{
-		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. It never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
-		{Name: "up", Description: "Start every resolved project definition through the hum daemon in declared after dependency order; readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output.  independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
+		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; manifest optionally selects one exact file (relative to project_root or absolute inside it) and disables conventional discovery. Omission retains hum.yaml/conventional discovery. Retained records remain a fallback when the selected file does not declare the requested name. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. It never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
+		{Name: "up", Description: "Start every selected project definition through the hum daemon in declared after dependency order; manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission retains hum.yaml/conventional discovery. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. Independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the selected declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop every running runtime record in the selected scope and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
-		{Name: "list", Description: "Merge resolved definitions with daemon runtime records in the selected scope, including readiness method, exact exec argv, interval, and bounded terminal diagnostic plus match output, and including ad_hoc records; use all from project scope to discover every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
+		{Name: "list", Description: "Merge selected stopped declarations with all daemon runtime records in the selected project scope, including readiness method, exact exec argv, interval, and bounded terminal diagnostic plus match output, and including ad_hoc records; retained records win by name. manifest optionally selects one exact file (relative to project_root or absolute inside it) and disables conventional discovery; omission retains hum.yaml/conventional discovery. Use all from project scope to discover every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record with readiness method, exact exec argv, interval, and bounded terminal diagnostic when configured; match readiness retains match and cursor. This tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
 		{Name: "logs", Description: "Read one immutable bounded cursor-based output snapshot for an existing declared or ad_hoc runtime record. stream selects stdout, stderr, supervision-only system entries, or both; both includes all three streams. match selects entries and context expands each match by eligible entries on both sides; windows merge in cursor order before tail and whole-entry bounds. Context requires match and is unavailable for live following. since_ms uses one request-time cutoff and composes with stream and cursor boundaries. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: logsSchema, OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms. Timeout results include process_observed from the same daemon wait request without an extra round trip; false means no runtime record for NAME was observed and includes actionable guidance.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Write one exact, bounded payload to an already-running TTY incarnation at its initial launch cursor with at-most-once behavior; never starts, waits, queues, retries, resends, retains, or explicitly echoes input and fails immediately on ownership conflict.", InputSchema: inputSchema, OutputSchema: inputResult},
-		{Name: "restart", Description: "Restart a resolved definition using the current server environment, or an existing retained ad_hoc record using its recorded launch specification. Results expose readiness method, exact argv, interval, and bounded terminal diagnostic while preserving match output. exec uses direct argv without a shell, starts immediately, retries serially after failures, inherits cwd/environment, and never retains probe output; readiness gates startup, not liveness. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
+		{Name: "restart", Description: "Restart a selected definition using the current server environment, or an existing retained ad_hoc or removed-definition record using its recorded launch specification. manifest optionally selects one exact file (relative to project_root or absolute inside it) and disables conventional discovery; omission retains hum.yaml/conventional discovery. A requested name absent from the selected file uses the existing retained-record fallback. Results expose readiness method, exact argv, interval, and bounded terminal diagnostic while preserving match output. exec uses direct argv without a shell, starts immediately, retries serially after failures, inherits cwd/environment, and never retains probe output; readiness gates startup, not liveness. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
 		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record while preserving its supervision session.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
 		{Name: "remove", Description: "Stop and discard one named runtime supervision session, or every runtime session in the selected scope when all is true. Bulk removal is lexical, never spans scopes, and does not target unlaunched declarations.", InputSchema: removeSchema, OutputSchema: map[string]any{"type": "object", "oneOf": []any{stop, collectionResults(stop)}}},
 		{Name: "signal", Description: "Send one observational signal to a running declared or ad_hoc process group without changing stop intent or automatic relaunch policy. Signal names are case-insensitive with an optional SIG prefix, and positive decimal values are accepted only when they map to the supported named signal table; the result is canonical and reports sent.", InputSchema: signalSchema, OutputSchema: signalResult},
@@ -434,6 +442,7 @@ func cloneProperties(src map[string]any) map[string]any {
 type commonInput struct {
 	Scope         string  `json:"scope,omitempty"`
 	ProjectRoot   string  `json:"project_root,omitempty"`
+	Manifest      string  `json:"manifest,omitempty"`
 	All           bool    `json:"all,omitempty"`
 	Name          string  `json:"name,omitempty"`
 	NoWait        bool    `json:"no_wait,omitempty"`
@@ -534,14 +543,24 @@ func decodeInputPayload(input commonInput) ([]byte, error) {
 	return data, nil
 }
 
-func (s *Server) resolve(ctx context.Context, root string) (Resolution, error) {
+func (s *Server) resolve(ctx context.Context, root, manifest string) (Resolution, error) {
 	if root == "" {
 		return Resolution{Root: "", Scope: protocol.ScopeGlobal}, nil
 	}
 	if s == nil || s.opts.Resolver == nil {
 		return Resolution{}, errors.New("MCP resolver is not configured")
 	}
-	resolution, err := s.opts.Resolver.Resolve(ctx, root)
+	var resolution Resolution
+	var err error
+	if manifest == "" {
+		resolution, err = s.opts.Resolver.Resolve(ctx, root)
+	} else {
+		resolver, ok := s.opts.Resolver.(manifestResolver)
+		if !ok {
+			return Resolution{}, errors.New("MCP resolver does not support manifest selection")
+		}
+		resolution, err = resolver.ResolveManifest(ctx, root, manifest)
+	}
 	if err != nil {
 		return Resolution{}, err
 	}
@@ -697,7 +716,7 @@ func mcpLaunchResult(definition Definition, shared orchestrate.Result) launchRes
 }
 
 func stoppedProcess(root string, definition Definition) protocol.Process {
-	process := protocol.Process{Name: definition.Name, Source: definition.Source, Root: root, TTY: definition.TTY, Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: "stopped", Restart: effectiveRestart(definition.Restart), StopGraceInherited: definition.StopGrace == nil}
+	process := protocol.Process{Name: definition.Name, Source: definition.Source, Scope: protocol.ScopeProject, Root: root, TTY: definition.TTY, Cwd: definition.Cwd, Argv: append([]string(nil), definition.Argv...), State: "stopped", Restart: effectiveRestart(definition.Restart), StopGraceInherited: definition.StopGrace == nil}
 	if definition.StopGrace != nil {
 		process.StopGrace = *definition.StopGrace
 	}
@@ -829,6 +848,9 @@ func validateToolInputFields(definition toolDefinition, raw json.RawMessage) err
 	if encoded, present := fields["scope"]; present {
 		_ = json.Unmarshal(encoded, &scope)
 	}
+	if _, manifestSet := fields["manifest"]; manifestSet && scope == protocol.ScopeGlobal {
+		return invalid("manifest is not allowed for global scope")
+	}
 	_, rootSet := fields["project_root"]
 	if scope == protocol.ScopeProject && !rootSet {
 		return invalid("project_root is required for project scope")
@@ -925,7 +947,7 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	} else if name != "up" && name != "down" && name != "list" && strings.TrimSpace(input.Name) == "" {
 		return nil, &ToolError{Code: "invalid_request", Message: "name is required"}
 	}
-	resolution, err := s.resolve(ctx, input.ProjectRoot)
+	resolution, err := s.resolve(ctx, input.ProjectRoot, input.Manifest)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -1304,7 +1326,11 @@ func definitionsHaveAfter(definitions []Definition) bool {
 }
 
 func listProcessKey(process protocol.Process) string {
-	return process.Scope + "\x00" + process.Root + "\x00" + process.Name
+	scope := process.Scope
+	if scope == "" {
+		scope = protocol.ScopeProject
+	}
+	return scope + "\x00" + process.Root + "\x00" + process.Name
 }
 
 func (s *Server) list(ctx context.Context, resolution Resolution, input commonInput) (any, error) {

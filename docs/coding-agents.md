@@ -114,6 +114,8 @@ SSH authentication and host-key verification must already work without prompts. 
 
 Tool calls accept `scope`: omit it for project scope and provide the absolute `project_root`; use `scope: "global"` without `project_root` for retained global sessions. `up` supports project scope only. Use `list` with `all: true` only from project scope; it includes global records.
 
+The definition-resolving MCP tools `start`, `up`, `restart`, and `list` optionally accept `manifest`. A relative path is resolved from `project_root`; an absolute path must remain inside it. Explicit selection loads exactly that validated file and disables conventional discovery, while omission retains `hum.yaml` and conventional discovery. The project-root namespace, project-root-relative child cwd, environment inheritance, and stable `manifest:<project-root-relative path>` source remain unchanged. `start` and `restart` fall back to a retained record when the selected file does not declare the requested name; `up` reports retained manifest records removed from the selected declarations, and `list` merges selected stopped declarations with retained records, with retained records winning by name. `manifest` is rejected with `invalid_request` for `down`, `status`, `logs`, `wait`, `input`, `stop`, `remove`, and `signal`, and for every global-scope call.
+
 Each tool rejects fields outside its advertised closed input schema before project resolution or daemon contact. Aggregate `up` and `down` do not accept `name`.
 
 - Prefer `up` over sequencing `start` calls when `hum.yaml` declares `after`: independent roots

@@ -71,6 +71,11 @@ func (r *countingResolver) Resolve(context.Context, string) (Resolution, error) 
 	return r.resolution, nil
 }
 
+func (r *countingResolver) ResolveManifest(context.Context, string, string) (Resolution, error) {
+	r.calls++
+	return r.resolution, nil
+}
+
 type blockingResolver struct {
 	resolution Resolution
 	entered    chan struct{}
@@ -2606,5 +2611,140 @@ func TestScopeDocs(t *testing.T) {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("tool descriptions/schemas omit %q", phrase)
 		}
+	}
+}
+
+func TestManifestSelection(t *testing.T) {
+	root := t.TempDir()
+	definitions := []Definition{
+		{Name: "api", Source: "manifest:hum.dev.yaml", Cwd: root, Argv: []string{"new"}},
+		{Name: "worker", Source: "manifest:hum.dev.yaml", Cwd: root, Argv: []string{"worker"}},
+	}
+	newServer := func(client *fakeClient) *Server {
+		resolver := &countingResolver{resolution: Resolution{Root: root, Definitions: definitions}}
+		return NewServer(Options{Resolver: resolver, ClientFactory: func(context.Context, bool) (Client, error) { return client, nil }})
+	}
+
+	t.Run("selected identity and declarations", func(t *testing.T) {
+		client := &fakeClient{processes: map[string]protocol.Process{}}
+		server := newServer(client)
+		value, err := server.callTool(context.Background(), "start", args(root, "manifest", "hum.dev.yaml", "name", "api", "no_wait", true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := value.(launchResult)
+		if len(client.starts) != 1 || client.starts[0].Source != "manifest:hum.dev.yaml" || result.Process == nil || result.Process.Source != "manifest:hum.dev.yaml" {
+			t.Fatalf("selected start identity: request=%#v result=%#v", client.starts, result)
+		}
+		if _, err := server.callTool(context.Background(), "restart", args(root, "manifest", "hum.dev.yaml", "name", "api", "no_wait", true)); err != nil {
+			t.Fatal(err)
+		}
+		if len(client.restarts) != 1 || !client.restarts[0].Update || client.restarts[0].Source != "manifest:hum.dev.yaml" {
+			t.Fatalf("selected restart identity: %#v", client.restarts)
+		}
+	})
+
+	t.Run("retained fallback", func(t *testing.T) {
+		client := &fakeClient{processes: map[string]protocol.Process{
+			"retained": {Name: "retained", Root: root, Cwd: root, Source: "manifest:hum.yaml", Argv: []string{"old"}, State: protocol.StateExited},
+		}}
+		server := newServer(client)
+		started, err := server.callTool(context.Background(), "start", args(root, "manifest", "hum.dev.yaml", "name", "retained", "no_wait", true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := started.(launchResult); got.Outcome != "started" || len(client.starts) != 1 || client.starts[0].Name != "retained" {
+			t.Fatalf("retained start fallback: result=%#v requests=%#v", got, client.starts)
+		}
+		client = &fakeClient{processes: map[string]protocol.Process{"retained": {Name: "retained", Root: root, Cwd: root, Source: "manifest:hum.yaml", Argv: []string{"old"}, State: protocol.StateExited}}}
+		server = newServer(client)
+		restarted, err := server.callTool(context.Background(), "restart", args(root, "manifest", "hum.dev.yaml", "name", "retained", "no_wait", true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := restarted.(restartResult); got.Name != "retained" || len(client.restarts) != 1 || client.restarts[0].Update {
+			t.Fatalf("retained restart fallback: result=%#v requests=%#v", got, client.restarts)
+		}
+	})
+
+	t.Run("list retained precedence and bounded response", func(t *testing.T) {
+		client := &fakeClient{processes: map[string]protocol.Process{"api": {Name: "api", Scope: protocol.ScopeProject, Root: root, Source: "manifest:hum.yaml", Argv: []string{"old"}, State: protocol.StateRunning}}}
+		server := newServer(client)
+		value, err := server.callTool(context.Background(), "list", args(root, "manifest", "hum.dev.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		processes := value.([]protocol.Process)
+		if len(processes) != 2 || processes[0].Name != "api" || processes[0].Source != "manifest:hum.yaml" || !reflect.DeepEqual(processes[0].Argv, []string{"old"}) || processes[1].Name != "worker" || processes[1].Source != "manifest:hum.dev.yaml" {
+			t.Fatalf("list precedence/declarations: %#v", processes)
+		}
+		arguments, _ := json.Marshal(callToolParams{Name: "list", Arguments: args(root, "manifest", "hum.dev.yaml")})
+		value, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"list"`), Method: "tools/call", Params: arguments})
+		if rpcErr != nil {
+			t.Fatal(rpcErr)
+		}
+		call := value.(callToolResult)
+		if call.IsError || len(call.Content) != 1 {
+			t.Fatalf("bounded list response: %#v", call)
+		}
+		var textProcesses []protocol.Process
+		if err := json.Unmarshal([]byte(call.Content[0].Text), &textProcesses); err != nil {
+			t.Fatalf("decode bounded list text: %v", err)
+		}
+		structured, ok := call.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("bounded list structured type=%T", call.StructuredContent)
+		}
+		structuredProcesses, ok := structured["processes"].([]protocol.Process)
+		if !ok || len(textProcesses) != len(structuredProcesses) || len(textProcesses) != 2 {
+			t.Fatalf("bounded list text/structured mismatch: text=%#v structured=%#v", textProcesses, structured)
+		}
+		for index := range textProcesses {
+			if textProcesses[index].Name != structuredProcesses[index].Name || textProcesses[index].Source != structuredProcesses[index].Source || !reflect.DeepEqual(textProcesses[index].Argv, structuredProcesses[index].Argv) {
+				t.Fatalf("bounded list identity mismatch: text=%#v structured=%#v", textProcesses, structuredProcesses)
+			}
+		}
+	})
+
+	t.Run("up removed definition", func(t *testing.T) {
+		client := &fakeClient{processes: map[string]protocol.Process{"removed": {Name: "removed", Root: root, Source: "manifest:hum.yaml", Argv: []string{"old"}, State: protocol.StateRunning}}}
+		server := newServer(client)
+		value, err := server.callTool(context.Background(), "up", args(root, "manifest", "hum.dev.yaml", "no_wait", true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		results := value.([]launchResult)
+		found := false
+		for _, result := range results {
+			if result.Name == "removed" {
+				found = true
+				if result.Outcome != "removed_definition" || result.Process == nil || !strings.Contains(result.Guidance, "hum stop removed") {
+					t.Fatalf("removed result=%#v", result)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("up omitted removed definition: %#v", results)
+		}
+	})
+
+	clientCalls := 0
+	resolver := &countingResolver{resolution: Resolution{Root: root, Definitions: definitions}}
+	server := NewServer(Options{Resolver: resolver, ClientFactory: func(context.Context, bool) (Client, error) { clientCalls++; return &fakeClient{}, nil }})
+	before := clientCalls
+	for _, tool := range []string{"down", "status", "logs", "wait", "input", "stop", "remove", "signal"} {
+		raw := args(root, "manifest", "hum.dev.yaml", "name", "api")
+		if tool == "input" {
+			raw = args(root, "manifest", "hum.dev.yaml", "name", "api", "text", "x")
+		}
+		if _, err := server.callTool(context.Background(), tool, raw); mapError(err).Code != "invalid_request" {
+			t.Fatalf("%s accepted manifest: %v", tool, err)
+		}
+	}
+	if clientCalls != before {
+		t.Fatalf("rejected manifest contacted client: %d -> %d", before, clientCalls)
+	}
+	if _, err := server.callTool(context.Background(), "list", json.RawMessage(`{"scope":"global","manifest":"hum.dev.yaml"}`)); mapError(err).Code != "invalid_request" {
+		t.Fatalf("global manifest error = %v", err)
 	}
 }
