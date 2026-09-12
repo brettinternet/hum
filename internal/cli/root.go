@@ -369,7 +369,7 @@ OPTIONS:{{template "visibleFlagCategoryTemplate" .}}{{else if .VisibleFlags}}
 
 OPTIONS:{{template "visibleFlagTemplate" .}}{{end}}{{if .VisiblePersistentFlags}}
 
-GLOBAL OPTIONS:{{range $e := .VisiblePersistentFlags}}{{if ne (index $e.Names 0) "project"}}
+GLOBAL OPTIONS:{{range $e := .VisiblePersistentFlags}}{{if and (ne (index $e.Names 0) "project") (ne (index $e.Names 0) "file")}}
    {{wrap $e.String 6}}{{end}}{{end}}{{end}}
 `
 
@@ -388,7 +388,7 @@ OPTIONS:{{template "visibleFlagCategoryTemplate" .}}{{else if .VisibleFlags}}
 
 OPTIONS:{{template "visibleFlagTemplate" .}}{{end}}{{if .VisiblePersistentFlags}}
 
-GLOBAL OPTIONS:{{range $e := .VisiblePersistentFlags}}{{if ne (index $e.Names 0) "project"}}
+GLOBAL OPTIONS:{{range $e := .VisiblePersistentFlags}}{{if and (ne (index $e.Names 0) "project") (ne (index $e.Names 0) "file")}}
    {{wrap $e.String 6}}{{end}}{{end}}{{end}}
 `
 
@@ -422,11 +422,12 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		ExitErrHandler:                  func(context.Context, *urfavecli.Command, error) {},
 		Flags: []urfavecli.Flag{
 			projectFlag(),
+			fileFlag(),
 			&urfavecli.BoolFlag{Name: "global", Aliases: []string{"g"}, DefaultText: "false", Local: true, Hidden: true, Usage: "use the explicit machine-wide global process namespace (ad-hoc run only)"},
 			&urfavecli.StringFlag{Name: "runtime-dir", Usage: "daemon runtime directory [$HUM_RUNTIME_DIR or $XDG_RUNTIME_DIR/hum]", DefaultText: "$TMPDIR/hum-UID"},
-			&urfavecli.StringFlag{Name: "stop-grace", Usage: "process stop grace period [$HUM_STOP_GRACE]", DefaultText: config.DefaultStopGrace.String()},
+			&urfavecli.StringFlag{Name: "stop-grace", Usage: "stop grace [$HUM_STOP_GRACE]", DefaultText: config.DefaultStopGrace.String()},
 			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained bytes per process, at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
-			&urfavecli.StringFlag{Name: "completed-records", Usage: "completed records retained [$HUM_COMPLETED_RECORDS]", DefaultText: strconv.Itoa(config.DefaultCompletedRecords)},
+			&urfavecli.StringFlag{Name: "completed-records", Usage: "records [$HUM_COMPLETED_RECORDS]", DefaultText: strconv.Itoa(config.DefaultCompletedRecords)},
 		},
 		Commands:     newCLICommands(version, buildTime, outputTracker, errWriter),
 		OnUsageError: onUsageError,
@@ -449,18 +450,20 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 }
 
 func projectFlag() *urfavecli.StringFlag {
-	return &urfavecli.StringFlag{
-		Name:    "project",
-		Aliases: []string{"C"},
-		Usage:   "use project directory; default is current project",
-	}
+	return &urfavecli.StringFlag{Name: "project", Aliases: []string{"C"}, Usage: "project directory (default current)"}
+}
+
+func fileFlag() *urfavecli.StringFlag {
+	return &urfavecli.StringFlag{Name: "file", Aliases: []string{"F"}, Usage: "manifest (default hum.yaml)"}
 }
 
 type projectSelection struct {
-	cwd      string
-	root     string
-	scope    string
-	selector string
+	cwd         string
+	root        string
+	scope       string
+	selector    string
+	manifest    project.ManifestSelection
+	hasManifest bool
 }
 
 // selectedProjectDirectory resolves the optional project override against the
@@ -473,8 +476,18 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 	}
 	global := cmd.Bool("global") || cmd.IsSet("global") || rawScopeFlag(cmd, "global", "g")
 	projectSet := cmd.IsSet("project") || rawScopeFlag(cmd, "project", "C")
+	fileSet := cmd.IsSet("file") || rawScopeFlag(cmd, "file", "F")
 	if global && projectSet {
 		return projectSelection{}, newCLIUsageError(errors.New("--global conflicts with --project/-C; choose one scope"))
+	}
+	if global && fileSet {
+		return projectSelection{}, newCLIUsageError(errors.New("--global conflicts with --file/-F; choose one scope"))
+	}
+	if fileSet {
+		switch cmd.Name {
+		case "version", "serve", "init", "skill", "shutdown":
+			return projectSelection{}, newCLIUsageError(fmt.Errorf("hum %s does not accept --file/-F", cmd.Name))
+		}
 	}
 	if global {
 		if cmd.Name == "list" && cmd.Bool("all") {
@@ -482,7 +495,14 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 		}
 		return projectSelection{cwd: invocationCwd, scope: "global", selector: "--global"}, nil
 	}
-	if !cmd.IsSet("project") {
+	if fileSet && !projectSet {
+		manifest, err := project.ResolveManifestPath(invocationCwd, "", rawFlagValue(cmd, "file", "F"))
+		if err != nil {
+			return projectSelection{}, newCLIUsageError(err)
+		}
+		return projectSelection{cwd: manifest.Root, root: manifest.Root, scope: "project", selector: manifestProjectSelector(manifest.Root, manifest), manifest: manifest, hasManifest: true}, nil
+	}
+	if !projectSet {
 		root, err := project.DiscoverProjectRoot(invocationCwd)
 		if err != nil {
 			return projectSelection{}, err
@@ -530,7 +550,58 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 	if rootErr != nil {
 		return projectSelection{}, fmt.Errorf("--project path %q: %w", selected, rootErr)
 	}
-	return projectSelection{cwd: selected, root: root, scope: "project", selector: "--project " + shellEscape(root)}, nil
+	selection := projectSelection{cwd: selected, root: root, scope: "project", selector: "--project " + shellEscape(root)}
+	if fileSet {
+		manifest, manifestErr := project.ResolveManifestPath(invocationCwd, root, rawFlagValue(cmd, "file", "F"))
+		if manifestErr != nil {
+			return projectSelection{}, newCLIUsageError(manifestErr)
+		}
+		selection.cwd, selection.manifest, selection.hasManifest = root, manifest, true
+		selection.selector = manifestProjectSelector(root, manifest)
+	}
+	return selection, nil
+}
+
+func manifestProjectSelector(root string, manifest project.ManifestSelection) string {
+	return "--project " + shellEscape(root) + " --file " + shellEscape(manifest.Relative)
+}
+
+func rawFlagValue(cmd *urfavecli.Command, long, short string) string {
+	if cmd == nil || cmd.Root() == nil {
+		return ""
+	}
+	args := cmd.Root().Args().Slice()
+	if state, ok := cmd.Root().Metadata[jsonErrorStateMetadataKey].(*jsonErrorState); ok && state != nil {
+		state.mu.Lock()
+		if len(state.invocationArgs) > 0 {
+			args = append([]string(nil), state.invocationArgs...)
+		}
+		state.mu.Unlock()
+	}
+	valueFlags := valueFlagTokens(cmd)
+	skipNext := false
+	for i, token := range args {
+		if token == "--" {
+			break
+		}
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if token == "--"+long || token == "-"+short {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return ""
+		}
+		if value, ok := strings.CutPrefix(token, "--"+long+"="); ok {
+			return value
+		}
+		if _, consumesNext := valueFlags[token]; consumesNext {
+			skipNext = true
+		}
+	}
+	return cmd.String(long)
 }
 
 func rawScopeFlag(cmd *urfavecli.Command, long, short string) bool {
@@ -604,8 +675,8 @@ func valueFlagTokens(cmd *urfavecli.Command) map[string]struct{} {
 }
 
 func rejectProjectOverride(cmd *urfavecli.Command, commandName string) error {
-	if cmd.IsSet("project") || cmd.Bool("global") || rawScopeFlag(cmd, "project", "C") || rawScopeFlag(cmd, "global", "g") {
-		return newCLIUsageError(fmt.Errorf("hum %s does not accept --project/-C or --global", commandName))
+	if cmd.IsSet("project") || cmd.Bool("global") || cmd.IsSet("file") || rawScopeFlag(cmd, "project", "C") || rawScopeFlag(cmd, "global", "g") || rawScopeFlag(cmd, "file", "F") {
+		return newCLIUsageError(fmt.Errorf("hum %s does not accept --project/-C, --file/-F, or --global", commandName))
 	}
 	return nil
 }

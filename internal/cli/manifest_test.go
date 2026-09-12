@@ -34,6 +34,203 @@ func writeManifestCLITestFile(t *testing.T, root, contents string) {
 	}
 }
 
+func TestManifestFileSelection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(root, "hum.dev.yaml")
+	if err := os.WriteFile(manifest, []byte("version: 1\nprocesses: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldwd := projectDirChdir(t, root)
+	defer projectDirRestore(t, oldwd)
+	var selected projectSelection
+	capture := func(args ...string) error {
+		commandRoot := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
+		for _, command := range commandRoot.Commands {
+			if command.Name == "list" {
+				command.Action = func(_ context.Context, cmd *urfavecli.Command) error {
+					var err error
+					selected, err = selectedProjectDirectory(cmd)
+					return err
+				}
+			}
+		}
+		return commandRoot.Run(context.Background(), append([]string{"hum"}, args...))
+	}
+	for _, args := range [][]string{{"list", "--file", "hum.dev.yaml"}, {"list", "-F", "hum.dev.yaml"}} {
+		if err := capture(args...); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !selected.hasManifest || selected.manifest.Relative != "hum.dev.yaml" || selected.root == "" || selected.cwd != selected.root || !strings.Contains(selected.selector, "--file hum.dev.yaml") {
+			t.Fatalf("selection for %v = %#v", args, selected)
+		}
+	}
+	rawRoot := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
+	for _, command := range rawRoot.Commands {
+		if command.Name == "logs" {
+			command.Action = func(_ context.Context, cmd *urfavecli.Command) error {
+				var err error
+				selected, err = selectedProjectDirectory(cmd)
+				return err
+			}
+		}
+	}
+	SetInvocationArgs(rawRoot, []string{"hum", "logs", "api", "--match", "--file", "--file", "hum.dev.yaml"})
+	if err := rawRoot.Run(context.Background(), []string{"hum", "logs", "api", "--match", "--file", "--file", "hum.dev.yaml"}); err != nil {
+		t.Fatalf("raw --match value scan: %v", err)
+	}
+	if !selected.hasManifest || selected.manifest.Relative != "hum.dev.yaml" {
+		t.Fatalf("raw --match value selected %#v", selected)
+	}
+	rootCommand := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
+	if err := rootCommand.Run(context.Background(), []string{"hum", "version", "--file", manifest}); err == nil || !strings.Contains(err.Error(), "does not accept --project/-C, --file/-F") {
+		t.Fatalf("version --file error = %v", err)
+	}
+}
+
+func TestAlternateManifestSelectorGuidance(t *testing.T) {
+	result := manifestResultWithSelector(manifestLaunchResult{Guidance: "hum restart api"}, "--project /tmp/project --file hum.dev.yaml")
+	want := "hum --project /tmp/project --file hum.dev.yaml restart api"
+	if result.ProjectSelector == "" || result.Guidance != want {
+		t.Fatalf("selector guidance = %#v, want %q", result, want)
+	}
+}
+
+func TestAlternateManifestFileFlagCoverage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(root, "hum.dev.yaml")
+	manifestText := "version: 1\nprocesses:\n  completion-name:\n    argv: [echo, completion]\n"
+	if err := os.WriteFile(manifestPath, []byte(manifestText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldwd := projectDirChdir(t, root)
+	defer projectDirRestore(t, oldwd)
+	var selected projectSelection
+	capture := func(args ...string) error {
+		commandRoot := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
+		for _, command := range commandRoot.Commands {
+			if command.Name == "list" {
+				command.Action = func(_ context.Context, cmd *urfavecli.Command) error {
+					var err error
+					selected, err = selectedProjectDirectory(cmd)
+					return err
+				}
+			}
+		}
+		return commandRoot.Run(context.Background(), append([]string{"hum"}, args...))
+	}
+	if err := capture("list"); err != nil || selected.hasManifest || selected.selector != "" {
+		t.Fatalf("no-file selection: err=%v selection=%#v", err, selected)
+	}
+	if err := capture("--file", "hum.dev.yaml", "list"); err != nil || !selected.hasManifest {
+		t.Fatalf("file-before-command: err=%v selection=%#v", err, selected)
+	}
+	if err := capture("list", "--project", ".", "--file", "hum.dev.yaml"); err != nil || !selected.hasManifest || !strings.Contains(selected.selector, "--project ") || !strings.Contains(selected.selector, "--file hum.dev.yaml") {
+		t.Fatalf("project/file composition: err=%v selection=%#v", err, selected)
+	}
+
+	runRoot := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
+	var runName string
+	var runArgv []string
+	for _, command := range runRoot.Commands {
+		if command.Name == "run" {
+			command.Action = func(_ context.Context, cmd *urfavecli.Command) error {
+				var err error
+				runName, runArgv, err = parseRunArgs(cmd)
+				if err != nil {
+					return err
+				}
+				selected, err = selectedProjectDirectory(cmd)
+				return err
+			}
+		}
+	}
+	SetInvocationArgs(runRoot, []string{"hum", "run", "api", "--file", "hum.dev.yaml", "--", "echo", "ok"})
+	if err := runRoot.Run(context.Background(), []string{"hum", "run", "api", "--file", "hum.dev.yaml", "--", "echo", "ok"}); err != nil || runName != "api" || !reflect.DeepEqual(runArgv, []string{"echo", "ok"}) || !selected.hasManifest {
+		t.Fatalf("raw run file scanner: err=%v name=%q argv=%v selection=%#v", err, runName, runArgv, selected)
+	}
+
+	signalRoot := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
+	var signalArgs []string
+	for _, command := range signalRoot.Commands {
+		if command.Name == "signal" {
+			command.Action = func(_ context.Context, cmd *urfavecli.Command) error {
+				var err error
+				signalArgs, err = parseSignalArgs(cmd)
+				if err != nil {
+					return err
+				}
+				selected, err = selectedProjectDirectory(cmd)
+				return err
+			}
+		}
+	}
+	if err := signalRoot.Run(context.Background(), []string{"hum", "signal", "--file", "hum.dev.yaml", "api", "TERM"}); err != nil || !reflect.DeepEqual(signalArgs, []string{"api", "TERM"}) || !selected.hasManifest {
+		t.Fatalf("raw signal file scanner: err=%v args=%v selection=%#v", err, signalArgs, selected)
+	}
+
+	invalidPath := filepath.Join(root, "hum.invalid.yaml")
+	if err := os.WriteFile(invalidPath, []byte("not: a valid manifest\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalidSelection, err := project.ResolveManifestPath(root, root, "hum.invalid.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadManifestSelection(context.Background(), projectSelection{manifest: invalidSelection, hasManifest: true}); err == nil || !strings.Contains(err.Error(), "hum.invalid.yaml") || strings.Contains(err.Error(), root) {
+		t.Fatalf("selected manifest error = %v", err)
+	}
+	emptyPath := filepath.Join(root, "hum.empty.yaml")
+	if err := os.WriteFile(emptyPath, []byte("version: 1\nprocesses: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	emptySelection, err := project.ResolveManifestPath(root, root, "hum.empty.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyManifest, err := loadManifestSelection(context.Background(), projectSelection{manifest: emptySelection, hasManifest: true})
+	if err != nil || len(emptyManifest.defs) != 0 || manifestDisplayName(emptyManifest) != "hum.empty.yaml" {
+		t.Fatalf("selected empty manifest = %#v err=%v", emptyManifest, err)
+	}
+	if message := fmt.Sprintf("No processes are declared in %s.", manifestDisplayName(emptyManifest)); message != "No processes are declared in hum.empty.yaml." {
+		t.Fatalf("empty-manifest message = %q", message)
+	}
+
+	_, completionRuntime := stopShutdownTestServer(t, 100*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", completionRuntime)
+	completionRoot := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
+	var completionNames []string
+	for _, command := range completionRoot.Commands {
+		if command.Name == "start" {
+			command.Action = func(ctx context.Context, cmd *urfavecli.Command) error {
+				completionNames = completionProcessNames(ctx, cmd)
+				return nil
+			}
+		}
+	}
+	if err := completionRoot.Run(context.Background(), []string{"hum", "start", "--file", "hum.dev.yaml"}); err != nil || !reflect.DeepEqual(completionNames, []string{"completion-name"}) {
+		t.Fatalf("alternate completion: err=%v names=%v", err, completionNames)
+	}
+
+	for _, commandName := range []string{"version", "serve", "init", "skill", "shutdown"} {
+		commandRoot := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
+		err := commandRoot.Run(context.Background(), []string{"hum", commandName, "--file", manifestPath})
+		if err == nil {
+			t.Fatalf("%s --file unexpectedly succeeded", commandName)
+		}
+	}
+	globalRoot := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
+	SetInvocationArgs(globalRoot, []string{"hum", "--global", "--file", manifestPath, "list"})
+	if err := globalRoot.Run(context.Background(), []string{"hum", "--global", "--file", manifestPath, "list"}); err == nil || !strings.Contains(err.Error(), "--global conflicts with --file") {
+		t.Fatalf("global/file conflict error = %v", err)
+	}
+}
+
 func manifestCLILaunchResults(t *testing.T, output string) []manifestLaunchResult {
 	t.Helper()
 	var results []manifestLaunchResult

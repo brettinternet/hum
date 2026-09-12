@@ -43,6 +43,7 @@ func TestFlagAliases(t *testing.T) {
 		"stop-grace":        nil,
 		"output-bytes":      nil,
 		"completed-records": nil,
+		"file":              {"F"},
 		"global":            {"g"},
 	}
 	flagAliasesAssertFlags(t, "hum", root.Flags, rootExpected)

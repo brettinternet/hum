@@ -82,6 +82,100 @@ func wantJustDumpCall(t *testing.T, calls *[]string, justfile string) {
 	}
 }
 
+func TestAlternateManifestSelection(t *testing.T) {
+	root := t.TempDir()
+	writeTestManifest(t, root, "version: 1\nprocesses:\n  default:\n    argv: [default]\n    cwd: sub\n")
+	if err := os.Mkdir(filepath.Join(root, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alternate := filepath.Join(root, "hum.dev.yaml")
+	if err := os.WriteFile(alternate, []byte("version: 1\nprocesses:\n  dev:\n    argv: [dev]\n    cwd: sub\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selection, err := ResolveManifestPath(root, root, "hum.dev.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalRoot, err := CanonicalPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Relative != "hum.dev.yaml" || selection.Source != "manifest:hum.dev.yaml" || selection.Root != canonicalRoot {
+		t.Fatalf("selection = %#v", selection)
+	}
+	definitions, err := ResolveExplicitDefinitions(context.Background(), selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(definitions) != 1 || definitions[0].Name != "dev" || definitions[0].Source != "manifest:hum.dev.yaml" || definitions[0].Cwd != filepath.Join(canonicalRoot, "sub") {
+		t.Fatalf("definitions = %#v", definitions)
+	}
+	if _, err := ResolveManifestPath(root, root, "missing.yaml"); err == nil {
+		t.Fatal("missing alternate manifest unexpectedly succeeded")
+	}
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(outside, []byte("version: 1\nprocesses: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveManifestPath(root, root, outside); err == nil {
+		t.Fatal("outside alternate manifest unexpectedly succeeded")
+	}
+	escaped := filepath.Join(root, "escaped.yaml")
+	if err := os.Symlink(outside, escaped); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveManifestPath(root, root, escaped); err == nil {
+		t.Fatal("symlink-escaped alternate manifest unexpectedly succeeded")
+	}
+}
+
+func TestExplicitManifestSelection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "service"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := writeDiscoveryFile(t, root, "hum.dev.yaml", "version: 1\nprocesses:\n  dev:\n    argv: [echo, dev]\n    cwd: service\n", 0o600)
+	selection, err := ResolveManifestPath(root, "", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalRoot, err := CanonicalPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Root != canonicalRoot || selection.Relative != "hum.dev.yaml" || selection.Source != "manifest:hum.dev.yaml" {
+		t.Fatalf("selection = %#v", selection)
+	}
+	defs, err := ResolveExplicitDefinitions(context.Background(), selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 1 || defs[0].Source != selection.Source || defs[0].Cwd != filepath.Join(canonicalRoot, "service") {
+		t.Fatalf("definitions = %#v", defs)
+	}
+	missing := filepath.Join(root, "missing.yaml")
+	if _, err := ResolveManifestPath(root, root, missing); err == nil {
+		t.Fatal("missing manifest accepted")
+	}
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(outside, []byte("version: 1\nprocesses: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveManifestPath(root, root, outside); err == nil {
+		t.Fatal("outside manifest accepted")
+	}
+	link := filepath.Join(root, "escaped.yaml")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveManifestPath(root, root, link); err == nil {
+		t.Fatal("escaped symlink accepted")
+	}
+}
+
 func TestResolveExplicit(t *testing.T) {
 	t.Run("valid manifest is authoritative", func(t *testing.T) {
 		root := t.TempDir()
@@ -585,6 +679,9 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 				}
 				if configuration.Path != filepath.Join(root, test.filename) {
 					t.Fatalf("configuration path = %q, want %q", configuration.Path, filepath.Join(root, test.filename))
+				}
+				if !strings.HasPrefix(err.Error(), "project discovery configuration is malformed: ") {
+					t.Fatalf("error = %q, want discovery configuration prefix", err)
 				}
 			})
 		}

@@ -26,6 +26,7 @@ type manifestState struct {
 	defs     []project.Definition
 	byName   map[string]project.Definition
 	selector string
+	display  string
 }
 
 // loadManifest resolves the project manifest for cwd. Command-backed
@@ -49,6 +50,35 @@ func loadManifest(ctx context.Context, cwd string) (manifestState, error) {
 		byName[definition.Name] = definition
 	}
 	return manifestState{root: root, defs: defs, byName: byName}, nil
+}
+
+func loadManifestSelection(ctx context.Context, selection projectSelection) (manifestState, error) {
+	if !selection.hasManifest {
+		return loadManifest(ctx, selection.cwd)
+	}
+	defs, err := project.ResolveExplicitDefinitions(ctx, selection.manifest)
+	if err != nil {
+		return manifestState{}, &project.ConfigurationError{Source: selection.manifest.Relative, Err: err}
+	}
+	byName := make(map[string]project.Definition, len(defs))
+	for _, definition := range defs {
+		byName[definition.Name] = definition
+	}
+	return manifestState{root: selection.manifest.Root, defs: defs, byName: byName, display: selection.manifest.Relative}, nil
+}
+
+func manifestDisplayName(manifest manifestState) string {
+	if manifest.display != "" {
+		return manifest.display
+	}
+	return "hum.yaml"
+}
+
+func loadManifestOrEmptySelection(ctx context.Context, selection projectSelection) (manifestState, error) {
+	if selection.hasManifest {
+		return loadManifestSelection(ctx, selection)
+	}
+	return loadManifestOrEmpty(ctx, selection.cwd)
 }
 
 // loadManifestOrEmpty preserves the ad-hoc command path when no conventional

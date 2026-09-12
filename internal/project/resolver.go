@@ -83,18 +83,13 @@ func (e *ConfigurationError) Error() string {
 	if location == "" {
 		location = "project discovery"
 	}
-	if e.Source == "hum.yaml" {
-		// A manifest validation error already names hum.yaml through this
-		// location, and its message is already prefixed by the same
-		// underlying filename; repeating either as "project discovery
-		// configuration is malformed: hum.yaml (path): path: message" is
-		// redundant. Report the location once and strip the duplicate
-		// filename prefix instead.
+	if e.Source == "hum.yaml" || (e.Source != "" && e.Path == "") {
 		if e.Err == nil {
 			return location
 		}
 		message := e.Err.Error()
-		if e.Path != "" {
+		message = strings.TrimPrefix(message, e.Source+": ")
+		if e.Source == "hum.yaml" && e.Path != "" {
 			message = strings.TrimPrefix(message, filepath.Join(e.Path, "hum.yaml")+": ")
 		}
 		return fmt.Sprintf("%s: %s", location, message)
@@ -179,6 +174,87 @@ var (
 	discoveryLookPath discoveryLookPathFunc = exec.LookPath
 	discoveryCommand  discoveryCommandFunc  = runDiscoveryCommand
 )
+
+// ManifestSelection identifies one validated manifest and its project scope.
+type ManifestSelection struct {
+	Root     string
+	Path     string
+	Relative string
+	Source   string
+}
+
+// ResolveManifestPath validates an explicit manifest selector. Relative paths
+// are based at invocationDir; the selected file and every symlink it follows
+// must remain inside the selected project.
+func ResolveManifestPath(invocationDir, projectRoot, filename string) (ManifestSelection, error) {
+	if filename == "" {
+		return ManifestSelection{}, errors.New("--file requires a non-empty path")
+	}
+	invocation, err := absoluteClean(invocationDir)
+	if err != nil {
+		return ManifestSelection{}, fmt.Errorf("manifest path: %w", err)
+	}
+	candidate := filename
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(invocation, candidate)
+	}
+	candidate, err = absoluteClean(candidate)
+	if err != nil {
+		return ManifestSelection{}, fmt.Errorf("manifest path %q: %w", filename, err)
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return ManifestSelection{}, fmt.Errorf("manifest file %q: %w", filename, err)
+	}
+	resolved, err = absoluteClean(resolved)
+	if err != nil {
+		return ManifestSelection{}, err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return ManifestSelection{}, fmt.Errorf("manifest file %q: %w", filename, err)
+	}
+	if !info.Mode().IsRegular() {
+		return ManifestSelection{}, fmt.Errorf("manifest file %q is not a regular file", filename)
+	}
+	var root string
+	if projectRoot != "" {
+		root, err = CanonicalPath(projectRoot)
+		if err != nil {
+			return ManifestSelection{}, fmt.Errorf("project root: %w", err)
+		}
+	} else {
+		root, err = DiscoverProjectRoot(filepath.Dir(resolved))
+		if err != nil {
+			return ManifestSelection{}, err
+		}
+	}
+	resolvedRoot, err := CanonicalPath(root)
+	if err != nil {
+		return ManifestSelection{}, err
+	}
+	if !pathWithin(resolvedRoot, resolved) {
+		return ManifestSelection{}, fmt.Errorf("manifest file %q is outside project root %q", filename, resolvedRoot)
+	}
+	relative, err := filepath.Rel(resolvedRoot, candidate)
+	if err != nil || filepath.IsAbs(relative) || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+		// For inferred projects candidate can be a symlink spelling; expose the
+		// resolved, safe relative identity rather than an absolute path.
+		relative, err = filepath.Rel(resolvedRoot, resolved)
+		if err != nil || filepath.IsAbs(relative) || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+			return ManifestSelection{}, fmt.Errorf("manifest file %q is outside project root %q", filename, resolvedRoot)
+		}
+	}
+	relative = filepath.ToSlash(filepath.Clean(relative))
+	return ManifestSelection{Root: resolvedRoot, Path: resolved, Relative: relative, Source: "manifest:" + relative}, nil
+}
+
+// ResolveExplicitDefinitions loads exactly the selected file and never invokes
+// conventional discovery.
+func ResolveExplicitDefinitions(ctx context.Context, selection ManifestSelection) ([]Definition, error) {
+	_ = ctx
+	return LoadDefinitionsFile(selection.Root, selection.Path, selection.Relative, selection.Source)
+}
 
 // ResolveDefinitions returns the explicit hum.yaml definitions when that file
 // exists. Only an absent hum.yaml invokes conventional root discovery.

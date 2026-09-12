@@ -54,7 +54,7 @@ hum skill
 hum completion bash|zsh|fish
 ```
 
-Short aliases are command-local except the global help and version aliases. Project-scoped commands also accept the persistent `-C DIR` alias for `--project DIR`; the selector may appear before or after the subcommand, and `run` accepts it after the process name before `--`.
+Short aliases are command-local except the global help and version aliases. Project-scoped commands also accept the persistent `-C DIR` alias for `--project DIR` and `-F PATH` for `--file PATH`; both selectors may appear before or after the subcommand, and `run` accepts them after the process name before `--`. `signal` accepts them before its positional names.
 
 `completion bash`, `completion zsh`, and `completion fish` print installable shell scripts.
 
@@ -70,6 +70,7 @@ Combined short options are unsupported; MCP fields have no aliases.
 | `-h` | `--help` | global |
 | `-v` | `--version` | global |
 | `-C` | `--project` | project-scoped commands |
+| `-F` | `--file` | project-scoped commands |
 | `-j` | `--json` | all supporting commands |
 | `-d` | `--daemon`, `--detach` | `serve`, `run`, `up` |
 | `-t` | `--timeout` | `start`, `up`, `wait`, `restart` |
@@ -86,8 +87,10 @@ Combined short options are unsupported; MCP fields have no aliases.
 command intentionally adds no short aliases, including for `--json`.
 
 `--project DIR` resolves DIR relative to the invocation directory, canonicalizes it to a
-physical absolute path, and applies the nearest-Git-root-or-directory-fallback rule. Launch
-commands require an existing directory; observation and lifecycle commands can target a removed
+physical absolute path, and applies the nearest-Git-root-or-directory-fallback rule. `--file PATH`
+resolves PATH relative to the invocation directory, requires a regular file whose resolved path is
+inside the selected project, and infers the project root from that file when `--project` is absent.
+Launch commands require an existing directory; observation and lifecycle commands can target a removed
 worktree when DIR exactly matches a canonical root retained by the daemon.
 
 - The resolved project root scopes names and manifests.
@@ -471,7 +474,7 @@ process is active unless `--stop-processes` is given.
 
 ### Manifest
 
-The nearest Git project root may contain one authoritative `hum.yaml`.
+The nearest Git project root contains the default authoritative `hum.yaml`; complete variants conventionally use names such as `hum.dev.yaml` and `hum.test.yaml`.
 
 - A valid empty manifest resolves to no definitions; an invalid manifest is an error.
 - `hum up` on an empty manifest does not create a daemon when none exists: it may inspect an
@@ -479,7 +482,9 @@ The nearest Git project root may contain one authoritative `hum.yaml`.
 - With no such records, human output is exactly `No processes are declared in hum.yaml.` and
   `--json` emits no NDJSON records.
 - Discovery occurs only when the file is absent.
-- Alternate filenames are ignored.
+- Without `--file`, `hum.yaml` is authoritative and conventional discovery runs only when it is absent. With `--file`, Hum loads exactly that file: no fallback, discovery, overlays, inheritance, or merging. The selected file is reported as `manifest:<project-root-relative-path>` while the default source remains `manifest`.
+- All manifests in one Git project share the `(project root, process name)` runtime namespace. The project root, not the manifest directory, is the default child cwd and base for manifest `cwd` values.
+- Runtime-only operations remain project-wide; a file selector validates and identifies the project but does not parse the manifest or restrict retained records. `list --all` remains a cross-project view.
 
 SchemaStore-aware editors automatically load the published root `hum.schema.json` for `hum.yaml`.
 The inline schema directive is optional in those editors and remains supported. `hum init` puts the

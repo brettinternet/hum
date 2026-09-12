@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -567,11 +568,22 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 }
 
-func manifestStopGrace(root, name string) *time.Duration {
+func manifestStopGrace(root, name, source string) *time.Duration {
 	if root == "" || name == "" {
 		return nil
 	}
-	definitions, err := project.LoadDefinitions(root)
+	var definitions []project.Definition
+	var err error
+	if strings.HasPrefix(source, "manifest:") {
+		relative := strings.TrimPrefix(source, "manifest:")
+		selection, selectionErr := project.ResolveManifestPath(root, root, relative)
+		if selectionErr != nil {
+			return nil
+		}
+		definitions, err = project.ResolveExplicitDefinitions(context.Background(), selection)
+	} else {
+		definitions, err = project.LoadDefinitions(root)
+	}
 	if err != nil {
 		return nil
 	}
@@ -611,7 +623,7 @@ func (s *Server) dispatch(req *protocol.Request) (any, bool) {
 			value.Cwd = "."
 		}
 		if value.StopGrace == nil && project.IsManifestSource(value.Source) {
-			value.StopGrace = manifestStopGrace(value.Root, value.Name)
+			value.StopGrace = manifestStopGrace(value.Root, value.Name, value.Source)
 		}
 		var size *app.TTYSize
 		if value.TTYSize != nil {
@@ -714,7 +726,7 @@ func (s *Server) dispatch(req *protocol.Request) (any, bool) {
 			return dispatchError(req.Op, app.ErrSupervisorClosed), false
 		}
 		if value.StopGrace == nil && value.Update && project.IsManifestSource(value.Source) {
-			value.StopGrace = manifestStopGrace(value.Root, value.Name)
+			value.StopGrace = manifestStopGrace(value.Root, value.Name, value.Source)
 		}
 		var size *app.TTYSize
 		if value.TTYSize != nil {

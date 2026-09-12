@@ -74,6 +74,111 @@ type manifestListResponse struct {
 	Processes []manifestProcess `json:"processes"`
 }
 
+func TestAlternateManifestSelection(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := integrationHum(t)
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	defaultManifest := "version: 1\nprocesses:\n  default:\n    argv: [/bin/sh, -c, 'printf default-log; sleep 30']\n"
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(defaultManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alternate := filepath.Join(projectRoot, "hum.dev.yaml")
+	alternateManifest := "version: 1\nprocesses:\n  dev:\n    argv: [/bin/sh, -c, 'printf dev-log; sleep 30']\n    cwd: .\n  retained:\n    argv: [/bin/sh, -c, 'printf alternate-declaration; sleep 30']\n  stopped:\n    argv: [/bin/sh, -c, 'sleep 30']\n"
+	if err := os.WriteFile(alternate, []byte(alternateManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=100ms")
+	t.Cleanup(func() {
+		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
+	})
+	defaultStarted := testutil.Run(t, hum, projectRoot, env, "start", "default", "--no-wait", "--json")
+	if defaultStarted.Code != 0 || defaultStarted.Err != nil {
+		t.Fatalf("default start: code=%d err=%v stdout=%q stderr=%q", defaultStarted.Code, defaultStarted.Err, defaultStarted.Stdout, defaultStarted.Stderr)
+	}
+	started := testutil.Run(t, hum, projectRoot, env, "start", "dev", "--file", alternate, "--no-wait", "--json")
+	if started.Code != 0 || started.Err != nil || !strings.Contains(started.Stdout, `"source":"manifest:hum.dev.yaml"`) {
+		t.Fatalf("alternate start: code=%d err=%v stdout=%q stderr=%q", started.Code, started.Err, started.Stdout, started.Stderr)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := testutil.Run(t, hum, projectRoot, env, "status", "dev", "--file", alternate, "--json")
+	if status.Code != 0 || status.Err != nil || !strings.Contains(status.Stdout, `"cwd":"`+canonicalRoot+`"`) {
+		t.Fatalf("alternate status cwd: code=%d err=%v stdout=%q stderr=%q", status.Code, status.Err, status.Stdout, status.Stderr)
+	}
+	listed := testutil.Run(t, hum, projectRoot, env, "list", "--file", alternate, "--json")
+	if listed.Code != 0 || listed.Err != nil || !strings.Contains(listed.Stdout, `"name":"dev"`) || !strings.Contains(listed.Stdout, `"name":"stopped"`) || !strings.Contains(listed.Stdout, `"state":"stopped"`) || !strings.Contains(listed.Stdout, canonicalRoot) {
+		t.Fatalf("alternate list with retained and stopped declarations: code=%d err=%v stdout=%q stderr=%q", listed.Code, listed.Err, listed.Stdout, listed.Stderr)
+	}
+	adHoc := testutil.Run(t, hum, projectRoot, env, "run", "retained", "--file", alternate, "--detach", "--json", "--", "/bin/sh", "-c", "printf retained-record; sleep 30")
+	if adHoc.Code != 0 || adHoc.Err != nil {
+		t.Fatalf("alternate retained ad-hoc launch: code=%d err=%v stdout=%q stderr=%q", adHoc.Code, adHoc.Err, adHoc.Stdout, adHoc.Stderr)
+	}
+	retained := testutil.Run(t, hum, projectRoot, env, "list", "--file", alternate, "--json")
+	if retained.Code != 0 || retained.Err != nil || !strings.Contains(retained.Stdout, `"name":"retained"`) || !strings.Contains(retained.Stdout, `"source":"ad_hoc"`) || !strings.Contains(retained.Stdout, "retained-record") {
+		t.Fatalf("alternate retained record precedence: code=%d err=%v stdout=%q stderr=%q", retained.Code, retained.Err, retained.Stdout, retained.Stderr)
+	}
+	var logs testutil.Result
+	logsDeadline := time.Now().Add(5 * time.Second)
+	for {
+		logs = testutil.Run(t, hum, projectRoot, env, "logs", "--file", alternate)
+		if strings.Contains(logs.Stdout, "dev-log") || time.Now().After(logsDeadline) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if logs.Code != 0 || logs.Err != nil || !strings.Contains(logs.Stdout, "dev-log") || strings.Contains(logs.Stdout, "default-log") {
+		t.Fatalf("alternate aggregate logs: code=%d err=%v stdout=%q stderr=%q", logs.Code, logs.Err, logs.Stdout, logs.Stderr)
+	}
+	changedManifest := strings.Replace(alternateManifest, "printf dev-log; sleep 30", "printf changed-log; sleep 30", 1)
+	if err := os.WriteFile(alternate, []byte(changedManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	drift := testutil.Run(t, hum, projectRoot, env, "start", "dev", "--file", alternate, "--no-wait", "--json")
+	if drift.Code == 0 || drift.Err == nil || !strings.Contains(drift.Stdout, `"outcome":"definition_drift"`) || !strings.Contains(drift.Stdout, `--file hum.dev.yaml restart dev`) || strings.Contains(drift.Stdout, "changed-log") {
+		t.Fatalf("alternate retained precedence/drift guidance: code=%d err=%v stdout=%q stderr=%q", drift.Code, drift.Err, drift.Stdout, drift.Stderr)
+	}
+	if err := os.WriteFile(alternate, []byte("version: 1\nprocesses:\n  stopped:\n    argv: [/bin/sh, -c, 'sleep 30']\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed := testutil.Run(t, hum, projectRoot, env, "up", "--file", alternate, "--no-wait", "--json")
+	if removed.Code != 0 || removed.Err != nil || !strings.Contains(removed.Stdout, `"outcome":"removed_definition"`) || !strings.Contains(removed.Stdout, "--file hum.dev.yaml") {
+		t.Fatalf("alternate removed-definition guidance: code=%d err=%v stdout=%q stderr=%q", removed.Code, removed.Err, removed.Stdout, removed.Stderr)
+	}
+	if err := os.WriteFile(alternate, []byte("not: a valid hum manifest\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	down := testutil.Run(t, hum, projectRoot, env, "down", "--file", alternate, "--json")
+	if down.Code != 0 || down.Err != nil || !strings.Contains(down.Stdout, `"name":"default"`) || !strings.Contains(down.Stdout, `"name":"dev"`) || !strings.Contains(down.Stdout, `"name":"retained"`) {
+		t.Fatalf("project-wide runtime-only down parsed or filtered by alternate manifest: code=%d err=%v stdout=%q stderr=%q", down.Code, down.Err, down.Stdout, down.Stderr)
+	}
+}
+
+func TestAlternateManifestNoWaitDependencyError(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := integrationHum(t)
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alternate := filepath.Join(projectRoot, "hum.dev.yaml")
+	contents := "version: 1\nprocesses:\n  db:\n    argv: [/bin/sh, -c, 'printf ready; sleep 30']\n    ready:\n      match: ready\n  api:\n    argv: [/bin/sh, -c, 'sleep 30']\n    after: [db]\n"
+	if err := os.WriteFile(alternate, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir)
+	result := testutil.Run(t, hum, projectRoot, env, "up", "--file", alternate, "--no-wait")
+	if result.Code == 0 || !strings.Contains(result.Stderr, "hum.dev.yaml declares after dependencies") {
+		t.Fatalf("alternate no-wait error: code=%d stdout=%q stderr=%q", result.Code, result.Stdout, result.Stderr)
+	}
+}
+
 func TestExecutableReadiness(t *testing.T) {
 	lifecycleRequireUnix(t)
 	hum := integrationHum(t)

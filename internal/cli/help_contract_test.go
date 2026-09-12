@@ -228,7 +228,7 @@ func helpContractFlags(command *urfavecli.Command) []urfavecli.Flag {
 	persistent := command.VisiblePersistentFlags()
 	if command.CustomHelpTemplate == scopeNeutralCommandHelpTemplate || command.CustomHelpTemplate == scopeNeutralSubcommandHelpTemplate {
 		for _, flag := range persistent {
-			if len(flag.Names()) > 0 && flag.Names()[0] != "project" {
+			if len(flag.Names()) > 0 && flag.Names()[0] != "project" && flag.Names()[0] != "file" {
 				flags = append(flags, flag)
 			}
 		}

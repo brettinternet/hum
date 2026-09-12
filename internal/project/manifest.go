@@ -93,79 +93,94 @@ func LoadDefinitions(root string) ([]Definition, error) {
 	return definitions, err
 }
 
+// LoadDefinitionsFile parses exactly filename as a complete manifest. The
+// filename must already have been validated by ResolveManifestPath; display is
+// the stable project-relative name used in diagnostics and source identity.
+func LoadDefinitionsFile(root, filename, display, source string) ([]Definition, error) {
+	root, err := absoluteClean(root)
+	if err != nil {
+		return nil, fmt.Errorf("%s: project root: %w", display, err)
+	}
+	if display == "" {
+		display = filepath.Base(filename)
+	}
+	if source == "" {
+		source = "manifest:" + filepath.ToSlash(display)
+	}
+	definitions, err := loadDefinitionsFile(root, filename, display, source)
+	return definitions, err
+}
+
 // loadDefinitions parses hum.yaml and reports whether the manifest was
 // present. The presence bit is kept private so LoadDefinitions can retain its
 // historical missing-manifest behavior while ResolveDefinitions can make a
 // present manifest authoritative.
 func loadDefinitions(root string) ([]Definition, bool, error) {
 	filename := filepath.Join(root, "hum.yaml")
-	file, err := os.Open(filename)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			if _, lstatErr := os.Lstat(filename); errors.Is(lstatErr, os.ErrNotExist) {
-				return []Definition{}, false, nil
-			}
-		}
+	if _, err := os.Lstat(filename); errors.Is(err, os.ErrNotExist) {
+		return []Definition{}, false, nil
+	} else if err != nil {
 		return nil, true, fmt.Errorf("%s: open: %w", filename, err)
 	}
-	defer file.Close()
+	definitions, err := loadDefinitionsFile(root, filename, filename, "manifest")
+	return definitions, true, err
+}
 
+func loadDefinitionsFile(root, filename, display, source string) ([]Definition, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, fmt.Errorf("%s: open: %w", display, err)
+	}
+	defer file.Close()
 	contents, err := io.ReadAll(file)
 	if err != nil {
-		return nil, true, fmt.Errorf("%s: read: %w", filename, err)
+		return nil, fmt.Errorf("%s: read: %w", display, err)
 	}
 	trimmed := bytes.TrimSpace(bytes.TrimPrefix(contents, []byte("\xef\xbb\xbf")))
 	if len(trimmed) > 0 && json.Valid(trimmed) {
-		return nil, true, manifestError(filename, "manifest", "unsupported format: JSON is not supported")
+		return nil, manifestError(display, "manifest", "unsupported format: JSON is not supported")
 	}
-
 	decoder := yaml.NewDecoder(bytes.NewReader(contents))
 	var document yaml.Node
 	if err := decoder.Decode(&document); err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, true, manifestError(filename, "manifest", "document is empty")
+			return nil, manifestError(display, "manifest", "document is empty")
 		}
-		return nil, true, fmt.Errorf("%s: decode YAML: %w", filename, err)
+		return nil, fmt.Errorf("%s: decode YAML: %w", display, err)
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err == nil {
-		return nil, true, manifestError(filename, "manifest", "multiple YAML documents are not allowed")
+		return nil, manifestError(display, "manifest", "multiple YAML documents are not allowed")
 	} else if !errors.Is(err, io.EOF) {
-		return nil, true, fmt.Errorf("%s: decode YAML: multiple documents are not allowed: %w", filename, err)
+		return nil, fmt.Errorf("%s: decode YAML: multiple documents are not allowed: %w", display, err)
 	}
-
 	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0] == nil {
-		return nil, true, manifestError(filename, "manifest", "document must contain exactly one value")
+		return nil, manifestError(display, "manifest", "document must contain exactly one value")
 	}
 	rootNode := document.Content[0]
-	if err := rejectForbidden(filename, "manifest", rootNode); err != nil {
-		return nil, true, err
+	if err := rejectForbidden(display, "manifest", rootNode); err != nil {
+		return nil, err
 	}
-	entries, err := decodeMapping(filename, "manifest", rootNode, manifestFields)
+	entries, err := decodeMapping(display, "manifest", rootNode, manifestFields)
 	if err != nil {
-		return nil, true, err
+		return nil, err
 	}
 	fields := make(map[string]*yaml.Node, len(entries))
 	for _, entry := range entries {
 		fields[entry.name] = entry.value
 	}
-
 	versionNode, ok := fields["version"]
 	if !ok {
-		return nil, true, manifestError(filename, "manifest", "missing key %q", "version")
+		return nil, manifestError(display, "manifest", "missing key %q", "version")
 	}
-	if err := parseVersion(filename, versionNode); err != nil {
-		return nil, true, err
+	if err := parseVersion(display, versionNode); err != nil {
+		return nil, err
 	}
 	processesNode, ok := fields["processes"]
 	if !ok {
-		return nil, true, manifestError(filename, "manifest", "missing key %q", "processes")
+		return nil, manifestError(display, "manifest", "missing key %q", "processes")
 	}
-	definitions, err := parseProcesses(root, filename, processesNode)
-	if err != nil {
-		return nil, true, err
-	}
-	return definitions, true, nil
+	return parseProcesses(root, display, processesNode, source)
 }
 
 func parseVersion(filename string, node *yaml.Node) error {
@@ -182,7 +197,11 @@ func parseVersion(filename string, node *yaml.Node) error {
 	return nil
 }
 
-func parseProcesses(root, filename string, node *yaml.Node) ([]Definition, error) {
+func parseProcesses(root, filename string, node *yaml.Node, sources ...string) ([]Definition, error) {
+	source := "manifest"
+	if len(sources) != 0 && sources[0] != "" {
+		source = sources[0]
+	}
 	entries, err := decodeMapping(filename, "processes", node, nil)
 	if err != nil {
 		return nil, err
@@ -198,7 +217,7 @@ func parseProcesses(root, filename string, node *yaml.Node) ([]Definition, error
 			return nil, err
 		}
 		definition.Name = entry.name
-		definition.Source = "manifest"
+		definition.Source = source
 		definitions = append(definitions, definition)
 	}
 	sort.Slice(definitions, func(i, j int) bool {
