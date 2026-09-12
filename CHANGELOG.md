@@ -2,6 +2,12 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.12.0](https://github.com/brettinternet/hum/compare/v0.11.0...v0.12.0) - 2026-09-12
+
+### Added
+
+- Load manifest process environments
+
 ## [v0.11.0](https://github.com/brettinternet/hum/compare/v0.10.1...v0.11.0) - 2026-09-12
 
 ### Added
