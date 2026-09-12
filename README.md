@@ -155,9 +155,35 @@ hum down
 
 ### Manifest environments
 
-A manifest may compose each declared process environment from the caller baseline, required UTF-8 `.env`-style files, and a process `env` map. `inherit` defaults to true; `inherit: false` starts empty, and `null` removes a lower-layer key. Files are relative to the selected manifest, remain inside the project root, and are read only for launch commands. The grammar accepts blank lines, full-line comments, `export KEY=value`, ordinary assignment whitespace, and whole single/double quoted values; it does not expand variables, discover files, decrypt, or activate shells. For example, ordinary whitespace and comments are valid: `export PORT = "3000" # local port`, with blank and full-line `#` comments. Quote literal `$NAME`, `${...}`, `$()`, or backticks, or use an external loader. Files are required and bounded to 16 files, 1 MiB each, 4,096 assignments each, and 4 MiB per final environment; encoded protocol requests retain the existing 8 MiB limit.
+Load shared values from files, then override or remove them per process:
 
-The default/empty configuration copies the caller environment byte-for-byte. Composed entries are sorted by key. `start`, `up`, declared `run`, and `restart` preflight before daemon contact; read-only commands do not read files. Running and automatic-recovery snapshots retain their launch environment, and explicit restart reloads it. Environment metadata is never returned, but child and readiness-probe output is unredacted—processes and probes should not print secrets.
+```yaml
+version: 1
+environment:
+  files: [.env]
+processes:
+  api:
+    argv: [bun, run, api]
+    env:
+      PORT: "3001"
+      LEGACY_DATABASE_URL: null
+```
+
+```dotenv
+# .env
+DATABASE_URL=postgres://localhost/app
+LEGACY_DATABASE_URL=postgres://localhost/old
+export PORT = "3000" # overridden by api.env
+LITERAL_DOLLAR='$NAME'
+```
+
+`api` gets the caller environment, then `.env`, then its `env` map. In this example, `PORT` is `3001` and `LEGACY_DATABASE_URL` is absent. Set `environment.inherit: false` to start without the caller environment. Quote numeric and boolean YAML values because `env` accepts only strings or `null`.
+
+Each listed file is required. Its path is relative to the selected manifest and must resolve to a regular file inside the project root. Files accept UTF-8 assignments, blank lines, full-line comments, optional `export`, assignment whitespace, and whole single- or double-quoted values. Hum does not discover files or expand `$NAME`, `${...}`, `$()`, or backticks; single-quote those forms when they are literal, or use an external loader.
+
+With no environment configuration, Hum preserves the caller environment exactly. `start`, `up`, declared `run`, and `restart` validate and load files before contacting the daemon; read-only commands do not read them. Running processes and automatic relaunches keep their launch snapshot. `hum restart NAME` reloads environment changes.
+
+Limits are 16 files, 1 MiB and 4,096 assignments per file, 4 MiB per composed environment, and 8 MiB per encoded protocol request. Environment metadata is never returned, but child and readiness-probe output is unredacted. Do not print secrets from process or probe commands.
 
 ### Operate from anywhere
 
