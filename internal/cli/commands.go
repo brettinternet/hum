@@ -3242,21 +3242,24 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	return nil
 }
 
-// upLaunchRecorder remembers which declarations this up invocation launched,
-// as opposed to those it found already running, so an interrupted startup can
-// abort exactly its own work.
+// upLaunchRecorder remembers declarations for which this up invocation issued
+// a start request. Recording before the request preserves cleanup intent when
+// Ctrl+C cancels the response after the daemon has already launched a process.
 type upLaunchRecorder struct {
 	mu    sync.Mutex
-	names []string
+	names map[string]struct{}
 }
 
-func (r *upLaunchRecorder) record(result manifestLaunchResult) {
-	if r == nil || result.Outcome != "started" {
+func (r *upLaunchRecorder) recordAttempt(name string) {
+	if r == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.names = append(r.names, result.Name)
+	if r.names == nil {
+		r.names = make(map[string]struct{})
+	}
+	r.names[name] = struct{}{}
 }
 
 func (r *upLaunchRecorder) launched() []string {
@@ -3265,35 +3268,54 @@ func (r *upLaunchRecorder) launched() []string {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	names := append([]string(nil), r.names...)
+	names := make([]string, 0, len(r.names))
+	for name := range r.names {
+		names = append(names, name)
+	}
 	sort.Strings(names)
 	return names
 }
 
-// stopInterruptedUpLaunches treats Ctrl+C during startup as abort: it stops the
-// processes this invocation launched and leaves already-running ones alone,
-// then reports what happened on the progress stream.
+// stopInterruptedUpLaunches treats Ctrl+C during startup as abort. The
+// canceled request may invalidate its connection, so cleanup uses a fresh one.
 func stopInterruptedUpLaunches(client *daemon.Client, manifest manifestState, launched *upLaunchRecorder, progressWriter io.Writer) error {
 	scope := app.ScopeProject
 	if manifest.selector == "--global" {
 		scope = app.ScopeGlobal
 	}
-	names := launched.launched()
-	var failed []string
-	for _, name := range names {
-		if err := client.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: scope, Cwd: manifest.root}); err != nil && !isNotFound(err) && !errors.Is(err, app.ErrNotRunning) {
-			failed = append(failed, name)
+	attempted := launched.launched()
+	var stopped, failed []string
+	cleanupClient, dialErr := daemon.Dial(context.Background(), client.SocketPath())
+	if dialErr != nil {
+		failed = append(failed, attempted...)
+	} else {
+		defer cleanupClient.Close()
+		for _, name := range attempted {
+			err := cleanupClient.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: scope, Cwd: manifest.root})
+			switch {
+			case err == nil:
+				stopped = append(stopped, name)
+			case isNotFound(err), errors.Is(err, app.ErrNotRunning):
+			default:
+				failed = append(failed, name)
+			}
 		}
 	}
 	if progressWriter == nil {
 		return nil
 	}
 	message := "hum up: startup interrupted; nothing was launched"
-	if len(names) != 0 {
-		message = "hum up: startup interrupted; stopped " + strings.Join(names, ", ")
-		if len(failed) != 0 {
-			message += "; could not stop " + strings.Join(failed, ", ") + " (hum down stops it)"
+	if len(attempted) != 0 && len(stopped) == 0 && len(failed) == 0 {
+		message = "hum up: startup interrupted; launched processes already stopped"
+	}
+	if len(stopped) != 0 {
+		message = "hum up: startup interrupted; stopped " + strings.Join(stopped, ", ")
+	}
+	if len(failed) != 0 {
+		if len(stopped) == 0 {
+			message = "hum up: startup interrupted"
 		}
+		message += "; could not stop " + strings.Join(failed, ", ") + " (hum down stops them)"
 	}
 	_, err := fmt.Fprintln(progressWriter, message)
 	return err
@@ -3315,7 +3337,7 @@ type manifestLaunchState struct {
 	observedAt time.Time
 }
 
-func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd string, manifest manifestState, name string, preserveRecovery bool) (project.Definition, manifestLaunchResult, app.Process) {
+func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd string, manifest manifestState, name string, preserveRecovery bool, onStart func(string)) (project.Definition, manifestLaunchResult, app.Process) {
 	scope := app.ScopeProject
 	if manifest.selector == "--global" {
 		scope = app.ScopeGlobal
@@ -3331,13 +3353,16 @@ func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd st
 		if app.IsActiveState(current.State) {
 			return definition, manifestLaunchResultFor(definition, current, "already_running"), current
 		}
+		if onStart != nil {
+			onStart(name)
+		}
 		process, startErr := client.Start(ctx, daemon.StartRequest{Name: name, Scope: scope, Root: manifest.root, Cwd: current.Cwd, TTY: current.TTY, Restart: string(app.RestartNever)})
 		if startErr != nil {
 			return definition, manifestLaunchError(definition, startErr), app.Process{}
 		}
 		return definition, manifestLaunchResultFor(definition, process, "started"), process
 	}
-	result, process, _, ensureErr := ensureManifestStart(ctx, client, cwd, manifest.root, definition, manifestEnvironment(manifest, definition), preserveRecovery)
+	result, process, _, ensureErr := ensureManifestStart(ctx, client, cwd, manifest.root, definition, manifestEnvironment(manifest, definition), preserveRecovery, onStart)
 	if ensureErr != nil {
 		return definition, manifestLaunchError(definition, ensureErr), app.Process{}
 	}
@@ -3352,7 +3377,7 @@ func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client
 		go func(index int, name string) {
 			defer launches.Done()
 			observedAt := time.Now()
-			definition, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, name, false)
+			definition, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, name, false, nil)
 			if result.Outcome == "started" && !process.Start.IsZero() {
 				observedAt = process.Start
 			} else if result.Outcome == "already_running" {
@@ -3442,8 +3467,7 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 	ops := manifestUpScheduleOps{
 		start: func(ctx context.Context, definition project.Definition) (manifestLaunchResult, app.Process, time.Time) {
 			observedAt := time.Now()
-			_, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, definition.Name, preserveRecovery)
-			launched.record(result)
+			_, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, definition.Name, preserveRecovery, launched.recordAttempt)
 			if result.Outcome == "started" && !process.Start.IsZero() {
 				observedAt = process.Start
 			} else if result.Outcome == "already_running" {

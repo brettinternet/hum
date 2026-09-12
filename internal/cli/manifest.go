@@ -701,7 +701,7 @@ func manifestTimeoutMS(timeout time.Duration) (int64, error) {
 	return int64(milliseconds), nil
 }
 
-func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root string, definition project.Definition, env []string, preserveRecovery bool) (manifestLaunchResult, app.Process, bool, error) {
+func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root string, definition project.Definition, env []string, preserveRecovery bool, onStart func(string)) (manifestLaunchResult, app.Process, bool, error) {
 	lookupRoot := root
 	if lookupRoot == "" {
 		lookupRoot = cwd
@@ -712,6 +712,9 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 			return cliOrchestrateProcess(current), err
 		},
 		Start: func(ctx context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
+			if onStart != nil {
+				onStart(request.Name)
+			}
 			var ready *protocol.ReadinessConfig
 			if request.Ready != nil {
 				ready = &protocol.ReadinessConfig{Method: request.Ready.Method, Match: request.Ready.Match, Argv: append([]string(nil), request.Ready.Argv...), Interval: request.Ready.Interval, Timeout: request.Ready.Timeout}

@@ -135,8 +135,8 @@ func TestFlagAliasParityReadCommands(t *testing.T) {
 			t.Fatalf("logs -m texts = %#v, want stdout-match", matchTexts)
 		}
 
-		shortFollow := flagAliasReadLiveFollow(t, project, "short", "-f")
-		longFollow := flagAliasReadLiveFollow(t, project, "long", "--follow")
+		shortFollow := flagAliasReadLiveFollow(t, runtimeDir, project, "short", "-f")
+		longFollow := flagAliasReadLiveFollow(t, runtimeDir, project, "long", "--follow")
 		if !reflect.DeepEqual(shortFollow, longFollow) {
 			t.Fatalf("short follow = %#v, long follow = %#v", shortFollow, longFollow)
 		}
@@ -207,7 +207,7 @@ type flagAliasReadFollowResult struct {
 	exitCode int
 }
 
-func flagAliasReadLiveFollow(t *testing.T, project, variant, flag string) flagAliasReadFollowResult {
+func flagAliasReadLiveFollow(t *testing.T, runtimeDir, project, variant, flag string) flagAliasReadFollowResult {
 	t.Helper()
 	name := "alias-follow-" + variant
 	fixtureDir := t.TempDir()
@@ -259,6 +259,14 @@ func flagAliasReadLiveFollow(t *testing.T, project, variant, flag string) flagAl
 		t.Fatalf("release follower producer: %v", err)
 	}
 	hum006ListLogsWaitForText(t, project, name, "after\n")
+	hum006ListLogsWaitForExit(t, runtimeDir, project, name)
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(capture.String(), `"type":"exit"`) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(capture.String(), `"type":"exit"`) {
+		t.Fatalf("follower %s did not render the exit event: %s", flag, capture.String())
+	}
 	cancel()
 
 	var commandOutput hum006ListLogsCommandResult
