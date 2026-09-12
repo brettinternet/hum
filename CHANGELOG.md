@@ -2,6 +2,14 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.12.1](https://github.com/brettinternet/hum/compare/v0.12.0...v0.12.1) - 2026-09-12
+
+### Fixed
+
+- **project:** Preserve opaque environment entries
+- **manifest:** Report the line of a YAML syntax error
+- **manifest:** Align env schema patterns with parser
+
 ## [v0.12.0](https://github.com/brettinternet/hum/compare/v0.11.0...v0.12.0) - 2026-09-12
 
 ### Added
