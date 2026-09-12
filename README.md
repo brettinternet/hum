@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Keep processes running between commands. `hum` gives users bounded logs, readiness checks, dependencies, JSON/MCP output, and controlled TTY input. See the [changelog](CHANGELOG.md) for release history.
+Keep processes running between commands—with bounded logs, readiness checks, dependencies, JSON/MCP output, and controlled TTY input. See the [changelog](CHANGELOG.md).
 
 ```text
 hum.yaml ──> hum daemon ──> db ──> api ──> web
@@ -75,16 +75,14 @@ hum up
 hum down
 ```
 
-SchemaStore-aware editors automatically load the published [`hum.schema.json`](hum.schema.json)
-for files named `hum.yaml`; the inline directive is optional in those editors and remains
-supported. `hum init` includes the directive so other compatible YAML editors also load validation
-and completion automatically. For an existing manifest in an editor without SchemaStore support,
-select the root `hum.schema.json` manually. The schema provides editor guidance; the Go manifest
-implementation is the authoritative parser.
+SchemaStore-aware editors load [`hum.schema.json`](hum.schema.json) for `hum.yaml` automatically.
+`hum init` also adds an inline schema directive. Other editors can select the root schema manually.
+The Go manifest parser remains authoritative.
 
 ## Start processes
 
-Without configuration, `hum up` finds conventional `dev` tasks in Mise, Task, Just, Make, `package.json`, Deno, Composer, `bin/dev`, or a Mix project with a literal Phoenix dependency.
+Without `hum.yaml`, `hum up` finds conventional `dev` tasks in Mise, Task, Just, Make,
+`package.json`, Deno, Composer, `bin/dev`, and Mix projects with a literal Phoenix dependency.
 
 For multiple processes, add `hum.yaml`:
 
@@ -107,7 +105,8 @@ processes:
       match: "Local:"
 ```
 
-`hum up` starts processes, gates dependents on `ready`, and follows output. Ctrl+C detaches; `hum down` stops. `hum up --detach` waits and returns. Its final human summary stays compact; use `hum up --full` to include complete readiness configuration.
+`hum up` starts in dependency order and follows output. Ctrl+C detaches; `hum down` stops.
+Use `hum up --detach` to wait and return, or `hum up --full` for full readiness details.
 
 For checks that do not emit a reliable startup message, use an executable probe. Exit status 0 marks the process ready. For example, check PostgreSQL inside Docker Compose:
 
@@ -149,9 +148,11 @@ hum stop web
 hum down
 ```
 
-`hum status` keeps the project overview to six columns; use `hum status NAME` for readiness configuration, diagnostics, and other process details.
+`hum status` shows a compact project overview. `hum status NAME` adds readiness and diagnostics.
 
-`start` is explicit and does not start dependencies. `ready.exec` runs exact argv without a shell; immediate serial retries (1s default) inherit cwd/env, retain bounded diagnostics, and gate startup—not liveness. `down` stops project processes concurrently. See [design and command semantics](docs/design.md) for validation details.
+`hum start NAME` does not start dependencies. `ready.exec` runs exact argv without a shell, inherits
+cwd/env, and retries every second by default. It gates startup, not liveness. `hum down` stops project
+processes concurrently. See [design and command semantics](docs/design.md).
 
 ### Manifest environments
 
@@ -177,13 +178,24 @@ export PORT = "3000" # overridden by api.env
 LITERAL_DOLLAR='$NAME'
 ```
 
-`api` gets the caller environment, then `.env`, then its `env` map. In this example, `PORT` is `3001` and `LEGACY_DATABASE_URL` is absent. Set `environment.inherit: false` to start without the caller environment. Quote numeric and boolean YAML values because `env` accepts only strings or `null`.
+The result for `api` includes `PORT=3001` and no `LEGACY_DATABASE_URL`:
 
-Each listed file is required. Its path is relative to the selected manifest and must resolve to a regular file inside the project root. Files accept UTF-8 assignments, blank lines, full-line comments, optional `export`, assignment whitespace, and whole single- or double-quoted values. Hum does not discover files or expand `$NAME`, `${...}`, `$()`, or backticks; single-quote those forms when they are literal, or use an external loader.
+```text
+caller environment → .env → processes.api.env
+```
 
-With no environment configuration, Hum preserves the caller environment exactly. `start`, `up`, declared `run`, and `restart` validate and load files before contacting the daemon; read-only commands do not read them. Running processes and automatic relaunches keep their launch snapshot. `hum restart NAME` reloads environment changes.
+- `inherit: false` skips the caller environment.
+- `env` accepts strings or `null`; quote numeric and boolean YAML values.
+- Every file is required, relative to the selected manifest, and inside the project root.
+- Files accept UTF-8 assignments, comments, `export`, whitespace, and whole quoted values.
+- Hum does not discover files or expand `$NAME`, `${...}`, `$()`, or backticks. Single-quote literal forms or use an external loader.
 
-Limits are 16 files, 1 MiB and 4,096 assignments per file, 4 MiB per composed environment, and 8 MiB per encoded protocol request. Environment metadata is never returned, but child and readiness-probe output is unredacted. Do not print secrets from process or probe commands.
+No configuration preserves the caller environment exactly. `start`, `up`, declared `run`, and
+`restart` load files before daemon contact; read-only commands do not. Processes and automatic
+relaunches keep their launch snapshot. Use `hum restart NAME` to reload changes.
+
+Limits: 16 files; 1 MiB and 4,096 assignments per file; 4 MiB per environment; 8 MiB per encoded
+request. Environment metadata stays private, but child and probe output is unredacted. Do not print secrets.
 
 ### Operate from anywhere
 
@@ -195,9 +207,23 @@ hum status -C ../checkout api
 hum run preview --project /path/to/checkout -- bun run preview
 ```
 
-A relative selector starts from the invocation directory. Ad-hoc runs use the selected directory as `cwd`; manifest `cwd` values stay project-relative. Select one complete alternate manifest with `--file PATH` or `-F PATH`, for example `hum.dev.yaml`: `hum -F hum.dev.yaml up` or `hum up -F hum.dev.yaml`. Without `--file`, `hum.yaml` remains authoritative and conventional discovery is used only when it is absent. With `--file`, the path must be a regular file inside the selected project; the project root remains the namespace and base for manifest `cwd` values. All manifests share that namespace, so switching files cannot run same-named processes concurrently.
+Select an alternate manifest with `--file PATH` or `-F PATH`:
 
-`--file` does not apply to `version`, `serve`, `init`, `shutdown`, `mcp`, or `skill`; `--project` remains available to `init`. Runtime-only controls (`down`, `attach`, `stop`, `remove`, `signal`, `wait`, and `input`) use `--file` only to identify the project and do not parse or limit runtime records. `init` continues to create only `hum.yaml`; overlays, inheritance, and per-manifest namespaces are not supported. `-d` means daemon, run, or up detach.
+```sh
+hum -F hum.dev.yaml up
+hum restart -F hum.test.yaml api
+```
+
+- A relative selector starts from the invocation directory.
+- Ad-hoc runs use the selected directory; manifest `cwd` stays project-relative.
+- `--file` must name a regular file inside the project.
+- Without `--file`, Hum uses `hum.yaml`, or conventional discovery when it is absent.
+- All manifests share one project namespace. The same process name cannot run twice through separate files.
+- Runtime-only commands use `--file` only to identify the project.
+- `--file` is unavailable on `version`, `serve`, `init`, `shutdown`, `mcp`, and `skill`.
+
+`hum init` creates only `hum.yaml`; Hum does not merge manifests or support overlays. `-d` means
+`--detach` for `daemon`, `run`, and `up`.
 
 ## Sessions
 
@@ -214,7 +240,9 @@ hum remove preview     # discard state
 hum remove --all       # discard sessions in this scope
 ```
 
-Scope selectors go before the child `--`. Foreground runs propagate status, stop on Ctrl+C or SIGTERM, and detach on SIGHUP. `--detach`, `up`, and `start` leave ownership to the daemon; `hum attach NAME` and `logs --follow` only observe.
+Put scope selectors before the child `--`. Foreground runs propagate exit status, stop on Ctrl+C
+or SIGTERM, and detach on SIGHUP. Detached runs belong to the daemon; `hum attach NAME` and
+`hum logs --follow` only observe them.
 
 ## Restart on failure
 
@@ -227,9 +255,16 @@ processes:
     restart: on-failure
 ```
 
-A non-zero exit relaunches after `1s`, `2s`, `4s`, `8s`, and `16s`, then stops retrying. Manual controls win. `hum restart NAME` adopts manifest changes; automatic relaunches reuse the previous definition. Status, JSON, and MCP expose recovery state and counts.
+A non-zero exit retries after `1s`, `2s`, `4s`, `8s`, and `16s`, then stops. Manual controls win.
+Automatic relaunches reuse the previous definition; `hum restart NAME` adopts manifest changes.
+Status, JSON, and MCP show recovery state and counts.
 
-Manifest `stop_grace` accepts non-negative durations; omission inherits, while `0s` means immediate kill. Status, JSON, and MCP show the effective value and inheritance marker. Restarts adopt definitions; relaunches and orphan reclaim retain policy.
+For `stop_grace`:
+
+- Omit it to inherit the daemon default.
+- Use `0s` for an immediate kill.
+- Restarts adopt changes; automatic relaunches and orphan reclaim keep the previous policy.
+- Status, JSON, and MCP show the effective value and whether it was inherited.
 
 ## Aggregate logs
 
@@ -240,9 +275,12 @@ hum logs web --stream stdout --match Listening    # matching stdout
 hum logs web --stream system                      # supervision events
 ```
 
-Ad-hoc sessions are selected by name. The default stream `both` includes stdout, stderr, and system events. `--after-cursor` pages from the oldest retained entry; without it, logs starts with the newest default window. Ctrl+C closes followers only.
+Ad-hoc sessions are selected by name. The default stream, `both`, includes stdout, stderr, and
+system events. `--after-cursor` pages from the oldest retained entry; otherwise logs start with the
+newest default window. Ctrl+C closes only the follower.
 
-Human output uses `[NAME]` prefixes. JSON output uses named NDJSON events. Logs `next` is the consumed cursor; process `next_cursor` is the next cursor to assign.
+Human output uses `[NAME]` prefixes; JSON uses named NDJSON events. Logs `next` is the consumed cursor.
+A process `next_cursor` is the next cursor to assign.
 
 ## JSON and NDJSON
 
@@ -285,7 +323,8 @@ With `hum` and Python 3.10+ on Herdr's `PATH`, install the process picker:
 herdr plugin install brettinternet/hum/plugins/herdr --yes
 ```
 
-It discovers the selected workspace through the public version 1 CLI contract and opens followed logs or interactive attachments in Herdr panes. See the [Herdr plugin guide](plugins/herdr/README.md) for actions and ownership boundaries.
+The picker uses the public CLI contract to open followed logs or interactive attachments for the
+selected workspace. See the [Herdr plugin guide](plugins/herdr/README.md) for actions and ownership.
 
 ### Claude Code plugin
 
@@ -370,6 +409,10 @@ hum -g run proxy -- caddy run         # machine-wide ad-hoc session
 hum signal proxy HUP --global         # global selector after positionals
 ```
 
-Project roots are canonical, so symlink aliases share a scope while separate worktrees do not. `--project PATH` and `-C PATH` select another project. `--global` and `-g` never fall back to project scopes and must precede `run`'s child `--`.
+Project roots are canonical: symlink aliases share a scope, while separate worktrees do not. Use
+`--project PATH` or `-C PATH`
+to select another project. Use `--global` or `-g` only for machine-wide ad-hoc sessions, before
+`run`'s child `--`.
 
-`--global` conflicts with `--project` and `list --all`; `init` and `up` reject it. JSON `scope` is `project` or `global`; global records omit `project_root`.
+`--global` conflicts with `--project` and `list --all`; `init` and `up` reject it. JSON reports
+`scope` as `project` or `global`; global records omit `project_root`.
