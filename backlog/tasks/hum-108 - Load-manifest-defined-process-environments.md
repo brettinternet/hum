@@ -4,7 +4,7 @@ title: Load manifest-defined process environments
 status: To Do
 assignee: []
 created_date: '2026-09-12 07:21'
-updated_date: '2026-09-12 14:51'
+updated_date: '2026-09-12 15:13'
 labels: []
 dependencies: []
 modified_files:
@@ -52,17 +52,77 @@ processes:
       LEGACY_DATABASE_URL: null
 ```
 
-`environment` is optional. When present, `inherit` is a boolean defaulting to true and `files` is a sequence of nonempty relative strings defaulting to empty; every listed file is required, including `.env.local` if added. `processes.<name>.env` is an optional mapping with string or null values only; empty strings are valid, numeric and boolean values must be quoted, null unsets a lower-layer key, duplicate or unknown mapping keys and other value types fail strict parsing with contextual diagnostics. A missing or empty/default environment and an absent or empty process map copy that target's baseline byte-for-byte, including order and duplicate inherited entries, and add no size restrictions. Names match `[A-Za-z_][A-Za-z0-9_]*` only for configured file/map keys; inherited names outside that grammar are preserved during active composition. NUL is prohibited with schema/parser parity. Composition is inherited baseline, then files in listed order, then the process map. Inherited duplicate keys use the last value; later layers replace keys, removing a file key exposes any inherited value, and null or `inherit: false` removes it. Final composed entries are lexical by key. `inherit: false` synthesizes nothing. The existing executor resolves the composed `PATH`; absolute and `./` relative executables work without it. Hum does not promise that children or tools cannot modify or reload their own environment.
+Manifest contract:
+- `environment` is optional.
+- When present, `inherit` is a boolean defaulting to true and `files` is a sequence of nonempty relative strings defaulting to empty; every listed file is required, including `.env.local` if added.
+- `processes.<name>.env` is an optional mapping with string or null values only; empty strings are valid, numeric and boolean values must be quoted, null unsets a lower-layer key, duplicate or unknown mapping keys and other value types fail strict parsing with contextual diagnostics.
+- A missing or empty/default environment and an absent or empty process map copy that target's baseline byte-for-byte, including order and duplicate inherited entries, and add no size restrictions.
+- Names match `[A-Za-z_][A-Za-z0-9_]*` only for configured file/map keys; inherited names outside that grammar are preserved during active composition.
+- NUL is prohibited with schema/parser parity.
+- Composition is inherited baseline, then files in listed order, then the process map.
+- Inherited duplicate keys use the last value; later layers replace keys, removing a file key exposes any inherited value, and null or `inherit: false` removes it.
+- Final composed entries are lexical by key.
+- `inherit: false` synthesizes nothing.
+- The existing executor resolves the composed `PATH`; absolute and `./` relative executables work without it.
+- Hum does not promise that children or tools cannot modify or reload their own environment.
 
-Files are UTF-8 with LF or CRLF; a final unterminated line is valid. Allow blank lines, full-line comments, optional `export` followed by horizontal whitespace, and assignments with horizontal whitespace around the assignment. The first `=` splits the line. Unquoted values trim horizontal edges; `#` starts a comment only at the value start or after horizontal whitespace, otherwise it is literal. Whole single-quoted values are literal and allow expansion-shaped text. Whole double-quoted values support only backslash, escaped double quote, `\n`, `\r`, and `\t`; after a closing quote, horizontal whitespace and a `#` comment are allowed, other suffixes are rejected. Empty values are valid. Reject BOM, NUL, invalid UTF-8, physical multiline values, unsupported escapes, malformed quotes, duplicate names within one file, and expansion-shaped text in unquoted or double-quoted values (`$` followed by a name-start, `${`, `$(`, or backtick). Such errors identify only key/location and advise single-quoting a literal or using an external loader. YAML inline strings are literal and are not dotenv-parsed. Do not evaluate, interpolate, decrypt, include, or implicitly discover files. This is not a direnv/dotenvx compatibility promise.
+Environment-file grammar:
+- Files are UTF-8 with LF or CRLF; a final unterminated line is valid.
+- Allow blank lines, full-line comments, optional `export` followed by horizontal whitespace, and assignments with horizontal whitespace around the assignment.
+- The first `=` splits the line; a line with no `=`, including bare `export KEY`, is rejected.
+- Unquoted values trim horizontal edges; `#` starts a comment only at the value start or after horizontal whitespace, otherwise it is literal.
+- Whole single-quoted values are literal and allow expansion-shaped text.
+- Whole double-quoted values support only backslash, escaped double quote, `\n`, `\r`, and `\t`; after a closing quote, horizontal whitespace and a `#` comment are allowed, other suffixes are rejected.
+- Empty values are valid.
+- Reject BOM, NUL, invalid UTF-8, physical multiline values, unsupported escapes, malformed quotes, duplicate names within one file, and expansion-shaped text in unquoted or double-quoted values (`$` followed by a name-start, `${`, `$(`, or backtick).
+- Such errors identify only key/location and advise single-quoting a literal or using an external loader.
+- YAML inline strings are literal and are not dotenv-parsed.
+- Do not evaluate, interpolate, decrypt, include, or implicitly discover files.
+- This is not a direnv/dotenvx compatibility promise.
 
-Paths are relative to the selected manifest directory, including a CLI `--file` selector, and must remain inside the canonical project root; `../.env` is valid when it stays inside the root. Reject absolute, empty, root, lexically escaping, symlink-escaping, missing, nonregular, and unreadable paths. Generic parsing validates syntax and lexical containment only and never accesses files, so read-only tools remain usable after a file is removed. Launch preflight resolves, stats, and bounded-reads regular files, with no FIFO hang. Read each unique canonical file once per invocation, cache only within that invocation, and reapply layers per target. Use no cross-invocation/worktree cache and never `os.Setenv`. The snapshot is fixed after preflight; concurrent external edits have no transactional-consistency guarantee. Limits are 16 file entries, 1 MiB actual bounded bytes per file, 4,096 assignments per file, and 4 MiB per final target's `KEY=VALUE` bytes including NUL separators. File errors name path and line when applicable; file-count and total limits name the limit without an invented line. A composed request is also checked after protocol escaping against existing `protocol.MarshalLine` and `DefaultMaxLineBytes` (8 MiB); raw environment fitting the limits does not guarantee encoded request size. Reject before client factory or protocol contact; do not increase the protocol limit. OS exec failures remain existing runtime behavior.
+Paths, reads, and bounds:
+- Paths are relative to the selected manifest directory, including a CLI `--file` selector, and must remain inside the canonical project root; `../.env` is valid when it stays inside the root.
+- Reject absolute, empty, root, lexically escaping, symlink-escaping, missing, nonregular, and unreadable paths.
+- Generic parsing validates syntax and lexical containment only and never accesses files, so read-only tools remain usable after a file is removed.
+- Launch preflight resolves, stats, and bounded-reads regular files, with no FIFO hang.
+- Read each unique canonical file once per invocation, cache only within that invocation, and reapply layers per target.
+- Use no cross-invocation/worktree cache and never `os.Setenv`.
+- The snapshot is fixed after preflight; concurrent external edits have no transactional-consistency guarantee.
+- Limits are 16 file entries, 1 MiB actual bounded bytes per file, 4,096 assignments per file, and 4 MiB per final target's `KEY=VALUE` bytes including NUL separators.
+- File errors name path and line when applicable; file-count and total limits name the limit without an invented line.
+- A composed request is also checked after protocol escaping against existing `protocol.MarshalLine` and `DefaultMaxLineBytes` (8 MiB); raw environment fitting the limits does not guarantee encoded request size.
+- Reject before client factory or protocol contact; do not increase the protocol limit.
+- OS exec failures remain existing runtime behavior.
 
-Selected declared `start`, `up`, declared `run`, and `restart` preflight once before any client or daemon creation/contact. CLI uses `os.Environ`; MCP uses `Options.Environment`, falling back to `os.Environ`. Preflight includes the full `up` dependency closure and aborts mixed declared/retained batches before mutation on any environment failure. It validates every required file even when a selected running record will be preserved. Empty `up`, ad hoc-only commands, and read-only commands do not access files. Explicit-argv `run` keeps the caller environment. Retained-only start/run/restart reuse the saved environment; discovered definitions preserve existing inherited behavior. `up` keeps running, pending, and exhausted snapshots. Targeted `start` preserves running entries but retains existing revival behavior for pending/exhausted entries, composing a fresh environment unless existing non-environment drift prevents it. Explicit restart reloads environment-only changes; automatic relaunch and `ready.exec` reuse the retained snapshot. Existing argv/name conflicts and runtime partial-success behavior remain unchanged. There is no environment drift/hash/enumeration. MCP uses the selected manifest from CLI selectors or its `project_root` and manifest inputs, never the invoking checkout; separate worktrees do not share caches.
+Command behavior:
+- Selected declared `start`, `up`, declared `run`, and `restart` preflight once before any client or daemon creation/contact.
+- CLI uses `os.Environ`; MCP uses `Options.Environment`, falling back to `os.Environ`.
+- Preflight includes the full `up` dependency closure and aborts mixed declared/retained batches before mutation on any environment failure.
+- It validates every required file even when a selected running record will be preserved.
+- Empty `up`, ad hoc-only commands, and read-only commands do not access files.
+- Explicit-argv `run` keeps the caller environment.
+- Retained-only start/run/restart reuse the saved environment; discovered definitions preserve existing inherited behavior.
+- `up` keeps running, pending, and exhausted snapshots.
+- Targeted `start` preserves running entries but retains existing revival behavior for pending/exhausted entries, composing a fresh environment unless existing non-environment drift prevents it.
+- Explicit restart reloads environment-only changes; automatic relaunch and `ready.exec` reuse the retained snapshot.
+- Existing argv/name conflicts and runtime partial-success behavior remain unchanged.
+- There is no environment drift/hash/enumeration.
+- MCP uses the selected manifest from CLI selectors or its `project_root` and manifest inputs, never the invoking checkout; separate worktrees do not share caches.
 
-Hum-generated responses, snapshots, JSON/MCP/status/drift output never enumerate environment names or values. Diagnostics may identify a valid variable key, path, process, line, and rule, but never a value, raw input, or decode error containing one. Invalid-key diagnostics use location only, and YAML errors are sanitized when environment content could leak. Preserve the protocol prohibition on an `env` response key. Child output remains unredacted; existing readiness output is discarded by the runner, so add no capture or redaction. User argv and readiness argv may contain text; no whole-output secret scrub is promised.
+Privacy:
+- Hum-generated responses, snapshots, JSON/MCP/status/drift output never enumerate environment names or values.
+- Diagnostics may identify a valid variable key, path, process, line, and rule, but never a value, raw input, or decode error containing one.
+- Invalid-key diagnostics use location only, and YAML errors are sanitized when environment content could leak.
+- Preserve the protocol prohibition on an `env` response key.
+- Child output remains unredacted; readiness probe output is already bounded to one terminal diagnostic, which is Hum-generated output and must not include values, so add no new capture or redaction.
+- User argv and readiness argv may contain text; no whole-output secret scrub is promised.
 
-Implement one shared `internal/project/environment.go` composer for CLI and MCP. Thread the private sensitive specification and prepared per-target environments through CLI `manifestState` and the schedulers in `internal/cli/commands.go`, and MCP `Resolution`/`ensureDefinition`; reuse existing `Env` requests, process, daemon, and protocol behavior. Update the schema, example, README, design, and coding-agent docs. Keep the existing modified-file list exactly. Non-goals are CLI override flags, optional file APIs, per-process files, overlays, implicit discovery, shell/profile activation, dotenvx/direnv feature parity, hot reload, daemon-side loading, environment drift, secret redaction, and changed process identity/discovery.
+Implementation:
+- Implement one shared `internal/project/environment.go` composer for CLI and MCP.
+- Thread the private sensitive specification and prepared per-target environments through CLI `manifestState` and the schedulers in `internal/cli/commands.go`, and MCP `Resolution`/`ensureDefinition`; reuse existing `Env` requests, process, daemon, and protocol behavior.
+- Update the schema, example, README, design, and coding-agent docs.
+- Keep the existing modified-file list exactly.
+- Non-goals are CLI override flags, optional file APIs, per-process files, overlays, implicit discovery, shell/profile activation, dotenvx/direnv feature parity, hot reload, daemon-side loading, environment drift, secret redaction, and changed process identity/discovery.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
