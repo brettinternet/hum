@@ -2,6 +2,26 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.11.0](https://github.com/brettinternet/hum/compare/v0.10.1...v0.11.0) - 2026-09-12
+
+### Added
+
+- Keep hum up summaries compact
+- **mcp:** Add manifest selection
+- Select alternate project manifests
+- **cli:** Compact list output
+
+### Fixed
+
+- **cli:** Bound aggregate status
+- Complete alternate manifest verification
+- Expose mise-installed manual
+
+### Documentation
+
+- Explain automatic SchemaStore support
+- Show remote access over SSH
+
 ## [v0.10.1](https://github.com/brettinternet/hum/compare/v0.10.0...v0.10.1) - 2026-09-11
 
 ### Documentation
