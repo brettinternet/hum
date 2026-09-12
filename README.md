@@ -105,7 +105,9 @@ processes:
       match: "Local:"
 ```
 
-`hum up` starts in dependency order and follows output. Ctrl+C detaches; `hum down` stops.
+`hum up` starts in dependency order and follows output. Once startup completes, Ctrl+C detaches
+and `hum down` stops; the daemon owns the processes, so closing the follower never kills them.
+Ctrl+C during startup aborts instead and stops what that `hum up` launched.
 Use `hum up --detach` to wait and return, or `hum up --full` for full readiness details.
 
 For checks that do not emit a reliable startup message, use an executable probe. Exit status 0 marks the process ready. For example, check PostgreSQL inside Docker Compose:

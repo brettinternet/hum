@@ -276,9 +276,14 @@ Human `hum up` has an attached interactive mode and bounded startup progress.
   streams atomic `[NAME]`-prefixed output written from that invocation onward, and keeps following
   after successful startup. It prints `Ctrl+C detaches; hum down stops processes`; detaching never
   signals a managed process.
-- Ctrl+C after successful startup detaches with exit 0. During startup it exits 130 immediately,
-  reports that launched processes remain supervised, and may leave dependency-gated declarations
-  unlaunched; rerun `hum up` to finish convergence.
+- Ctrl+C after successful startup detaches with exit 0 and prints
+  `detached; processes still running (hum down stops them)` so the hint is visible at the moment
+  it matters, not only in the scrolled-away startup line.
+- Ctrl+C during startup aborts this invocation: it exits 130, stops exactly the declarations this
+  `up` launched, leaves declarations it found already running untouched, and reports which names
+  it stopped. Dependency-gated declarations may remain unlaunched; rerun `hum up` to converge.
+- The split mirrors `run`: a command stops what it launched and is still bringing up, and only
+  observes daemon-owned work once startup has completed.
 - `up --detach` keeps the bounded readiness-and-return behavior. `up --no-wait` returns after
   spawn without following. JSON and non-terminal output are also bounded so automation does not
   begin an indefinite follow implicitly.

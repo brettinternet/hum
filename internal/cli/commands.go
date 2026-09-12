@@ -129,7 +129,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:       "ensure manifest processes are running",
 			UsageText:   "hum up [--detach] [--no-wait] [--timeout DURATION] [--full] [--json]",
 			ArgsUsage:   "",
-			Description: "Launch independent roots concurrently, gate dependents on readiness, and continue after failures; --full expands the NAME, RESULT, STATE, and PID summary; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C interrupts startup.\n\nExamples:\n  hum up",
+			Description: "Launch independent roots concurrently, gate dependents on readiness, and continue after failures; --full expands the NAME, RESULT, STATE, and PID summary; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C aborts startup, stopping what it launched.\n\nExamples:\n  hum up",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "wait for readiness and return instead of following process output"},
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn without following output; default waits for readiness"},
@@ -3136,8 +3136,9 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	if ordered && !cmd.Bool("json") && !cmd.Bool("no-wait") && progressWriter != nil {
 		progress = newManifestProgressRendererWithPolicy(progressWriter, len(names), colorPolicyForWriter(progressWriter), manifest.selector)
 	}
+	launched := &upLaunchRecorder{}
 	if ordered {
-		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, timeoutOverride, preserveRecovery, progress)
+		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, timeoutOverride, preserveRecovery, progress, launched)
 		if err == nil {
 			var removed []manifestLaunchResult
 			removed, err = removedManifestResults(ctx, client, manifest)
@@ -3153,10 +3154,8 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		if waitErr := session.wait(); waitErr != nil {
 			return waitErr
 		}
-		if progressWriter != nil {
-			if _, writeErr := fmt.Fprintln(progressWriter, "hum up: startup interrupted; launched processes remain supervised"); writeErr != nil {
-				return writeErr
-			}
+		if err := stopInterruptedUpLaunches(client, manifest, launched, progressWriter); err != nil {
+			return err
 		}
 		return urfavecli.Exit("", 130)
 	}
@@ -3232,7 +3231,72 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	}
 	session := followSession
 	followSession = nil
-	return session.wait()
+	if err := session.wait(); err != nil {
+		return err
+	}
+	if session.interrupted() {
+		if _, err := fmt.Fprintln(statusWriter, "hum up: detached; processes still running (hum down stops them)"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// upLaunchRecorder remembers which declarations this up invocation launched,
+// as opposed to those it found already running, so an interrupted startup can
+// abort exactly its own work.
+type upLaunchRecorder struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (r *upLaunchRecorder) record(result manifestLaunchResult) {
+	if r == nil || result.Outcome != "started" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.names = append(r.names, result.Name)
+}
+
+func (r *upLaunchRecorder) launched() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	names := append([]string(nil), r.names...)
+	sort.Strings(names)
+	return names
+}
+
+// stopInterruptedUpLaunches treats Ctrl+C during startup as abort: it stops the
+// processes this invocation launched and leaves already-running ones alone,
+// then reports what happened on the progress stream.
+func stopInterruptedUpLaunches(client *daemon.Client, manifest manifestState, launched *upLaunchRecorder, progressWriter io.Writer) error {
+	scope := app.ScopeProject
+	if manifest.selector == "--global" {
+		scope = app.ScopeGlobal
+	}
+	names := launched.launched()
+	var failed []string
+	for _, name := range names {
+		if err := client.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: scope, Cwd: manifest.root}); err != nil && !isNotFound(err) && !errors.Is(err, app.ErrNotRunning) {
+			failed = append(failed, name)
+		}
+	}
+	if progressWriter == nil {
+		return nil
+	}
+	message := "hum up: startup interrupted; nothing was launched"
+	if len(names) != 0 {
+		message = "hum up: startup interrupted; stopped " + strings.Join(names, ", ")
+		if len(failed) != 0 {
+			message += "; could not stop " + strings.Join(failed, ", ") + " (hum down stops it)"
+		}
+	}
+	_, err := fmt.Fprintln(progressWriter, message)
+	return err
 }
 
 func manifestHasAfter(definitions []project.Definition) bool {
@@ -3374,11 +3438,12 @@ type manifestUpScheduleOps struct {
 	skipped   func(context.Context, project.Definition, []string) manifestLaunchResult
 }
 
-func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, timeoutOverride time.Duration, preserveRecovery bool, progress *manifestProgressRenderer) ([]manifestLaunchResult, error) {
+func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, timeoutOverride time.Duration, preserveRecovery bool, progress *manifestProgressRenderer, launched *upLaunchRecorder) ([]manifestLaunchResult, error) {
 	ops := manifestUpScheduleOps{
 		start: func(ctx context.Context, definition project.Definition) (manifestLaunchResult, app.Process, time.Time) {
 			observedAt := time.Now()
 			_, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, definition.Name, preserveRecovery)
+			launched.record(result)
 			if result.Outcome == "started" && !process.Start.IsZero() {
 				observedAt = process.Start
 			} else if result.Outcome == "already_running" {

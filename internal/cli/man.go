@@ -173,7 +173,7 @@ func manCommandDescription(command *urfavecli.Command) string {
 	case "start":
 		return "Start named processes from hum.yaml or project discovery. Already-running processes are left alone. Unlike hum up, this command does not start dependencies. It waits for configured readiness checks unless --no-wait is used. Readiness confirms startup only; it does not monitor later health.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 exit before ready."
 	case "up":
-		return "Start every process in hum.yaml. Independent processes start together; dependent processes wait for their prerequisites to become ready. By default Hum follows process output. Use --detach to return after readiness or --no-wait to return after spawning.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 early exit or failed recovery; 130 interrupted startup."
+		return "Start every process in hum.yaml. Independent processes start together; dependent processes wait for their prerequisites to become ready. By default Hum follows process output. Use --detach to return after readiness or --no-wait to return after spawning.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 early exit or failed recovery; 130 interrupted startup (processes launched by this invocation are stopped)."
 	case "logs":
 		return "Read retained output for one or more processes. Filters and limits apply separately to each process. Use --follow for new output; Ctrl+C stops following without stopping the process."
 	case "wait":

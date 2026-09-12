@@ -164,7 +164,7 @@ func TestRestartReadinessDocs(t *testing.T) {
 func TestHelpExitCodes(t *testing.T) {
 	exitContracts := map[string]string{
 		"start":   "Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.",
-		"up":      "Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C interrupts startup.",
+		"up":      "Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C aborts startup, stopping what it launched.",
 		"wait":    "Exit codes: 0 for a match or unfiltered exit; exit 1 for a request or usage error; exit 2 for timeout; exit 3 when process exit precedes --match.",
 		"restart": "Exit codes: 0 success; exit 1 for request or validation error; exit 2 for readiness timeout; exit 3 for exited before readiness.",
 	}

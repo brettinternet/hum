@@ -1767,39 +1767,48 @@ processes:
 		_, _, _ = stopShutdownRun(t, "stop", "app")
 	})
 
+	registered := make(chan chan<- os.Signal, 1)
+	previousNotify := notifyUpFollowSignals
+	notifyUpFollowSignals = func(signals chan<- os.Signal) { registered <- signals }
+	t.Cleanup(func() { notifyUpFollowSignals = previousNotify })
+
 	tty := renderTestTTY(t)
 	var stdout manifestTTYProgressCapture
 	stdout.fd = tty.Fd()
 	var stderr manifestProgressCapture
-	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- NewRootCommand("test", "test", &stdout, &stderr).Run(ctx, []string{"hum", "up"})
+		done <- NewRootCommand("test", "test", &stdout, &stderr).Run(context.Background(), []string{"hum", "up"})
 	}()
 	if !stdout.waitFor(processLogPrefix(colorPolicy{enabled: true}, "app")+" before-ready\n", 3*time.Second) {
-		cancel()
 		t.Fatalf("attached up did not stream startup output: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 	if err := os.WriteFile(gate, []byte("ready\n"), 0o600); err != nil {
-		cancel()
 		t.Fatal(err)
 	}
 	if !stderr.waitFor("hum up: startup complete; following logs", 3*time.Second) {
-		cancel()
 		t.Fatalf("attached up did not enter follow mode: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 	if !stdout.waitFor(processLogPrefix(colorPolicy{enabled: true}, "app")+" after-ready\n", 3*time.Second) {
-		cancel()
 		t.Fatalf("attached up did not continue after readiness: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
-	cancel()
+	var signals chan<- os.Signal
+	select {
+	case signals = <-registered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("attached up did not register its interrupt handler")
+	}
+	signals <- os.Interrupt
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("detached attached up: %v", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("attached up did not detach after cancellation")
+		t.Fatal("attached up did not detach after Ctrl+C")
+	}
+	if !strings.Contains(stderr.String(), "hum up: detached; processes still running (hum down stops them)") {
+		t.Fatalf("detached attached up stderr = %q, want detach notice", stderr.String())
 	}
 	processes := stopShutdownListActive(t, server, root)
 	if len(processes) != 1 || processes[0].Name != "app" || !app.IsActiveState(processes[0].State) {
@@ -1826,10 +1835,16 @@ processes:
   app:
     argv: [/bin/sh, -c, "printf 'before-ready\\n'; sleep 30"]
     ready: {match: never-ready, timeout: 30s}
+  held:
+    argv: [/bin/sh, -c, "sleep 30"]
 `)
 	t.Cleanup(func() {
 		_, _, _ = stopShutdownRun(t, "stop", "app")
+		_, _, _ = stopShutdownRun(t, "stop", "held")
 	})
+	if _, stderr, err := stopShutdownRun(t, "start", "held"); err != nil {
+		t.Fatalf("pre-start held: %v; stderr=%q", err, stderr)
+	}
 
 	registered := make(chan chan<- os.Signal, 1)
 	previousNotify := notifyUpFollowSignals
@@ -1862,12 +1877,15 @@ processes:
 	case <-time.After(3 * time.Second):
 		t.Fatal("interrupted attached up did not return")
 	}
-	if !strings.Contains(stderr.String(), "startup interrupted; launched processes remain supervised") {
+	if !strings.Contains(stderr.String(), "hum up: startup interrupted; stopped app\n") {
 		t.Fatalf("interrupted attached up stderr = %q", stderr.String())
 	}
-	processes := stopShutdownListActive(t, server, root)
-	if len(processes) != 1 || processes[0].Name != "app" || !app.IsActiveState(processes[0].State) {
-		t.Fatalf("processes after startup interrupt = %#v, want app still active", processes)
+	active := map[string]bool{}
+	for _, process := range stopShutdownListActive(t, server, root) {
+		active[process.Name] = app.IsActiveState(process.State)
+	}
+	if active["app"] || !active["held"] {
+		t.Fatalf("active after startup interrupt = %v, want app stopped and held still active", active)
 	}
 }
 
