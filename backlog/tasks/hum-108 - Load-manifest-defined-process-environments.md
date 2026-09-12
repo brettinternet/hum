@@ -1,10 +1,10 @@
 ---
 id: HUM-108
 title: Load manifest-defined process environments
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-12 07:21'
-updated_date: '2026-09-12 15:38'
+updated_date: '2026-09-12 16:25'
 labels: []
 dependencies: []
 modified_files:
@@ -127,36 +127,46 @@ Implementation:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `mise exec go -- go test ./internal/project -run '^TestManifestEnvironmentContract$|^TestEnvironmentFileContract$|^TestEnvironmentCompositionContract$' -count=1 -v` exits 0 with RUN and PASS for all three exact tests. The corpus covers schema/YAML types, required inherit/files/env shapes, duplicate/unknown keys, NUL parity, defaults, per-target byte-identical no-op behavior including opaque inherited names and duplicates, layer precedence and null/unset, every specified file syntax and expansion rejection, path containment cases, canonical read-once behavior, and all bounds. Diagnostics include path and line when applicable, omit values, and do not invent lines for count/total limits.
-- [ ] #2 AC2 — `mise exec go -- go test ./internal/cli -run '^TestManifestEnvironmentPreflightContract$' -count=1 -v` exits 0 with RUN and PASS. Using the existing harness or small local seams, it proves command and mixed-batch behavior, `up` dependency closure, one inherited snapshot, one canonical read per unique file, raw and encoded bounds, zero client creation/contact/mutation on failure, environment-configuration and preflight diagnostics that omit values while allowing valid-key/location context, read-only behavior even when files are missing, required-file validation for preserved running records, empty/ad hoc/discovery compatibility, retained environment reuse, and existing argv/name-conflict and recovery semantics. Child output, captured probe text, user argv, and existing runtime errors are outside the no-value assertion.
-- [ ] #3 AC3 — `mise exec go -- go test ./internal/mcp -run '^TestMCPManifestEnvironmentContract$' -count=1 -v` exits 0 with RUN and PASS. It proves the MCP baseline is captured once from `Options.Environment` or `os.Environ`, per-process composition and `inherit: false`, concurrent requests do not mutate global environment, selected project-root/manifest resolution, retained semantics, missing-file read-only behavior, zero client contact for malformed or oversized input, and response metadata never serializes the environment map or enumerates configured environment names and values. Environment parsing, composition, and preflight diagnostics may name a valid key and location but never a value; captured probe text, child output, user argv, and existing runtime errors are untrusted user-derived text outside that guarantee, including when embedded in responses.
-- [ ] #4 AC4 — `mise exec go -- go test ./integration -run '^TestManifestEnvironmentLifecycle$' -count=1 -v` exits 0 and prints `--- PASS: TestManifestEnvironmentLifecycle`. A real daemon proves process and readiness parity, stale-variable override, inheritance isolation, separate worktrees, nested alternate-manifest paths, explicit restart reload including clearing retained environment, unchanged ad hoc saved environments, `up` preservation, targeted-start recovery behavior, automatic relaunch reuse after files change or disappear, and zero launches after a failing multi-target preflight. A failing `ready.exec` that prints a `NONSECRET` environment sentinel to stderr leaves that sentinel in the retained bounded failed-probe diagnostic and absent from the normal supervised child log store.
-- [ ] #5 AC5 — `task cli:check && task test` exits 0. Schema, example, README, design, and coding-agent docs describe the API, no-op/default and inherit caveat, grammar, ordinary whitespace and full-line/comment examples, expansion and external-loader limits, required-file/path rules, precedence, bounds, encoded-request limit, command/state/MCP/worktree behavior, retained snapshot lifecycle, the environment-configuration diagnostic boundary, and the unredacted child/probe-output boundary, including advice not to print secrets from process or probe commands. The design document removes environment values/files from its unsupported non-goals.
+- [x] #1 AC1 — `mise exec go -- go test ./internal/project -run '^TestManifestEnvironmentContract$|^TestEnvironmentFileContract$|^TestEnvironmentCompositionContract$' -count=1 -v` exits 0 with RUN and PASS for all three exact tests. The corpus covers schema/YAML types, required inherit/files/env shapes, duplicate/unknown keys, NUL parity, defaults, per-target byte-identical no-op behavior including opaque inherited names and duplicates, layer precedence and null/unset, every specified file syntax and expansion rejection, path containment cases, canonical read-once behavior, and all bounds. Diagnostics include path and line when applicable, omit values, and do not invent lines for count/total limits.
+- [x] #2 AC2 — `mise exec go -- go test ./internal/cli -run '^TestManifestEnvironmentPreflightContract$' -count=1 -v` exits 0 with RUN and PASS. Using the existing harness or small local seams, it proves command and mixed-batch behavior, `up` dependency closure, one inherited snapshot, one canonical read per unique file, raw and encoded bounds, zero client creation/contact/mutation on failure, environment-configuration and preflight diagnostics that omit values while allowing valid-key/location context, read-only behavior even when files are missing, required-file validation for preserved running records, empty/ad hoc/discovery compatibility, retained environment reuse, and existing argv/name-conflict and recovery semantics. Child output, captured probe text, user argv, and existing runtime errors are outside the no-value assertion.
+- [x] #3 AC3 — `mise exec go -- go test ./internal/mcp -run '^TestMCPManifestEnvironmentContract$' -count=1 -v` exits 0 with RUN and PASS. It proves the MCP baseline is captured once from `Options.Environment` or `os.Environ`, per-process composition and `inherit: false`, concurrent requests do not mutate global environment, selected project-root/manifest resolution, retained semantics, missing-file read-only behavior, zero client contact for malformed or oversized input, and response metadata never serializes the environment map or enumerates configured environment names and values. Environment parsing, composition, and preflight diagnostics may name a valid key and location but never a value; captured probe text, child output, user argv, and existing runtime errors are untrusted user-derived text outside that guarantee, including when embedded in responses.
+- [x] #4 AC4 — `mise exec go -- go test ./integration -run '^TestManifestEnvironmentLifecycle$' -count=1 -v` exits 0 and prints `--- PASS: TestManifestEnvironmentLifecycle`. A real daemon proves process and readiness parity, stale-variable override, inheritance isolation, separate worktrees, nested alternate-manifest paths, explicit restart reload including clearing retained environment, unchanged ad hoc saved environments, `up` preservation, targeted-start recovery behavior, automatic relaunch reuse after files change or disappear, and zero launches after a failing multi-target preflight. A failing `ready.exec` that prints a `NONSECRET` environment sentinel to stderr leaves that sentinel in the retained bounded failed-probe diagnostic and absent from the normal supervised child log store.
+- [x] #5 AC5 — `task cli:check && task test` exits 0. Schema, example, README, design, and coding-agent docs describe the API, no-op/default and inherit caveat, grammar, ordinary whitespace and full-line/comment examples, expansion and external-loader limits, required-file/path rules, precedence, bounds, encoded-request limit, command/state/MCP/worktree behavior, retained snapshot lifecycle, the environment-configuration diagnostic boundary, and the unredacted child/probe-output boundary, including advice not to print secrets from process or probe commands. The design document removes environment values/files from its unsupported non-goals.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
 - [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-- [ ] Extend the strict manifest parser and schema for boolean `environment.inherit`, nonempty relative `environment.files`, and process `env` mappings, preserving per-target no-op byte-for-byte behavior and private sensitive specifications. No dependencies are required; HUM-103 and HUM-104 are done and HUM-105 is unrelated.
-- [ ] Implement the shared environment-file parser, containment resolver, bounded canonical read, layer composer, and diagnostics in `internal/project`; keep the existing protocol encoded-size check in the CLI/MCP adapters using `protocol.MarshalLine` and `DefaultMaxLineBytes`.
-- [ ] Add CLI preflight for start/up/declared run/restart, including dependency closure, required-file validation before preserved-running classification, retained/recovery rules, one baseline snapshot, zero-contact failure behavior, and unchanged argv/name-conflict and runtime partial-success behavior; keep both schedulers in `internal/cli/commands.go`.
-- [ ] Add the equivalent MCP preflight using the configured server baseline and selected `project_root`/manifest inputs, without global environment mutation or cross-request caching.
-- [ ] Thread prepared environments through existing `Env` requests and preserve existing process, daemon, protocol, readiness, automatic-restart, and ad hoc behavior.
-- [ ] Add the named contract and lifecycle tests, update schema/example/README/design/coding-agent documentation, run all five acceptance commands, and record evidence without claiming implementation before those tests pass.
+- [x] Extend the strict manifest parser and schema for boolean `environment.inherit`, nonempty relative `environment.files`, and process `env` mappings, preserving per-target no-op byte-for-byte behavior and private sensitive specifications. No dependencies are required; HUM-103 and HUM-104 are done and HUM-105 is unrelated.
+- [x] Implement the shared environment-file parser, containment resolver, bounded canonical read, layer composer, and diagnostics in `internal/project`; keep the existing protocol encoded-size check in the CLI/MCP adapters using `protocol.MarshalLine` and `DefaultMaxLineBytes`.
+- [x] Add CLI preflight for start/up/declared run/restart, including dependency closure, required-file validation before preserved-running classification, retained/recovery rules, one baseline snapshot, zero-contact failure behavior, and unchanged argv/name-conflict and runtime partial-success behavior; keep both schedulers in `internal/cli/commands.go`.
+- [x] Add the equivalent MCP preflight using the configured server baseline and selected `project_root`/manifest inputs, without global environment mutation or cross-request caching.
+- [x] Thread prepared environments through existing `Env` requests and preserve existing process, daemon, protocol, readiness, automatic-restart, and ad hoc behavior.
+- [x] Add the named contract and lifecycle tests, update schema/example/README/design/coding-agent documentation, run all five acceptance commands, and record evidence without claiming implementation before those tests pass.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Review findings, not HUM-108 completion evidence. Existing executor behavior already resolves a supplied `PATH`, absolute and `./` relative executables do not require it, and the current process/app/CLI/MCP behavior preserves exact environments and recovery launch state. Baseline check passed: `mise exec go -- go test ./internal/process ./internal/app ./internal/cli ./internal/mcp -run '^(TestStartResolvesExecutableFromSuppliedPath|TestStartDoesNotSearchDaemonPathForNilEnv|TestStartUsesExactDirectoryAndEnvironment|TestEmptyEnvironmentPassedToChild|TestRestartPreservesLaunchAndOutputState|TestUpPreservesCrashRecovery)$' -count=1` passed all four packages. The revised grammar corrects the earlier draft's treatment of inline comments as value text and its overclaim of interpolation compatibility: it accepts common assignment whitespace and full-line comments, while rejecting unsupported expansion. See [dotenvx env-file documentation](https://dotenvx.com/docs/env-file/) as review evidence. No dependencies are required; HUM-103 and HUM-104 are done and HUM-105 is unrelated.
+
+Implementation commit 42214ca (`feat: load manifest process environments`).
+AC#1 — `mise exec go -- go test ./internal/project -run "^TestManifestEnvironmentContract$|^TestEnvironmentFileContract$|^TestEnvironmentCompositionContract$" -count=1 -v` passed all three exact tests and their contract corpus.
+AC#2 — `mise exec go -- go test ./internal/cli -run "^TestManifestEnvironmentPreflightContract$" -count=1 -v` passed.
+AC#3 — `mise exec go -- go test ./internal/mcp -run "^TestMCPManifestEnvironmentContract$" -count=1 -v` passed.
+AC#4 — `mise exec go -- go test ./integration -run "^TestManifestEnvironmentLifecycle$" -count=1 -v` passed with `--- PASS: TestManifestEnvironmentLifecycle`.
+AC#5 — `task cli:check && task test` passed.
+Local final gate — `task ci` passed on commit 42214ca, including security, checks, tests, race tests, and smoke tests.
+Review — parent review found and fixed null-unset precedence, declared restart reload, one-baseline capture, no-op size compatibility, canonical snapshot reuse, and exact encoded-request sizing. No remaining concrete findings. The independent subagent review/verifier workflow exhausted its configured token budget after implementation; remote GitHub CI is the pending independent final verification.
+Modified-file contract — implementation commit 42214ca touches 18 paths, all contained in the task modified-file list. No tests were deleted, skipped, or weakened; no protected gate file changed.
 <!-- SECTION:NOTES:END -->
