@@ -128,7 +128,7 @@ func runZeroConfigCase(t *testing.T, hum, fixture string, testCase zeroConfigCas
 
 	// Project-aware list is an inspection path. It must resolve the one
 	// candidate without executing its body or starting a daemon.
-	initialHuman := testutil.Run(t, hum, projectRoot, env, "list")
+	initialHuman := testutil.Run(t, hum, projectRoot, env, "list", "--full")
 	zeroConfigAssertSuccess(t, initialHuman, "initial project-aware list")
 	zeroConfigAssertHumanMetadata(t, initialHuman.Stdout, "stopped", testCase.source, testCase.argv, false)
 	zeroConfigAssertNoCandidateExecution(t, launchLog, bodyMarker)
@@ -179,7 +179,7 @@ func runZeroConfigCase(t *testing.T, hum, fixture string, testCase zeroConfigCas
 	if listed.PID != runningBefore.PID || listed.LaunchCursor != runningBefore.LaunchCursor {
 		t.Fatalf("idempotent commands replaced process: before=%#v after=%#v", runningBefore, listed)
 	}
-	postHuman := testutil.Run(t, hum, projectRoot, env, "list")
+	postHuman := testutil.Run(t, hum, projectRoot, env, "list", "--full")
 	zeroConfigAssertSuccess(t, postHuman, "post-idempotence human list")
 	zeroConfigAssertHumanMetadata(t, postHuman.Stdout, "running", testCase.source, testCase.argv, true)
 
@@ -213,7 +213,7 @@ func runZeroConfigCase(t *testing.T, hum, fixture string, testCase zeroConfigCas
 	if finalProcess.RestartCount < 1 {
 		t.Fatalf("final list restart_count = %d, want at least one restart", finalProcess.RestartCount)
 	}
-	finalHuman := testutil.Run(t, hum, projectRoot, env, "list")
+	finalHuman := testutil.Run(t, hum, projectRoot, env, "list", "--full")
 	zeroConfigAssertSuccess(t, finalHuman, "final human list")
 	zeroConfigAssertHumanMetadata(t, finalHuman.Stdout, "running", testCase.source, testCase.argv, true)
 }

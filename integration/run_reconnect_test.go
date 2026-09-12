@@ -370,7 +370,7 @@ func TestDetachedRun(t *testing.T) {
 		testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
 		managed := runitListProcess(t, scenario, name)
 		runitAssertListedProcess(t, managed, summary, scenario.cwd, fixtureArgs)
-		humanList := testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, "list")
+		humanList := testutil.Run(t, scenario.hum, scenario.cwd, scenario.env, "list", "--full")
 		if humanList.Code != 0 || !strings.Contains(humanList.Stdout, name) || !strings.Contains(humanList.Stdout, strconv.Itoa(summary.PID)) || !strings.Contains(humanList.Stdout, scenario.fixture) {
 			t.Fatalf("human list = code %d stdout=%q stderr=%q, want name/PID/argv", humanList.Code, humanList.Stdout, humanList.Stderr)
 		}
