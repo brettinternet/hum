@@ -2,6 +2,21 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.12.2](https://github.com/brettinternet/hum/compare/v0.12.1...v0.12.2) - 2026-09-12
+
+### Added
+
+- **up:** Abort own launches on startup Ctrl+C, announce detach
+
+### Fixed
+
+- **up:** Make interrupted startup cleanup reliable
+
+### Documentation
+
+- Make readme more scannable
+- Clarify manifest environments
+
 ## [v0.12.1](https://github.com/brettinternet/hum/compare/v0.12.0...v0.12.1) - 2026-09-12
 
 ### Fixed
