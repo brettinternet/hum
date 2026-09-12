@@ -84,6 +84,34 @@ Cursor and other clients that accept an `mcpServers` configuration:
 }
 ```
 
+### Connect to Hum over SSH
+
+SSH can carry Hum's CLI output or MCP stdio stream without adding remote transport to Hum:
+
+```sh
+ssh devbox hum --project /srv/app logs web --stream stderr --tail 100
+```
+
+For an MCP client, run Hum on the remote host through SSH:
+
+```json
+{
+  "mcpServers": {
+    "hum-remote": {
+      "command": "ssh",
+      "args": [
+        "-T",
+        "-o", "BatchMode=yes",
+        "devbox",
+        "/usr/local/bin/hum", "mcp"
+      ]
+    }
+  }
+}
+```
+
+SSH authentication and host-key verification must already work without prompts. Tool calls use paths on the remote host, so pass a remote absolute `project_root` such as `/srv/app`.
+
 Tool calls accept `scope`: omit it for project scope and provide the absolute `project_root`; use `scope: "global"` without `project_root` for retained global sessions. `up` supports project scope only. Use `list` with `all: true` only from project scope; it includes global records.
 
 Each tool rejects fields outside its advertised closed input schema before project resolution or daemon contact. Aggregate `up` and `down` do not accept `name`.
