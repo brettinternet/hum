@@ -1321,7 +1321,7 @@ processes:
 	}
 }
 
-func TestUpHumanProgress(t *testing.T) {
+func TestUpFailureAndReadinessProgress(t *testing.T) {
 	if runCLIIsolatedTest(t) {
 		return
 	}
@@ -1588,6 +1588,59 @@ processes:
 		}
 		if fields[0] != wantNames[index] {
 			t.Fatalf("final human result order = %q, want %q at %d", stdout.String(), wantNames[index], index)
+		}
+	}
+}
+
+func TestUpSummaryOutputModes(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  match:
+    argv: [/bin/sh, -c, "printf service-ready-with-an-intentionally-long-matcher; sleep 30"]
+    ready: {match: "service-ready-with-an-intentionally-long-matcher", timeout: 2s}
+  exec:
+    argv: [/bin/sh, -c, "sleep 30"]
+    ready:
+      exec: [/bin/sh, -c, "exit 0", "probe-with-an-intentionally-long-argument"]
+      interval: 250ms
+      timeout: 2s
+`)
+	t.Cleanup(func() {
+		for _, name := range []string{"exec", "match"} {
+			_, _, _ = stopShutdownRun(t, "stop", name)
+		}
+		_, _, _ = stopShutdownRun(t, "shutdown", "--stop-processes")
+	})
+
+	compact, compactDiagnostics, err := stopShutdownRun(t, "up", "--detach")
+	if err != nil {
+		t.Fatalf("compact up: %v (stdout=%q stderr=%q)", err, compact, compactDiagnostics)
+	}
+	lines := stopShutdownNonEmptyLines(compact)
+	if len(lines) != 3 || !reflect.DeepEqual(strings.Fields(lines[0]), []string{"NAME", "RESULT", "STATE", "PID"}) {
+		t.Fatalf("compact up table = %q, want fixed four-column header and two rows", compact)
+	}
+	for _, hidden := range []string{"READINESS", "service-ready-with-an-intentionally-long-matcher", "probe-with-an-intentionally-long-argument", "interval=250ms"} {
+		if strings.Contains(compact, hidden) {
+			t.Errorf("compact up table contains readiness detail %q: %q", hidden, compact)
+		}
+	}
+	for _, diagnostic := range []string{"hum up: exec: ready", "hum up: match: ready"} {
+		if !strings.Contains(compactDiagnostics, diagnostic) {
+			t.Errorf("compact up diagnostics missing %q: %q", diagnostic, compactDiagnostics)
+		}
+	}
+
+	full, fullDiagnostics, err := stopShutdownRun(t, "up", "--detach", "--full")
+	if err != nil {
+		t.Fatalf("full up: %v (stdout=%q stderr=%q)", err, full, fullDiagnostics)
+	}
+	for _, detail := range []string{"READINESS", "method=exec", "probe-with-an-intentionally-long-argument", "interval=250ms", "match=service-ready-with-an-intentionally-long-matcher"} {
+		if !strings.Contains(full, detail) {
+			t.Errorf("full up table missing readiness detail %q: %q", detail, full)
 		}
 	}
 }

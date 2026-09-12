@@ -564,6 +564,8 @@ func TestLifecycleHelp(t *testing.T) {
 				"continue after failures",
 				"--no-wait",
 				"--timeout",
+				"--full",
+				"name, result, state, and pid",
 				"--json",
 				"docs/design.md",
 			},

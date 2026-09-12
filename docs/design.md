@@ -283,10 +283,11 @@ Human `hum up` has an attached interactive mode and bounded startup progress.
 - Attached mode exits with the normal nonzero result instead of continuing to follow when initial
   startup fails, exits before readiness, times out, or cannot reach a running state. Successfully
   launched children remain supervised.
-- Readiness progress writes newline-terminated startup transitions to stderr. The final stdout
-  summary is a compact `NAME`, `RESULT`, `STATE`, and `PID` table in lexical declaration order;
-  readiness match/cursor and exec method/argv/interval details are available in JSON and, when
-  configured, human output; terminal exec diagnostics are bounded and probe output is not retained.
+- Readiness progress and actionable failure or definition-drift diagnostics write newline-terminated
+  startup transitions to stderr. The default final stdout summary is a fixed `NAME`, `RESULT`,
+  `STATE`, and `PID` table in lexical declaration order. `up --full` adds complete readiness
+  matcher or exec method/argv/interval details; JSON remains complete. Terminal exec diagnostics
+  are bounded and probe output is not retained.
 - Progress follows temporal transition completion rather than lexical declaration order, is
   serialized as complete lines, and uses at most two lines per declaration: one
   launch, observation, error, or dependency-blocked line and, only for a declaration that

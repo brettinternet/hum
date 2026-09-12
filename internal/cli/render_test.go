@@ -11,6 +11,7 @@ import (
 	"github.com/creack/pty"
 	"hum/internal/app"
 	"hum/internal/output"
+	"hum/internal/project"
 )
 
 func unsetRenderTestEnv(t *testing.T, key string) {
@@ -280,7 +281,7 @@ func TestAggregateLogPrefixColor(t *testing.T) {
 	}
 }
 
-func TestManifestLaunchTable(t *testing.T) {
+func TestUpSummaryOutputTable(t *testing.T) {
 	t.Parallel()
 	pid := 42
 	launchCursor, readyCursor := uint64(3), uint64(5)
@@ -288,13 +289,15 @@ func TestManifestLaunchTable(t *testing.T) {
 		{
 			Name: "api", Outcome: "started", State: string(app.StateRunning), PID: &pid,
 			LaunchCursor: &launchCursor, Readiness: app.ReadinessReady,
-			ReadinessMatch: "Listening on a very long address", ReadinessConfigured: true, ReadyCursor: &readyCursor,
+			ReadinessMatch: "Listening on a very long address", ReadinessConfigured: true,
+			ReadinessMethod: "exec", ReadinessArgv: []string{"probe", "--service", "long-service-name"},
+			ReadinessInterval: 250 * time.Millisecond, ReadinessDiagnostic: "connection refused", ReadyCursor: &readyCursor,
 		},
 		{Name: "web", Outcome: "timed_out", State: string(app.StateRunning), PID: &pid},
 		{Name: "worker", Outcome: "exited_before_ready", State: string(app.StateExited), PID: &pid},
 	}
 	var output bytes.Buffer
-	if err := renderManifestLaunchTableWithPolicy(&output, results, colorPolicy{}); err != nil {
+	if err := renderManifestLaunchTableWithPolicy(&output, results, false, colorPolicy{}); err != nil {
 		t.Fatal(err)
 	}
 	want := "NAME    RESULT               STATE    PID\n" +
@@ -302,21 +305,61 @@ func TestManifestLaunchTable(t *testing.T) {
 		"web     timed out            running  42\n" +
 		"worker  exited before ready  exited   42\n"
 	if output.String() != want {
-		t.Fatalf("manifest launch table = %q, want %q", output.String(), want)
+		t.Fatalf("compact manifest launch table = %q, want %q", output.String(), want)
 	}
-	for _, hidden := range []string{"launch_cursor", "ready_cursor", "readiness_match", "Listening"} {
+	for _, hidden := range []string{"READINESS", "launch_cursor", "ready_cursor", "Listening", "probe", "250ms", "connection refused"} {
 		if strings.Contains(output.String(), hidden) {
-			t.Errorf("manifest launch table contains diagnostic detail %q: %q", hidden, output.String())
+			t.Errorf("compact manifest launch table contains readiness detail %q: %q", hidden, output.String())
 		}
 	}
 
 	output.Reset()
-	if err := renderManifestLaunchTableWithPolicy(&output, results, colorPolicy{enabled: true}); err != nil {
+	if err := renderManifestLaunchTableWithPolicy(&output, results, true, colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, detail := range []string{"READINESS", "method=exec", "argv=probe --service long-service-name", "interval=250ms", "diagnostic=connection refused"} {
+		if !strings.Contains(output.String(), detail) {
+			t.Errorf("full manifest launch table missing %q: %q", detail, output.String())
+		}
+	}
+
+	output.Reset()
+	if err := renderManifestLaunchTableWithPolicy(&output, results, false, colorPolicy{enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{ansiBoldString("NAME"), ansiBoldString("RESULT"), ansiGreenString("started"), ansiRedString("timed out"), ansiGreenString("running"), ansiDimString("exited")} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("colored manifest launch table missing %q: %q", want, output.String())
+		}
+	}
+}
+
+func TestUpSummaryOutputFullPreservesEmptyMatcher(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	if err := renderManifestLaunchTableWithPolicy(&output, []manifestLaunchResult{{
+		Name: "matcher", Outcome: "started", ReadinessConfigured: true,
+	}}, true, colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "READINESS") || !strings.Contains(output.String(), "match=") {
+		t.Fatalf("full manifest launch table omitted configured empty matcher: %q", output.String())
+	}
+}
+
+func TestUpReadinessFailureDiagnostics(t *testing.T) {
+	t.Parallel()
+	result := manifestLaunchResult{
+		Name: "api", Outcome: "timed_out", ReadinessDiagnostic: "probe failed\nconnection refused",
+	}
+	for _, line := range []string{manifestProgressInitialLine(project.Definition{}, result), manifestProgressTerminalLine(result)} {
+		for _, want := range []string{"readiness timed out", "readiness diagnostic: probe failed connection refused", "inspect retained logs: hum logs api"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("readiness failure line missing %q: %q", want, line)
+			}
+		}
+		if strings.ContainsRune(line, '\n') {
+			t.Errorf("readiness failure diagnostic was not bounded to one line: %q", line)
 		}
 	}
 }
