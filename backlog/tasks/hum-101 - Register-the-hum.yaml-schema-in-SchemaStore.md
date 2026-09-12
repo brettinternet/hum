@@ -1,16 +1,15 @@
 ---
 id: HUM-101
 title: Register the hum.yaml schema in SchemaStore
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-11 17:38'
-updated_date: '2026-09-11 19:04'
+updated_date: '2026-09-12 01:47'
 labels:
   - docs
   - integration
   - human
-  - waiting
 milestone: m-5
 dependencies:
   - HUM-098
@@ -41,27 +40,35 @@ Non-goals: changing schema content; moving the root schema; versioned schema URL
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `gh pr view PR_NUMBER --repo SchemaStore/schemastore --json state --jq .state` prints `MERGED`.
-- [ ] #2 AC2 — `curl -fsSL https://www.schemastore.org/api/json/catalog.json | python3 -c 'import json,sys; c=json.load(sys.stdin); e=[s for s in c["schemas"] if "hum.yaml" in s.get("fileMatch",[])]; assert len(e)==1 and e[0]["url"]=="https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json"'` exits 0.
-- [ ] #3 AC3 — `rg -n 'SchemaStore' README.md docs/design.md` exits 0 and the matched documentation states the inline schema directive is optional for SchemaStore-aware editors and remains supported.
+- [x] #1 AC1 — `gh pr view PR_NUMBER --repo SchemaStore/schemastore --json state --jq .state` prints `MERGED`.
+- [x] #2 AC2 — `curl -fsSL https://www.schemastore.org/api/json/catalog.json | python3 -c 'import json,sys; c=json.load(sys.stdin); e=[s for s in c["schemas"] if "hum.yaml" in s.get("fileMatch",[])]; assert len(e)==1 and e[0]["url"]=="https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json"'` exits 0.
+- [x] #3 AC3 — `rg -n 'SchemaStore' README.md docs/design.md` exits 0 and the matched documentation states the inline schema directive is optional for SchemaStore-aware editors and remains supported.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Claimed with worklease. Implementation will prepare the SchemaStore contribution and complete repository documentation after the external catalog entry is merged.
+SchemaStore PR `SchemaStore/schemastore#6344` merged and the production catalog now serves the `hum` entry. Repository documentation landed in commit `f164560`.
 
-SchemaStore PR `SchemaStore/schemastore#6344` is open; external contribution checks `bun cli.js check` and `bun cli.js coverage` passed. Repository docs are prepared on branch `agent/HUM-101-schemastore`. Because SchemaStore rejects positive/negative test directories unless a matching schema is hosted in its repository, and its documented external-schema workflow requires only the catalog entry, the submitted external-schema PR intentionally has no test documents. Next, wait for upstream merge and production catalog propagation, then run HUM-101 acceptance checks, independent verification, merge the docs to main, and clean up.
+AC#1 evidence — `gh pr view 6344 --repo SchemaStore/schemastore --json state --jq .state` printed `MERGED`.
+AC#2 evidence — the acceptance command against `https://www.schemastore.org/api/json/catalog.json` exited 0, confirming exactly one `hum.yaml` match with URL `https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json`.
+AC#3 evidence — `rg -n 'SchemaStore' README.md docs/design.md` exited 0; both passages state that the inline directive is optional for SchemaStore-aware editors and remains supported.
 
-This task is waiting for upstream merge and production catalog propagation: https://github.com/SchemaStore/schemastore/pull/6344
+Delivery evidence — `task ci` passed on commit `f164560`. Independent verifier run `a1341888-83e9-4342-aafa-31a687b45fbf` returned PASS for AC1, AC2, and AC3 and confirmed the implementation commit touches only README.md and docs/design.md, with no tests or protected gate files changed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SchemaStore/schemastore#6344 merged, the production catalog serves the Hum schema for `hum.yaml`, and README.md plus docs/design.md document automatic SchemaStore support while retaining the inline directive.
+<!-- SECTION:FINAL_SUMMARY:END -->
