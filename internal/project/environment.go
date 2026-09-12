@@ -276,19 +276,26 @@ func (p *PreparedEnvironment) compose(spec *EnvironmentSpec) ([]string, error) {
 		return append([]string(nil), p.baseline...), nil
 	}
 	if !spec.Inherit {
-		pmap := map[string]string{}
-		return p.composeMap(pmap, spec)
+		return p.composeMap(map[string]string{}, nil, spec)
 	}
 	values := map[string]string{}
-	for _, entry := range p.baseline {
+	opaque := make([]positionedEnvironmentEntry, 0)
+	for index, entry := range p.baseline {
 		if key, value, ok := splitEnvEntry(entry); ok {
 			values[key] = value
+		} else {
+			opaque = append(opaque, positionedEnvironmentEntry{index: index, value: entry})
 		}
 	}
-	return p.composeMap(values, spec)
+	return p.composeMap(values, opaque, spec)
 }
 
-func (p *PreparedEnvironment) composeMap(values map[string]string, spec *EnvironmentSpec) ([]string, error) {
+type positionedEnvironmentEntry struct {
+	index int
+	value string
+}
+
+func (p *PreparedEnvironment) composeMap(values map[string]string, opaque []positionedEnvironmentEntry, spec *EnvironmentSpec) ([]string, error) {
 	for _, filename := range spec.Files {
 		canonical, ok := p.paths[environmentFileRef(spec, filename)]
 		if !ok {
@@ -310,15 +317,34 @@ func (p *PreparedEnvironment) composeMap(values map[string]string, spec *Environ
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	result := make([]string, 0, len(keys))
+	result := make([]string, 0, len(keys)+len(opaque))
 	total := 0
-	for _, key := range keys {
-		entry := key + "=" + values[key]
+	appendEntry := func(entry string) error {
 		total += len(entry) + 1
 		if total > maxEnvironmentBytes {
-			return nil, errors.New("composed environment exceeds the 4 MiB limit")
+			return errors.New("composed environment exceeds the 4 MiB limit")
 		}
 		result = append(result, entry)
+		return nil
+	}
+	keyIndex := 0
+	for _, entry := range opaque {
+		for len(result) < entry.index && keyIndex < len(keys) {
+			key := keys[keyIndex]
+			if err := appendEntry(key + "=" + values[key]); err != nil {
+				return nil, err
+			}
+			keyIndex++
+		}
+		if err := appendEntry(entry.value); err != nil {
+			return nil, err
+		}
+	}
+	for ; keyIndex < len(keys); keyIndex++ {
+		key := keys[keyIndex]
+		if err := appendEntry(key + "=" + values[key]); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }
@@ -338,7 +364,10 @@ func resolveEnvironmentFile(base, root, name string) (string, error) {
 		return "", fmt.Errorf("environment file %q must be a non-empty relative path", name)
 	}
 	lexical := filepath.Clean(filepath.Join(base, name))
-	if lexical == base || !pathWithin(root, lexical) {
+	if lexical == base {
+		return "", fmt.Errorf("environment file %q is not a file", name)
+	}
+	if !pathWithin(root, lexical) {
 		return "", fmt.Errorf("environment file %q escapes the project root", name)
 	}
 	canonicalRoot, rootErr := filepath.EvalSymlinks(root)

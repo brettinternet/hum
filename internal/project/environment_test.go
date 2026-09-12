@@ -1,6 +1,7 @@
 package project
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -81,6 +82,21 @@ func TestEnvironmentFileContract(t *testing.T) {
 			t.Fatalf("assignment bound error = %v", err)
 		}
 	})
+
+	t.Run("self-referential paths are not files", func(t *testing.T) {
+		for _, name := range []string{".", "sub/.."} {
+			root := t.TempDir()
+			manifest := fmt.Sprintf("version: 1\nenvironment:\n  files: [%q]\nprocesses: {}\n", name)
+			mustWriteEnvironmentFile(t, filepath.Join(root, "hum.yaml"), manifest)
+			_, err := LoadDefinitions(root)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("path %q is not a file", name)) {
+				t.Fatalf("path %q error = %v", name, err)
+			}
+			if strings.Contains(err.Error(), "escapes the project root") {
+				t.Fatalf("path %q incorrectly reported an escape: %v", name, err)
+			}
+		}
+	})
 }
 
 func TestEnvironmentCompositionContract(t *testing.T) {
@@ -122,6 +138,24 @@ func TestEnvironmentCompositionContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []string{"A=map", "C=file", "D=", "ODD-NAME=kept", "Z=last"}
+		if !reflect.DeepEqual(got["api"], want) {
+			t.Fatalf("environment=%v want %v", got["api"], want)
+		}
+	})
+
+	t.Run("opaque baseline entries", func(t *testing.T) {
+		baseline := []string{"A=base", "NO_EQUALS", "=empty-key", "Z=base"}
+		spec := &EnvironmentSpec{
+			Inherit: true,
+			Values:  map[string]*string{"A": envString("configured")},
+			BaseDir: root,
+			Root:    root,
+		}
+		got, err := PrepareEnvironments([]Definition{{Name: "api", Environment: spec}}, baseline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"A=configured", "NO_EQUALS", "=empty-key", "Z=base"}
 		if !reflect.DeepEqual(got["api"], want) {
 			t.Fatalf("environment=%v want %v", got["api"], want)
 		}

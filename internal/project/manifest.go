@@ -444,7 +444,10 @@ func parseEnvironment(root, base, filename string, node *yaml.Node) (*Environmen
 					return nil, manifestError(filename, fmt.Sprintf("environment.files[%d]", index), "must be a non-empty relative path")
 				}
 				clean := filepath.Clean(filepath.Join(base, item.Value))
-				if clean == base || !pathWithin(root, clean) {
+				if clean == base {
+					return nil, manifestError(filename, fmt.Sprintf("environment.files[%d]", index), "path %q is not a file", item.Value)
+				}
+				if !pathWithin(root, clean) {
 					return nil, manifestError(filename, fmt.Sprintf("environment.files[%d]", index), "path escapes the project root")
 				}
 				spec.Files = append(spec.Files, item.Value)
