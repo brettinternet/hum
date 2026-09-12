@@ -8,7 +8,7 @@ With Hum and Python 3.10+ on Herdr's `PATH`, install the workspace process picke
 herdr plugin install brettinternet/hum/plugins/herdr --yes
 ```
 
-The plugin verifies `hum version --json`, discovers the selected project with `hum list --json`, and uses exact CLI argument arrays for logs, attachment, and lifecycle actions. See [`plugins/herdr/README.md`](../plugins/herdr/README.md) for pane behavior and the Herdr/Hum ownership boundary.
+The plugin verifies `hum version --json`, discovers the selected project with `hum list --json`, and uses exact CLI argument arrays for logs, attachment, and lifecycle actions. CLI users and coding agents may select a complete alternate manifest with `--file PATH`/`-F PATH`, conventionally `hum.dev.yaml` or `hum.test.yaml`; use it before or after a command (after NAME and before `--` for `run`, before positional names for `signal`). Without it, `hum.yaml` remains the default and discovery occurs only when it is absent. See [`plugins/herdr/README.md`](../plugins/herdr/README.md) for pane behavior and the Herdr/Hum ownership boundary.
 
 For silent services use `ready.exec` with an exact non-empty argv; hum never invokes it through a shell. The first probe runs immediately after launch and retries serially after failures at the positive `interval` (default 1s), up to `timeout` (default 30s). It inherits the supervised cwd/environment, retains one bounded terminal diagnostic, and is startup gating rather than liveness monitoring. Changing method or argv is `readiness_exec` drift; interval and timeout do not cause drift.
 
@@ -273,5 +273,7 @@ wait --match "prompt" ──> input ──> wait --match "complete"
 The same loop works with bounded `logs` instead of the first `wait`.
 
 ## Canonical project scopes
+
+`--file` is resolved from the invocation directory and must resolve to a regular file inside the selected project; without `--project`, the file location infers the canonical Git project. The project root remains the daemon namespace and base for manifest `cwd` values, and all manifest variants share `(project root, process name)` identity. Runtime-only controls remain project-wide and use a file selector only for project identification; they do not parse or restrict records. Overlays, inheritance, environment files, and per-manifest namespaces are not supported.
 
 hum selects project scope automatically from the invocation directory. symlink aliases share a canonical scope while separate worktrees do not. Use `hum --project /path/to/main` for explicit cross-worktree access. Use `hum --global` (`-g`) only for machine-wide ad-hoc retained sessions; it works before or after ordinary positional arguments and before `run`'s required `--` child boundary, conflicts with `--project` and `list --all`, and `init`/`up` reject it. Global `start`/`restart` reuse retained launch specifications and never read the caller's manifest; child cwd remains the lexical run directory. `hum remove --all` removes every runtime session only in the selected project or global scope; it never spans scopes or targets unlaunched declarations. Use `hum --global logs proxy` for a global match reported by project not-found guidance, or `hum list --all` to discover all scopes. JSON `scope` is `project` or `global`; global records omit `project_root`.

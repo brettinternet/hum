@@ -188,6 +188,7 @@ func TestHelpAdvertisesOnlySupportedScopeFlags(t *testing.T) {
 	tests := []struct {
 		name        string
 		wantProject bool
+		wantFile    bool
 		wantGlobal  bool
 	}{
 		{name: "version"},
@@ -196,27 +197,30 @@ func TestHelpAdvertisesOnlySupportedScopeFlags(t *testing.T) {
 		{name: "skill"},
 		{name: "shutdown"},
 		{name: "completion"},
-		{name: "init", wantProject: true},
-		{name: "up", wantProject: true},
-		{name: "run", wantProject: true, wantGlobal: true},
-		{name: "start", wantProject: true, wantGlobal: true},
-		{name: "down", wantProject: true, wantGlobal: true},
-		{name: "list", wantProject: true, wantGlobal: true},
-		{name: "status", wantProject: true, wantGlobal: true},
-		{name: "attach", wantProject: true, wantGlobal: true},
-		{name: "logs", wantProject: true, wantGlobal: true},
-		{name: "wait", wantProject: true, wantGlobal: true},
-		{name: "input", wantProject: true, wantGlobal: true},
-		{name: "restart", wantProject: true, wantGlobal: true},
-		{name: "signal", wantProject: true, wantGlobal: true},
-		{name: "stop", wantProject: true, wantGlobal: true},
-		{name: "remove", wantProject: true, wantGlobal: true},
+		{name: "init", wantProject: true, wantFile: true},
+		{name: "up", wantProject: true, wantFile: true},
+		{name: "run", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "start", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "down", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "list", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "status", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "attach", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "logs", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "wait", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "input", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "restart", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "signal", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "stop", wantProject: true, wantFile: true, wantGlobal: true},
+		{name: "remove", wantProject: true, wantFile: true, wantGlobal: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			help := renderHelp(t, tt.name)
 			if got := strings.Contains(help, "--project"); got != tt.wantProject {
 				t.Errorf("--project advertised = %t, want %t\n%s", got, tt.wantProject, help)
+			}
+			if got := strings.Contains(help, "--file"); got != tt.wantFile {
+				t.Errorf("--file advertised = %t, want %t\n%s", got, tt.wantFile, help)
 			}
 			if got := strings.Contains(help, "--global"); got != tt.wantGlobal {
 				t.Errorf("--global advertised = %t, want %t\n%s", got, tt.wantGlobal, help)

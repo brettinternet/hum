@@ -160,9 +160,9 @@ hum status -C ../checkout api
 hum run preview --project /path/to/checkout -- bun run preview
 ```
 
-A relative selector starts from the invocation directory. Ad-hoc runs use the selected directory as `cwd`; manifest `cwd` values stay project-relative.
+A relative selector starts from the invocation directory. Ad-hoc runs use the selected directory as `cwd`; manifest `cwd` values stay project-relative. Select one complete alternate manifest with `--file PATH` or `-F PATH`, for example `hum.dev.yaml`: `hum -F hum.dev.yaml up` or `hum up -F hum.dev.yaml`. Without `--file`, `hum.yaml` remains authoritative and conventional discovery is used only when it is absent. With `--file`, the path must be a regular file inside the selected project; the project root remains the namespace and base for manifest `cwd` values. All manifests share that namespace, so switching files cannot run same-named processes concurrently.
 
-`--project` does not apply to `serve`, `shutdown`, `mcp`, or `skill`. `-d` means daemon, run, or up detach.
+`--file` does not apply to `version`, `serve`, `init`, `shutdown`, `mcp`, or `skill`; `--project` remains available to `init`. Runtime-only controls (`down`, `attach`, `stop`, `remove`, `signal`, `wait`, and `input`) use `--file` only to identify the project and do not parse or limit runtime records. `init` continues to create only `hum.yaml`; overlays, inheritance, and per-manifest namespaces are not supported. `-d` means daemon, run, or up detach.
 
 ## Sessions
 

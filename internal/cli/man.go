@@ -32,7 +32,7 @@ func WriteManPage(writer io.Writer, root *urfavecli.Command, date string) error 
 	writeManSection(&page, "SYNOPSIS")
 	writeManLiteral(&page, commandUsage(root))
 	writeManSection(&page, "DESCRIPTION")
-	writeManParagraphs(&page, "Supervise local development processes. Use hum up to start processes in hum.yaml. Use hum run for ad-hoc work. Inspect processes with hum status and hum logs. Select another project with --project. Use --global for machine-wide ad-hoc processes.")
+	writeManParagraphs(&page, "Supervise local development processes. Use hum up to start processes in hum.yaml. Use hum run for ad-hoc work. Inspect processes with hum status and hum logs. Select another project with --project or an exact complete variant with --file, conventionally hum.dev.yaml. Use --global for machine-wide ad-hoc processes.")
 	writeManQuickStart(&page)
 	writeManConfiguration(&page)
 
@@ -64,7 +64,7 @@ func WriteManPage(writer io.Writer, root *urfavecli.Command, date string) error 
 	writeManSection(&page, "FILES")
 	fmt.Fprintln(&page, ".TP")
 	fmt.Fprintln(&page, ".B hum.yaml")
-	writeManText(&page, "Optional project manifest. Hum searches from the selected directory to the nearest Git root.")
+	writeManText(&page, "Optional project manifest. Hum searches from the selected directory to the nearest Git root. Use --file PATH or -F PATH to select one complete manifest inside the project; without it, hum.yaml is authoritative and discovery runs only when hum.yaml is absent.")
 	writeManSection(&page, "ENVIRONMENT")
 	writeManDefinition(&page, "HUM_RUNTIME_DIR", "Override the daemon runtime directory.")
 	writeManDefinition(&page, "XDG_RUNTIME_DIR", "Base runtime directory when HUM_RUNTIME_DIR is unset.")

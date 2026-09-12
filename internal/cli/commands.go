@@ -584,6 +584,8 @@ func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool
 			name = "json"
 		case "-C":
 			name = "project"
+		case "-F":
+			name = "file"
 		case "-g":
 			name = "global"
 		default:
@@ -599,7 +601,7 @@ func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool
 			if err := cmd.Set(name, "true"); err != nil {
 				return newCLIUsageError(err)
 			}
-		case "runtime-dir", "stop-grace", "output-bytes", "completed-records", "project":
+		case "runtime-dir", "stop-grace", "output-bytes", "completed-records", "project", "file":
 			if !hasValue {
 				i++
 				if i >= len(options) {
@@ -646,9 +648,9 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	if err != nil {
 		return err
 	}
-	manifest := manifestState{byName: make(map[string]project.Definition)}
-	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(ctx, cwd)
+	manifest := manifestState{root: selection.root, byName: make(map[string]project.Definition)}
+	if selection.scope != "global" && (len(argv) == 0 || !selection.hasManifest) {
+		manifest, err = loadManifestOrEmptySelection(ctx, selection)
 		if err != nil {
 			return err
 		}
@@ -659,7 +661,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return newCLIUsageError(errors.New("--tty requires an ad-hoc command after --"))
 	}
 	if len(argv) != 0 && declared {
-		return newCLIUsageError(fmt.Errorf("process %q is declared in hum.yaml; use %s (foreground) or %s (background)", name, projectCommand(selection.selector, "run "+name), projectCommand(selection.selector, "start "+name)))
+		return newCLIUsageError(fmt.Errorf("process %q is declared in %s; use %s (foreground) or %s (background)", name, manifestDisplayName(manifest), projectCommand(selection.selector, "run "+name), projectCommand(selection.selector, "start "+name)))
 	}
 	client, err := runDaemonClient(ctx, cfg)
 	if err != nil {
@@ -922,7 +924,7 @@ func projectProcessList(ctx context.Context, cmd *urfavecli.Command, version, bu
 	}
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(ctx, selection.cwd)
+		manifest, err = loadManifestOrEmptySelection(ctx, selection)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -996,7 +998,7 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	cwd := selection.cwd
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(ctx, cwd)
+		manifest, err = loadManifestOrEmptySelection(ctx, selection)
 		if err != nil {
 			return err
 		}
@@ -1089,14 +1091,6 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	if err != nil {
 		return err
 	}
-	manifest := manifestState{byName: make(map[string]project.Definition)}
-	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(ctx, selection.cwd)
-		if err != nil {
-			return err
-		}
-	}
-	manifest.selector = selection.selector
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -1114,20 +1108,20 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	defer signal.Stop(signals)
 
 	name := args[0]
-	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
+	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: selection.root})
 	if err != nil {
 		if isNotFound(err) {
-			return inputNotFoundError(name, manifest.selector)
+			return inputNotFoundError(name, selection.selector)
 		}
 		return err
 	}
 	if !app.IsActiveState(process.State) {
-		return inputSessionNotRunningError(name, manifest.selector)
+		return inputSessionNotRunningError(name, selection.selector)
 	}
 
 	root := process.Root
 	if root == "" {
-		root = manifest.root
+		root = selection.root
 	}
 	inputCwd := process.Cwd
 	if inputCwd == "" {
@@ -1372,7 +1366,7 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	cwd := selection.cwd
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(ctx, cwd)
+		manifest, err = loadManifestOrEmptySelection(ctx, selection)
 		if err != nil {
 			return err
 		}
@@ -1514,9 +1508,13 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 		if len(args) == 0 {
 			// The no-name form is intentionally strict: it has the same definition
 			// set as up, rather than falling back to an ad-hoc session.
-			manifest, err = loadManifest(ctx, cwd)
+			if selection.hasManifest {
+				manifest, err = loadManifestSelection(ctx, selection)
+			} else {
+				manifest, err = loadManifest(ctx, cwd)
+			}
 		} else {
-			manifest, err = loadManifestOrEmpty(ctx, cwd)
+			manifest, err = loadManifestOrEmptySelection(ctx, selection)
 		}
 	}
 	if err != nil {
@@ -1531,7 +1529,7 @@ func aggregateLogsCommand(ctx context.Context, cmd *urfavecli.Command, version, 
 		}
 	}
 	if len(names) == 0 {
-		return newCLIUsageError(newUserFacingError(fmt.Sprintf("No process declarations resolve for logs. Define processes in hum.yaml or run %s.", projectCommand(selection.selector, "init"))))
+		return newCLIUsageError(newUserFacingError(fmt.Sprintf("No process declarations resolve for logs. Define processes in %s or run %s.", manifestDisplayName(manifest), projectCommand(selection.selector, "init"))))
 	}
 
 	cfg, err := cliConfig(cmd, version, buildTime)
@@ -1947,7 +1945,7 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	cwd := selection.cwd
-	if selection.scope != "global" {
+	if selection.scope != "global" && !selection.hasManifest {
 		if _, err := loadManifestOrEmpty(ctx, cwd); err != nil {
 			return err
 		}
@@ -2022,7 +2020,7 @@ func parseSignalArgs(cmd *urfavecli.Command) ([]string, error) {
 					return nil, newCLIUsageError(err)
 				}
 				continue
-			case "--project", "-C":
+			case "--project", "-C", "--file", "-F":
 				if !hasValue {
 					index++
 					if index >= len(args) {
@@ -2030,7 +2028,14 @@ func parseSignalArgs(cmd *urfavecli.Command) ([]string, error) {
 					}
 					value = args[index]
 				}
-				if err := cmd.Set("project", value); err != nil {
+				flagName := strings.TrimPrefix(name, "--")
+				if name == "-C" {
+					flagName = "project"
+				}
+				if name == "-F" {
+					flagName = "file"
+				}
+				if err := cmd.Set(flagName, value); err != nil {
 					return nil, newCLIUsageError(err)
 				}
 				continue
@@ -2076,9 +2081,11 @@ func valueOrTrue(value string, hasValue bool) string {
 // manifest is read only on this path, so a malformed manifest cannot block
 // signalling a process that is actually running.
 func signalUnavailableMessage(ctx context.Context, selection projectSelection, name string) error {
-	if manifest, err := loadManifestOrEmpty(ctx, selection.cwd); err == nil {
-		if definition, ok := manifest.byName[name]; ok {
-			return newCLIUnavailableError(manifestUnavailableMessage(definition, selection.selector))
+	if !selection.hasManifest {
+		if manifest, err := loadManifestOrEmpty(ctx, selection.cwd); err == nil {
+			if definition, ok := manifest.byName[name]; ok {
+				return newCLIUnavailableError(manifestUnavailableMessage(definition, selection.selector))
+			}
 		}
 	}
 	return newCLIUnavailableError(newUserFacingError(logsUnavailableMessageFor(selection.selector)))
@@ -2335,8 +2342,8 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		}
 		return err
 	}
-	manifest := manifestState{byName: make(map[string]project.Definition)}
-	if selection.scope != "global" {
+	manifest := manifestState{root: selection.root, byName: make(map[string]project.Definition)}
+	if selection.scope != "global" && !selection.hasManifest {
 		manifest, err = loadManifestOrEmpty(ctx, cwd)
 		if err != nil {
 			return err
@@ -2630,7 +2637,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 	cwd := selection.cwd
 	manifest := manifestState{byName: make(map[string]project.Definition)}
 	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(ctx, cwd)
+		manifest, err = loadManifestOrEmptySelection(ctx, selection)
 		if err != nil {
 			return err
 		}
@@ -2833,15 +2840,24 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	// discovered convention is an error when there is nothing to report: the
 	// error is deferred so an existing daemon can still surface removed manifest
 	// sessions, and it replaces the empty-manifest message otherwise.
-	manifest, err := loadManifest(ctx, cwd)
+	var manifest manifestState
 	var noCandidateErr error
+	if selection.hasManifest {
+		manifest, err = loadManifestSelection(ctx, selection)
+	} else {
+		manifest, err = loadManifest(ctx, cwd)
+	}
 	if err != nil {
 		var noCandidate *project.NoCandidateError
 		if !errors.As(err, &noCandidate) {
 			return err
 		}
 		noCandidateErr = err
-		manifest, err = loadManifestOrEmpty(ctx, cwd)
+		if selection.hasManifest {
+			manifest, err = loadManifestSelection(ctx, selection)
+		} else {
+			manifest, err = loadManifestOrEmpty(ctx, cwd)
+		}
 		if err != nil {
 			return err
 		}
@@ -2852,7 +2868,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 	}
 	manifest.selector = selection.selector
 	if cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
-		return newCLIUsageError(errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies"))
+		return newCLIUsageError(fmt.Errorf("hum up --no-wait is not allowed when %s declares after dependencies", manifestDisplayName(manifest)))
 	}
 	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, true, true, errWriter, noCandidateErr, followSince)
 }
@@ -2995,7 +3011,12 @@ func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version,
 	if selection.scope == "global" {
 		return manifestLaunchCommandWithState(ctx, cmd, version, buildTime, writer, manifestState{byName: make(map[string]project.Definition), selector: selection.selector}, names, false)
 	}
-	manifest, err := loadManifest(ctx, cwd)
+	var manifest manifestState
+	if selection.hasManifest {
+		manifest, err = loadManifestSelection(ctx, selection)
+	} else {
+		manifest, err = loadManifest(ctx, cwd)
+	}
 	if err != nil {
 		var noCandidate *project.NoCandidateError
 		if !errors.As(err, &noCandidate) {
@@ -3012,7 +3033,11 @@ func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version,
 		if dialErr != nil {
 			return projectGuidanceError(err, selection.selector)
 		}
-		manifest, err = loadManifestOrEmpty(ctx, cwd)
+		if selection.hasManifest {
+			manifest, err = loadManifestSelection(ctx, selection)
+		} else {
+			manifest, err = loadManifestOrEmpty(ctx, cwd)
+		}
 		if err != nil {
 			return err
 		}
@@ -3046,7 +3071,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		manifest.selector = selection.selector
 	}
 	if ordered && cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
-		return newCLIUsageError(errors.New("hum up --no-wait is not allowed when hum.yaml declares after dependencies"))
+		return newCLIUsageError(fmt.Errorf("hum up --no-wait is not allowed when %s declares after dependencies", manifestDisplayName(manifest)))
 	}
 	timeoutOverride, err := manifestTimeoutOverride(cmd)
 	if err != nil {
@@ -3069,7 +3094,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 				if cmd.Bool("json") {
 					return nil
 				}
-				_, printErr := fmt.Fprintln(writer, "No processes are declared in hum.yaml.")
+				_, printErr := fmt.Fprintf(writer, "No processes are declared in %s.\n", manifestDisplayName(manifest))
 				return printErr
 			}
 			return err
@@ -3151,7 +3176,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		if cmd.Bool("json") {
 			return nil
 		}
-		_, err = fmt.Fprintln(writer, "No processes are declared in hum.yaml.")
+		_, err = fmt.Fprintf(writer, "No processes are declared in %s.\n", manifestDisplayName(manifest))
 		return err
 	}
 	if cmd.Bool("json") {

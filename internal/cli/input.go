@@ -52,11 +52,10 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	if err != nil {
 		return inputCommandError(cmd, writer, name, err)
 	}
-	cwd := selection.cwd
 	selector := selection.selector
-	manifest := manifestState{byName: make(map[string]project.Definition)}
-	if selection.scope != "global" {
-		manifest, err = loadManifestOrEmpty(ctx, cwd)
+	manifest := manifestState{root: selection.root, byName: make(map[string]project.Definition)}
+	if selection.scope != "global" && !selection.hasManifest {
+		manifest, err = loadManifestOrEmpty(ctx, selection.cwd)
 		if err != nil {
 			return inputCommandError(cmd, writer, name, err)
 		}
@@ -77,30 +76,20 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	}
 	defer client.Close()
 
-	definition, declared := manifest.byName[name]
 	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 	if err != nil {
 		if !isNotFound(err) {
 			return inputCommandError(cmd, writer, name, err)
 		}
-		if declared && !definition.TTY {
-			return inputCommandError(cmd, writer, name, inputNotTTYError(name, definition.TTY, selector))
-		}
-		if declared {
-			return inputCommandError(cmd, writer, name, inputSessionNotRunningError(name, selector))
-		}
 		return inputCommandError(cmd, writer, name, inputNotFoundError(name, selector))
 	}
-	if declared && !definition.TTY {
-		return inputCommandError(cmd, writer, name, inputNotTTYError(name, false, selector))
-	}
 	if !process.TTY {
-		return inputCommandError(cmd, writer, name, inputNotTTYError(name, declared && definition.TTY, selector))
+		return inputCommandError(cmd, writer, name, inputNotTTYError(name, false, selector))
 	}
 
 	root := process.Root
 	if root == "" {
-		root = manifest.root
+		root = selection.root
 	}
 	inputCwd := process.Cwd
 	if inputCwd == "" {

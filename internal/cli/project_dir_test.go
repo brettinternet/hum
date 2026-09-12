@@ -346,7 +346,7 @@ func TestProjectDirGuidance(t *testing.T) {
 func TestProjectDirDocs(t *testing.T) {
 	for path, phrases := range map[string][]string{
 		"../../README.md":      {"hum --project /path/to/checkout up", "-C DIR", "relative selector", "nearest Git root", "`-d` means"},
-		"../../docs/design.md": {"hum [--project DIR|-C DIR]", "nearest-Git-root-or-directory-fallback", "run` accepts it after the process name", "Command-local `-d`"},
+		"../../docs/design.md": {"hum [--project DIR|-C DIR]", "nearest-Git-root-or-directory-fallback", "`run` accepts them after the process name", "Command-local `-d`"},
 	} {
 		content, err := os.ReadFile(path)
 		if err != nil {
