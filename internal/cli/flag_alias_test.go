@@ -19,7 +19,7 @@ func TestFlagAliases(t *testing.T) {
 		"init":     {"force": nil, "json": {"j"}},
 		"run":      {"detach": {"d"}, "json": {"j"}, "tty": nil},
 		"start":    {"no-wait": nil, "timeout": {"t"}, "json": {"j"}},
-		"up":       {"detach": {"d"}, "no-wait": nil, "timeout": {"t"}, "json": {"j"}},
+		"up":       {"detach": {"d"}, "no-wait": nil, "timeout": {"t"}, "full": nil, "json": {"j"}},
 		"down":     {"json": {"j"}},
 		"list":     {"all": {"a"}, "full": nil, "json": {"j"}},
 		"status":   {"json": {"j"}},

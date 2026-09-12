@@ -1047,9 +1047,9 @@ func manifestProgressInitialLineWithPolicy(definition project.Definition, result
 		if result.Signal != nil {
 			line += "; exit: " + signalHumanText(result.Signal.Name, result.Signal.Number)
 		}
-		return line + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return line + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "timed_out":
-		return prefix + colors.apply(ansiRed, "readiness timed out") + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return prefix + colors.apply(ansiRed, "readiness timed out") + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "started", "already_running":
 		action := colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressAction(result))
 		if manifestProgressWaitsForReadiness(definition, result) {
@@ -1084,9 +1084,9 @@ func manifestProgressTerminalLineWithPolicy(result manifestLaunchResult, colors 
 		if result.Signal != nil {
 			line += "; exit: " + signalHumanText(result.Signal.Name, result.Signal.Number)
 		}
-		return line + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return line + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "timed_out":
-		return prefix + colors.apply(ansiRed, "readiness timed out") + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return prefix + colors.apply(ansiRed, "readiness timed out") + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "started", "already_running":
 		if result.Readiness == app.ReadinessReady {
 			return prefix + colors.apply(ansiGreen, "ready")
@@ -1099,6 +1099,13 @@ func manifestProgressTerminalLineWithPolicy(result manifestLaunchResult, colors 
 	default:
 		return prefix + colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressText(result.Outcome))
 	}
+}
+
+func manifestProgressReadinessDiagnostic(result manifestLaunchResult) string {
+	if result.ReadinessDiagnostic == "" {
+		return ""
+	}
+	return "; readiness diagnostic: " + manifestProgressText(result.ReadinessDiagnostic)
 }
 
 func manifestProgressSkippedText(result manifestLaunchResult) string {
@@ -1149,12 +1156,14 @@ func manifestProgressText(value string) string {
 	}, value)
 }
 
-func buildManifestLaunchTable(results []manifestLaunchResult) listTable {
+func buildManifestLaunchTable(results []manifestLaunchResult, full bool) listTable {
 	showReadiness := false
-	for _, result := range results {
-		if result.ReadinessMethod == "exec" || len(result.ReadinessArgv) != 0 || result.ReadinessInterval != 0 || result.ReadinessDiagnostic != "" {
-			showReadiness = true
-			break
+	if full {
+		for _, result := range results {
+			if result.ReadinessConfigured || result.ReadinessMethod != "" || len(result.ReadinessArgv) != 0 || result.ReadinessInterval != 0 || result.ReadinessDiagnostic != "" {
+				showReadiness = true
+				break
+			}
 		}
 	}
 	header := listRow{
@@ -1201,7 +1210,7 @@ func buildManifestLaunchTable(results []manifestLaunchResult) listTable {
 				}
 				detail += "interval=" + result.ReadinessInterval.String()
 			}
-			if result.ReadinessMatch != "" {
+			if result.ReadinessConfigured && result.ReadinessMethod != "exec" {
 				if detail != "" {
 					detail += " "
 				}
@@ -1243,8 +1252,8 @@ func manifestOutcomeLabel(outcome string) string {
 	}
 }
 
-func renderManifestLaunchTableWithPolicy(w io.Writer, results []manifestLaunchResult, colors colorPolicy) error {
-	return writeListTable(w, buildManifestLaunchTable(results), colors)
+func renderManifestLaunchTableWithPolicy(w io.Writer, results []manifestLaunchResult, full bool, colors colorPolicy) error {
+	return writeListTable(w, buildManifestLaunchTable(results, full), colors)
 }
 
 func renderManifestLaunchHuman(w io.Writer, result manifestLaunchResult) error {

@@ -127,13 +127,14 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		{
 			Name:        "up",
 			Usage:       "ensure manifest processes are running",
-			UsageText:   "hum up [--detach] [--no-wait] [--timeout DURATION] [--json]",
+			UsageText:   "hum up [--detach] [--no-wait] [--timeout DURATION] [--full] [--json]",
 			ArgsUsage:   "",
-			Description: "Resolve manifest processes, launch independent roots concurrently, gate dependents on readiness, and continue after failures; --detach waits; --no-wait returns after spawn. ready.exec exact argv, no shell; immediate serial 1s retries inherit cwd/env, bounded diagnostics, startup gate—not liveness; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C interrupts startup.\n\nExamples:\n  hum up",
+			Description: "Launch independent roots concurrently, gate dependents on readiness, and continue after failures; --full expands the NAME, RESULT, STATE, and PID summary; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C interrupts startup.\n\nExamples:\n  hum up",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "wait for readiness and return instead of following process output"},
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn without following output; default waits for readiness"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "readiness limit; omit for the manifest timeout"},
+				&urfavecli.BoolFlag{Name: "full", DefaultText: "false", Usage: "include complete readiness configuration in human output"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write bounded JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,
@@ -3188,7 +3189,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	} else if ordered {
 		colors := colorPolicyForWriter(writer)
 		if err := withSynchronizedWriter(writer, func(output io.Writer) error {
-			return renderManifestLaunchTableWithPolicy(output, results, colors)
+			return renderManifestLaunchTableWithPolicy(output, results, cmd.Bool("full"), colors)
 		}); err != nil {
 			return err
 		}

@@ -107,7 +107,7 @@ processes:
       match: "Local:"
 ```
 
-`hum up` starts processes, gates dependents on `ready`, and follows output. Ctrl+C detaches; `hum down` stops. `hum up --detach` waits and returns.
+`hum up` starts processes, gates dependents on `ready`, and follows output. Ctrl+C detaches; `hum down` stops. `hum up --detach` waits and returns. Its final human summary stays compact; use `hum up --full` to include complete readiness configuration.
 
 For checks that do not emit a reliable startup message, use an executable probe. Exit status 0 marks the process ready. For example, check PostgreSQL inside Docker Compose:
 
@@ -140,6 +140,7 @@ processes:
 ```sh
 hum up
 hum up --detach
+hum up --full
 hum status
 hum status web
 hum logs --follow
