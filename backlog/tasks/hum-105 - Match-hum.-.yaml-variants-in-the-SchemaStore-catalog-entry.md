@@ -1,10 +1,10 @@
 ---
 id: HUM-105
 title: Match alternate Hum manifest filenames in SchemaStore
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-12 01:34'
-updated_date: '2026-09-12 01:43'
+updated_date: '2026-09-12 03:49'
 labels:
   - docs
   - integration
@@ -16,6 +16,7 @@ references:
   - HUM-101
   - 'https://github.com/SchemaStore/schemastore/pull/6344'
   - 'https://www.schemastore.org/api/json/catalog.json'
+  - 'https://github.com/SchemaStore/schemastore/pull/6346'
 modified_files:
   - README.md
   - docs/design.md
@@ -55,3 +56,9 @@ Non-goals: schema content changes; filename patterns beyond the five listed matc
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Opened SchemaStore/schemastore#6346 from `hum-alternate-manifest-file-match`; the PR changes only `src/api/json/catalog.json`, preserves the external URL, parses as JSON, and passes `git diff --check`. Next: wait for upstream review, merge, and production catalog propagation before updating Hum docs.
+<!-- SECTION:NOTES:END -->
