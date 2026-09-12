@@ -106,7 +106,7 @@ func TestStatusSummary(t *testing.T) {
 	projectRoot := stopShutdownTestProject(t)
 	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
-	writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  api:\n    argv: [/bin/sh, -c, 'sleep 30']\n  worker:\n    argv: [/bin/sh, -c, 'exit 0']\n    restart: on-failure\n")
+	writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  api:\n    argv: [/bin/sh, -c, 'sleep 30']\n    ready:\n      exec: [/a/very/long/readiness/probe, --with-an-equally-long-argument]\n      interval: 125ms\n      timeout: 30s\n  worker:\n    argv: [/bin/sh, -c, 'exit 0']\n    restart: on-failure\n")
 	started := stopShutdownStartProcess(t, server, projectRoot, "api", []string{"/bin/sh", "-c", "sleep 30"})
 	t.Cleanup(func() { _, _, _ = stopShutdownRun(t, "stop", "api") })
 
@@ -114,12 +114,19 @@ func TestStatusSummary(t *testing.T) {
 	if err != nil || stderr != "" {
 		t.Fatalf("status summary: err=%v stderr=%q output=%q", err, stderr, stdout)
 	}
-	for _, want := range []string{"NAME", "STATE", "PID", "READINESS", "RESTART", "FOLLOWERS", "api", "running", fmt.Sprint(started.PID), "worker", "stopped", "on-failure"} {
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("status summary lines = %q, want header and two process rows", lines)
+	}
+	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "PID", "READINESS", "RESTART", "FOLLOWERS"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("status summary columns = %#v, want exactly %#v", got, want)
+	}
+	for _, want := range []string{"api", "running", fmt.Sprint(started.PID), "worker", "stopped", "on-failure"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("status summary missing %q: %q", want, stdout)
 		}
 	}
-	for _, hidden := range []string{"SOURCE", "ARGV", "source=", "argv=", projectRoot} {
+	for _, hidden := range []string{"SOURCE", "ARGV", "READINESS_DETAILS", "source=", "argv=", "readiness_method", "readiness_argv", "readiness_interval", "very/long", projectRoot} {
 		if strings.Contains(stdout, hidden) {
 			t.Errorf("status summary contains detail %q: %q", hidden, stdout)
 		}
@@ -130,7 +137,7 @@ func TestStatusSummaryJSON(t *testing.T) {
 	projectRoot := stopShutdownTestProject(t)
 	runtimeDir := hum006ListLogsTempDir(t, "status-summary-runtime")
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
-	writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  api:\n    argv: [task, dev]\n  worker:\n    argv: [task, work]\n")
+	writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  api:\n    argv: [task, dev]\n    ready:\n      exec: [probe, --service, api]\n      interval: 125ms\n      timeout: 30s\n  worker:\n    argv: [task, work]\n")
 
 	stdout, stderr, err := stopShutdownRun(t, "status", "--json")
 	if err != nil || stderr != "" {
@@ -147,6 +154,10 @@ func TestStatusSummaryJSON(t *testing.T) {
 		if process.Source != "manifest" || process.State != string(app.StateStopped) || process.Root != projectRoot {
 			t.Errorf("status summary process = %#v, want stopped manifest in %q", process, projectRoot)
 		}
+	}
+	api := got.Processes[0]
+	if api.ReadinessMethod != "exec" || !reflect.DeepEqual(api.ReadinessArgv, []string{"probe", "--service", "api"}) || api.ReadinessInterval != 125*time.Millisecond {
+		t.Errorf("status summary JSON readiness = method %q argv %#v interval %s", api.ReadinessMethod, api.ReadinessArgv, api.ReadinessInterval)
 	}
 }
 

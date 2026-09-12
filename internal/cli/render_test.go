@@ -373,6 +373,78 @@ func ansiCyanString(value string) string { return string(ansiCyan) + value + ans
 func ansiDimString(value string) string  { return string(ansiDim) + value + ansiReset }
 func ansiRedString(value string) string  { return string(ansiRed) + value + ansiReset }
 
+func TestStatusSummaryOmitsLongReadinessDetails(t *testing.T) {
+	process := app.Process{
+		Name: "api", Source: "manifest", State: app.StateRunning, PID: 42,
+		Readiness: &app.Readiness{
+			State: app.ReadinessStarting, Method: "exec",
+			Argv:       []string{"/a/very/long/readiness/probe", "--with-an-equally-long-argument"},
+			Interval:   125 * time.Millisecond,
+			Diagnostic: "a diagnostic that must stay out of aggregate status",
+		},
+	}
+	var output bytes.Buffer
+	if err := renderStatusSummaryHuman(&output, []app.Process{process}); err != nil {
+		t.Fatal(err)
+	}
+	want := "NAME  STATE    PID  READINESS  RESTART  FOLLOWERS\n" +
+		"api   running  42   starting   never    0\n"
+	if output.String() != want {
+		t.Fatalf("status summary = %q, want %q", output.String(), want)
+	}
+	for _, hidden := range []string{"READINESS_DETAILS", "readiness_method", "readiness_argv", "readiness_interval", "readiness_diagnostic", "very/long", "diagnostic"} {
+		if strings.Contains(output.String(), hidden) {
+			t.Errorf("status summary contains readiness detail %q: %q", hidden, output.String())
+		}
+	}
+}
+
+func TestStatusHumanRetainsReadinessDetails(t *testing.T) {
+	process := app.Process{
+		Name: "api", Source: "manifest", Root: "/project", Cwd: "/project", State: app.StateRunning,
+		Argv: []string{"server"}, Readiness: &app.Readiness{
+			State: app.ReadinessStarting, Method: "exec", Argv: []string{"probe", "--service", "api"},
+			Interval: 125 * time.Millisecond, Diagnostic: "status 1",
+		},
+	}
+	var output bytes.Buffer
+	if err := renderStatusHuman(&output, process); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"readiness: starting\n", "readiness_method: exec\n", "readiness_argv: probe --service api\n",
+		"readiness_interval: 125ms\n", "readiness_diagnostic: status 1\n",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("named human status missing %q: %q", want, output.String())
+		}
+	}
+}
+
+func TestStatusJSONRetainsReadinessDetails(t *testing.T) {
+	process := app.Process{
+		Name: "api", Source: "manifest", Root: "/project", Cwd: "/project", State: app.StateRunning,
+		Argv: []string{"server"}, Readiness: &app.Readiness{
+			State: app.ReadinessStarting, Method: "exec", Argv: []string{"probe", "--service", "api"},
+			Interval: 125 * time.Millisecond, Diagnostic: "status 1",
+		},
+	}
+	for name, value := range map[string]any{
+		"named":     statusJSONFor(process),
+		"aggregate": listJSON{Processes: []listProcessJSON{processJSON(process)}},
+	} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"readiness_method":"exec"`, `"readiness_argv":["probe","--service","api"]`, `"readiness_interval":125000000`, `"readiness_diagnostic":"status 1"`} {
+			if !strings.Contains(string(encoded), want) {
+				t.Errorf("%s status JSON missing %s: %s", name, want, encoded)
+			}
+		}
+	}
+}
+
 func TestProcessStopGraceCLIOutput(t *testing.T) {
 	process := app.Process{Name: "api", Source: "manifest", State: app.StateRunning, StopGrace: 2 * time.Second, StopGraceInherited: true}
 	var human bytes.Buffer

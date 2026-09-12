@@ -204,9 +204,11 @@ Decision: defer
 JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus
 identity, readiness, cursors, and errors when applicable.
 
-- Human `status` always prints `followers`. Human `list` defaults to `name`, `state`, and `PID`;
-  `list --full` includes source, argv, readiness, followers for followed records, TTY, exit signal,
-  and restart details. JSON list output always retains the complete process snapshot.
+- Aggregate human `status` is fixed to `name`, `state`, `PID`, readiness state, restart policy,
+  and followers; readiness configuration and diagnostics remain in `status NAME`. Human `list`
+  defaults to `name`, `state`, and `PID`; `list --full` includes source, argv, readiness, followers
+  for followed records, TTY, exit signal, and restart details. JSON status and list output always
+  retain the complete process snapshot.
 - JSON-capable commands classify failures as `usage`, `daemon_unavailable`, `manifest_invalid`,
   or `internal` and emit one newline-terminated `{"error":{"code":"...","message":"..."}}`
   object on stdout when no JSON has been written.

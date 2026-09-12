@@ -149,6 +149,8 @@ hum stop web
 hum down
 ```
 
+`hum status` keeps the project overview to six columns; use `hum status NAME` for readiness configuration, diagnostics, and other process details.
+
 `start` is explicit and does not start dependencies. `ready.exec` runs exact argv without a shell; immediate serial retries (1s default) inherit cwd/env, retain bounded diagnostics, and gate startup—not liveness. `down` stops project processes concurrently. See [design and command semantics](docs/design.md) for validation details.
 
 ### Operate from anywhere

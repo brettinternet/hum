@@ -872,19 +872,9 @@ func renderStatusSummaryHumanWithPolicy(w io.Writer, processes []app.Process, po
 		_, err := fmt.Fprintln(w, message)
 		return err
 	}
-	showReadiness := false
-	for _, process := range processes {
-		if process.Readiness != nil && process.Source != "" && process.Source != "ad_hoc" && (process.Readiness.Method == "exec" || len(process.Readiness.Argv) != 0 || process.Readiness.Interval != 0 || process.Readiness.Diagnostic != "") {
-			showReadiness = true
-			break
-		}
-	}
 	header := listRow{
 		styledListCell("NAME", ansiBold), styledListCell("STATE", ansiBold), styledListCell("PID", ansiBold),
 		styledListCell("READINESS", ansiBold), styledListCell("RESTART", ansiBold), styledListCell("FOLLOWERS", ansiBold),
-	}
-	if showReadiness {
-		header = append(header, styledListCell("READINESS_DETAILS", ansiBold))
 	}
 	table := listTable{header: header, rows: make([]listRow, 0, len(processes))}
 	for _, process := range processes {
@@ -904,12 +894,6 @@ func renderStatusSummaryHumanWithPolicy(w io.Writer, processes []app.Process, po
 			plainListCell(string(effectiveProcessRestart(process))),
 			plainListCell(strconv.Itoa(process.Followers)),
 		})
-		if showReadiness {
-			detail := listRow{}
-			appendReadinessDetailCells(&detail, process)
-			parts := listRowText(detail)
-			table.rows[len(table.rows)-1] = append(table.rows[len(table.rows)-1], plainListCell(strings.Join(parts, " ")))
-		}
 	}
 	return writeLifecycleTable(w, table, policy)
 }
