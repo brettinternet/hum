@@ -11,6 +11,15 @@
       "description": "The hum manifest format version.",
       "const": 1
     },
+    "environment": {
+      "description": "Optional baseline and environment files for declared processes.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inherit": {"type": "boolean", "default": true},
+        "files": {"type": "array", "maxItems": 16, "items": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!\\.$)(?!.*\\u0000).+"}}
+      }
+    },
     "processes": {
       "description": "Named processes managed by hum.",
       "type": "object",
@@ -71,6 +80,12 @@
           "description": "Optional non-negative Go duration between SIGTERM and SIGKILL. Omit to inherit the daemon default; 0s kills immediately after the TERM check.",
           "type": "string",
           "pattern": "^[+]?(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|μs|ms|s|m|h))+$"
+        },
+        "env": {
+          "description": "Per-process environment values; null unsets an inherited key.",
+          "type": "object",
+          "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+          "additionalProperties": {"anyOf": [{"type": "string", "pattern": "^(?!.*\\u0000).*$"}, {"type": "null"}]}
         }
       }
     },

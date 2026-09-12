@@ -10,6 +10,74 @@ import (
 	"time"
 )
 
+func TestManifestEnvironmentContract(t *testing.T) {
+	root := t.TempDir()
+
+	t.Run("complete manifest", func(t *testing.T) {
+		writeTestManifest(t, root, "version: 1\nenvironment:\n  inherit: false\n  files: [.env]\nprocesses:\n  api:\n    argv: [bun, run, api]\n    env:\n      PORT: \"3000\"\n      EMPTY: \"\"\n      LITERAL: '$NAME'\n      OLD_URL: null\n")
+		defs, err := LoadDefinitions(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(defs) != 1 || defs[0].Environment == nil || defs[0].Environment.Inherit {
+			t.Fatalf("environment=%#v", defs)
+		}
+		values := defs[0].Environment.Values
+		if values["OLD_URL"] != nil || *values["PORT"] != "3000" || *values["EMPTY"] != "" || *values["LITERAL"] != "$NAME" {
+			t.Fatalf("values=%#v", values)
+		}
+	})
+
+	t.Run("defaults are no-op", func(t *testing.T) {
+		for _, environment := range []string{"", "environment: {}\n"} {
+			writeTestManifest(t, root, "version: 1\n"+environment+"processes:\n  api:\n    argv: [api]\n    env: {}\n")
+			defs, err := LoadDefinitions(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(defs) != 1 || defs[0].Environment != nil && !environmentNoop(defs[0].Environment) {
+				t.Fatalf("default environment=%#v", defs)
+			}
+		}
+	})
+
+	invalid := []struct {
+		name string
+		body string
+	}{
+		{name: "environment scalar", body: "environment: true\nprocesses: {}\n"},
+		{name: "unknown environment key", body: "environment: {optional: true}\nprocesses: {}\n"},
+		{name: "inherit string", body: "environment: {inherit: 'true'}\nprocesses: {}\n"},
+		{name: "inherit integer", body: "environment: {inherit: 1}\nprocesses: {}\n"},
+		{name: "files scalar", body: "environment: {files: .env}\nprocesses: {}\n"},
+		{name: "empty file", body: "environment: {files: ['']}\nprocesses: {}\n"},
+		{name: "absolute file", body: "environment: {files: [/tmp/private.env]}\nprocesses: {}\n"},
+		{name: "root file", body: "environment: {files: [.]}\nprocesses: {}\n"},
+		{name: "escaping file", body: "environment: {files: [../private.env]}\nprocesses: {}\n"},
+		{name: "too many files", body: "environment: {files: [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q]}\nprocesses: {}\n"},
+		{name: "env sequence", body: "processes:\n  api: {argv: [api], env: []}\n"},
+		{name: "env numeric", body: "processes:\n  api: {argv: [api], env: {PORT: 3000}}\n"},
+		{name: "env boolean", body: "processes:\n  api: {argv: [api], env: {DEBUG: true}}\n"},
+		{name: "env object", body: "processes:\n  api: {argv: [api], env: {KEY: {secret: SECRET_VALUE}}}\n"},
+		{name: "invalid key", body: "processes:\n  api: {argv: [api], env: {BAD-KEY: SECRET_VALUE}}\n"},
+		{name: "duplicate key", body: "processes:\n  api:\n    argv: [api]\n    env:\n      KEY: first\n      KEY: SECRET_VALUE\n"},
+		{name: "unknown process key", body: "processes:\n  api: {argv: [api], environment: SECRET_VALUE}\n"},
+		{name: "malformed YAML", body: "processes:\n  api: {argv: [api], env: {KEY: SECRET_VALUE\n"},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			writeTestManifest(t, root, "version: 1\n"+test.body)
+			_, err := LoadDefinitions(root)
+			if err == nil {
+				t.Fatal("invalid manifest accepted")
+			}
+			if strings.Contains(err.Error(), "SECRET_VALUE") {
+				t.Fatalf("diagnostic leaked environment value: %q", err)
+			}
+		})
+	}
+}
+
 func writeTestManifest(t *testing.T, root, contents string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(contents), 0o600); err != nil {
@@ -283,7 +351,7 @@ func TestLoadDefinitionsStrictRejections(t *testing.T) {
 		},
 		{
 			name:      "unknown process key",
-			manifest:  "version: 1\nprocesses:\n  web:\n    argv: [go]\n    env: {}\n",
+			manifest:  "version: 1\nprocesses:\n  web:\n    argv: [go]\n    autostart: true\n",
 			entry:     "web",
 			wantError: "unknown key",
 		},

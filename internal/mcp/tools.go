@@ -62,15 +62,16 @@ var ErrDaemonUnavailable = errors.New("daemon unavailable")
 
 // Definition is one explicit or discovered project process.
 type Definition struct {
-	Name      string
-	Source    string
-	Argv      []string
-	Cwd       string
-	Ready     *protocol.ReadinessConfig
-	After     []string
-	TTY       bool
-	Restart   string
-	StopGrace *time.Duration
+	Name        string
+	Environment *project.EnvironmentSpec `json:"-"`
+	Source      string
+	Argv        []string
+	Cwd         string
+	Ready       *protocol.ReadinessConfig
+	After       []string
+	TTY         bool
+	Restart     string
+	StopGrace   *time.Duration
 }
 
 // Resolution is the canonical project root and its process definitions.
@@ -740,6 +741,42 @@ func (s *Server) environment() []string {
 	return append([]string(nil), os.Environ()...)
 }
 
+func (s *Server) prepareEnvironments(resolution Resolution, names ...string) (map[string][]string, error) {
+	wanted := map[string]bool{}
+	if len(names) != 0 {
+		for _, name := range names {
+			wanted[name] = true
+		}
+	}
+	definitions := make([]project.Definition, 0, len(resolution.Definitions))
+	for _, definition := range resolution.Definitions {
+		if len(wanted) != 0 && !wanted[definition.Name] {
+			continue
+		}
+		definitions = append(definitions, project.Definition{Name: definition.Name, Environment: definition.Environment})
+	}
+	prepared, err := project.PrepareEnvironments(definitions, s.environment())
+	if err != nil {
+		return nil, err
+	}
+	for _, definition := range definitions {
+		if !project.HasEnvironmentConfiguration(definition.Environment) {
+			continue
+		}
+		resolved, _ := findDefinition(resolution, definition.Name)
+		request := protocol.StartRequest{
+			Op: protocol.OpStart, Name: resolved.Name, Root: resolution.Root,
+			Argv: resolved.Argv, Cwd: resolved.Cwd, Env: prepared[definition.Name],
+			Source: resolved.Source, Ready: resolved.Ready, TTY: resolved.TTY,
+			Restart: resolved.Restart, StopGrace: resolved.StopGrace,
+		}
+		if _, err := protocol.MarshalLine(request); err != nil {
+			return nil, errors.New("composed environment request is too large")
+		}
+	}
+	return prepared, nil
+}
+
 func positiveTimeout(value int64) (int64, error) {
 	if value == 0 {
 		return defaultTimeoutMS, nil
@@ -983,8 +1020,8 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		panic("unreachable")
 	}
 }
-func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution Resolution, definition Definition, preserveRecovery bool) (protocol.Process, bool, string, error) {
-	shared := orchestrate.Ensure(ctx, resolution.Root, mcpDefinition(definition), s.environment(), preserveRecovery, orchestrate.EnsureOperations{
+func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution Resolution, definition Definition, env []string, preserveRecovery bool) (protocol.Process, bool, string, error) {
+	shared := orchestrate.Ensure(ctx, resolution.Root, mcpDefinition(definition), env, preserveRecovery, orchestrate.EnsureOperations{
 		Get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
 			current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Scope: resolution.Scope, Name: name, Cwd: root})
 			return orchestrateProcess(current), err
@@ -1131,6 +1168,11 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		process = normalizeProcess(process)
 		return launchResult{Name: input.Name, Outcome: outcome, Process: &process}, nil
 	}
+	prepared, err := s.prepareEnvironments(resolution, definition.Name)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	env := prepared[definition.Name]
 	timeout, err := readinessTimeout(input.TimeoutMS, definition)
 	if err != nil {
 		return nil, err
@@ -1140,7 +1182,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	process, already, classification, err := s.ensureDefinition(ctx, client, resolution, definition, false)
+	process, already, classification, err := s.ensureDefinition(ctx, client, resolution, definition, env, false)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -1196,6 +1238,10 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		recordStartupWarnings(ctx, startupWarnings(client))
 		return mcpRemovedDefinitionResults(resolution, processes), nil
 	}
+	prepared, prepErr := s.prepareEnvironments(resolution)
+	if prepErr != nil {
+		return nil, mapError(prepErr)
+	}
 	client, err := s.client(ctx, true)
 	if err != nil {
 		return nil, mapError(err)
@@ -1219,7 +1265,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 				return orchestrate.StartResult{Result: orchestrate.ErrorResult(definition, errors.New("definition not found"))}, nil
 			}
 			observedAt := time.Now()
-			process, already, classification, startErr := s.ensureDefinition(ctx, client, resolution, projectDefinition, true)
+			process, already, classification, startErr := s.ensureDefinition(ctx, client, resolution, projectDefinition, prepared[projectDefinition.Name], true)
 			if startErr != nil {
 				return orchestrate.StartResult{Result: orchestrate.ErrorResult(definition, startErr), Process: orchestrateProcess(process), ObservedAt: observedAt}, nil
 			}
@@ -1753,14 +1799,22 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 	if input.TimeoutMS > int64((1<<63-1)/int64(time.Millisecond)) {
 		return nil, &ToolError{Code: "invalid_request", Message: "timeout_ms is too large"}
 	}
+	name := input.Name
+	definition, declared := findDefinition(resolution, name)
+	var err error
+	var prepared map[string][]string
+	if declared {
+		prepared, err = s.prepareEnvironments(resolution, name)
+		if err != nil {
+			return nil, mapError(err)
+		}
+	}
 	client, err := s.client(ctx, false)
 	if err != nil {
 		return nil, mapError(err)
 	}
 	defer client.Close()
 
-	name := input.Name
-	definition, declared := findDefinition(resolution, name)
 	if !declared {
 		if process, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Scope: resolution.Scope, Cwd: resolution.Root}); getErr != nil {
 			return nil, mapError(getErr)
@@ -1776,7 +1830,7 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 	request := protocol.RestartRequest{Op: protocol.OpRestart, Name: name, Scope: resolution.Scope, Cwd: resolution.Root}
 	if declared {
 		request.Root, request.Cwd, request.Update = resolution.Root, definition.Cwd, true
-		request.Argv, request.Env, request.Source, request.TTY = append([]string(nil), definition.Argv...), s.environment(), definition.Source, definition.TTY
+		request.Argv, request.Env, request.Source, request.TTY = append([]string(nil), definition.Argv...), prepared[name], definition.Source, definition.TTY
 		if definition.Ready != nil {
 			ready := *definition.Ready
 			ready.Argv = append([]string(nil), definition.Ready.Argv...)

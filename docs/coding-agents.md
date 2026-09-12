@@ -183,14 +183,35 @@ failure semantics.
 ## Deterministic environments
 
 MCP does not run an interactive shell or activate Mise, nvm, direnv, or similar
-hooks. If a process needs environment activation, commit a wrapper and use its
-exact argv in `hum.yaml`:
+hooks. A manifest can compose the caller baseline, required relative UTF-8 env
+files, and a literal per-process map:
 
 ```yaml
+environment:
+  inherit: true
+  files: [.env]
 processes:
   web:
-    argv: [./tools/run-with-project-env, bun, run, dev]
+    argv: [bun, run, dev]
+    env:
+      PORT: "3000"
+      OLD_URL: null
 ```
+
+`inherit` defaults to true; false starts empty and null removes a lower-layer
+key. Files allow blank lines, full-line comments, optional `export`, ordinary
+whitespace, and whole single/double quotes. They reject expansion (`$NAME`,
+`${...}`, `$()`, backticks), includes, interpolation, and implicit discovery;
+quote literal expansion-shaped text or use an external loader. Files must stay
+inside the selected project root and are bounded to 16 files, 1 MiB each, 4,096
+assignments each, and 4 MiB of final `KEY=VALUE` bytes, with the existing 8 MiB
+encoded request limit still applying. Launch commands preflight once before
+contact; read-only tools do not access files. Empty/default config preserves the
+baseline byte-for-byte, retained and automatic relaunches reuse their snapshot,
+and explicit restart reloads changes. Environment names and values never occur
+in metadata, status, JSON, or MCP responses; diagnostics may identify location
+and a valid key but not values. Child/probe output is unredacted, so commands
+should not print secrets.
 
 ## Crash relaunch policy
 

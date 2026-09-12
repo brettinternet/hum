@@ -22,11 +22,13 @@ import (
 )
 
 type manifestState struct {
-	root     string
-	defs     []project.Definition
-	byName   map[string]project.Definition
-	selector string
-	display  string
+	root         string
+	defs         []project.Definition
+	byName       map[string]project.Definition
+	environments map[string][]string
+	baseline     []string
+	selector     string
+	display      string
 }
 
 // loadManifest resolves the project manifest for cwd. Command-backed
@@ -65,6 +67,73 @@ func loadManifestSelection(ctx context.Context, selection projectSelection) (man
 		byName[definition.Name] = definition
 	}
 	return manifestState{root: selection.manifest.Root, defs: defs, byName: byName, display: selection.manifest.Relative}, nil
+}
+
+func prepareManifestEnvironments(manifest *manifestState, names []string, baseline []string, includeDependencies bool) error {
+	if manifest == nil || len(manifest.defs) == 0 {
+		return nil
+	}
+	manifest.baseline = append([]string(nil), baseline...)
+	selected := manifest.defs
+	if len(names) != 0 {
+		byName := make(map[string]project.Definition, len(manifest.defs))
+		for _, definition := range manifest.defs {
+			byName[definition.Name] = definition
+		}
+		wanted := make(map[string]bool, len(names))
+		var include func(string)
+		include = func(name string) {
+			if wanted[name] {
+				return
+			}
+			definition, ok := byName[name]
+			if !ok {
+				return
+			}
+			wanted[name] = true
+			if includeDependencies {
+				for _, dependency := range definition.After {
+					include(dependency)
+				}
+			}
+		}
+		for _, name := range names {
+			include(name)
+		}
+		selected = make([]project.Definition, 0, len(wanted))
+		for _, definition := range manifest.defs {
+			if wanted[definition.Name] {
+				selected = append(selected, definition)
+			}
+		}
+	}
+	prepared, err := project.PrepareEnvironments(selected, baseline)
+	if err != nil {
+		return &project.ConfigurationError{Source: manifestDisplayName(*manifest), Err: err}
+	}
+	for _, definition := range selected {
+		if !project.HasEnvironmentConfiguration(definition.Environment) {
+			continue
+		}
+		request := protocol.StartRequest{
+			Op: protocol.OpStart, Name: definition.Name, Root: manifest.root,
+			Argv: definition.Argv, Cwd: definition.Cwd, Env: prepared[definition.Name],
+			Source: definition.Source, Ready: readinessConfig(definition), TTY: definition.TTY,
+			Restart: protocolRestartPolicy(definition), StopGrace: definition.StopGrace,
+		}
+		if _, err := protocol.MarshalLine(request); err != nil {
+			return &project.ConfigurationError{Source: manifestDisplayName(*manifest), Err: fmt.Errorf("composed environment request is too large")}
+		}
+	}
+	manifest.environments = prepared
+	return nil
+}
+
+func manifestEnvironment(manifest manifestState, definition project.Definition) []string {
+	if env, ok := manifest.environments[definition.Name]; ok {
+		return append([]string(nil), env...)
+	}
+	return append([]string(nil), manifest.baseline...)
 }
 
 func manifestDisplayName(manifest manifestState) string {

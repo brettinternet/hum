@@ -664,6 +664,11 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	if len(argv) != 0 && declared {
 		return newCLIUsageError(fmt.Errorf("process %q is declared in %s; use %s (foreground) or %s (background)", name, manifestDisplayName(manifest), projectCommand(selection.selector, "run "+name), projectCommand(selection.selector, "start "+name)))
 	}
+	if len(argv) == 0 && declared {
+		if err := prepareManifestEnvironments(&manifest, []string{name}, os.Environ(), false); err != nil {
+			return err
+		}
+	}
 	client, err := runDaemonClient(ctx, cfg)
 	if err != nil {
 		return err
@@ -681,7 +686,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 			return client.Start(context.Background(), daemon.StartRequest{Name: name, Scope: selection.scope, Source: "ad_hoc", Root: manifest.root, Argv: argv, Cwd: cwd, Env: os.Environ(), TTY: cmd.Bool("tty"), Attached: attached})
 		}
 		if declared {
-			return client.Start(context.Background(), daemon.StartRequest{Name: name, Scope: selection.scope, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: os.Environ(), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition), Attached: attached})
+			return client.Start(context.Background(), daemon.StartRequest{Name: name, Scope: selection.scope, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: manifestEnvironment(manifest, definition), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition), Attached: attached})
 		}
 		return client.Start(context.Background(), daemon.StartRequest{Name: name, Scope: selection.scope, Root: manifest.root, Cwd: current.Cwd, Attached: attached})
 	}
@@ -2644,6 +2649,9 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		}
 	}
 	manifest.selector = selection.selector
+	if err := prepareManifestEnvironments(&manifest, names, os.Environ(), false); err != nil {
+		return err
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -2674,7 +2682,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 			request.Root = manifest.root
 			request.Cwd = definition.Cwd
 			request.Argv = append([]string(nil), definition.Argv...)
-			request.Env = manifestProcessEnv()
+			request.Env = manifestEnvironment(manifest, definition)
 			request.Source = definition.Source
 			request.Ready = readinessConfig(definition)
 			request.TTY = definition.TTY
@@ -3078,6 +3086,9 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	if err != nil {
 		return newCLIUsageError(err)
 	}
+	if err := prepareManifestEnvironments(&manifest, names, os.Environ(), ordered); err != nil {
+		return err
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -3120,14 +3131,13 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 			}
 		}()
 	}
-	env := manifestProcessEnv()
 	var results []manifestLaunchResult
 	var progress *manifestProgressRenderer
 	if ordered && !cmd.Bool("json") && !cmd.Bool("no-wait") && progressWriter != nil {
 		progress = newManifestProgressRendererWithPolicy(progressWriter, len(names), colorPolicyForWriter(progressWriter), manifest.selector)
 	}
 	if ordered {
-		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, env, timeoutOverride, preserveRecovery, progress)
+		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, timeoutOverride, preserveRecovery, progress)
 		if err == nil {
 			var removed []manifestLaunchResult
 			removed, err = removedManifestResults(ctx, client, manifest)
@@ -3135,7 +3145,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 			sort.SliceStable(results, func(i, j int) bool { return results[i].Name < results[j].Name })
 		}
 	} else {
-		results, err = manifestStartConcurrent(ctx, cmd, client, cwd, manifest, names, env, timeoutOverride)
+		results, err = manifestStartConcurrent(ctx, cmd, client, cwd, manifest, names, timeoutOverride)
 	}
 	if followSession.interrupted() {
 		session := followSession
@@ -3241,7 +3251,7 @@ type manifestLaunchState struct {
 	observedAt time.Time
 }
 
-func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd string, manifest manifestState, name string, env []string, preserveRecovery bool) (project.Definition, manifestLaunchResult, app.Process) {
+func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd string, manifest manifestState, name string, preserveRecovery bool) (project.Definition, manifestLaunchResult, app.Process) {
 	scope := app.ScopeProject
 	if manifest.selector == "--global" {
 		scope = app.ScopeGlobal
@@ -3263,14 +3273,14 @@ func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd st
 		}
 		return definition, manifestLaunchResultFor(definition, process, "started"), process
 	}
-	result, process, _, ensureErr := ensureManifestStart(ctx, client, cwd, manifest.root, definition, env, preserveRecovery)
+	result, process, _, ensureErr := ensureManifestStart(ctx, client, cwd, manifest.root, definition, manifestEnvironment(manifest, definition), preserveRecovery)
 	if ensureErr != nil {
 		return definition, manifestLaunchError(definition, ensureErr), app.Process{}
 	}
 	return definition, result, process
 }
 
-func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, env []string, timeoutOverride time.Duration) ([]manifestLaunchResult, error) {
+func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, timeoutOverride time.Duration) ([]manifestLaunchResult, error) {
 	states := make([]manifestLaunchState, len(names))
 	var launches sync.WaitGroup
 	for index, name := range names {
@@ -3278,7 +3288,7 @@ func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client
 		go func(index int, name string) {
 			defer launches.Done()
 			observedAt := time.Now()
-			definition, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, name, env, false)
+			definition, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, name, false)
 			if result.Outcome == "started" && !process.Start.IsZero() {
 				observedAt = process.Start
 			} else if result.Outcome == "already_running" {
@@ -3364,11 +3374,11 @@ type manifestUpScheduleOps struct {
 	skipped   func(context.Context, project.Definition, []string) manifestLaunchResult
 }
 
-func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, env []string, timeoutOverride time.Duration, preserveRecovery bool, progress *manifestProgressRenderer) ([]manifestLaunchResult, error) {
+func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, timeoutOverride time.Duration, preserveRecovery bool, progress *manifestProgressRenderer) ([]manifestLaunchResult, error) {
 	ops := manifestUpScheduleOps{
 		start: func(ctx context.Context, definition project.Definition) (manifestLaunchResult, app.Process, time.Time) {
 			observedAt := time.Now()
-			_, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, definition.Name, env, preserveRecovery)
+			_, result, process := ensureNamedManifestStart(ctx, client, cwd, manifest, definition.Name, preserveRecovery)
 			if result.Outcome == "started" && !process.Start.IsZero() {
 				observedAt = process.Start
 			} else if result.Outcome == "already_running" {

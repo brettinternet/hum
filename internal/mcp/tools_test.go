@@ -19,8 +19,113 @@ import (
 	"hum/internal/daemon"
 	"hum/internal/orchestrate"
 	"hum/internal/output"
+	"hum/internal/project"
 	"hum/internal/protocol"
 )
+
+func TestMCPManifestEnvironmentContract(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("TOKEN=file-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fileSpec := &project.EnvironmentSpec{Inherit: true, Files: []string{".env"}, Values: map[string]*string{}, BaseDir: root, Root: root}
+	resolution := Resolution{Root: root, Definitions: []Definition{{Name: "api", Source: "manifest", Argv: []string{"api"}, Cwd: root, Environment: fileSpec}}}
+
+	t.Run("configured baseline captured once", func(t *testing.T) {
+		calls := 0
+		server := NewServer(Options{Environment: func() []string {
+			calls++
+			return []string{"PATH=/bin", "TOKEN=baseline-secret"}
+		}})
+		prepared, err := server.prepareEnvironments(resolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 || !reflect.DeepEqual(prepared["api"], []string{"PATH=/bin", "TOKEN=file-secret"}) {
+			t.Fatalf("calls=%d prepared=%v", calls, prepared["api"])
+		}
+	})
+
+	t.Run("inherit false and null", func(t *testing.T) {
+		value := "only"
+		spec := &project.EnvironmentSpec{Inherit: false, Values: map[string]*string{"ONLY": &value, "TOKEN": nil}, BaseDir: root, Root: root}
+		server := NewServer(Options{Environment: func() []string { return []string{"TOKEN=baseline-secret"} }})
+		prepared, err := server.prepareEnvironments(Resolution{Root: root, Definitions: []Definition{{Name: "isolated", Environment: spec}}})
+		if err != nil || !reflect.DeepEqual(prepared["isolated"], []string{"ONLY=only"}) {
+			t.Fatalf("prepared=%v error=%v", prepared, err)
+		}
+	})
+
+	t.Run("concurrent requests do not mutate global environment", func(t *testing.T) {
+		t.Setenv("HUM_MCP_ENVIRONMENT_SENTINEL", "global")
+		server := NewServer(Options{Environment: func() []string { return []string{"HUM_MCP_ENVIRONMENT_SENTINEL=baseline"} }})
+		var group sync.WaitGroup
+		errors := make(chan error, 16)
+		for index := 0; index < cap(errors); index++ {
+			group.Add(1)
+			go func() {
+				defer group.Done()
+				_, err := server.prepareEnvironments(resolution)
+				errors <- err
+			}()
+		}
+		group.Wait()
+		close(errors)
+		for err := range errors {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := os.Getenv("HUM_MCP_ENVIRONMENT_SENTINEL"); got != "global" {
+			t.Fatalf("global environment mutated to %q", got)
+		}
+	})
+
+	t.Run("preflight precedes client contact", func(t *testing.T) {
+		contacts := 0
+		server := NewServer(Options{
+			Environment: func() []string { return []string{"PATH=/bin"} },
+			ClientFactory: func(context.Context, bool) (Client, error) {
+				contacts++
+				return nil, errors.New("unexpected client contact")
+			},
+		})
+		missing := Resolution{Root: root, Definitions: []Definition{{Name: "bad", Source: "manifest", Argv: []string{"bad"}, Cwd: root, Environment: &project.EnvironmentSpec{Inherit: true, Files: []string{"missing.env"}, Values: map[string]*string{}, BaseDir: root, Root: root}}}}
+		if _, err := server.start(context.Background(), missing, commonInput{Name: "bad", NoWait: true}); err == nil || contacts != 0 {
+			t.Fatalf("missing-file error=%v contacts=%d", err, contacts)
+		}
+
+		encodedLarge := strings.Repeat("\n", (4<<20)-7)
+		oversized := Resolution{Root: root, Definitions: []Definition{{Name: "bad", Source: "manifest", Argv: []string{"bad"}, Cwd: root, Environment: &project.EnvironmentSpec{Inherit: false, Values: map[string]*string{"VALUE": &encodedLarge}, BaseDir: root, Root: root}}}}
+		if _, err := server.start(context.Background(), oversized, commonInput{Name: "bad", NoWait: true}); err == nil || contacts != 0 {
+			t.Fatalf("oversized error=%v contacts=%d", err, contacts)
+		}
+	})
+
+	t.Run("request carries environment but response does not", func(t *testing.T) {
+		client := &fakeClient{processes: map[string]protocol.Process{}, startErr: map[string]error{}}
+		server := NewServer(Options{
+			Environment:   func() []string { return []string{"PATH=/bin", "TOKEN=baseline-secret"} },
+			ClientFactory: func(context.Context, bool) (Client, error) { return client, nil },
+		})
+		value, err := server.start(context.Background(), resolution, commonInput{Name: "api", NoWait: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(client.starts) != 1 || !reflect.DeepEqual(client.starts[0].Env, []string{"PATH=/bin", "TOKEN=file-secret"}) {
+			t.Fatalf("start requests=%#v", client.starts)
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{`"env"`, "TOKEN", "file-secret", "baseline-secret"} {
+			if strings.Contains(string(encoded), secret) {
+				t.Fatalf("response exposed %q: %s", secret, encoded)
+			}
+		}
+	})
+}
 
 func TestStartupReconciliationWarnings(t *testing.T) {
 	warnings := []protocol.StartupWarning{{Project: "/project", Name: "api", Outcome: "unresolved", Message: "identity mismatch"}}

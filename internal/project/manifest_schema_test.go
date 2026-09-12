@@ -31,10 +31,38 @@ func TestManifestSchemaContract(t *testing.T) {
 	processes := schemaObject(t, schema, "properties", "processes")
 	propertyNames := schemaObject(t, processes, "propertyNames")
 	assertSchemaString(t, propertyNames, "pattern", manifestNamePattern)
+	environment := schemaObject(t, schema, "properties", "environment")
+	assertClosedSchemaObject(t, "environment", environment)
+	assertSchemaKeys(t, "environment", environment, map[string]struct{}{"inherit": {}, "files": {}})
+	inherit := schemaObject(t, environment, "properties", "inherit")
+	if inherit["type"] != "boolean" || inherit["default"] != true {
+		t.Fatalf("environment.inherit schema = %#v", inherit)
+	}
+	files := schemaObject(t, environment, "properties", "files")
+	if files["type"] != "array" || files["maxItems"] != float64(maxEnvironmentFiles) {
+		t.Fatalf("environment.files schema = %#v", files)
+	}
+	fileItem := schemaObject(t, files, "items")
+	filePattern, _ := fileItem["pattern"].(string)
+	if fileItem["type"] != "string" || fileItem["minLength"] != float64(1) || !strings.Contains(filePattern, "u0000") {
+		t.Fatalf("environment.files item schema = %#v", fileItem)
+	}
+
 	process := schemaObject(t, schema, "$defs", "process")
 	assertClosedSchemaObject(t, "process", process)
 	assertSchemaKeys(t, "process", process, processFields)
 	assertRequiredKeys(t, "process", process, "argv")
+	processEnvironment := schemaObject(t, process, "properties", "env")
+	if processEnvironment["type"] != "object" {
+		t.Fatalf("process.env schema = %#v", processEnvironment)
+	}
+	envNames := schemaObject(t, processEnvironment, "propertyNames")
+	assertSchemaString(t, envNames, "pattern", environmentKeyPattern.String())
+	envValues := schemaObject(t, processEnvironment, "additionalProperties")
+	if variants, ok := envValues["anyOf"].([]any); !ok || len(variants) != 2 {
+		t.Fatalf("process.env values schema = %#v", envValues)
+	}
+
 	readiness := schemaObject(t, schema, "$defs", "readiness")
 	assertClosedSchemaObject(t, "readiness", readiness)
 	assertSchemaKeys(t, "readiness", readiness, readyFields)

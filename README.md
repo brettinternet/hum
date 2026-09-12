@@ -153,6 +153,12 @@ hum down
 
 `start` is explicit and does not start dependencies. `ready.exec` runs exact argv without a shell; immediate serial retries (1s default) inherit cwd/env, retain bounded diagnostics, and gate startup—not liveness. `down` stops project processes concurrently. See [design and command semantics](docs/design.md) for validation details.
 
+### Manifest environments
+
+A manifest may compose each declared process environment from the caller baseline, required UTF-8 `.env`-style files, and a process `env` map. `inherit` defaults to true; `inherit: false` starts empty, and `null` removes a lower-layer key. Files are relative to the selected manifest, remain inside the project root, and are read only for launch commands. The grammar accepts blank lines, full-line comments, `export KEY=value`, ordinary assignment whitespace, and whole single/double quoted values; it does not expand variables, discover files, decrypt, or activate shells. For example, ordinary whitespace and comments are valid: `export PORT = "3000" # local port`, with blank and full-line `#` comments. Quote literal `$NAME`, `${...}`, `$()`, or backticks, or use an external loader. Files are required and bounded to 16 files, 1 MiB each, 4,096 assignments each, and 4 MiB per final environment; encoded protocol requests retain the existing 8 MiB limit.
+
+The default/empty configuration copies the caller environment byte-for-byte. Composed entries are sorted by key. `start`, `up`, declared `run`, and `restart` preflight before daemon contact; read-only commands do not read files. Running and automatic-recovery snapshots retain their launch environment, and explicit restart reloads it. Environment metadata is never returned, but child and readiness-probe output is unredacted—processes and probes should not print secrets.
+
 ### Operate from anywhere
 
 Use `--project DIR` or `-C DIR` before or after the subcommand:

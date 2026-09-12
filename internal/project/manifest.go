@@ -35,8 +35,9 @@ const (
 
 var (
 	manifestFields = map[string]struct{}{
-		"version":   {},
-		"processes": {},
+		"version":     {},
+		"environment": {},
+		"processes":   {},
 	}
 	processFields = map[string]struct{}{
 		"argv":       {},
@@ -46,6 +47,7 @@ var (
 		"tty":        {},
 		"restart":    {},
 		"stop_grace": {},
+		"env":        {},
 	}
 	readyFields = map[string]struct{}{
 		"match":    {},
@@ -62,15 +64,18 @@ func IsManifestSource(source string) bool {
 
 // Definition is one named process declared by a project manifest.
 type Definition struct {
-	Name      string
-	Source    string
-	Argv      []string
-	Cwd       string
-	Ready     *ReadyDefinition
-	After     []string
-	TTY       bool
-	Restart   RestartPolicy
-	StopGrace *time.Duration
+	Name string
+	// Environment is sensitive launch configuration and is never serialized in
+	// process snapshots or response models.
+	Environment *EnvironmentSpec `json:"-"`
+	Source      string
+	Argv        []string
+	Cwd         string
+	Ready       *ReadyDefinition
+	After       []string
+	TTY         bool
+	Restart     RestartPolicy
+	StopGrace   *time.Duration
 }
 
 // ReadyDefinition describes the output expression or direct executable and
@@ -146,13 +151,13 @@ func loadDefinitionsFile(root, filename, display, source string) ([]Definition, 
 		if errors.Is(err, io.EOF) {
 			return nil, manifestError(display, "manifest", "document is empty")
 		}
-		return nil, fmt.Errorf("%s: decode YAML: %w", display, err)
+		return nil, manifestError(display, "manifest", "invalid YAML")
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err == nil {
 		return nil, manifestError(display, "manifest", "multiple YAML documents are not allowed")
 	} else if !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%s: decode YAML: multiple documents are not allowed: %w", display, err)
+		return nil, manifestError(display, "manifest", "multiple YAML documents are not allowed")
 	}
 	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0] == nil {
 		return nil, manifestError(display, "manifest", "document must contain exactly one value")
@@ -176,11 +181,18 @@ func loadDefinitionsFile(root, filename, display, source string) ([]Definition, 
 	if err := parseVersion(display, versionNode); err != nil {
 		return nil, err
 	}
+	var environment *EnvironmentSpec
+	if environmentNode, ok := fields["environment"]; ok {
+		environment, err = parseEnvironment(root, filepath.Dir(filename), display, environmentNode)
+		if err != nil {
+			return nil, err
+		}
+	}
 	processesNode, ok := fields["processes"]
 	if !ok {
 		return nil, manifestError(display, "manifest", "missing key %q", "processes")
 	}
-	return parseProcesses(root, display, processesNode, source)
+	return parseProcesses(root, display, processesNode, source, environment)
 }
 
 func parseVersion(filename string, node *yaml.Node) error {
@@ -197,11 +209,7 @@ func parseVersion(filename string, node *yaml.Node) error {
 	return nil
 }
 
-func parseProcesses(root, filename string, node *yaml.Node, sources ...string) ([]Definition, error) {
-	source := "manifest"
-	if len(sources) != 0 && sources[0] != "" {
-		source = sources[0]
-	}
+func parseProcesses(root, filename string, node *yaml.Node, source string, manifestEnvironment *EnvironmentSpec) ([]Definition, error) {
 	entries, err := decodeMapping(filename, "processes", node, nil)
 	if err != nil {
 		return nil, err
@@ -212,7 +220,7 @@ func parseProcesses(root, filename string, node *yaml.Node, sources ...string) (
 			return nil, manifestError(filename, "processes", "invalid process name %q (want [A-Za-z0-9][A-Za-z0-9._-]{0,63})", entry.name)
 		}
 		context := fmt.Sprintf("process %q", entry.name)
-		definition, err := parseProcess(root, filename, context, entry.value)
+		definition, err := parseProcess(root, filename, context, entry.value, manifestEnvironment)
 		if err != nil {
 			return nil, err
 		}
@@ -298,7 +306,7 @@ func validateAfterGraph(filename string, definitions []Definition) error {
 	return nil
 }
 
-func parseProcess(root, filename, context string, node *yaml.Node) (Definition, error) {
+func parseProcess(root, filename, context string, node *yaml.Node, manifestEnvironment *EnvironmentSpec) (Definition, error) {
 	entries, err := decodeMapping(filename, context, node, processFields)
 	if err != nil {
 		return Definition{}, err
@@ -360,6 +368,13 @@ func parseProcess(root, filename, context string, node *yaml.Node) (Definition, 
 			return Definition{}, manifestError(filename, context, "restart %q is invalid (want never or on-failure)", restartNode.Value)
 		}
 	}
+	var processEnvironment map[string]*string
+	if envNode, ok := fields["env"]; ok {
+		processEnvironment, err = parseProcessEnvironment(filename, context+".env", envNode)
+		if err != nil {
+			return Definition{}, err
+		}
+	}
 	var stopGrace *time.Duration
 	if stopGraceNode, ok := fields["stop_grace"]; ok {
 		if !isStringScalar(stopGraceNode) {
@@ -374,7 +389,79 @@ func parseProcess(root, filename, context string, node *yaml.Node) (Definition, 
 		}
 		stopGrace = &parsed
 	}
-	return Definition{Argv: argv, Cwd: cwd, Ready: ready, After: after, TTY: tty, Restart: restart, StopGrace: stopGrace}, nil
+	var environment *EnvironmentSpec
+	if manifestEnvironment != nil {
+		copy := *manifestEnvironment
+		copy.Files = append([]string(nil), manifestEnvironment.Files...)
+		copy.Values = processEnvironment
+		if copy.Values == nil {
+			copy.Values = map[string]*string{}
+		}
+		environment = &copy
+	} else if processEnvironment != nil {
+		environment = &EnvironmentSpec{Inherit: true, Values: processEnvironment}
+	}
+	return Definition{Argv: argv, Cwd: cwd, Ready: ready, After: after, TTY: tty, Restart: restart, StopGrace: stopGrace, Environment: environment}, nil
+}
+
+func parseEnvironment(root, base, filename string, node *yaml.Node) (*EnvironmentSpec, error) {
+	entries, err := decodeMapping(filename, "environment", node, map[string]struct{}{"inherit": {}, "files": {}})
+	if err != nil {
+		return nil, err
+	}
+	spec := &EnvironmentSpec{Inherit: true, Values: map[string]*string{}, BaseDir: base, Root: root}
+	for _, entry := range entries {
+		switch entry.name {
+		case "inherit":
+			if entry.value == nil || entry.value.Kind != yaml.ScalarNode || entry.value.ShortTag() != "!!bool" {
+				return nil, manifestError(filename, "environment.inherit", "must be a boolean")
+			}
+			if err := entry.value.Decode(&spec.Inherit); err != nil {
+				return nil, manifestError(filename, "environment.inherit", "must be a boolean")
+			}
+		case "files":
+			if !isSequenceNode(entry.value) {
+				return nil, manifestError(filename, "environment.files", "must be a sequence of non-empty relative strings")
+			}
+			if len(entry.value.Content) > maxEnvironmentFiles {
+				return nil, manifestError(filename, "environment.files", "must contain at most %d entries", maxEnvironmentFiles)
+			}
+			for index, item := range entry.value.Content {
+				if !isStringScalar(item) || item.Value == "" || filepath.IsAbs(item.Value) || strings.IndexByte(item.Value, 0) >= 0 {
+					return nil, manifestError(filename, fmt.Sprintf("environment.files[%d]", index), "must be a non-empty relative path")
+				}
+				clean := filepath.Clean(filepath.Join(base, item.Value))
+				if clean == base || !pathWithin(root, clean) {
+					return nil, manifestError(filename, fmt.Sprintf("environment.files[%d]", index), "path escapes the project root")
+				}
+				spec.Files = append(spec.Files, item.Value)
+			}
+		}
+	}
+	return spec, nil
+}
+
+func parseProcessEnvironment(filename, context string, node *yaml.Node) (map[string]*string, error) {
+	entries, err := decodeMapping(filename, context, node, nil)
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]*string, len(entries))
+	for _, entry := range entries {
+		if !environmentKeyPattern.MatchString(entry.name) || strings.IndexByte(entry.name, 0) >= 0 {
+			return nil, manifestError(filename, context, "invalid environment key")
+		}
+		if entry.value == nil || entry.value.ShortTag() == "!!null" {
+			values[entry.name] = nil
+			continue
+		}
+		if !isStringScalar(entry.value) || strings.IndexByte(entry.value.Value, 0) >= 0 {
+			return nil, manifestError(filename, context, "environment values must be strings or null")
+		}
+		value := entry.value.Value
+		values[entry.name] = &value
+	}
+	return values, nil
 }
 
 func parseAfter(filename, context string, node *yaml.Node) ([]string, error) {
@@ -529,12 +616,14 @@ func decodeMapping(filename, context string, node *yaml.Node, allowed map[string
 		if allowed != nil {
 			if _, known := allowed[name]; !known {
 				validKeys := allowed
-				// Keep legacy diagnostics stable while accepting the additive
-				// stop_grace field.
-				if _, hasStopGrace := allowed["stop_grace"]; hasStopGrace {
+				// Keep diagnostics stable: additive launch-only keys are omitted
+				// from the legacy valid-key hint.
+				_, hasStopGrace := allowed["stop_grace"]
+				_, hasEnv := allowed["env"]
+				if hasStopGrace || hasEnv {
 					validKeys = make(map[string]struct{}, len(allowed)-1)
 					for key := range allowed {
-						if key != "stop_grace" {
+						if key != "stop_grace" && key != "env" {
 							validKeys[key] = struct{}{}
 						}
 					}

@@ -86,7 +86,7 @@ func (mcpResolver) ResolveManifest(ctx context.Context, root, filename string) (
 	definitions := make([]mcpserver.Definition, 0, len(defs))
 	for _, definition := range defs {
 		definitions = append(definitions, mcpserver.Definition{
-			Name: definition.Name, Source: definition.Source,
+			Name: definition.Name, Environment: definition.Environment, Source: definition.Source,
 			Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd,
 			Ready: readinessConfig(definition), After: append([]string{}, definition.After...), TTY: definition.TTY, Restart: restartPolicy(definition),
 		})

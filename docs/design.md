@@ -550,10 +550,43 @@ Parsing is strict and single-document.
 - Definitions are name-sorted and carry `source: manifest`; discovered definitions always have
   no dependencies.
 
-The manifest defines processes and their client-side launch dependencies only: no
-runtime settings, ports, HTTP checks, or environment values/files. Projects
-needing environment activation must commit a runner and put it in argv; CLI and
-MCP do not activate mise, nvm, direnv, or shell hooks.
+The manifest defines processes, their client-side launch dependencies, and an
+optional deterministic environment composition. `environment.inherit` defaults
+to true. Composition starts with the caller baseline, applies required files in
+listed order, then applies the process `env` map. Later values replace earlier
+ones, inherited duplicate names use their last value, `null` unsets a key, and
+active composition sorts final entries by key. A missing/default environment
+and an absent/empty process map preserve the baseline byte-for-byte—including
+order, duplicate entries, opaque inherited names, and its existing size. This
+means the default remains caller-dependent and can inherit stale values;
+`inherit: false` starts from no entries.
+
+Environment files are UTF-8 with LF or CRLF and may end without a newline. They
+allow blank lines, full-line comments, optional `export` plus horizontal
+whitespace, horizontal whitespace around `=`, and empty values. The first `=`
+splits an assignment. Unquoted values trim horizontal edges; `#` begins a
+comment only at value start or after horizontal whitespace. Whole single-quoted
+values are literal. Whole double-quoted values support only `\\`, `\\"`, `\\n`,
+`\\r`, and `\\t`; only horizontal whitespace and a comment may follow the close.
+BOM, NUL, invalid UTF-8, physical multiline values, malformed quotes,
+unsupported escapes, duplicate names, and expansion-shaped text (`$NAME`,
+`${...}`, `$()`, or backticks) are rejected. YAML `env` strings remain literal
+and do not use this grammar. Hum never evaluates, interpolates, decrypts,
+includes, or implicitly discovers environment files; single-quote literal
+expansion-shaped file values or use an external loader. This is not a
+dotenvx/direnv compatibility contract.
+
+File paths are resolved from the selected manifest directory, including
+`--file`; a `../.env` is valid when it remains inside the canonical project
+root. Empty, absolute, root, lexical escapes, symlink escapes, missing,
+nonregular, and unreadable paths fail. Generic manifest parsing checks syntax
+and lexical containment without reading files. Launch preflight stats and
+bounded-reads each unique canonical file once per invocation, then reapplies its
+snapshot per target. There is no cross-request/worktree cache and no global
+environment mutation. Limits are 16 file entries, 1 MiB actual bytes per file,
+4,096 assignments per file, and 4 MiB of final `KEY=VALUE` bytes including NUL
+separators. The marshaled request must also fit the existing 8 MiB protocol line
+limit. CLI and MCP do not activate mise, nvm, direnv, or shell hooks.
 
 ### Zero-config discovery
 
@@ -761,11 +794,39 @@ project, name, leader PID, PGID, and OS process-start identity.
 - Clean graceful shutdown removes `hum.state`; corrupt state fails closed with operator cleanup
   guidance.
 
-The launching client supplies cwd and its full environment.
+The launching client supplies cwd and its baseline environment. The CLI takes
+one `os.Environ` snapshot; MCP takes one `Options.Environment` snapshot (falling
+back to `os.Environ`) per request. Declared processes compose that baseline with
+the selected manifest environment files and per-process map. Selected declared
+`start`, `up`, declared `run`, and `restart` preflight once before creating or
+contacting a client; `up` includes its full dependency closure and any failure
+aborts a mixed declared/retained batch before mutation. Required files are
+validated even for a running record that will be preserved. Empty `up`, ad-hoc
+or retained-only commands, discovered definitions, explicit-argv `run`, and
+read-only commands keep their existing behavior and do not add file access.
+
+The default/empty configuration remains byte-for-byte identical, while
+`inherit: false` synthesizes no baseline. `up` preserves running, pending, and
+exhausted snapshots. Targeted `start` preserves running entries but composes a
+fresh environment when reviving pending/exhausted entries unless other
+definition drift blocks it. Retained-only start/run/restart, automatic relaunch,
+and `ready.exec` reuse the saved snapshot; explicit declared restart reloads
+changes, including clearing a formerly configured environment. No environment
+hash, drift field, or enumeration is exposed. MCP resolves files from the
+request's selected project root/manifest, so separate worktrees do not share
+snapshots or caches.
+Configured environment metadata is never returned or enumerated, and protocol
+responses still prohibit an `env` key. Parsing and preflight diagnostics may
+identify a valid key, path, process, and line but not values, raw input, or a
+decode error containing a value. User argv and existing runtime errors remain
+outside that guarantee. Child output is unredacted. A failing `ready.exec`
+captures bounded stdout/stderr in its retained terminal diagnostic, not in the
+normal supervised log store; that untrusted text can appear in status, JSON, or
+MCP output. Process and probe commands should not print secrets.
 
 - Manifest `cwd` changes only the child directory; discovered definitions use the project root.
-- Resolved restarts use the current argv, cwd, readiness, and requesting client's environment,
-  so definition edits take effect through explicit `restart`.
+- Resolved restarts use the current argv, cwd, readiness, and freshly composed manifest
+  environment, so definition and environment edits take effect through explicit `restart`.
 - A running or recovery-capable manifest record with changed argv, canonical cwd, readiness
   method (including the readiness matcher), exact exec argv, TTY, normalized restart policy, or
   `stop_grace` returns `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance
@@ -851,7 +912,6 @@ The foundation does not include:
 - persistent process history
 - a plugin system
 - OS service installation
-- environment literals or files
 
 The runtime directory contains only the socket, PID/startup/readiness files, durable live-group state, and bounded daemon diagnostics.
 

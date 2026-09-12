@@ -1,5 +1,10 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
 version: 1
+# Optional process environment composition. Files are required and relative to
+# this manifest; values are literal and are never shell-expanded.
+environment:
+  inherit: true
+  files: [.env]
 processes:
   db:
     # argv runs directly, without shell parsing.
@@ -8,6 +13,9 @@ processes:
       match: "ready"
   api:
     argv: [bun, run, api]
+    env:
+      PORT: "3000"
+      LEGACY_DATABASE_URL: null
     after: [db]
     ready:
       match: "Listening"

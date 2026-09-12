@@ -20,6 +20,141 @@ import (
 
 const manifestWorkflowTimeout = 30 * time.Second
 
+func TestManifestEnvironmentLifecycle(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := integrationHum(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := testutil.RuntimeDir(t)
+	env := append(testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=100ms"), "VALUE=stale", "KEEP=inherited", "REMOVED=stale")
+	t.Cleanup(func() { _ = testutil.Run(t, hum, root, env, "shutdown", "--stop-processes") })
+
+	resultFile := filepath.Join(root, "environment.txt")
+	writeEnvironmentLifecycleManifest(t, root, resultFile, "environment:\n  files: [.env]\n")
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("VALUE=file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	started := testutil.Run(t, hum, root, env, "start", "api", "--no-wait", "--json")
+	if started.Code != 0 || started.Err != nil {
+		t.Fatalf("start: code=%d err=%v stdout=%q stderr=%q", started.Code, started.Err, started.Stdout, started.Stderr)
+	}
+	manifestWaitForFileContents(t, resultFile, "file|inherited|unset")
+
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("VALUE=reloaded\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preserved := testutil.Run(t, hum, root, env, "start", "api", "--no-wait", "--json")
+	if preserved.Code != 0 || !strings.Contains(preserved.Stdout, `"outcome":"already_running"`) {
+		t.Fatalf("preserved start: code=%d err=%v stdout=%q stderr=%q", preserved.Code, preserved.Err, preserved.Stdout, preserved.Stderr)
+	}
+	manifestAssertFileContents(t, resultFile, "file|inherited|unset")
+
+	if err := os.Remove(resultFile); err != nil {
+		t.Fatal(err)
+	}
+	restarted := testutil.Run(t, hum, root, env, "restart", "api", "--no-wait", "--json")
+	if restarted.Code != 0 || restarted.Err != nil {
+		t.Fatalf("restart: code=%d err=%v stdout=%q stderr=%q", restarted.Code, restarted.Err, restarted.Stdout, restarted.Stderr)
+	}
+	manifestWaitForFileContents(t, resultFile, "reloaded|inherited|unset")
+
+	if err := os.Remove(filepath.Join(root, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	status := testutil.Run(t, hum, root, env, "status", "api", "--json")
+	if status.Code != 0 || status.Err != nil {
+		t.Fatalf("read-only status accessed missing file: code=%d err=%v stderr=%q", status.Code, status.Err, status.Stderr)
+	}
+	missing := testutil.Run(t, hum, root, env, "start", "api", "--no-wait", "--json")
+	if missing.Code == 0 || missing.Err == nil || !strings.Contains(missing.Stdout+missing.Stderr, ".env") {
+		t.Fatalf("required-file preflight: code=%d err=%v stdout=%q stderr=%q", missing.Code, missing.Err, missing.Stdout, missing.Stderr)
+	}
+	manifestAssertFileContents(t, resultFile, "reloaded|inherited|unset")
+
+	writeEnvironmentLifecycleManifest(t, root, resultFile, "")
+	if err := os.Remove(resultFile); err != nil {
+		t.Fatal(err)
+	}
+	cleared := testutil.Run(t, hum, root, env, "restart", "api", "--no-wait", "--json")
+	if cleared.Code != 0 || cleared.Err != nil {
+		t.Fatalf("clear environment restart: code=%d err=%v stdout=%q stderr=%q", cleared.Code, cleared.Err, cleared.Stdout, cleared.Stderr)
+	}
+	manifestWaitForFileContents(t, resultFile, "stale|inherited|unset")
+
+	configDir := filepath.Join(root, "config")
+	if err := os.Mkdir(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("VALUE=nested\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nestedResult := filepath.Join(root, "nested.txt")
+	nestedManifest := "version: 1\nenvironment:\n  files: [../.env]\nprocesses:\n  nested:\n    argv: [/bin/sh, -c, " + yamlQuote(environmentLifecycleScript(nestedResult)) + "]\n    env:\n      REMOVED: null\n"
+	if err := os.WriteFile(filepath.Join(configDir, "hum.dev.yaml"), []byte(nestedManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nested := testutil.Run(t, hum, root, env, "start", "nested", "--file", "config/hum.dev.yaml", "--no-wait", "--json")
+	if nested.Code != 0 || nested.Err != nil {
+		t.Fatalf("nested manifest start: code=%d err=%v stdout=%q stderr=%q", nested.Code, nested.Err, nested.Stdout, nested.Stderr)
+	}
+	manifestWaitForFileContents(t, nestedResult, "nested|inherited|unset")
+
+	failedRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(failedRoot, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	failedRuntime := testutil.RuntimeDir(t)
+	failedEnv := testutil.RuntimeEnv(failedRuntime)
+	failedManifest := "version: 1\nenvironment:\n  files: [missing.env]\nprocesses:\n  first:\n    argv: [/bin/sh, -c, 'sleep 30']\n  second:\n    argv: [/bin/sh, -c, 'sleep 30']\n"
+	if err := os.WriteFile(filepath.Join(failedRoot, "hum.yaml"), []byte(failedManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failed := testutil.Run(t, hum, failedRoot, failedEnv, "up", "--no-wait", "--json")
+	if failed.Code == 0 || failed.Err == nil {
+		t.Fatalf("failing batch passed: stdout=%q stderr=%q", failed.Stdout, failed.Stderr)
+	}
+	if _, err := os.Stat(filepath.Join(failedRuntime, "hum.sock")); !os.IsNotExist(err) {
+		t.Fatalf("preflight contacted daemon: %v", err)
+	}
+}
+
+func writeEnvironmentLifecycleManifest(t *testing.T, root, resultFile, environment string) {
+	t.Helper()
+	manifest := "version: 1\n" + environment + "processes:\n  api:\n    argv: [/bin/sh, -c, " + yamlQuote(environmentLifecycleScript(resultFile)) + "]\n    env:\n      REMOVED: null\n"
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func environmentLifecycleScript(resultFile string) string {
+	return fmt.Sprintf("printf '%%s|%%s|%%s' \"$VALUE\" \"$KEEP\" \"${REMOVED-unset}\" > %s; sleep 30", resultFile)
+}
+
+func manifestWaitForFileContents(t *testing.T, path, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		contents, err := os.ReadFile(path)
+		if err == nil && string(contents) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("file %s = %q, error %v; want %q", path, contents, err, want)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func manifestAssertFileContents(t *testing.T, path, want string) {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != want {
+		t.Fatalf("file %s = %q, error %v; want %q", path, contents, err, want)
+	}
+}
+
 type manifestTestReady struct {
 	Match   string
 	Timeout string
