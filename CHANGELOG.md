@@ -2,6 +2,12 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.13.0](https://github.com/brettinternet/hum/compare/v0.12.2...v0.13.0) - 2026-09-13
+
+### Added
+
+- Add doctor preflight command
+
 ## [v0.12.2](https://github.com/brettinternet/hum/compare/v0.12.1...v0.12.2) - 2026-09-12
 
 ### Added
