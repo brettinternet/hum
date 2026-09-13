@@ -3,6 +3,10 @@
     "hum": {
       "command": "hum",
       "args": ["mcp"]
+    },
+    "worklease": {
+      "command": "worklease",
+      "args": ["mcp"]
     }
   }
 }
