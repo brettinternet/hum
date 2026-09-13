@@ -323,8 +323,13 @@ func newDoctorResult(checks []doctorCheck) doctorResult {
 }
 
 func writeDoctorHuman(writer io.Writer, result doctorResult) error {
+	return writeDoctorHumanWithPolicy(writer, result, colorPolicyForWriter(writer))
+}
+
+func writeDoctorHumanWithPolicy(writer io.Writer, result doctorResult, colors colorPolicy) error {
 	for _, check := range result.Checks {
-		if _, err := fmt.Fprintf(writer, "%s %-28s %s\n", check.Status, check.Name, check.Message); err != nil {
+		status := colors.apply(doctorStatusStyle(check.Status), check.Status)
+		if _, err := fmt.Fprintf(writer, "%s %-28s %s\n", status, check.Name, check.Message); err != nil {
 			return err
 		}
 	}
@@ -336,4 +341,19 @@ func writeDoctorHuman(writer io.Writer, result doctorResult) error {
 	}
 	_, err := fmt.Fprintf(writer, "Summary: %s\n", strings.Join(parts, ", "))
 	return err
+}
+
+func doctorStatusStyle(status string) ansiStyle {
+	switch status {
+	case doctorPass:
+		return ansiGreen
+	case doctorWarn:
+		return ansiYellow
+	case doctorFail:
+		return ansiRed
+	case doctorInfo:
+		return ansiCyan
+	default:
+		return ""
+	}
 }

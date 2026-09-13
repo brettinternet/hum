@@ -16,6 +16,46 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestDoctorHumanColorsStatusLabels(t *testing.T) {
+	result := newDoctorResult([]doctorCheck{
+		{Name: "runtime.path", Status: doctorPass, Message: "path /private/runtime is usable"},
+		{Name: "project.discovery", Status: doctorWarn, Message: "warning text"},
+		{Name: "process.executable", Status: doctorFail, Message: "missing /private/bin"},
+		{Name: "daemon", Status: doctorInfo, Message: "socket absent"},
+	})
+
+	var colored bytes.Buffer
+	if err := writeDoctorHumanWithPolicy(&colored, result, colorPolicy{enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		ansiGreenString(doctorPass),
+		ansiYellowString(doctorWarn),
+		ansiRedString(doctorFail),
+		ansiCyanString(doctorInfo),
+	} {
+		if !strings.Contains(colored.String(), want) {
+			t.Errorf("colored doctor output missing %q: %q", want, colored.String())
+		}
+	}
+	for _, value := range []string{"runtime.path", "/private/runtime", "project.discovery", "warning text", "/private/bin", "socket absent", "Summary:"} {
+		if strings.Contains(colored.String(), string(ansiGreen)+value+ansiReset) ||
+			strings.Contains(colored.String(), string(ansiYellow)+value+ansiReset) ||
+			strings.Contains(colored.String(), string(ansiRed)+value+ansiReset) ||
+			strings.Contains(colored.String(), string(ansiCyan)+value+ansiReset) {
+			t.Errorf("doctor styled non-status value %q: %q", value, colored.String())
+		}
+	}
+
+	var plain bytes.Buffer
+	if err := writeDoctorHumanWithPolicy(&plain, result, colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := stripRenderANSI(colored.String()); got != plain.String() {
+		t.Fatalf("color changed doctor output content:\ncolored=%q\nplain=%q", got, plain.String())
+	}
+}
+
 func TestDoctorConfigurationAndRuntimeContract(t *testing.T) {
 	projectRoot := t.TempDir()
 	writeDoctorTestFile(t, filepath.Join(projectRoot, "hum.yaml"), "version: 1\nprocesses:\n  ok:\n    argv: [/bin/sh]\n")
