@@ -137,7 +137,7 @@ func Start(spec Spec) (*Child, error) {
 		idleFlush = defaultIdleFlush
 	}
 
-	resolvedPath, err := resolveExecutable(argv[0], env, spec.Dir)
+	resolvedPath, err := ResolveExecutable(argv[0], env, spec.Dir)
 	if err != nil {
 		return nil, fmt.Errorf("process: resolve %q: %w", argv[0], err)
 	}
@@ -1058,8 +1058,33 @@ func capture(
 	return errors.Join(errs...)
 }
 
-func resolveExecutable(name string, env []string, dir string) (string, error) {
+// ResolveExecutable resolves name using the exact environment and working
+// directory used by Start, without executing it. Slash-containing names are
+// checked directly; bare names use only PATH from env.
+func ResolveExecutable(name string, env []string, dir string) (string, error) {
+	if name == "" {
+		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+	}
 	if filepath.Base(name) != name {
+		candidate := name
+		if !filepath.IsAbs(candidate) {
+			targetDir := dir
+			if targetDir == "" {
+				var err error
+				targetDir, err = os.Getwd()
+				if err != nil {
+					return "", &exec.Error{Name: name, Err: err}
+				}
+			}
+			candidate = filepath.Join(targetDir, candidate)
+		}
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() || info.Mode().Perm()&0111 == 0 {
+			if err == nil {
+				err = exec.ErrNotFound
+			}
+			return "", &exec.Error{Name: name, Err: err}
+		}
 		return name, nil
 	}
 

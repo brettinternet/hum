@@ -32,7 +32,7 @@ func WriteManPage(writer io.Writer, root *urfavecli.Command, date string) error 
 	writeManSection(&page, "SYNOPSIS")
 	writeManLiteral(&page, commandUsage(root))
 	writeManSection(&page, "DESCRIPTION")
-	writeManParagraphs(&page, "Supervise local development processes. Use hum up to start processes in hum.yaml. Use hum run for ad-hoc work. Inspect processes with hum status and hum logs. Select another project with --project or an exact complete variant with --file, conventionally hum.dev.yaml. Use --global for machine-wide ad-hoc processes.")
+	writeManParagraphs(&page, "Supervise local development processes. Use hum doctor for a read-only preflight, hum up to start processes in hum.yaml, and hum run for ad-hoc work. Inspect processes with hum status and hum logs. Select another project with --project or an exact complete variant with --file, conventionally hum.dev.yaml. Use --global for machine-wide ad-hoc processes.")
 	writeManQuickStart(&page)
 	writeManConfiguration(&page)
 
@@ -166,6 +166,8 @@ func manExamples(description string) []string {
 
 func manCommandDescription(command *urfavecli.Command) string {
 	switch command.Name {
+	case "doctor":
+		return "Check the supported operating system, effective Hum settings, runtime path, selected project and manifest environments, process and readiness executables, and an already-present daemon. It never starts the daemon or executes managed commands and never exposes environment values. A missing daemon is informational; failures exit 1, while warnings and informational results do not."
 	case "mcp":
 		return "Run a one-time Model Context Protocol server over standard input and output. Coding agents can manage processes with the same lifecycle operations as the CLI. See the coding-agent guide in SEE ALSO for tools, scopes, and errors."
 	case "run":
@@ -189,6 +191,8 @@ func manCommandDescription(command *urfavecli.Command) string {
 
 func manCommandExamples(command *urfavecli.Command) []string {
 	switch command.Name {
+	case "doctor":
+		return []string{"hum doctor", "hum --project ../service doctor --json"}
 	case "init":
 		return []string{"hum init", "hum init --json", "hum init --force"}
 	case "run":

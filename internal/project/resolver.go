@@ -13,6 +13,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
+	"gopkg.in/yaml.v3"
 )
 
 // ErrNoCandidate reports that no supported conventional development entrypoint
@@ -166,6 +169,7 @@ var supportedDiscoverySources = []string{
 
 type discoveryLookPathFunc func(string) (string, error)
 type discoveryCommandFunc func(context.Context, string, ...string) ([]byte, error)
+type discoveryReadFileFunc func(string) ([]byte, error)
 type discoveryDetector func(context.Context, string) (Definition, bool, error)
 
 // These package-private seams keep detector tests deterministic. Production
@@ -277,6 +281,282 @@ func ResolveDefinitionsContext(ctx context.Context, root string) ([]Definition, 
 		return definitions, nil
 	}
 	return discoverDefinitionsContext(ctx, root)
+}
+
+// ResolveExplicitDefinitionsReadOnly loads exactly the selected manifest with
+// the same bounded, nonblocking file semantics used by diagnostic discovery.
+func ResolveExplicitDefinitionsReadOnly(selection ManifestSelection) ([]Definition, error) {
+	contents, err := readDiscoveryDeclaration(selection.Path)
+	if err != nil {
+		return nil, err
+	}
+	return parseDefinitions(selection.Root, contents, filepath.Dir(selection.Path), selection.Relative, selection.Source)
+}
+
+// ResolveDefinitionsReadOnly resolves hum.yaml and conventional definitions
+// without running task-runner introspection commands. It is intended for
+// observational diagnostics that must not execute any project-owned command.
+func ResolveDefinitionsReadOnly(ctx context.Context, root string) ([]Definition, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	root, err := absoluteClean(root)
+	if err != nil {
+		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: err}
+	}
+	manifestPath := filepath.Join(root, "hum.yaml")
+	contents, err := readDiscoveryDeclaration(manifestPath)
+	if err == nil {
+		definitions, parseErr := parseDefinitions(root, contents, filepath.Dir(manifestPath), manifestPath, "manifest")
+		if parseErr != nil {
+			return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: parseErr}
+		}
+		return definitions, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: fmt.Errorf("%s: open: %w", manifestPath, err)}
+	}
+	if err := validateReadOnlyDiscoveryFiles(root); err != nil {
+		return nil, err
+	}
+	detectors := []discoveryDetector{
+		detectMiseReadOnly,
+		detectTaskReadOnly,
+		detectJustReadOnly,
+		detectMakeReadOnly,
+		detectPackageReadOnly,
+		detectDenoReadOnly,
+		detectComposerReadOnly,
+		detectBinDev,
+		detectMixReadOnly,
+	}
+	candidates := make([]Definition, 0, len(detectors))
+	for _, detector := range detectors {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		candidate, found, err := detector(ctx, root)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			candidates = append(candidates, candidate)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, &NoCandidateError{Root: root, Supported: append([]string(nil), supportedDiscoveryConventions...)}
+	}
+	if len(candidates) > 1 {
+		sources := make([]string, len(candidates))
+		for index, candidate := range candidates {
+			sources[index] = candidate.Source
+		}
+		return nil, &AmbiguityError{Root: root, Sources: sources, Candidates: candidates}
+	}
+	return candidates, nil
+}
+
+const maxReadOnlyDiscoveryFileBytes int64 = 1 << 20
+
+func readDiscoveryDeclaration(path string) ([]byte, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("open declaration file")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("declaration is not a regular file")
+	}
+	if info.Size() > maxReadOnlyDiscoveryFileBytes {
+		return nil, errors.New("declaration exceeds the 1 MiB diagnostic limit")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxReadOnlyDiscoveryFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxReadOnlyDiscoveryFileBytes {
+		return nil, errors.New("declaration exceeds the 1 MiB diagnostic limit")
+	}
+	return data, nil
+}
+
+func validateReadOnlyDiscoveryFiles(root string) error {
+	groups := []struct {
+		source string
+		names  []string
+		all    bool
+	}{
+		{source: "mise", names: []string{"mise.toml", ".mise.toml", filepath.Join(".config", "mise.toml")}, all: true},
+		{source: "task", names: []string{"Taskfile.yml", "Taskfile.yaml", "taskfile.yml", "taskfile.yaml"}},
+		{source: "just", names: []string{"justfile", "Justfile", ".justfile"}},
+		{source: "make", names: []string{"GNUmakefile", "makefile", "Makefile"}},
+		{source: "package_json", names: []string{"package.json"}},
+		{source: "deno_json", names: []string{"deno.json", "deno.jsonc"}, all: true},
+		{source: "composer_json", names: []string{"composer.json"}},
+		{source: "mix", names: []string{"mix.exs"}},
+	}
+	for _, group := range groups {
+		paths, err := rootFiles(root, group.names, group.source)
+		if err != nil {
+			return err
+		}
+		if !group.all && len(paths) > 1 {
+			paths = paths[:1]
+		}
+		for _, path := range paths {
+			info, err := os.Stat(path)
+			if err != nil {
+				return configurationError(group.source, path, err)
+			}
+			if info.Size() > maxReadOnlyDiscoveryFileBytes {
+				return configurationError(group.source, path, errors.New("declaration exceeds the 1 MiB diagnostic limit"))
+			}
+		}
+	}
+	return nil
+}
+
+var (
+	justRecipeName   = regexp.MustCompile(`^([A-Za-z0-9_-]+)`)
+	miseInlineDevKey = regexp.MustCompile(`(?:^|,)\s*(?:"dev"|'dev'|dev)\s*=`)
+)
+
+func detectMiseReadOnly(_ context.Context, root string) (Definition, bool, error) {
+	paths, err := rootFiles(root, []string{"mise.toml", ".mise.toml", filepath.Join(".config", "mise.toml")}, "mise")
+	if err != nil {
+		return Definition{}, false, err
+	}
+	for _, path := range paths {
+		data, err := readDiscoveryDeclaration(path)
+		if err != nil {
+			return Definition{}, false, configurationError("mise", path, err)
+		}
+		if miseDeclaresDev(data) {
+			return discoveredDefinition(root, "mise", "mise", "run", "dev"), true, nil
+		}
+	}
+	return Definition{}, false, nil
+}
+
+func miseDeclaresDev(data []byte) bool {
+	inTasks := false
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			table := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+			parts := strings.Split(table, ".")
+			if len(parts) == 2 && tomlKey(parts[0]) == "tasks" && tomlKey(parts[1]) == "dev" {
+				return true
+			}
+			inTasks = len(parts) == 1 && tomlKey(parts[0]) == "tasks"
+			continue
+		}
+		name, value, assignment := strings.Cut(line, "=")
+		if !assignment {
+			continue
+		}
+		parts := strings.Split(strings.TrimSpace(name), ".")
+		if inTasks && len(parts) == 1 && tomlKey(parts[0]) == "dev" || len(parts) == 2 && tomlKey(parts[0]) == "tasks" && tomlKey(parts[1]) == "dev" {
+			return true
+		}
+		value = strings.TrimSpace(value)
+		if len(parts) == 1 && tomlKey(parts[0]) == "tasks" && strings.HasPrefix(value, "{") && strings.HasSuffix(value, "}") && miseInlineDevKey.MatchString(strings.TrimSpace(value[1:len(value)-1])) {
+			return true
+		}
+	}
+	return false
+}
+
+func tomlKey(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && (value[0] == '\'' && value[len(value)-1] == '\'' || value[0] == '"' && value[len(value)-1] == '"') {
+		return value[1 : len(value)-1]
+	}
+	return value
+}
+
+func detectTaskReadOnly(_ context.Context, root string) (Definition, bool, error) {
+	path, present, err := rootFile(root, []string{"Taskfile.yml", "Taskfile.yaml", "taskfile.yml", "taskfile.yaml"}, "task")
+	if err != nil || !present {
+		return Definition{}, false, err
+	}
+	data, err := readDiscoveryDeclaration(path)
+	if err != nil {
+		return Definition{}, false, configurationError("task", path, err)
+	}
+	var document struct {
+		Tasks map[string]struct {
+			Aliases []string `yaml:"aliases"`
+		} `yaml:"tasks"`
+	}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return Definition{}, false, configurationError("task", path, err)
+	}
+	for name, task := range document.Tasks {
+		if name == "dev" || slicesContain(task.Aliases, "dev") {
+			return discoveredDefinition(root, "task", "task", "dev"), true, nil
+		}
+	}
+	return Definition{}, false, nil
+}
+
+func detectJustReadOnly(_ context.Context, root string) (Definition, bool, error) {
+	path, present, err := rootFile(root, []string{"justfile", "Justfile", ".justfile"}, "just")
+	if err != nil || !present {
+		return Definition{}, false, err
+	}
+	data, err := readDiscoveryDeclaration(path)
+	if err != nil {
+		return Definition{}, false, configurationError("just", path, err)
+	}
+	private := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			for _, attribute := range strings.Split(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"), ",") {
+				if strings.TrimSpace(attribute) == "private" {
+					private = true
+				}
+			}
+			continue
+		}
+		match := justRecipeName.FindStringSubmatch(trimmed)
+		if len(match) == 0 {
+			private = false
+			continue
+		}
+		remainder := strings.TrimSpace(strings.TrimPrefix(trimmed, match[1]))
+		isRecipe := strings.Contains(remainder, ":") && !strings.HasPrefix(remainder, ":=")
+		if isRecipe && match[1] == "dev" && !private {
+			return discoveredDefinition(root, "just", "just", "dev"), true, nil
+		}
+		private = false
+	}
+	return Definition{}, false, nil
+}
+
+func slicesContain(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func discoverDefinitions(root string) ([]Definition, error) {
@@ -635,12 +915,20 @@ func justRecipePrivate(recipe map[string]any) (bool, error) {
 	return private, nil
 }
 
-func detectMake(_ context.Context, root string) (Definition, bool, error) {
+func detectMake(ctx context.Context, root string) (Definition, bool, error) {
+	return detectMakeWithReader(ctx, root, os.ReadFile)
+}
+
+func detectMakeReadOnly(ctx context.Context, root string) (Definition, bool, error) {
+	return detectMakeWithReader(ctx, root, readDiscoveryDeclaration)
+}
+
+func detectMakeWithReader(_ context.Context, root string, readFile discoveryReadFileFunc) (Definition, bool, error) {
 	path, present, err := rootFile(root, []string{"GNUmakefile", "makefile", "Makefile"}, "make")
 	if err != nil || !present {
 		return Definition{}, false, err
 	}
-	contents, readErr := os.ReadFile(path)
+	contents, readErr := readFile(path)
 	if readErr != nil {
 		return Definition{}, false, configurationError("make", path, readErr)
 	}
@@ -891,12 +1179,20 @@ func isMakeSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n'
 }
 
-func detectPackage(_ context.Context, root string) (Definition, bool, error) {
+func detectPackage(ctx context.Context, root string) (Definition, bool, error) {
+	return detectPackageWithReader(ctx, root, os.ReadFile)
+}
+
+func detectPackageReadOnly(ctx context.Context, root string) (Definition, bool, error) {
+	return detectPackageWithReader(ctx, root, readDiscoveryDeclaration)
+}
+
+func detectPackageWithReader(_ context.Context, root string, readFile discoveryReadFileFunc) (Definition, bool, error) {
 	path, present, err := rootFile(root, []string{"package.json"}, "package_json")
 	if err != nil || !present {
 		return Definition{}, false, err
 	}
-	contents, err := os.ReadFile(path)
+	contents, err := readFile(path)
 	if err != nil {
 		return Definition{}, false, configurationError("package_json", path, err)
 	}
@@ -1002,14 +1298,22 @@ func packageRunnerFromLockfiles(root string) (string, error) {
 	return families[0], nil
 }
 
-func detectDeno(_ context.Context, root string) (Definition, bool, error) {
+func detectDeno(ctx context.Context, root string) (Definition, bool, error) {
+	return detectDenoWithReader(ctx, root, os.ReadFile)
+}
+
+func detectDenoReadOnly(ctx context.Context, root string) (Definition, bool, error) {
+	return detectDenoWithReader(ctx, root, readDiscoveryDeclaration)
+}
+
+func detectDenoWithReader(_ context.Context, root string, readFile discoveryReadFileFunc) (Definition, bool, error) {
 	paths, err := rootFiles(root, []string{"deno.json", "deno.jsonc"}, "deno_json")
 	if err != nil {
 		return Definition{}, false, err
 	}
 	found := false
 	for _, path := range paths {
-		contents, readErr := os.ReadFile(path)
+		contents, readErr := readFile(path)
 		if readErr != nil {
 			return Definition{}, false, configurationError("deno_json", path, readErr)
 		}
@@ -1067,12 +1371,20 @@ func validateTaskValue(raw json.RawMessage) error {
 	return errors.New("task must be a string or array of strings")
 }
 
-func detectComposer(_ context.Context, root string) (Definition, bool, error) {
+func detectComposer(ctx context.Context, root string) (Definition, bool, error) {
+	return detectComposerWithReader(ctx, root, os.ReadFile)
+}
+
+func detectComposerReadOnly(ctx context.Context, root string) (Definition, bool, error) {
+	return detectComposerWithReader(ctx, root, readDiscoveryDeclaration)
+}
+
+func detectComposerWithReader(_ context.Context, root string, readFile discoveryReadFileFunc) (Definition, bool, error) {
 	path, present, err := rootFile(root, []string{"composer.json"}, "composer_json")
 	if err != nil || !present {
 		return Definition{}, false, err
 	}
-	contents, err := os.ReadFile(path)
+	contents, err := readFile(path)
 	if err != nil {
 		return Definition{}, false, configurationError("composer_json", path, err)
 	}
@@ -1121,12 +1433,20 @@ func detectBinDev(_ context.Context, root string) (Definition, bool, error) {
 	return discoveredDefinition(root, "bin_dev", "./bin/dev"), true, nil
 }
 
-func detectMix(_ context.Context, root string) (Definition, bool, error) {
+func detectMix(ctx context.Context, root string) (Definition, bool, error) {
+	return detectMixWithReader(ctx, root, os.ReadFile)
+}
+
+func detectMixReadOnly(ctx context.Context, root string) (Definition, bool, error) {
+	return detectMixWithReader(ctx, root, readDiscoveryDeclaration)
+}
+
+func detectMixWithReader(_ context.Context, root string, readFile discoveryReadFileFunc) (Definition, bool, error) {
 	path, present, err := rootFile(root, []string{"mix.exs"}, "mix")
 	if err != nil || !present {
 		return Definition{}, false, err
 	}
-	contents, err := os.ReadFile(path)
+	contents, err := readFile(path)
 	if err != nil {
 		return Definition{}, false, configurationError("mix", path, err)
 	}

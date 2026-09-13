@@ -63,8 +63,22 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 		},
 		{
+			Name:        "doctor",
+			Usage:       "preflight",
+			UsageText:   "hum doctor [--json]",
+			ArgsUsage:   "",
+			Description: "Check configuration, runtime paths, project definitions, environments, executables, and an existing daemon without starting processes or creating a daemon. A missing daemon is informational; failures exit 1 and warnings do not.\n\nExamples:\n  hum doctor\n  hum --project ../service doctor --json",
+			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write stable JSON; default is human-readable output"},
+			},
+			OnUsageError: onUsageError,
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return doctorCommand(ctx, cmd, version, buildTime, writer)
+			},
+		},
+		{
 			Name:        "init",
-			Usage:       "create hum.yaml from discovery",
+			Usage:       "initialize hum.yaml",
 			UsageText:   "hum init [--force] [--json]",
 			ArgsUsage:   "",
 			Description: "Create hum.yaml from strict project discovery without starting a daemon. A single candidate is generated; otherwise a commented template is written. Existing manifests require --force.\n\nExamples:\n  hum init",
@@ -350,7 +364,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			command.CustomHelpTemplate = scopeNeutralCommandHelpTemplate
 		default:
 			globalFlag := &urfavecli.BoolFlag{Name: "global", Aliases: []string{"g"}, DefaultText: "false", Usage: "use the machine-wide global process namespace"}
-			if command.Name == "init" || command.Name == "up" {
+			if command.Name == "doctor" || command.Name == "init" || command.Name == "up" {
 				globalFlag.Hidden = true
 			}
 			command.Flags = append(command.Flags, globalFlag)

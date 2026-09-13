@@ -141,6 +141,10 @@ func loadDefinitionsFile(root, filename, display, source string) ([]Definition, 
 	if err != nil {
 		return nil, fmt.Errorf("%s: read: %w", display, err)
 	}
+	return parseDefinitions(root, contents, filepath.Dir(filename), display, source)
+}
+
+func parseDefinitions(root string, contents []byte, baseDir, display, source string) ([]Definition, error) {
 	trimmed := bytes.TrimSpace(bytes.TrimPrefix(contents, []byte("\xef\xbb\xbf")))
 	if len(trimmed) > 0 && json.Valid(trimmed) {
 		return nil, manifestError(display, "manifest", "unsupported format: JSON is not supported")
@@ -183,7 +187,7 @@ func loadDefinitionsFile(root, filename, display, source string) ([]Definition, 
 	}
 	var environment *EnvironmentSpec
 	if environmentNode, ok := fields["environment"]; ok {
-		environment, err = parseEnvironment(root, filepath.Dir(filename), display, environmentNode)
+		environment, err = parseEnvironment(root, baseDir, display, environmentNode)
 		if err != nil {
 			return nil, err
 		}

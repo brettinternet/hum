@@ -1443,3 +1443,32 @@ func TestStartRejectsMissingRequiredFields(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveExecutableUsesExactEnvironmentAndCwd(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(bin, "tool")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveExecutable("tool", []string{"PATH=bin"}, root)
+	if err != nil || got != executable {
+		t.Fatalf("relative PATH resolution = %q, %v; want %q", got, err, executable)
+	}
+	if _, err := ResolveExecutable("tool", []string{"OTHER=value"}, root); err == nil {
+		t.Fatal("resolution used ambient PATH")
+	}
+	direct := filepath.Join(root, "direct")
+	if err := os.WriteFile(direct, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ResolveExecutable("./direct", nil, root); err != nil || got != "./direct" {
+		t.Fatalf("direct resolution = %q, %v", got, err)
+	}
+	if _, err := ResolveExecutable("./missing", nil, root); err == nil {
+		t.Fatal("missing direct executable resolved")
+	}
+}

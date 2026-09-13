@@ -16,6 +16,7 @@ func TestFlagAliases(t *testing.T) {
 	expected := map[string]map[string][]string{
 		"version":  {"json": {"j"}},
 		"serve":    {"daemon": {"d"}},
+		"doctor":   {"json": {"j"}},
 		"init":     {"force": nil, "json": {"j"}},
 		"run":      {"detach": {"d"}, "json": {"j"}, "tty": nil},
 		"start":    {"no-wait": nil, "timeout": {"t"}, "json": {"j"}},
@@ -50,7 +51,7 @@ func TestFlagAliases(t *testing.T) {
 	if got := urfavecli.HelpFlag.Names(); !reflect.DeepEqual(got, []string{"help", "h"}) {
 		t.Fatalf("help names = %v, want [help h]", got)
 	}
-	for _, name := range []string{"init", "run", "start", "up", "down", "list", "status", "attach", "logs", "wait", "input", "signal", "restart", "stop", "remove"} {
+	for _, name := range []string{"doctor", "init", "run", "start", "up", "down", "list", "status", "attach", "logs", "wait", "input", "signal", "restart", "stop", "remove"} {
 		expected[name]["global"] = []string{"g"}
 	}
 	if got := urfavecli.VersionFlag.Names(); !reflect.DeepEqual(got, []string{"version", "v"}) {
@@ -74,7 +75,7 @@ func TestFlagAliases(t *testing.T) {
 
 	for command, flags := range expected {
 		for name, aliases := range flags {
-			if name == "global" && (command == "init" || command == "up") {
+			if name == "global" && (command == "doctor" || command == "init" || command == "up") {
 				continue
 			}
 			for _, alias := range aliases {

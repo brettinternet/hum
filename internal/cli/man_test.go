@@ -34,6 +34,8 @@ func TestWriteManPageCoversPublicCommandTree(t *testing.T) {
 		`.SS "hum help"`,
 		`hum.yaml`,
 		`HUM_RUNTIME_DIR`,
+		`.SS "hum doctor"`,
+		`never exposes environment values`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("man page missing %q", want)
@@ -70,7 +72,7 @@ func TestWriteManPageCoversPublicCommandTree(t *testing.T) {
 			t.Errorf("man page missing practical example %q", want)
 		}
 	}
-	for _, heading := range []string{`.SS "hum init"`, `.SS "hum up"`} {
+	for _, heading := range []string{`.SS "hum doctor"`, `.SS "hum init"`, `.SS "hum up"`} {
 		section := manTestSection(page, heading)
 		if strings.Contains(section, `\-\-global`) {
 			t.Errorf("%s exposes hidden --global flag", heading)

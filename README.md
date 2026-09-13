@@ -193,8 +193,9 @@ caller environment → .env → processes.api.env
 - Hum does not discover files or expand `$NAME`, `${...}`, `$()`, or backticks. Single-quote literal forms or use an external loader.
 
 No configuration preserves the caller environment exactly. `start`, `up`, declared `run`, and
-`restart` load files before daemon contact; read-only commands do not. Processes and automatic
-relaunches keep their launch snapshot. Use `hum restart NAME` to reload changes.
+`restart` load files before daemon contact; ordinary read-only commands do not. `hum doctor` loads
+and validates them without exposing values or launching anything. Processes and automatic relaunches
+keep their launch snapshot. Use `hum restart NAME` to reload changes.
 
 Limits: 16 files; 1 MiB and 4,096 assignments per file; 4 MiB per environment; 8 MiB per encoded
 request. Environment metadata stays private, but child and probe output is unredacted. Do not print secrets.
@@ -222,7 +223,13 @@ hum restart -F hum.test.yaml api
 - Without `--file`, Hum uses `hum.yaml`, or conventional discovery when it is absent.
 - All manifests share one project namespace. The same process name cannot run twice through separate files.
 - Runtime-only commands use `--file` only to identify the project.
-- `--file` is unavailable on `version`, `serve`, `init`, `shutdown`, `mcp`, and `skill`.
+- `--file` is unavailable on `version`, `serve`, `shutdown`, `mcp`, and `skill`.
+
+Run `hum doctor` before launching work to check the selected project, Hum settings, runtime path,
+manifest environments, process and `ready.exec` executables, and any already-present daemon. It never
+starts the daemon, executes a process or readiness probe, repairs files, or retains state; an absent
+daemon is informational. Human output ends with PASS/WARN/FAIL/INFO counts. `--json` emits one
+schema-versioned object, and the command exits 1 only when a check fails or usage is invalid.
 
 `hum init` creates only `hum.yaml`; Hum does not merge manifests or support overlays. `-d` means
 `--detach` for `daemon`, `run`, and `up`.
@@ -286,7 +293,8 @@ A process `next_cursor` is the next cursor to assign.
 
 ## JSON and NDJSON
 
-Every supported CLI `--json` result and NDJSON record includes `schema_version: 1`. See the
+Every supported CLI `--json` result and NDJSON record includes `schema_version: 1`.
+`hum doctor --json` is the read-only preflight result for automation. See the
 [version 1 CLI machine-output contract](docs/cli-json-v1.md) for covered commands, required and
 optional fields, framing, ordering, exit-code interaction, Compatibility rules, and the boundary
 from Hum's private daemon protocol. Attached `hum run` remains raw child output and does not use the CLI JSON contract.

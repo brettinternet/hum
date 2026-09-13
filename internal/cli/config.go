@@ -179,8 +179,15 @@ func classifyJSONError(err error) *protocol.WireError {
 // cliConfig resolves the command-edge values once. The config package remains
 // independent of urfave/cli and receives only its typed input.
 func cliConfig(cmd *urfavecli.Command, version, buildTime string) (config.Config, error) {
-	env := os.Environ()
-	input := config.Input{
+	cfg, err := config.New(config.BuildOpts{Version: version, BuildTime: buildTime}, cliConfigInput(cmd, os.Environ()))
+	if err != nil {
+		return config.Config{}, newCLIUsageError(err)
+	}
+	return cfg, nil
+}
+
+func cliConfigInput(cmd *urfavecli.Command, env []string) config.Input {
+	return config.Input{
 		FlagRuntimeDir:       cmd.String("runtime-dir"),
 		FlagStopGrace:        cmd.String("stop-grace"),
 		FlagOutputBytes:      cmd.String("output-bytes"),
@@ -191,11 +198,6 @@ func cliConfig(cmd *urfavecli.Command, version, buildTime string) (config.Config
 		EnvOutputBytes:       lookupEnv(env, "HUM_OUTPUT_BYTES"),
 		EnvCompletedRecords:  lookupEnv(env, "HUM_COMPLETED_RECORDS"),
 	}
-	cfg, err := config.New(config.BuildOpts{Version: version, BuildTime: buildTime}, input)
-	if err != nil {
-		return config.Config{}, newCLIUsageError(err)
-	}
-	return cfg, nil
 }
 
 func lookupEnv(env []string, name string) string {

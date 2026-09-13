@@ -102,13 +102,23 @@ worktree when DIR exactly matches a canonical root retained by the daemon.
   declared root-relative `cwd`.
 - `init` writes at the resolved root, and `list --all` uses the selected project while merging
   unlaunched declarations.
+- `doctor` rejects `--global` and inspects exactly one selected filesystem project. In fixed order it
+  checks the supported OS, effective Hum settings, runtime path usability, manifest or conventional
+  discovery, environment-file composition and protocol bounds, each process and `ready.exec`
+  executable using its exact cwd and composed environment, and an already-present daemon handshake.
+  It never starts the daemon, runs process argv or readiness probes, repairs files, or retains state;
+  a missing daemon is informational and an incompatible or unreachable existing socket fails.
 - Guidance and stable next-command fields preserve a canonical shell-safe absolute `--project`
   selector, including paths with spaces.
 - `version`, `serve`, `shutdown`, `mcp`, and `skill` reject explicit project and global selectors
   because their scope is build-static, daemon-global, request-scoped, or static.
 - Command-local `-d` remains `serve --daemon` and `run --detach`, and now also selects `up --detach`.
 
-Human-readable output is the default.
+Human-readable output is the default. `hum doctor` emits ordered `PASS`, `WARN`, `FAIL`, and `INFO`
+rows plus summary counts; warnings and informational checks preserve exit 0, while any failed check
+or invalid usage exits 1. Its JSON form is one newline-terminated version 1 object with `ok`, ordered
+`checks`, and `summary`; diagnostics never include environment values, complete environments, or
+environment-key inventories.
 
 - When stdout is a terminal, `TERM` is not `dumb`, and `NO_COLOR` is absent, `list`, `status`,
   `logs`, and `up` use a fixed minimal palette.

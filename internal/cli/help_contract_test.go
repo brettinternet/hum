@@ -120,6 +120,23 @@ func TestHelpContract(t *testing.T) {
 	}
 }
 
+func TestDoctorHelpContract(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	root := NewRootCommand("test", "test", &stdout, &stderr)
+	if err := root.Run(context.Background(), []string{"hum", "doctor", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	help := strings.ToLower(stdout.String())
+	for _, want := range []string{"hum doctor", "--json", "configuration", "runtime paths", "executables", "existing daemon", "without starting", "missing daemon", "exit 1"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("doctor help missing %q: %q", want, stdout.String())
+		}
+	}
+	if strings.Contains(help, "--global") || stderr.Len() != 0 {
+		t.Fatalf("doctor help exposes global or writes stderr: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestLogsSystemStreamHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	root := NewRootCommand("test", "test", &stdout, &stderr)

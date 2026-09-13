@@ -106,6 +106,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 	want := map[string]bool{
 		"version":  true,
 		"serve":    true,
+		"doctor":   true,
 		"init":     true,
 		"mcp":      true,
 		"skill":    true,
@@ -150,6 +151,7 @@ func TestHelpWordBudgets(t *testing.T) {
 		{name: "", limit: 250},
 		{name: "version", limit: 200},
 		{name: "serve", limit: 200},
+		{name: "doctor", limit: 200},
 		{name: "init", limit: 200},
 		{name: "mcp", limit: 200},
 		{name: "skill", limit: 200},
@@ -197,6 +199,7 @@ func TestHelpAdvertisesOnlySupportedScopeFlags(t *testing.T) {
 		{name: "skill"},
 		{name: "shutdown"},
 		{name: "completion"},
+		{name: "doctor", wantProject: true, wantFile: true},
 		{name: "init", wantProject: true, wantFile: true},
 		{name: "up", wantProject: true, wantFile: true},
 		{name: "run", wantProject: true, wantFile: true, wantGlobal: true},
