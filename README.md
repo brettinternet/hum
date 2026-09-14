@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Run long-lived local processes as named, queryable sessions—with bounded logs, readiness checks, dependencies, and controlled TTY input.
+Hum is a deterministic local process supervisor designed equally for humans and coding agents.
+Run long-lived local processes as named, queryable sessions with bounded logs, readiness checks, dependencies, and controlled TTY input.
+Or just have your agent do it.
 
 ```text
 hum.yaml ──> hum daemon ──> db ──> api ──> web
