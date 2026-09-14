@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Hum is a deterministic local process supervisor designed equally for humans and coding agents.
-Run long-lived local processes as named, queryable sessions with bounded logs, readiness checks, dependencies, and controlled TTY input.
-Or just have your agent do it.
+Hum runs your project so you can your agents can work together.
+Agents can query your local server logs, view readiness and restart the processes while you also watch the logs.
+Compatible with worktrees and parallel work.
 
 ```text
 hum.yaml ──> hum daemon ──> db ──> api ──> web
