@@ -2,13 +2,26 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Keep processes running between commands—with bounded logs, readiness checks, dependencies, JSON/MCP output, and controlled TTY input.
+Run long-lived local processes as named, queryable sessions—with bounded logs, readiness checks, dependencies, and controlled TTY input.
 
 ```text
 hum.yaml ──> hum daemon ──> db ──> api ──> web
                   │
                   └── bounded logs <── CLI / coding agents
 ```
+
+Terminal panes make processes visible. Hum makes them queryable:
+
+```sh
+hum up --detach
+hum status api --json
+hum logs api --stream stderr --tail 50 --json
+hum wait api --match "ready" --timeout 30s --json
+```
+
+Instead of parsing a terminal buffer, tools get explicit lifecycle state, bounded structured output,
+readiness, and stable cursors. Herdr can still provide the panes—its Hum plugin uses Herdr for UI and
+Hum for process state.
 
 Run a process and follow its retained logs
 
