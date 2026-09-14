@@ -505,12 +505,13 @@ The nearest Git project root contains the default authoritative `hum.yaml`; comp
 - All manifests in one Git project share the `(project root, process name)` runtime namespace. The project root, not the manifest directory, is the default child cwd and base for manifest `cwd` values.
 - Runtime-only operations remain project-wide; a file selector validates and identifies the project but does not parse the manifest or restrict retained records. `list --all` remains a cross-project view.
 
-SchemaStore-aware editors automatically load the published root `hum.schema.json` for `hum.yaml`.
-The inline schema directive is optional in those editors and remains supported. `hum init` puts the
-directive first so other compatible YAML editors configure validation and completion
-automatically. Existing manifests in editors without SchemaStore support can select
-`hum.schema.json` manually. The schema is an editor contract; the Go implementation remains the
-authoritative parser for manifest behavior.
+SchemaStore-aware editors automatically load the published root `hum.schema.json` for `hum.yaml`
+and alternate filenames matching `hum.*.yaml`, `*.hum.yaml`, `hum.yml`, or `*.hum.yml`. The inline
+schema directive is optional in those editors and remains supported. `hum init` puts the directive
+first so other compatible YAML editors configure validation and completion automatically. Existing
+manifests in editors without SchemaStore support can select `hum.schema.json` manually. The schema
+is an editor contract; the Go implementation remains the authoritative parser for manifest
+behavior.
 
 ```yaml
 version: 1

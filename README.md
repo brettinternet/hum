@@ -90,9 +90,10 @@ hum up
 hum down
 ```
 
-SchemaStore-aware editors load [`hum.schema.json`](hum.schema.json) for `hum.yaml` automatically.
-`hum init` also adds an inline schema directive. Other editors can select the root schema manually.
-The Go manifest parser remains authoritative.
+SchemaStore-aware editors load [`hum.schema.json`](hum.schema.json) automatically for `hum.yaml` and
+alternate filenames matching `hum.*.yaml`, `*.hum.yaml`, `hum.yml`, or `*.hum.yml`. `hum init` also
+adds an inline schema directive. Other editors can select the root schema manually. The Go manifest
+parser remains authoritative.
 
 ## Start processes
 
