@@ -4,7 +4,7 @@ title: Add native HTTP and TCP readiness probes
 status: To Do
 assignee: []
 created_date: '2026-09-14 23:15'
-updated_date: '2026-09-14 23:17'
+updated_date: '2026-09-14 23:35'
 labels:
   - config
   - daemon
@@ -41,6 +41,13 @@ modified_files:
   - docs/cli-json-v1.md
   - internal/skill/SKILL.md
   - plugins/hum/skills/hum/SKILL.md
+  - internal/daemon/wire_protocol.go
+  - internal/daemon/wire_protocol_test.go
+  - internal/cli/manifest.go
+  - internal/cli/manifest_test.go
+  - internal/cli/commands.go
+  - internal/cli/mcp.go
+  - internal/cli/mcp_test.go
 priority: medium
 type: feature
 ordinal: 84800
@@ -64,15 +71,15 @@ Extend ready so exactly one of match, exec, http, or tcp is present:
       tcp: 127.0.0.1:5432                   # ready when a connection is accepted
       timeout: 30s
 
-- http accepts an absolute http:// or https:// URL with a host that is a literal IP or localhost; no redirects are followed, no body is read beyond a bounded prefix, and TLS verification is not disabled. Non-2xx, connection errors, and per-attempt timeouts are retries.
-- tcp accepts host:port with a literal IP or localhost. Ready when connect succeeds; the connection is closed immediately without writing.
-- interval is permitted with exec, http, and tcp and rejected with match. Probes run in-process; no subprocess and no shell.
-- Probes are startup gates only. They inherit no environment and cannot expand variables; a manifest env value such as PORT must be repeated literally in the URL. Document this.
-- Drift: changing method or target reports readiness_http or readiness_tcp; interval and timeout remain wait policy, mirroring readiness_exec.
+- http accepts an absolute http:// or https:// URL with a host that is a literal IP or localhost; no redirects are followed, the response body is closed without reading or retaining it, and TLS verification is not disabled. Non-2xx (including 3xx), connection errors, and per-attempt timeouts are retries. Reject userinfo and URL fragments. Use no environment-derived proxy; HTTPS uses normal certificate verification. Omitted HTTP ports use 80/443; explicit ports must be decimal 1..65535.
+- tcp accepts host:port with a literal IP or localhost. Require a decimal port in 1..65535 and bracketed IPv6, for example [::1]:5432. Ready when connect succeeds; the connection is closed immediately without writing.
+- interval is permitted with exec, http, and tcp and rejected with match. HTTP/TCP probes run in-process; ready.exec retains its existing direct-subprocess behavior. HTTP/TCP attempt immediately, retry serially after interval, and bound each attempt to min(1s, remaining startup timeout). Cancel in-flight work on stop, exit, restart, and shutdown; a successor incarnation cannot inherit old probe success. Stop probing after success or timeout; timeout does not implicitly kill the supervised service.
+- HTTP/TCP probes are startup gates only. They inherit no environment and cannot expand variables; a manifest env value such as PORT must be repeated literally in the URL. Document this.
+- Drift: compare both method and target. Report the changed old/new readiness fields as a sorted unique set (http to tcp reports readiness_http and readiness_tcp; a same-method target change reports only that method). Apply the same rule for transitions to/from match, exec, or no readiness. Interval and timeout remain wait policy, mirroring readiness_exec.
 
 ## Surfaces
 
-- protocol.ReadinessConfig and Readiness gain a target field for http/tcp and method values http and tcp. Status, list --full, status --json, and MCP process results show method and target exactly as declared. Diagnostic keeps one bounded terminal reason (last status code or dial error).
+- protocol.ReadinessConfig and Readiness gain a target field for http/tcp and method values http and tcp. Status, list --full, status --json, and MCP process results show method and target exactly as declared. Carry target through project/app/orchestrate/protocol/daemon/CLI/MCP adapters; use optional target inside readiness snapshots and readiness_target in flattened launch/restart records. Existing match/exec fields and JSON v1 framing remain unchanged. Diagnostic keeps one terminal reason capped by the existing probe diagnostic limit (status code or sanitized dial/TLS error); do not retain response bodies, query values, or credentials. A successful probe clears an earlier failure diagnostic.
 - hum doctor validates http/tcp syntax (scheme, host restriction, port range) without connecting.
 - hum.schema.json, README readiness section, docs/design.md scope paragraph, docs/cli-json-v1.md readiness fields, and both SKILL.md files document the new methods.
 
@@ -80,16 +87,18 @@ Extend ready so exactly one of match, exec, http, or tcp is present:
 
 Liveness or health monitoring; TLS options; custom headers, methods, or body matching; DNS hostnames other than localhost; ready.match on HTTP bodies; port allocation or discovery; CLI flags on hum run.
 
-Modified-file contract: internal/project/manifest.go, internal/project/manifest_test.go, internal/project/manifest_schema_test.go, hum.schema.json, internal/protocol/protocol.go, internal/protocol/protocol_test.go, internal/app/app.go, internal/app/app_test.go, internal/orchestrate/orchestrate.go, internal/orchestrate/orchestrate_test.go, internal/cli/render.go, internal/cli/render_test.go, internal/cli/doctor.go, internal/cli/doctor_test.go, internal/mcp/tools.go, internal/mcp/tools_test.go, integration/manifest_test.go, README.md, docs/design.md, docs/cli-json-v1.md, internal/skill/SKILL.md, plugins/hum/skills/hum/SKILL.md.
+Modified-file contract: internal/project/manifest.go, internal/project/manifest_test.go, internal/project/manifest_schema_test.go, hum.schema.json, internal/protocol/protocol.go, internal/protocol/protocol_test.go, internal/app/app.go, internal/app/app_test.go, internal/orchestrate/orchestrate.go, internal/orchestrate/orchestrate_test.go, internal/cli/render.go, internal/cli/render_test.go, internal/cli/doctor.go, internal/cli/doctor_test.go, internal/mcp/tools.go, internal/mcp/tools_test.go, integration/manifest_test.go, README.md, docs/design.md, docs/cli-json-v1.md, internal/skill/SKILL.md, plugins/hum/skills/hum/SKILL.md, internal/daemon/wire_protocol.go, internal/daemon/wire_protocol_test.go, internal/cli/manifest.go, internal/cli/manifest_test.go, internal/cli/commands.go, internal/cli/mcp.go, internal/cli/mcp_test.go.
+
+Next action: extend parser/schema validation cases and trace the existing ready.exec incarnation/cancellation tests through every adapter before adding the network attempts. Add the named tests below; each command must print RUN/PASS for the HTTP and TCP cases, not merely exit successfully with no matching tests. HUM-111 and HUM-113 are independent outcomes, not prerequisites; preserve their contracts if already landed.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — mise exec go -- go test ./internal/project -run '^TestManifestSchemaContract$|^TestParseReady' -count=1 -v exits 0 and proves ready accepts exactly one of match|exec|http|tcp, rejects interval with match, rejects non-literal-IP/localhost hosts, bad schemes, and out-of-range ports with a file:line diagnostic, and that hum.schema.json accepts and rejects the same documents as the parser.
-- [ ] #2 AC2 — mise exec go -- go test ./internal/app -run '^TestReadiness(HTTP|TCP)' -count=1 -v exits 0 against in-test net/http and net listeners and proves: non-2xx then 2xx transitions to ready; redirects are not followed; connection refused retries at interval until timeout; per-attempt bound is honored; the retained diagnostic is bounded and names the last status or dial error; no subprocess is spawned.
-- [ ] #3 AC3 — mise exec go -- go test ./internal/orchestrate ./internal/cli ./internal/mcp -run 'Readiness.*(HTTP|TCP|Drift)|^TestDoctor.*Readiness' -count=1 -v exits 0 and proves method/target changes report readiness_http or readiness_tcp while interval/timeout changes do not, status and list --full render method and target, status --json and MCP process results carry method and target under existing field names, and doctor validates syntax without opening a connection.
+- [ ] #1 AC1 — mise exec go -- go test ./internal/project -run '^TestManifestSchemaContract$|^TestParseReady' -count=1 -v exits 0 and proves ready accepts exactly one of match|exec|http|tcp, rejects interval with match, rejects non-literal-IP/localhost hosts, bad schemes, and out-of-range ports with a file:line diagnostic, and that hum.schema.json accepts and rejects the same documents as the parser. Include empty/non-string targets, bracketed IPv6, missing TCP ports, HTTP default ports, userinfo/fragments, and every pair of conflicting readiness keys.
+- [ ] #2 AC2 — mise exec go -- go test ./internal/app -run '^TestReadiness(HTTP|TCP)' -count=1 -v exits 0 against in-test net/http and net listeners and proves: non-2xx then 2xx transitions to ready; redirects are not followed; connection refused retries at interval until timeout; per-attempt bound is honored; the retained diagnostic is bounded and names the last status or dial error; no subprocess is spawned. Prove the 1s/remaining-budget bound, no overlapping probes, no body reads, no proxy environment use, TLS verification, success diagnostic clearing, all cancellation paths, and old-incarnation isolation. Existing ready.exec tests must continue to pass unchanged.
+- [ ] #3 AC3 — mise exec go -- go test ./internal/protocol ./internal/daemon ./internal/orchestrate ./internal/cli ./internal/mcp -run 'Readiness.*(HTTP|TCP|Drift)|^TestDoctor.*Readiness' -count=1 -v exits 0 and proves method/target changes report readiness_http or readiness_tcp while interval/timeout changes do not, status and list --full render method and target, status --json and MCP process results carry method and target with optional target/readiness_target fields and unchanged existing fields, and doctor validates syntax without opening a connection. Tests must round-trip target through protocol and daemon mapping, exercise all old/new method drift pairs, and prove doctor opens zero connections for accepted and rejected IPv4/IPv6/localhost cases.
 - [ ] #4 AC4 — mise exec go -- go test ./integration -run '^TestManifestHTTPReadiness$|^TestManifestTCPReadiness$' -count=1 -v exits 0 with a real hum up --detach against a fixture that listens late, exiting 0 once the probe passes and 2 on timeout.
-- [ ] #5 AC5 — task cli:check && task test exits 0, and rg -n 'ready\.(http|tcp)|readiness_(http|tcp)' README.md docs/design.md docs/cli-json-v1.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md hum.schema.json exits 0 for every listed file.
+- [ ] #5 AC5 — `task cli:check && task test` exits 0. `for doc in README.md docs/design.md docs/cli-json-v1.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md; do rg -n "ready\.(http|tcp)|readiness_(http|tcp)" "$doc" || exit 1; done` exits 0 with matches in every file; review those sections for literal targets (no PORT expansion), startup-only behavior, validation, timeout/cancellation, and additive JSON fields. Schema semantics are proved by AC1, not a grep for dotted YAML keys in JSON Schema.
 <!-- AC:END -->
 
 ## Definition of Done
