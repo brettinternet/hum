@@ -3,6 +3,7 @@
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
 Hum runs your project so you can your agents can work together.
+
 Agents can query your local server logs, view readiness and restart the processes while you also watch the logs.
 Compatible with worktrees and parallel work.
 
