@@ -3,10 +3,10 @@ id: HUM-113
 title: >-
   Remove runtime conventional discovery; make hum.yaml or --file the only
   declaration source
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-14 23:16'
-updated_date: '2026-09-14 23:36'
+updated_date: '2026-09-15 09:00'
 labels:
   - cli
   - mcp
@@ -91,19 +91,47 @@ Next action: encode the missing/default/explicit/invalid-manifest and retained/n
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `mise exec go -- go test ./internal/project -run "^TestInit|^TestResolve.*Manifest" -count=1 -v` exits 0 with RUN/PASS cases for all nine read-only init sources, conservative dynamic-config behavior, ambiguity/no-candidate templates, cancellation, and manifest-only runtime resolution. `python3 -c 'from pathlib import Path; import re; paths=[p for p in Path("internal/project").glob("*.go") if not p.name.endswith("_test.go")]; hits=[str(p) for p in paths if re.search(r"exec\.Command|runDiscoveryCommand|func detect(?:Mise|Task|Just)\(", p.read_text())]; assert not hits, hits'` exits 0; tests use sentinel executables to prove init launches no discovery subprocess.
-- [ ] #2 AC2 — `mise exec go -- go test ./internal/cli ./internal/mcp -run "ManifestMissing|Doctor.*Manifest" -count=1 -v` exits 0 with RUN/PASS for the complete contract matrix: up/unresolved start/restart fail with root/guidance and manifest_missing in CLI human/JSON and MCP tool errors; retained start/restart still work; list/aggregate status/MCP list return retained or empty results; named status keeps not-found semantics; doctor retains its report envelope and one manifest FAIL check; invalid manifests and explicit --file failures never fall back; global/--all behavior is unchanged.
-- [ ] #3 AC3 — mise exec go -- go test ./integration -run '^TestZeroConfig|^TestInit' -count=1 -v exits 0 with TestZeroConfig* rewritten to assert the manifest_missing failure and exit 1 for hum up in a package.json-only project, and hum run continuing to work there. Preserve coverage for all former runtime discovery sources by asserting they do not trigger introspection or launch; retain init tests rather than removing them.
-- [ ] #4 AC4 — `rg -n -i "conventional|zero-config|package\.json|Justfile|Taskfile|bin/dev|Mix" README.md docs/design.md docs/coding-agents.md hum.example.yaml internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md` prints a review inventory: each occurrence must concern init scaffolding, explicit argv examples, ad_hoc run, or historical rationale, never a promise of runtime discovery. `for doc in docs/cli-json-v1.md README.md; do rg -n "manifest_missing" "$doc" || exit 1; done` exits 0. Review documents against the command matrix, including doctor framing, retained-record exceptions, and init/legacy source values; do not use grep exit 1 with informal exceptions as a gate.
-- [ ] #5 AC5 — `task cli:check && task test` exits 0, and `git log -1 --format=%s | grep -Eq "^[a-z]+(\([a-z-]+\))?!:"` exits 0 on the implementation landing commit. This breaking marker applies to discovery removal, not to backlog-refinement commits.
+- [x] #1 AC1 — `mise exec go -- go test ./internal/project -run "^TestInit|^TestResolve.*Manifest" -count=1 -v` exits 0 with RUN/PASS cases for all nine read-only init sources, conservative dynamic-config behavior, ambiguity/no-candidate templates, cancellation, and manifest-only runtime resolution. `python3 -c 'from pathlib import Path; import re; paths=[p for p in Path("internal/project").glob("*.go") if not p.name.endswith("_test.go")]; hits=[str(p) for p in paths if re.search(r"exec\.Command|runDiscoveryCommand|func detect(?:Mise|Task|Just)\(", p.read_text())]; assert not hits, hits'` exits 0; tests use sentinel executables to prove init launches no discovery subprocess.
+- [x] #2 AC2 — `mise exec go -- go test ./internal/cli ./internal/mcp -run "ManifestMissing|Doctor.*Manifest" -count=1 -v` exits 0 with RUN/PASS for the complete contract matrix: up/unresolved start/restart fail with root/guidance and manifest_missing in CLI human/JSON and MCP tool errors; retained start/restart still work; list/aggregate status/MCP list return retained or empty results; named status keeps not-found semantics; doctor retains its report envelope and one manifest FAIL check; invalid manifests and explicit --file failures never fall back; global/--all behavior is unchanged.
+- [x] #3 AC3 — mise exec go -- go test ./integration -run '^TestZeroConfig|^TestInit' -count=1 -v exits 0 with TestZeroConfig* rewritten to assert the manifest_missing failure and exit 1 for hum up in a package.json-only project, and hum run continuing to work there. Preserve coverage for all former runtime discovery sources by asserting they do not trigger introspection or launch; retain init tests rather than removing them.
+- [x] #4 AC4 — `rg -n -i "conventional|zero-config|package\.json|Justfile|Taskfile|bin/dev|Mix" README.md docs/design.md docs/coding-agents.md hum.example.yaml internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md` prints a review inventory: each occurrence must concern init scaffolding, explicit argv examples, ad_hoc run, or historical rationale, never a promise of runtime discovery. `for doc in docs/cli-json-v1.md README.md; do rg -n "manifest_missing" "$doc" || exit 1; done` exits 0. Review documents against the command matrix, including doctor framing, retained-record exceptions, and init/legacy source values; do not use grep exit 1 with informal exceptions as a gate.
+- [x] #5 AC5 — `task cli:check && task test` exits 0, and `git log -1 --format=%s | grep -Eq "^[a-z]+(\([a-z-]+\))?!:"` exits 0 on the implementation landing commit. This breaking marker applies to discovery removal, not to backlog-refinement commits.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add manifest-only project resolution and a stable manifest_missing error, preserving retained-record and read-only command behavior across CLI and MCP.
+2. Restrict hum init to read-only conventional detectors, remove discovery subprocess execution, and rewrite project/integration tests around the new boundary.
+3. Update doctor, JSON/MCP contracts, help/man pages, docs, examples, skills, and changelog to describe explicit manifests or ad_hoc run.
+4. Run focused acceptance commands, full task test/CI gates, independently verify every AC, then land one breaking conventional commit.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation commit: 9cf7264 feat!: require explicit process declarations.
+AC#1 evidence: mise exec go -- go test ./internal/project -run ^TestInit|^TestResolve.*Manifest -count=1 -v PASS with all nine init sources, templates, cancellation, sentinel executables, and manifest-only resolution; the required Python forbidden-subprocess scan PASS with no hits.
+AC#2 evidence: mise exec go -- go test ./internal/cli ./internal/mcp -run ManifestMissing|Doctor.*Manifest -count=1 -v PASS with CLI human/JSON, up/start/restart, retained start/restart/list, empty list, aggregate/named status, invalid default/explicit manifests, global/--all, doctor report, MCP error envelope, and runtime-only tool cases.
+AC#3 evidence: mise exec go -- go test ./integration -run ^TestZeroConfig|^TestInit -count=1 -v PASS for init plus all nine former discovery sources; sentinel PATH executables and candidate markers prove no introspection or launch, while ad_hoc run passes.
+AC#4 evidence: required rg inventory reviewed PASS; every match is init scaffolding, explicit argv/ad_hoc use, filename convention, or historical boundary. manifest_missing grep in docs/cli-json-v1.md and README.md PASS.
+AC#5 evidence: task cli:check && task test PASS; commit-subject breaking-marker grep PASS on 9cf7264.
+DoD evidence: task ci PASS on final commit 9cf7264, including security, vet/staticcheck, full tests, race tests, man/build, and smoke. No protected gate files changed. Obsolete discovery tests were rewritten around manifest-only/read-only behavior; none were skipped.
+Modified-file deviation justification: integration/down_test.go, integration/manifest_test.go, integration/mcp_test.go, integration/relaunch_test.go, internal/cli/flag_alias_lifecycle_parity_test.go, internal/cli/restart_test.go, internal/cli/serve_run_test.go, internal/cli/status_test.go, internal/cli/surface_test.go, and internal/skill/skill_test.go are direct contract callsites whose expected default runtime source changed from manifest to manifest:hum.yaml or whose assertions documented removed runtime-discovery behavior. They were updated only to preserve coverage for the required breaking contract; no production scope expanded.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Removed runtime conventional discovery and made hum.yaml or --file the only declaration source while preserving ad_hoc run, retained-record lifecycle fallback, read-only list/status behavior, and read-only init scaffolding. Added stable manifest_missing CLI/MCP/doctor contracts, migrated discovery coverage to init and manifest-only matrices, updated docs and source values, and landed breaking commit 9cf7264. Exact AC1-AC5 commands and task ci passed; independent verifier returned PASS for every acceptance criterion and Definition of Done item.
+<!-- SECTION:FINAL_SUMMARY:END -->
