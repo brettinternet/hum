@@ -2,11 +2,29 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
-## Unreleased
+## [v0.14.0](https://github.com/brettinternet/hum/compare/v0.13.0...v0.14.0) - 2026-09-15
 
-### Changed
+### Added
 
-- **breaking:** Require `hum.yaml` or `--file` for declared lifecycle definitions; use `hum run NAME -- COMMAND` for ad-hoc work. `hum init` remains read-only source detection.
+- Prefer private hum manifest
+- Require explicit process declarations
+- Add native readiness probes
+- Add durable service event history
+- **cli:** Add ls alias for list
+- **doctor:** Color diagnostic statuses
+
+### Fixed
+
+- Preserve ad-hoc manifest state
+
+### Documentation
+
+- Clarify Hum positioning and non-goals
+- Typo
+- Fix whitespace
+- Update README project description again
+- Update README project description
+- Clarify Hum versus terminal panes
 
 ## [v0.13.0](https://github.com/brettinternet/hum/compare/v0.12.2...v0.13.0) - 2026-09-13
 
