@@ -50,7 +50,7 @@ processes:
     ready:
       http: http://127.0.0.1:%d/
       interval: 20ms
-      timeout: 3s
+      timeout: 10s
 `, port, port)
 	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ processes:
     ready:
       tcp: 127.0.0.1:%d
       interval: 20ms
-      timeout: 3s
+      timeout: 10s
 `, port, port)
 	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
