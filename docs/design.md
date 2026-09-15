@@ -1,19 +1,38 @@
 # hum design
 
-## Scope
+## Scope and non-goals
 
-Readiness is a startup gate. `ready.exec` is a non-empty exact argv executed directly without a shell; `ready.http` performs GET and accepts only 2xx, and `ready.tcp` waits for a connection. HTTP/TCP targets must be absolute HTTP(S) URLs or host:port using literal IPs or localhost (bracket IPv6). Network probes run in-process, immediately then serially after a positive `interval` (default 1s), with each attempt bounded to 1s and the remaining `timeout` (default 30s). They inherit no environment, follow no redirects, retain only one bounded status/dial diagnostic, and cancel on stop/restart/shutdown. This is not liveness monitoring. Readiness method/target changes report readiness_http/readiness_tcp (and corresponding old/new fields); interval and timeout are wait policy.
-
-hum is a local process supervisor for humans and coding agents.
+Hum is a local exact-argv process supervisor for humans and coding agents.
 
 - A private Unix-socket daemon owns named process groups and bounded output independently of
   clients.
 - CLI and MCP clients resolve project definitions and send exact argv to that daemon; they never
   create another supervisor or reconstruct shell text.
+- Process names are scoped to the nearest canonical Git root, or the caller's working directory
+  when no Git marker exists.
 
-Process names are scoped to the nearest Git root, or the caller's working
-directory when no Git marker exists. macOS and Linux are supported; Windows is
-not.
+Readiness is a startup gate. `ready.exec` is a non-empty exact argv executed directly without a shell; `ready.http` performs GET and accepts only 2xx, and `ready.tcp` waits for a connection. HTTP/TCP targets must be absolute HTTP(S) URLs or host:port using literal IPs or localhost (bracket IPv6). Network probes run in-process, immediately then serially after a positive `interval` (default 1s), with each attempt bounded to 1s and the remaining `timeout` (default 30s). They inherit no environment, follow no redirects, retain only one bounded status/dial diagnostic, and cancel on stop/restart/shutdown. This is not liveness monitoring. Readiness method/target changes report readiness_http/readiness_tcp (and corresponding old/new fields); interval and timeout are wait policy.
+
+Hum deliberately does not provide:
+
+- a TUI or web UI; Herdr provides panes;
+- port allocation or a reverse proxy;
+- cron scheduling, boot start, or shell-hook autostart;
+- file-watch restarts or liveness/health monitoring;
+- child CPU/RSS sampling or resource-limit enforcement—operators can wrap exact argv with
+  platform-native tools, while Hum still bounds its own retained output and machine-facing operations;
+- log parsing or query languages;
+- runtime shell interpretation or templating; or
+- Windows support.
+
+The bounded process interface also excludes arbitrary or queued input, remote transport or
+authentication, live event-follow callbacks, an in-daemon plugin system, and OS service installation.
+These boundaries are recorded in
+[decision-001](../backlog/decisions/decision-001%20-%20Hum-stays-a-process-API-no-port-allocation-proxying-or-shell-level-conveniences.md).
+
+Hum's differentiation is its contracts and integrations, not any single process-management feature:
+the versioned CLI JSON v1 contract, closed MCP schemas, read-only `doctor` preflight, and
+Herdr, Claude Code, and Codex plugins give tools a stable bounded substrate.
 
 ## Shared orchestration
 
@@ -916,18 +935,6 @@ MCP exposes no follow or other unbounded operation; agents use bounded `wait`, `
   supervisors, or output stores in-process.
 - It has no `run`, `serve`, or `shutdown`, HTTP transport, authentication, remote access, or
   arbitrary-command tool.
-
-## Non-goals
-
-The foundation does not include:
-
-- arbitrary or unbounded input
-- queued input
-- remote transport or authentication
-- a web UI
-- live event follow streams or callbacks
-- a plugin system
-- OS service installation
 
 The runtime directory contains the socket, PID/startup/readiness files, durable live-group state,
 bounded daemon diagnostics, and private per-scope event-history payload/cursor files. Event history is

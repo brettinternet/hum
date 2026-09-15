@@ -2,10 +2,8 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Hum runs your project so you and your agents can work together.
-
-Agents can query your local server logs, view readiness and restart the processes while you also watch the logs.
-Compatible with worktrees and parallel work.
+Hum is a bounded, exact-argv process interface that tools and coding agents can start, observe, wait on, and type into.
+It scopes processes to a project so people and agents can share lifecycle state without sharing a terminal buffer.
 
 ```text
 hum.yaml ──> hum daemon ──> db ──> api ──> web
@@ -13,7 +11,7 @@ hum.yaml ──> hum daemon ──> db ──> api ──> web
                   └── bounded logs <── CLI / coding agents
 ```
 
-Terminal panes make processes visible. Hum makes them queryable:
+Hum makes pane-visible processes queryable:
 
 ```sh
 hum up --detach
@@ -22,9 +20,8 @@ hum logs api --stream stderr --tail 50 --json
 hum wait api --match "ready" --timeout 30s --json
 ```
 
-Instead of parsing a terminal buffer, tools get explicit lifecycle state, bounded structured output,
-readiness, and stable cursors. Herdr can still provide the panes—its Hum plugin uses Herdr for UI and
-Hum for process state.
+Tools get lifecycle state, bounded structured output, readiness, and stable cursors. Herdr provides
+panes; its Hum plugin uses Hum for process state.
 
 Run a process and follow its retained logs
 
@@ -95,6 +92,36 @@ SchemaStore-aware editors load [`hum.schema.json`](hum.schema.json) automaticall
 alternate filenames matching `hum.*.yaml`, `*.hum.yaml`, `hum.yml`, or `*.hum.yml`. `hum init` also
 adds an inline schema directive. Other editors can select the root schema manually. The Go manifest
 parser remains authoritative.
+
+## Hum and other process managers
+
+| Dimension | Hum | [pitchfork](https://pitchfork.jdx.dev/) | [Overmind](https://github.com/DarthSim/overmind) | [Hivemind](https://github.com/DarthSim/hivemind) | [mprocs](https://github.com/pvolok/dekit/blob/master/README-mprocs.md) |
+| --- | --- | --- | --- | --- | --- |
+| Config | Exact argv in `hum.yaml` or `--file`; ad hoc `run` | Layered TOML daemon config | Procfile plus env/flags | Procfile plus `.env`/flags | Local/global YAML or Procfile |
+| Scope | Canonical Git root; cwd fallback outside Git | Filesystem config hierarchy and namespace | Working directory and per-project socket | Working directory/root | Current-directory config |
+| Logs | Bounded retained streams and durable service events | SQLite history with search and retention | tmux output/`echo`; history not documented | Prefixed foreground output; history not documented | TUI output and optional files; query API not documented |
+| Wait/readiness | Match, exact-argv, HTTP, and TCP startup gates; bounded `wait` | Delay, match, HTTP, TCP, or command readiness; exit wait | Readiness/wait not documented | Readiness not documented; waits for process exit | Readiness not documented; shutdown waits |
+| TTY input | Attached PTY or one-shot CLI/MCP input | PTY buffering; interactive input not documented | Attach to a process's tmux window | Child PTY receives stdin | Interactive TUI and `send-key` |
+| MCP | Closed-schema bounded tools | Status, lifecycle, and logs tools | Not documented | Not documented | Not documented |
+| UI | CLI; Herdr supplies panes | TUI and optional web UI | tmux windows | Multiplexed terminal output | Full terminal UI |
+
+Choose [pitchfork](https://pitchfork.jdx.dev/) or another manager when its cited capabilities—such as a
+built-in TUI, web UI, or log query store—fit the job. For a bounded process substrate that tools and
+agents build on, use Hum. “Not documented” does not claim that a feature is absent.
+
+## Non-goals
+
+Hum deliberately does not provide:
+
+- a TUI or web UI; Herdr provides panes;
+- port allocation or a reverse proxy;
+- cron scheduling, boot start, or shell-hook autostart;
+- file-watch restarts or liveness/health monitoring;
+- child CPU/RSS sampling or resource-limit enforcement—wrap exact argv with platform-native tools
+  when needed; Hum still bounds its own retained output and machine-facing operations;
+- log parsing or query languages;
+- runtime shell interpretation or templating; or
+- Windows support.
 
 ## Start processes
 
@@ -222,6 +249,28 @@ No configuration preserves the caller environment exactly. `start`, `up`, declar
 `restart` load files before daemon contact; ordinary read-only commands do not. `hum doctor` loads
 and validates them without exposing values or launching anything. Processes and automatic relaunches
 keep their launch snapshot. Use `hum restart NAME` to reload changes.
+
+#### Ports across worktrees
+
+Use a checkout-local environment file to assign a literal port in each worktree:
+
+```yaml
+version: 1
+environment:
+  files: [.env.local]
+processes:
+  web:
+    argv: [bun, run, dev]
+```
+
+```dotenv
+# .env.local in this worktree
+PORT=3101
+```
+
+Set another worktree's `.env.local` to a different literal value, such as `PORT=3102`, or select a
+complete alternate manifest with `--file`. Hum does not allocate ports. Values are not interpolated
+into argv or readiness targets, and this configuration does not connect services across worktrees.
 
 Limits: 16 files; 1 MiB and 4,096 assignments per file; 4 MiB per environment; 8 MiB per encoded
 request. Environment metadata stays private, but child and probe output is unredacted. Do not print secrets.
