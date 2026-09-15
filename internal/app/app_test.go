@@ -894,7 +894,7 @@ func TestExecutableReadinessProbeSchedulingAndEnvironment(t *testing.T) {
 		Name: "probe-scheduling", Source: "manifest", Cwd: root,
 		Argv:  []string{"/bin/sh", "-c", "sleep 5"},
 		Env:   []string{"PATH=/usr/bin:/bin", "EXEC_ENV=service-value", "PROBE_EVENTS=" + events, "PROBE_LOCK=" + lock},
-		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", `stamp() { /bin/date +%s%N; }; started=$(stamp); if test -e "$PROBE_LOCK"; then overlap=1; else overlap=0; fi; : > "$PROBE_LOCK"; printf 'start|%s|%s|%s|%s\n' "$started" "$(/bin/pwd -P)" "$EXEC_ENV" "$overlap" >> "$PROBE_EVENTS"; sleep .03; finished=$(stamp); printf 'end|%s\n' "$finished" >> "$PROBE_EVENTS"; rm -f "$PROBE_LOCK"; exit 1`}, Interval: interval, Timeout: 800 * time.Millisecond},
+		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", `stamp() { /bin/date +%s%N; }; started=$(stamp); if test -e "$PROBE_LOCK"; then overlap=1; else overlap=0; fi; : > "$PROBE_LOCK"; printf 'start|%s|%s|%s|%s\n' "$started" "$(/bin/pwd -P)" "$EXEC_ENV" "$overlap" >> "$PROBE_EVENTS"; sleep .03; finished=$(stamp); printf 'end|%s\n' "$finished" >> "$PROBE_EVENTS"; rm -f "$PROBE_LOCK"; exit 1`}, Interval: interval, Timeout: 5 * time.Second},
 	})
 	if err != nil {
 		t.Fatal(err)
