@@ -1,10 +1,10 @@
 ---
 id: HUM-116
 title: Prefer a private .hum.yaml over the shared hum.yaml manifest
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-14 23:39'
-updated_date: '2026-09-14 23:50'
+updated_date: '2026-09-15 10:58'
 labels:
   - cli
   - mcp
@@ -88,19 +88,39 @@ Existing tests may be updated only where asserted help/description text changes;
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `mise exec go -- go test ./internal/project -run "TestPrivateManifest" -count=1 -v` exits 0 and prints PASS for subtests named `PrivateWins`, `PrivateAlone`, `SharedAlone`, `NoMerge`, `InvalidPrivateNoFallback`, `UnreadablePrivateNoFallback`, `SymlinkPrivateNoFallback`, `DirectoryPrivateNoFallback`, and `ExplicitFileWins`, covering `ResolveDefinitionsContext`, `ResolveDefinitionsReadOnly`, and `LoadDefinitions`; private-manifest definitions carry `Source == "manifest:.hum.yaml"` and the shared-only case still yields `Source == "manifest"`.
-- [ ] #2 AC2 — `mise exec go -- go test ./internal/cli -run "TestPrivateManifest|TestDoctorPrivateManifest" -count=1 -v` exits 0 with PASS cases proving: `hum list --json` in a root with both defaults reports only the `.hum.yaml` declarations with `source` `manifest:.hum.yaml`; `hum list -F hum.yaml` selects the shared file; `hum doctor --json` emits `project.discovery` `PASS` with `details.manifest == ".hum.yaml"` and `details.shadowed_manifest == "hum.yaml"`, and omits `shadowed_manifest` when only one default exists; an invalid `.hum.yaml` beside a valid `hum.yaml` fails `list` with a `manifest_invalid` error naming `.hum.yaml`; and `mcpResolver.ResolveManifest` with an empty `manifest` returns the `.hum.yaml` definitions.
-- [ ] #3 AC3 — `mise exec go -- go test ./internal/project ./internal/cli ./integration -run "TestInitPrivateManifest" -count=1 -v` exits 0 with PASS cases proving: init writes `hum.yaml` when neither default exists; with `.hum.yaml` present, plain init exits 1, reports outcome `exists` with the `.hum.yaml` path, and leaves both files byte-identical; `init --force` replaces the regular `.hum.yaml` and leaves `hum.yaml` byte-identical; `init --force` refuses a symlinked `.hum.yaml`.
-- [ ] #4 AC4 — `rg -lF ".hum.yaml" README.md docs/design.md docs/coding-agents.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md | wc -l` prints 5; `rg -qF shadowed_manifest docs/design.md`, `mise exec go -- go run ./cmd/hum man | rg -qF ".hum.yaml"`, and `mise exec go -- go run ./cmd/hum --help | rg -qF ".hum.yaml"` each exit 0; review confirms README.md and docs/design.md each state the precedence `--file`, then `.hum.yaml`, then `hum.yaml`; complete replacement rather than merging; fail-closed on an invalid `.hum.yaml`; and the Git-ignore trade-off.
-- [ ] #5 AC5 — `task cli:check && task test` exits 0 with no test removed, skipped, or weakened; `git diff --stat main -- "internal/project/*_test.go" "internal/cli/*_test.go" "integration/*_test.go"` shows only additions plus help/description string updates, proving repositories with only `hum.yaml` keep existing behavior.
+- [x] #1 AC1 — `mise exec go -- go test ./internal/project -run "TestPrivateManifest" -count=1 -v` exits 0 and prints PASS for subtests named `PrivateWins`, `PrivateAlone`, `SharedAlone`, `NoMerge`, `InvalidPrivateNoFallback`, `UnreadablePrivateNoFallback`, `SymlinkPrivateNoFallback`, `DirectoryPrivateNoFallback`, and `ExplicitFileWins`, covering `ResolveDefinitionsContext`, `ResolveDefinitionsReadOnly`, and `LoadDefinitions`; private-manifest definitions carry `Source == "manifest:.hum.yaml"` and the shared-only case still yields `Source == "manifest"`.
+- [x] #2 AC2 — `mise exec go -- go test ./internal/cli -run "TestPrivateManifest|TestDoctorPrivateManifest" -count=1 -v` exits 0 with PASS cases proving: `hum list --json` in a root with both defaults reports only the `.hum.yaml` declarations with `source` `manifest:.hum.yaml`; `hum list -F hum.yaml` selects the shared file; `hum doctor --json` emits `project.discovery` `PASS` with `details.manifest == ".hum.yaml"` and `details.shadowed_manifest == "hum.yaml"`, and omits `shadowed_manifest` when only one default exists; an invalid `.hum.yaml` beside a valid `hum.yaml` fails `list` with a `manifest_invalid` error naming `.hum.yaml`; and `mcpResolver.ResolveManifest` with an empty `manifest` returns the `.hum.yaml` definitions.
+- [x] #3 AC3 — `mise exec go -- go test ./internal/project ./internal/cli ./integration -run "TestInitPrivateManifest" -count=1 -v` exits 0 with PASS cases proving: init writes `hum.yaml` when neither default exists; with `.hum.yaml` present, plain init exits 1, reports outcome `exists` with the `.hum.yaml` path, and leaves both files byte-identical; `init --force` replaces the regular `.hum.yaml` and leaves `hum.yaml` byte-identical; `init --force` refuses a symlinked `.hum.yaml`.
+- [x] #4 AC4 — `rg -lF ".hum.yaml" README.md docs/design.md docs/coding-agents.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md | wc -l` prints 5; `rg -qF shadowed_manifest docs/design.md`, `mise exec go -- go run ./cmd/hum man | rg -qF ".hum.yaml"`, and `mise exec go -- go run ./cmd/hum --help | rg -qF ".hum.yaml"` each exit 0; review confirms README.md and docs/design.md each state the precedence `--file`, then `.hum.yaml`, then `hum.yaml`; complete replacement rather than merging; fail-closed on an invalid `.hum.yaml`; and the Git-ignore trade-off.
+- [x] #5 AC5 — `task cli:check && task test` exits 0 with no test removed, skipped, or weakened; `git diff --stat main -- "internal/project/*_test.go" "internal/cli/*_test.go" "integration/*_test.go"` shows only additions plus help/description string updates, proving repositories with only `hum.yaml` keep existing behavior.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation merged to main as 1190864.
+
+AC#1 — PASS: mise exec go -- go test ./internal/project -run "TestPrivateManifest" -count=1 -v. Required precedence, no-merge, fail-closed, explicit-file, source, and lexical symlink-root cases passed.
+AC#2 — PASS: mise exec go -- go test ./internal/cli -run "TestPrivateManifest|TestDoctorPrivateManifest" -count=1 -v. CLI list, explicit shared selection, invalid-private error, doctor shadow reporting, and MCP default resolution passed.
+AC#3 — PASS: mise exec go -- go test ./internal/project ./internal/cli ./integration -run "TestInitPrivateManifest" -count=1 -v. Project and CLI init cases passed; integration contains no matching test.
+AC#4 — PASS: the five-file .hum.yaml count printed 5; shadowed_manifest, root help, precedence/no-merge/fail-closed/Git-ignore review, and mise exec go -- go run ./cmd/hum-man --date 2026-09-15 all passed. The task command go run ./cmd/hum man is not executable because Hum has no man subcommand; cmd/hum-man is the repository man-page generator.
+AC#5 — PASS: task cli:check && task test exited 0. Test diffs are additions plus expected public-text updates; no test was deleted, skipped, or weakened.
+
+Definition of Done — task ci passed on final commit 1190864. Independent verifier returned PASS for AC1-AC5. All 20 changed paths are declared by the modified-file contract; no protected gate file changed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented private .hum.yaml precedence across project resolution, CLI, MCP, doctor, init, help, man output, skills, and documentation. Preserved shared hum.yaml runtime identity and bounded/lexical path behavior. Added focused precedence, fail-closed, doctor, CLI list, MCP, init, and symlink-root tests. Merged commit 1190864; task ci and independent verification passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
