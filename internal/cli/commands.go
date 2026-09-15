@@ -172,6 +172,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:        "list",
+			Aliases:     []string{"ls"},
 			Usage:       "list supervised processes",
 			UsageText:   "hum list [--all] [--full] [--json]",
 			ArgsUsage:   "",

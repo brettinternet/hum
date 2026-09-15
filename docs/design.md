@@ -54,7 +54,9 @@ hum skill
 hum completion bash|zsh|fish
 ```
 
-Short aliases are command-local except the global help and version aliases. Project-scoped commands also accept the persistent `-C DIR` alias for `--project DIR` and `-F PATH` for `--file PATH`; both selectors may appear before or after the subcommand, and `run` accepts them after the process name before `--`. `signal` accepts them before its positional names.
+`list` also accepts the conventional command alias `ls`. Long command names remain canonical in documentation, scripts, output, and errors.
+
+Short option aliases are command-local except the global help and version aliases. Project-scoped commands also accept the persistent `-C DIR` alias for `--project DIR` and `-F PATH` for `--file PATH`; both selectors may appear before or after the subcommand, and `run` accepts them after the process name before `--`. `signal` accepts them before its positional names.
 
 `completion bash`, `completion zsh`, and `completion fish` print installable shell scripts.
 

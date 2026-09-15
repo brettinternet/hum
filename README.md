@@ -436,6 +436,8 @@ hum -g run proxy -- caddy run         # machine-wide ad-hoc session
 hum signal proxy HUP --global         # global selector after positionals
 ```
 
+`hum ls` is an interactive alias for `hum list`; documentation and scripts use the canonical name.
+
 Project roots are canonical: symlink aliases share a scope, while separate worktrees do not. Use
 `--project PATH` or `-C PATH`
 to select another project. Use `--global` or `-g` only for machine-wide ad-hoc sessions, before

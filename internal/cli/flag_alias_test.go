@@ -134,6 +134,29 @@ func TestFlagAliases(t *testing.T) {
 	}
 }
 
+func TestCommandAliases(t *testing.T) {
+	t.Parallel()
+	root := NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{})
+	for _, command := range root.Commands {
+		want := []string(nil)
+		if command.Name == "list" {
+			want = []string{"ls"}
+		}
+		if !reflect.DeepEqual(command.Aliases, want) {
+			t.Errorf("%s aliases = %v, want %v", command.Name, command.Aliases, want)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	root = NewRootCommand("test", "test", &stdout, &stderr)
+	if err := root.Run(context.Background(), []string{"hum", "ls", "--help"}); err != nil {
+		t.Fatalf("hum ls --help: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "hum list") || stderr.Len() != 0 {
+		t.Fatalf("hum ls did not dispatch to list: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestFlagAliasParity(t *testing.T) {
 	t.Parallel()
 	type parityCase struct {
