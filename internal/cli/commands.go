@@ -188,8 +188,31 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			},
 		},
 		{
+			Name:          "events",
+			Usage:         "events",
+			UsageText:     "hum events [NAME...] [OPTIONS]",
+			ArgsUsage:     "[NAME...]",
+			ShellComplete: completeProcessNames,
+			Description:   "Show recent service events. Narrow by names and filters; --after-cursor reads the next page.\n\nExamples:\n  hum events\n  hum events api --kind lifecycle --failed\n  hum events --after-cursor 42 --json",
+			Flags: []urfavecli.Flag{
+				&urfavecli.StringFlag{Name: "since", HideDefault: true, Usage: "newer than DURATION (omit for all)"},
+				&urfavecli.StringSliceFlag{Name: "kind", HideDefault: true, Usage: "lifecycle or operation (omit for all)"},
+				&urfavecli.BoolFlag{Name: "failed", DefaultText: "false", Usage: "show failures only"},
+				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "filter NAME or DETAIL (omit for all)"},
+				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, Value: 50, Usage: "number of events (1..2000)"},
+				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "after cursor (omit for newest window)"},
+				&urfavecli.IntFlag{Name: "limit-bytes", HideDefault: true, Usage: "encoded page bytes (omit for default)"},
+				&urfavecli.BoolFlag{Name: "full", DefaultText: "false", Usage: "show unabridged details"},
+				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write schema-versioned NDJSON"},
+			},
+			OnUsageError: onUsageError,
+			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				return eventsCommand(ctx, cmd, writer)
+			},
+		},
+		{
 			Name:          "status",
-			Usage:         "show project or process status",
+			Usage:         "status",
 			UsageText:     "hum status [NAME] [--json]",
 			ArgsUsage:     "[NAME]",
 			ShellComplete: completeProcessNames,
@@ -204,7 +227,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:          "attach",
-			Usage:         "attach to a running supervision session",
+			Usage:         "attach",
 			UsageText:     "hum attach NAME [--tail N]",
 			ArgsUsage:     "NAME",
 			ShellComplete: completeProcessNames,
@@ -689,6 +712,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return err
 	}
 	defer client.Close()
+	client.SetEventOperation("run", daemon.NewOperationID(), "cli")
 	current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 	if getErr == nil && app.IsActiveState(current.State) {
 		return fmt.Errorf("%s is already running; join it with %s or stop it with %s", name, projectCommand(selection.selector, "attach "+name), projectCommand(selection.selector, "stop "+name))
@@ -764,6 +788,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		if len(argv) == 0 && !declared && getErr == nil {
 			inputRequest.Cwd = current.Cwd
 		}
+		client.SetEventOperation("input", daemon.NewOperationID(), "cli")
 		session, attachErr := client.InputAttach(context.Background(), inputRequest)
 		if attachErr != nil {
 			return attachErr
@@ -1157,6 +1182,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		inputRequest.Argv = nil
 		inputRequest.Source = ""
 		inputRequest.Ready = nil
+		client.SetEventOperation("input", daemon.NewOperationID(), "cli")
 		session, attachErr := client.InputAttach(ctx, inputRequest)
 		if attachErr != nil {
 			if !isInputConflict(attachErr) {
@@ -2142,6 +2168,7 @@ func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return err
 	}
 	defer client.Close()
+	client.SetEventOperation("signal", daemon.NewOperationID(), "cli")
 	result, err := client.SignalResult(ctx, daemon.SignalRequest{Name: name, Scope: selection.scope, Cwd: selection.cwd, Signal: parsed.Name})
 	if err != nil {
 		if isWireCode(err, string(protocol.ErrorNotFound)) {
@@ -2200,6 +2227,7 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	defer client.Close()
+	client.SetEventOperation("stop", daemon.NewOperationID(), "cli")
 	processes, err := client.List(ctx, daemon.ListRequest{Scope: selection.scope, Cwd: cwd})
 	if err != nil {
 		if daemonUnavailable(err) {
@@ -2295,6 +2323,7 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return err
 	}
 	defer client.Close()
+	client.SetEventOperation("remove", daemon.NewOperationID(), "cli")
 	if all {
 		processes, err := client.List(ctx, daemon.ListRequest{Scope: selection.scope, Cwd: cwd, IncludeCompleted: true})
 		if err != nil {
@@ -2356,6 +2385,8 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return err
 	}
 	defer client.Close()
+	downOperationID := daemon.NewOperationID()
+	client.SetEventOperation("down", downOperationID, "cli")
 	processes, err := client.List(ctx, daemon.ListRequest{Scope: selection.scope, Cwd: cwd})
 	if err != nil {
 		if daemonUnavailable(err) {
@@ -2394,12 +2425,16 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		err    error
 	}
 	workers := make(chan workerResult, len(names))
+	readyWorkers := make(chan struct{}, len(names))
+	startStops := make(chan struct{})
 	var waitGroup sync.WaitGroup
+	activeWorkers := 0
 	for index, name := range names {
 		if !app.IsActiveState(byName[name].State) && !processNeedsRestartControl(byName[name]) {
 			continue
 		}
 		waitGroup.Add(1)
+		activeWorkers++
 		go func(index int, name string) {
 			defer waitGroup.Done()
 			result := stopResult{Name: name}
@@ -2407,10 +2442,13 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			if worker != nil {
 				defer worker.Close()
 			}
+			readyWorkers <- struct{}{}
+			<-startStops
 			if stopErr == nil {
 				if worker == nil {
 					stopErr = errors.New("daemon connection returned nil client")
 				} else {
+					worker.SetEventOperation("down", downOperationID, "cli")
 					stopErr = worker.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
 				}
 			}
@@ -2426,6 +2464,10 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			workers <- workerResult{index: index, result: result, err: stopErr}
 		}(index, name)
 	}
+	for range activeWorkers {
+		<-readyWorkers
+	}
+	close(startStops)
 	waitGroup.Wait()
 	close(workers)
 	stopErrors := make([]error, len(names))
@@ -2684,6 +2726,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		return err
 	}
 	defer client.Close()
+	client.SetEventOperation("restart", daemon.NewOperationID(), "cli")
 
 	results := make([]restartOutputResult, 0, len(names))
 	for _, name := range names {
@@ -3133,6 +3176,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		}
 	}
 	defer client.Close()
+	client.SetEventOperation(cmd.Name, daemon.NewOperationID(), "cli")
 	var followSession *upLogFollowSession
 	if followOutput {
 		followSession, err = startUpLogFollow(ctx, cmd, client, cwd, names, manifest, writer, progressWriter, followSince, cfg.ReadEntries, int(cfg.ReadBytes))

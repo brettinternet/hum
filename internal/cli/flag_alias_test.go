@@ -23,6 +23,7 @@ func TestFlagAliases(t *testing.T) {
 		"up":       {"detach": {"d"}, "no-wait": nil, "timeout": {"t"}, "full": nil, "json": {"j"}},
 		"down":     {"json": {"j"}},
 		"list":     {"all": {"a"}, "full": nil, "json": {"j"}},
+		"events":   {"since": nil, "kind": nil, "failed": nil, "match": {"m"}, "tail": {"n"}, "after-cursor": {"c"}, "limit-bytes": nil, "full": nil, "json": {"j"}},
 		"status":   {"json": {"j"}},
 		"attach":   {"tail": {"n"}},
 		"logs":     {"stream": {"s"}, "tail": {"n"}, "after-cursor": {"c"}, "since": nil, "limit-bytes": {"b"}, "match": {"m"}, "context": nil, "follow": {"f"}, "json": {"j"}},
@@ -51,7 +52,7 @@ func TestFlagAliases(t *testing.T) {
 	if got := urfavecli.HelpFlag.Names(); !reflect.DeepEqual(got, []string{"help", "h"}) {
 		t.Fatalf("help names = %v, want [help h]", got)
 	}
-	for _, name := range []string{"doctor", "init", "run", "start", "up", "down", "list", "status", "attach", "logs", "wait", "input", "signal", "restart", "stop", "remove"} {
+	for _, name := range []string{"doctor", "init", "run", "start", "up", "down", "list", "events", "status", "attach", "logs", "wait", "input", "signal", "restart", "stop", "remove"} {
 		expected[name]["global"] = []string{"g"}
 	}
 	if got := urfavecli.VersionFlag.Names(); !reflect.DeepEqual(got, []string{"version", "v"}) {

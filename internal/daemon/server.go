@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -50,6 +51,11 @@ type Server struct {
 
 	projectsMu sync.Mutex
 	projects   map[string]struct{}
+
+	eventOpsMu       sync.Mutex
+	eventOps         map[string]eventOperation
+	eventDiagnostics map[string]struct{}
+	eventQueue       chan queuedHistoryEvent
 
 	serveMu      sync.Mutex
 	serveStarted bool
@@ -139,21 +145,26 @@ func NewServer(cfg Config) (*Server, error) {
 		projects[item.Root] = struct{}{}
 	}
 	server := &Server{
-		owner:          owner,
-		paths:          paths,
-		listener:       listener,
-		supervisor:     supervisor,
-		version:        version,
-		maxLine:        maxLine,
-		log:            log,
-		projects:       projects,
-		serveDone:      make(chan struct{}),
-		ready:          make(chan struct{}),
-		shutdownDone:   make(chan struct{}),
-		closing:        make(chan struct{}),
-		warnings:       append([]protocol.StartupWarning(nil), warnings...),
-		unresolvedDone: make(chan struct{}),
+		owner:            owner,
+		paths:            paths,
+		listener:         listener,
+		supervisor:       supervisor,
+		version:          version,
+		maxLine:          maxLine,
+		log:              log,
+		projects:         projects,
+		eventOps:         make(map[string]eventOperation),
+		eventDiagnostics: make(map[string]struct{}),
+		eventQueue:       make(chan queuedHistoryEvent, 1024),
+		serveDone:        make(chan struct{}),
+		ready:            make(chan struct{}),
+		shutdownDone:     make(chan struct{}),
+		closing:          make(chan struct{}),
+		warnings:         append([]protocol.StartupWarning(nil), warnings...),
+		unresolvedDone:   make(chan struct{}),
 	}
+	go server.writeHistoryEvents()
+	supervisor.SetLifecycleHook(server.recordLifecycle)
 	go server.monitorUnresolved()
 	return server, nil
 }
@@ -383,6 +394,7 @@ func (s *Server) shutdown(force bool) error {
 	if err := s.supervisor.Shutdown(context.Background()); err != nil {
 		shutdownErr = errors.Join(shutdownErr, err)
 	}
+	s.flushHistoryEvents()
 	// Follow handlers must flush the supervisor shutdown error before the
 	// daemon exits and tears down their connections. Closing s.closing starts
 	// the bounded drain so a client that stopped reading cannot block exit.
@@ -603,8 +615,279 @@ func dispatchError(op protocol.Operation, err error) protocol.ErrorResponse {
 	return protocol.ErrorResponse{Op: op, OK: false, Error: protocolWireError(err)}
 }
 
+func reqEventOperation(req *protocol.Request, fallback string) string {
+	if req != nil && req.EventOperation != "" {
+		return req.EventOperation
+	}
+	return fallback
+}
+
+func reqEventOrigin(req *protocol.Request, fallback string) string {
+	if fallback != "" {
+		return fallback
+	}
+	if req != nil && req.EventOrigin != "" {
+		return req.EventOrigin
+	}
+	return "cli"
+}
+
+func reqOperationID(req *protocol.Request) string {
+	if req == nil {
+		return NewOperationID()
+	}
+	if req.ID == "" {
+		req.ID = NewOperationID()
+	}
+	return req.ID
+}
+
+func (s *Server) history(scope, root, cwd string) (*EventHistory, error) {
+	if scope == "" {
+		scope = app.ScopeProject
+	}
+	if scope == app.ScopeGlobal {
+		root = ""
+	} else if root == "" {
+		if cwd == "" {
+			cwd = "."
+		}
+		canonical, err := canonicalRequestRoot(cwd)
+		if err != nil {
+			return nil, err
+		}
+		root = canonical
+	}
+	history := NewEventHistory(s.paths.Dir, scope, root)
+	history.SetDiagnostic(func(err error) {
+		key := history.EventPath()
+		s.eventOpsMu.Lock()
+		_, diagnosed := s.eventDiagnostics[key]
+		if !diagnosed {
+			s.eventDiagnostics[key] = struct{}{}
+		}
+		s.eventOpsMu.Unlock()
+		if !diagnosed && s.log != nil {
+			s.log.Printf("event history: %v\n", err)
+		}
+	})
+	return history, nil
+}
+
+type eventOperation struct {
+	id, origin      string
+	launched, ready bool
+}
+
+type queuedHistoryEvent struct {
+	scope, root, cwd string
+	event            protocol.HistoryEvent
+	barrier          chan struct{}
+}
+
+func (s *Server) writeHistoryEvents() {
+	for item := range s.eventQueue {
+		if item.barrier != nil {
+			close(item.barrier)
+			continue
+		}
+		history, err := s.history(item.scope, item.root, item.cwd)
+		if err == nil {
+			_, err = history.Append(item.event)
+		}
+		if err != nil && s.log != nil {
+			s.log.Printf("event history write failed: %v\n", err)
+		}
+	}
+}
+
+func (s *Server) queueHistoryEvent(scope, root, cwd string, event protocol.HistoryEvent) {
+	s.eventQueue <- queuedHistoryEvent{scope: scope, root: root, cwd: cwd, event: event}
+}
+
+func (s *Server) flushHistoryEvents() {
+	barrier := make(chan struct{})
+	s.eventQueue <- queuedHistoryEvent{barrier: barrier}
+	<-barrier
+}
+
+func eventOperationKey(scope, root, name string) string {
+	if scope == "" {
+		scope = app.ScopeProject
+	}
+	if scope == app.ScopeGlobal {
+		root = ""
+	}
+	return scope + "\x00" + root + "\x00" + name
+}
+
+func (s *Server) beginEventOperation(scope, root, cwd, name, id, origin string) func() {
+	if scope == "" {
+		scope = app.ScopeProject
+	}
+	if scope != app.ScopeGlobal && root == "" {
+		if canonical, err := canonicalRequestRoot(cwd); err == nil {
+			root = canonical
+		}
+	}
+	key := eventOperationKey(scope, root, name)
+	s.eventOpsMu.Lock()
+	s.eventOps[key] = eventOperation{id: id, origin: origin}
+	s.eventOpsMu.Unlock()
+	return func() {
+		s.eventOpsMu.Lock()
+		delete(s.eventOps, key)
+		s.eventOpsMu.Unlock()
+	}
+}
+
+func (s *Server) recordLifecycle(event app.LifecycleEvent) {
+	key := eventOperationKey(event.Scope, event.Root, event.Name)
+	s.eventOpsMu.Lock()
+	operation := s.eventOps[key]
+	if operation.id != "" {
+		switch event.Event {
+		case "launch":
+			operation.launched = true
+			if operation.ready {
+				delete(s.eventOps, key)
+			} else {
+				s.eventOps[key] = operation
+			}
+		case "ready":
+			operation.ready = true
+			if operation.launched {
+				delete(s.eventOps, key)
+			} else {
+				s.eventOps[key] = operation
+			}
+		case "startup_failure":
+			delete(s.eventOps, key)
+		}
+	}
+	s.eventOpsMu.Unlock()
+	s.queueHistoryEvent(event.Scope, event.Root, event.Cwd, protocol.HistoryEvent{Time: event.Time, Kind: protocol.EventLifecycle, Name: event.Name, Event: event.Event, Detail: event.Detail, OperationID: operation.id, ExitCode: event.ExitCode, Signal: event.Signal})
+}
+
+func (s *Server) appendHistory(scope, root, cwd, operationID, origin, operation, name, outcome, lifecycle string) {
+	if origin == "" {
+		origin = "cli"
+	}
+	s.queueHistoryEvent(scope, root, cwd, protocol.HistoryEvent{Time: time.Now().UTC(), Kind: protocol.EventOperation, Name: name, Event: operation, OperationID: operationID, Origin: origin, Outcome: outcome})
+	if lifecycle != "" {
+		s.queueHistoryEvent(scope, root, cwd, protocol.HistoryEvent{Time: time.Now().UTC(), Kind: protocol.EventLifecycle, Name: name, Event: lifecycle, OperationID: operationID})
+	}
+}
+
 func (s *Server) dispatch(req *protocol.Request) (any, bool) {
+	response, terminal := s.dispatchRequest(req)
+	if req != nil && req.Op != protocol.OpEvents {
+		if err := responseError(response); err != nil {
+			name, scope, cwd, root, origin := requestTarget(req)
+			if name != "" {
+				s.appendHistory(scope, root, cwd, reqOperationID(req), reqEventOrigin(req, origin), reqEventOperation(req, string(req.Op)), name, "failure", "")
+			}
+		}
+	}
+	return response, terminal
+}
+
+func responseError(response any) error {
+	switch value := response.(type) {
+	case protocol.ErrorResponse:
+		if value.Error != nil {
+			return value.Error
+		}
+	case *protocol.ErrorResponse:
+		if value != nil && value.Error != nil {
+			return value.Error
+		}
+	}
+	return nil
+}
+
+func requestTarget(req *protocol.Request) (name, scope, cwd, root, origin string) {
+	if req == nil {
+		return
+	}
+	scope = protocol.ScopeProject
 	switch req.Op {
+	case protocol.OpStart:
+		name, scope, cwd, root, origin = req.Start.Name, req.Start.Scope, req.Start.Cwd, req.Start.Root, req.Start.Origin
+	case protocol.OpSignal:
+		name, scope, cwd, origin = req.Signal.Name, req.Signal.Scope, req.Signal.Cwd, req.Signal.Origin
+	case protocol.OpStop:
+		name, scope, cwd, origin = req.Stop.Name, req.Stop.Scope, req.Stop.Cwd, req.Stop.Origin
+	case protocol.OpRemove:
+		name, scope, cwd, origin = req.Remove.Name, req.Remove.Scope, req.Remove.Cwd, req.Remove.Origin
+	case protocol.OpRestart:
+		name, scope, cwd, root, origin = req.Restart.Name, req.Restart.Scope, req.Restart.Cwd, req.Restart.Root, req.Restart.Origin
+	}
+	if origin == "" {
+		origin = req.EventOrigin
+	}
+	return
+}
+
+func (s *Server) dispatchRequest(req *protocol.Request) (any, bool) {
+	switch req.Op {
+	case protocol.OpEvents:
+		value := req.Events
+		if value == nil {
+			return dispatchError(req.Op, fmt.Errorf("%w: events payload is required", app.ErrInvalidRequest)), false
+		}
+		if value.Tail == 0 {
+			value.Tail = 50
+		}
+		if value.Tail < 1 || value.Tail > maxHistoryEvents {
+			return dispatchError(req.Op, fmt.Errorf("%w: tail must be between 1 and %d", app.ErrInvalidRequest, maxHistoryEvents)), false
+		}
+		for _, name := range value.Names {
+			if err := app.ValidateName(name); err != nil {
+				return dispatchError(req.Op, err), false
+			}
+		}
+		for _, kind := range value.Kinds {
+			if kind != protocol.EventLifecycle && kind != protocol.EventOperation {
+				return dispatchError(req.Op, fmt.Errorf("%w: event kind must be lifecycle or operation", app.ErrInvalidRequest)), false
+			}
+		}
+		if value.MaxBytes < 0 {
+			return dispatchError(req.Op, fmt.Errorf("%w: max bytes must not be negative", app.ErrInvalidRequest)), false
+		}
+		maxBytes := value.MaxBytes
+		wireBound := s.maxLine / 2
+		if wireBound <= 0 || wireBound > maxBoundedReadBytes {
+			wireBound = maxBoundedReadBytes
+		}
+		if maxBytes == 0 || maxBytes > wireBound {
+			maxBytes = wireBound
+		}
+		var match *regexp.Regexp
+		var err error
+		if value.Match != "" {
+			match, err = regexp.Compile(value.Match)
+			if err != nil {
+				return dispatchError(req.Op, fmt.Errorf("%w: invalid match expression: %v", app.ErrInvalidRequest, err)), false
+			}
+		}
+		var since time.Time
+		if value.SinceUnixNano != 0 {
+			since = time.Unix(0, value.SinceUnixNano)
+		}
+		s.flushHistoryEvents()
+		history, err := s.history(value.Scope, value.Root, value.Cwd)
+		if err != nil {
+			return dispatchError(req.Op, err), false
+		}
+		page, err := history.Read(value.Names, since, value.Kinds, value.Failed, match, value.Tail, value.AfterCursor, maxBytes)
+		if err != nil {
+			if errors.Is(err, ErrHistoryCursorFuture) {
+				err = fmt.Errorf("%w: %v", app.ErrInvalidRequest, err)
+			}
+			return dispatchError(req.Op, err), false
+		}
+		return protocol.NewEventsResponse(page.Events, page.NextCursor, page.Truncated, page.HasMore), false
 	case protocol.OpStart:
 		value := req.Start
 		if value.Root != "" {
@@ -629,13 +912,19 @@ func (s *Server) dispatch(req *protocol.Request) (any, bool) {
 		if value.TTYSize != nil {
 			size = &app.TTYSize{Columns: value.TTYSize.Columns, Rows: value.TTYSize.Rows}
 		}
+		operationID := reqOperationID(req)
+		endOperation := s.beginEventOperation(value.Scope, value.Root, value.Cwd, value.Name, operationID, value.Origin)
 		launched, err := s.supervisor.Start(app.StartRequest{Name: value.Name, Scope: value.Scope, Source: value.Source, Root: value.Root, Argv: value.Argv, Cwd: value.Cwd, Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), StopGrace: value.StopGrace, Attached: value.Attached})
+		if err != nil || launched.Readiness == nil {
+			endOperation()
+		}
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
 		}
 		s.trackProcess(launched)
 		s.shutdownMu.Unlock()
+		s.appendHistory(value.Scope, value.Root, value.Cwd, operationID, reqEventOrigin(req, value.Origin), reqEventOperation(req, "start"), value.Name, "success", "")
 		item := protocolProcessFromApp(launched)
 		return protocol.StartResponse{Op: req.Op, OK: true, Process: &item, Warnings: s.StartupWarnings()}, false
 	case protocol.OpList:
@@ -692,12 +981,18 @@ func (s *Server) dispatch(req *protocol.Request) (any, bool) {
 		if signalErr != nil {
 			return dispatchError(req.Op, signalErr), false
 		}
+		s.appendHistory(value.Scope, "", value.Cwd, reqOperationID(req), reqEventOrigin(req, value.Origin), reqEventOperation(req, "signal"), value.Name, "success", "")
 		return protocol.SignalResponse{Op: req.Op, OK: true, Name: value.Name, Signal: &protocol.SignalInfo{Name: parsed.Name, Number: parsed.Number}, Status: "sent"}, false
 	case protocol.OpStop:
 		value := req.Stop
+		operationID := reqOperationID(req)
+		endOperation := s.beginEventOperation(value.Scope, "", value.Cwd, value.Name, operationID, value.Origin)
 		if err := s.supervisor.StopScoped(context.Background(), value.Scope, value.Cwd, value.Name); err != nil {
+			endOperation()
 			return dispatchError(req.Op, err), false
 		}
+		endOperation()
+		s.appendHistory(value.Scope, "", value.Cwd, operationID, reqEventOrigin(req, value.Origin), reqEventOperation(req, "stop"), value.Name, "success", "operator_stop")
 		var snapshot *protocol.Process
 		if item, err := s.supervisor.GetScoped(value.Scope, value.Cwd, value.Name); err == nil {
 			s.trackProcess(item)
@@ -707,9 +1002,14 @@ func (s *Server) dispatch(req *protocol.Request) (any, bool) {
 		return protocol.StopResponse{Op: req.Op, OK: true, Process: snapshot}, false
 	case protocol.OpRemove:
 		value := req.Remove
+		operationID := reqOperationID(req)
+		endOperation := s.beginEventOperation(value.Scope, "", value.Cwd, value.Name, operationID, value.Origin)
 		if err := s.supervisor.RemoveScoped(context.Background(), value.Scope, value.Cwd, value.Name); err != nil {
+			endOperation()
 			return dispatchError(req.Op, err), false
 		}
+		endOperation()
+		s.appendHistory(value.Scope, "", value.Cwd, operationID, reqEventOrigin(req, value.Origin), reqEventOperation(req, "remove"), value.Name, "success", "removal")
 		return protocol.RemoveResponse{Op: req.Op, OK: true}, false
 	case protocol.OpRestart:
 		value := req.Restart
@@ -733,13 +1033,19 @@ func (s *Server) dispatch(req *protocol.Request) (any, bool) {
 			size = &app.TTYSize{Columns: value.TTYSize.Columns, Rows: value.TTYSize.Rows}
 		}
 		options := app.RestartOptions{Update: value.Update, Source: value.Source, Root: value.Root, Cwd: value.Cwd, Argv: append([]string(nil), value.Argv...), Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), StopGrace: value.StopGrace, Scope: value.Scope}
+		operationID := reqOperationID(req)
+		endOperation := s.beginEventOperation(value.Scope, value.Root, value.Cwd, value.Name, operationID, value.Origin)
 		launched, err := s.supervisor.RestartScoped(context.Background(), value.Scope, value.Cwd, value.Name, options)
+		if err != nil || launched.Readiness == nil {
+			endOperation()
+		}
 		if err != nil {
 			s.shutdownMu.Unlock()
 			return dispatchError(req.Op, err), false
 		}
 		s.trackProcess(launched)
 		s.shutdownMu.Unlock()
+		s.appendHistory(value.Scope, value.Root, value.Cwd, operationID, reqEventOrigin(req, value.Origin), reqEventOperation(req, "restart"), value.Name, "success", "explicit_restart")
 		snapshot := protocolProcessFromApp(launched)
 		return protocol.RestartResponse{Op: req.Op, OK: true, Process: &snapshot}, false
 	case protocol.OpShutdown:
@@ -1016,6 +1322,19 @@ func (s *Server) handleInput(ctx context.Context, conn net.Conn, decoder *protoc
 			if err == nil {
 				ack.LaunchCursor, ack.Written = inputRequest.LaunchCursor, len(data)
 			}
+			operationID := req.ID
+			if operationID == "" {
+				operationID = NewOperationID()
+			}
+			operationName := req.EventOperation
+			if operationName == "" {
+				operationName = "input"
+			}
+			outcome := "success"
+			if response != nil {
+				outcome = "failure"
+			}
+			s.appendHistory(req.Scope, req.Root, req.Cwd, operationID, req.Origin, operationName, req.Name, outcome, "")
 			writeMu.Lock()
 			writeErr := encoder.EncodeResponse(ack)
 			writeMu.Unlock()

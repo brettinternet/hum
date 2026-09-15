@@ -20,20 +20,21 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 	stopGrace := 2 * time.Second
 	requests := []any{
 		Hello{Op: OpHello, Version: 20},
-		StartRequest{Op: OpStart, Scope: ScopeProject, Name: "start", Argv: []string{"tool", "--flag"}, Cwd: "/work", Root: "/project", Env: []string{"A=B"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace, Attached: true},
+		StartRequest{Op: OpStart, Scope: ScopeProject, Name: "start", Argv: []string{"tool", "--flag"}, Cwd: "/work", Root: "/project", Env: []string{"A=B"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace, Attached: true, Origin: "cli"},
 		ListRequest{Op: OpList, Scope: ScopeGlobal, Cwd: "/work", All: true, IncludeCompleted: true},
 		GetRequest{Op: OpGet, Scope: ScopeProject, Name: "get", Cwd: "/work"},
 		OutputRequest{Op: OpOutput, Scope: ScopeProject, Name: "output", Cwd: "/work", After: &cursor, SinceMS: 11, Tail: 12, Stream: StreamStdout, Match: "needle", Context: 2, MaxEntries: 13, MaxBytes: 14},
+		EventsRequest{Op: OpEvents, Scope: ScopeProject, Root: "/project", Cwd: "/work", Names: []string{"api"}, SinceUnixNano: stamp.UnixNano(), Kinds: []EventKind{EventLifecycle, EventOperation}, Failed: true, Match: "api", Tail: 12, AfterCursor: &cursor, MaxBytes: 14},
 		OutputRequest{Op: OpOutput, Scope: ScopeProject, Name: "output-absolute", Cwd: "/work", SinceUnixNano: stamp.UnixNano()},
 		FollowRequest{Op: OpFollow, Scope: ScopeProject, Name: "follow", Cwd: "/work", After: &cursor, UntilExit: true, SinceUnixNano: stamp.UnixNano(), Tail: 15, Stream: StreamStderr, Match: "follow", MaxEntries: 16, MaxBytes: 17},
 		FollowRequest{Op: OpFollow, Scope: ScopeProject, Name: "follow-relative", Cwd: "/work", SinceMS: 19},
 		WaitRequest{Op: OpWait, Scope: ScopeProject, Name: "wait", Cwd: "/work", After: &cursor, Match: "wait", TimeoutMS: 18},
-		SignalRequest{Op: OpSignal, Scope: ScopeGlobal, Name: "signal", Cwd: "/work", Signal: "SIGTERM", Control: true},
-		StopRequest{Op: OpStop, Scope: ScopeProject, Name: "stop", Cwd: "/work"},
-		RestartRequest{Op: OpRestart, Scope: ScopeProject, Name: "restart", Cwd: "/work", Root: "/project", Update: true, Argv: []string{"new"}, Env: []string{"C=D"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace},
-		RemoveRequest{Op: OpRemove, Scope: ScopeGlobal, Name: "remove", Cwd: "/work"},
+		SignalRequest{Op: OpSignal, Scope: ScopeGlobal, Name: "signal", Cwd: "/work", Signal: "SIGTERM", Control: true, Origin: "mcp"},
+		StopRequest{Op: OpStop, Scope: ScopeProject, Name: "stop", Cwd: "/work", Origin: "cli"},
+		RestartRequest{Op: OpRestart, Scope: ScopeProject, Name: "restart", Cwd: "/work", Root: "/project", Update: true, Argv: []string{"new"}, Env: []string{"C=D"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace, Origin: "mcp"},
+		RemoveRequest{Op: OpRemove, Scope: ScopeGlobal, Name: "remove", Cwd: "/work", Origin: "mcp"},
 		ShutdownRequest{Op: OpShutdown, Force: true},
-		InputAttachRequest{Op: OpInputAttach, Scope: ScopeProject, Name: "input", Cwd: "/work", Root: "/project", TTY: true, Argv: []string{"shell"}, Source: "manifest", Ready: ready, Columns: 100, Rows: 30},
+		InputAttachRequest{Op: OpInputAttach, ID: "operation-1", EventOperation: "input", Origin: "mcp", Scope: ScopeProject, Name: "input", Cwd: "/work", Root: "/project", TTY: true, Argv: []string{"shell"}, Source: "manifest", Ready: ready, Columns: 100, Rows: 30},
 		InputReleaseRequest{Op: OpInputRelease},
 		InputWriteRequest{Op: OpInputWrite, LaunchCursor: cursor, Data: "aGVsbG8="},
 		InputResizeRequest{Op: OpInputResize, LaunchCursor: cursor, Columns: 100, Rows: 30},
@@ -60,6 +61,8 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 				actual = *got.Get
 			case OpOutput:
 				actual = *got.Output
+			case OpEvents:
+				actual = *got.Events
 			case OpFollow:
 				actual = *got.Follow
 			case OpWait:

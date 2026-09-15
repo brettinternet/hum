@@ -299,7 +299,7 @@ func TestJSONErrorModeDetection(t *testing.T) {
 	root := NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{})
 	jsonCommands := map[string]bool{
 		"version": true, "doctor": true, "init": true, "run": true, "start": true, "up": true, "down": true,
-		"list": true, "status": true, "logs": true, "wait": true, "input": false,
+		"list": true, "events": true, "status": true, "logs": true, "wait": true, "input": false,
 		"restart": true, "stop": true, "remove": true, "signal": true, "shutdown": true,
 	}
 	for commandName, shortAlias := range jsonCommands {

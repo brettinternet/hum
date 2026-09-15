@@ -522,7 +522,7 @@ func selectedProjectDirectory(cmd *urfavecli.Command) (projectSelection, error) 
 	info, err := os.Stat(selected)
 	allowMissing := false
 	switch cmd.Name {
-	case "list", "status", "logs", "wait", "signal", "stop", "remove", "down":
+	case "list", "status", "logs", "wait", "signal", "stop", "remove", "down", "events":
 		allowMissing = true
 	}
 	if err != nil && !allowMissing {

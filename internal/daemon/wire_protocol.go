@@ -394,6 +394,8 @@ func normalizeProtocolScope(req *protocol.Request) error {
 		return set(&req.Get.Scope, nil, nil)
 	case protocol.OpOutput:
 		return set(&req.Output.Scope, nil, nil)
+	case protocol.OpEvents:
+		return set(&req.Events.Scope, &req.Events.Root, nil)
 	case protocol.OpFollow:
 		return set(&req.Follow.Scope, nil, nil)
 	case protocol.OpWait:

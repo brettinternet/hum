@@ -14,7 +14,8 @@ import (
 // run launch/follow scoping and control-intent signal requests; version 17 added
 // the explicit global process namespace; version 18 added bounded match context;
 // version 19 added per-process stop grace; version 20 adds executable readiness
-// configuration and durable readiness diagnostics.
+// configuration and durable readiness diagnostics; durable event history reads
+// are additive within the current private wire version.
 const Version = 20
 
 const (
@@ -83,6 +84,8 @@ const (
 	OpRemove Operation = "remove"
 	// OpShutdown retires the daemon.
 	OpShutdown Operation = "shutdown"
+	// OpEvents reads the bounded durable service event history.
+	OpEvents Operation = "events"
 	// OpEvent marks a streaming event response. It is not a client request.
 	OpEvent Operation = "event"
 	// OpInputAttach opens the dedicated duplex TTY input connection.
@@ -110,6 +113,7 @@ const (
 	OperationRestart      = OpRestart
 	OperationRemove       = OpRemove
 	OperationShutdown     = OpShutdown
+	OperationEvents       = OpEvents
 	OperationEvent        = OpEvent
 	OperationInputAttach  = OpInputAttach
 	OperationInputRelease = OpInputRelease
@@ -132,7 +136,7 @@ const (
 
 var knownOperations = map[Operation]struct{}{
 	OpHello: {}, OpStart: {}, OpList: {}, OpGet: {}, OpOutput: {},
-	OpFollow: {}, OpWait: {}, OpSignal: {}, OpStop: {}, OpRestart: {}, OpRemove: {}, OpShutdown: {},
+	OpFollow: {}, OpWait: {}, OpSignal: {}, OpStop: {}, OpRestart: {}, OpRemove: {}, OpShutdown: {}, OpEvents: {},
 	OpInputAttach: {}, OpInputRelease: {}, OpInputWrite: {}, OpInputResize: {},
 }
 
@@ -261,6 +265,7 @@ type StartRequest struct {
 	Restart   string           `json:"restart"`
 	StopGrace *time.Duration   `json:"stop_grace,omitempty"`
 	Attached  bool             `json:"attached,omitempty"`
+	Origin    string           `json:"origin,omitempty"`
 }
 
 // TTYSize is a terminal size in character cells.
@@ -291,7 +296,8 @@ func (r StartRequest) MarshalJSON() ([]byte, error) {
 		Restart   string           `json:"restart"`
 		StopGrace *time.Duration   `json:"stop_grace,omitempty"`
 		Attached  bool             `json:"attached,omitempty"`
-	}{Op: OpStart, Scope: r.Scope, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart), StopGrace: r.StopGrace, Attached: r.Attached})
+		Origin    string           `json:"origin,omitempty"`
+	}{Op: OpStart, Scope: r.Scope, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart), StopGrace: r.StopGrace, Attached: r.Attached, Origin: r.Origin})
 }
 
 // UnmarshalJSON decodes a start request and validates its operation when
@@ -312,6 +318,7 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 		Restart   string           `json:"restart"`
 		StopGrace *time.Duration   `json:"stop_grace"`
 		Attached  bool             `json:"attached"`
+		Origin    string           `json:"origin"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -322,7 +329,7 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	r.Op = OpStart
 	r.Name, r.Argv, r.Cwd, r.Root, r.Env, r.Scope = wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env, wire.Scope
 	r.Source, r.Ready = wire.Source, wire.Ready
-	r.TTY, r.TTYSize, r.Restart, r.StopGrace, r.Attached = wire.TTY, wire.TTYSize, effectiveRestart(wire.Restart), wire.StopGrace, wire.Attached
+	r.TTY, r.TTYSize, r.Restart, r.StopGrace, r.Attached, r.Origin = wire.TTY, wire.TTYSize, effectiveRestart(wire.Restart), wire.StopGrace, wire.Attached, wire.Origin
 	return nil
 }
 
@@ -469,6 +476,83 @@ func (r *WaitRequest) UnmarshalJSON(data []byte) error {
 
 // Cursor is the monotonically increasing output sequence cursor.
 type Cursor uint64
+
+// EventKind identifies a durable service-history record.
+type EventKind string
+
+const (
+	EventLifecycle EventKind = "lifecycle"
+	EventOperation EventKind = "operation"
+)
+
+// HistoryEvent is one bounded, response-safe durable service-history record.
+// It intentionally contains no argv, environment, output, input, or raw error.
+type HistoryEvent struct {
+	Cursor      Cursor    `json:"cursor"`
+	Time        time.Time `json:"time"`
+	Kind        EventKind `json:"kind"`
+	Name        string    `json:"name"`
+	Event       string    `json:"event"`
+	Detail      string    `json:"detail,omitempty"`
+	OperationID string    `json:"operation_id,omitempty"`
+	Origin      string    `json:"origin,omitempty"`
+	Outcome     string    `json:"outcome,omitempty"`
+	ExitCode    *int      `json:"exit_code,omitempty"`
+	Signal      string    `json:"signal,omitempty"`
+}
+
+// EventRecord is a descriptive alias for HistoryEvent.
+type EventRecord = HistoryEvent
+
+// EventsRequest asks for a bounded immutable history snapshot.
+type EventsRequest struct {
+	Op            Operation   `json:"op"`
+	Scope         string      `json:"scope,omitempty"`
+	Root          string      `json:"root,omitempty"`
+	Cwd           string      `json:"cwd,omitempty"`
+	Names         []string    `json:"names,omitempty"`
+	SinceUnixNano int64       `json:"since_unix_nano,omitempty"`
+	Kinds         []EventKind `json:"kinds,omitempty"`
+	Failed        bool        `json:"failed,omitempty"`
+	Match         string      `json:"match,omitempty"`
+	Tail          int         `json:"tail,omitempty"`
+	AfterCursor   *Cursor     `json:"after_cursor,omitempty"`
+	MaxBytes      int         `json:"max_bytes,omitempty"`
+}
+
+func (r EventsRequest) MarshalJSON() ([]byte, error) {
+	type wire EventsRequest
+	r.Op = OpEvents
+	return json.Marshal(wire(r))
+}
+func (r *EventsRequest) UnmarshalJSON(data []byte) error {
+	type wire EventsRequest
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if value.Op != "" && value.Op != OpEvents {
+		return &UnknownOperationError{Operation: value.Op}
+	}
+	*r = EventsRequest(value)
+	r.Op = OpEvents
+	return nil
+}
+
+// EventsResponse is the bounded history page and its immutable snapshot metadata.
+type EventsResponse struct {
+	Op         Operation      `json:"op"`
+	OK         bool           `json:"ok"`
+	Events     []HistoryEvent `json:"events"`
+	NextCursor Cursor         `json:"next_cursor"`
+	Truncated  bool           `json:"truncated,omitempty"`
+	HasMore    bool           `json:"has_more,omitempty"`
+	Error      *WireError     `json:"error,omitempty"`
+}
+
+func NewEventsResponse(events []HistoryEvent, next Cursor, truncated, more bool) EventsResponse {
+	return EventsResponse{Op: OpEvents, OK: true, Events: events, NextCursor: next, Truncated: truncated, HasMore: more}
+}
 
 // Stream identifies the source selected by an output request or entry.
 type Stream string
@@ -642,6 +726,7 @@ type SignalRequest struct {
 	Cwd     string    `json:"cwd"`
 	Signal  string    `json:"signal"`
 	Control bool      `json:"control,omitempty"`
+	Origin  string    `json:"origin,omitempty"`
 }
 
 // NewSignalRequest builds a signal-forward request. Signal is normally a
@@ -666,7 +751,8 @@ func (r SignalRequest) MarshalJSON() ([]byte, error) {
 		Cwd     string    `json:"cwd"`
 		Signal  string    `json:"signal"`
 		Control bool      `json:"control,omitempty"`
-	}{Op: OpSignal, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Signal: r.Signal, Control: r.Control})
+		Origin  string    `json:"origin,omitempty"`
+	}{Op: OpSignal, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Signal: r.Signal, Control: r.Control, Origin: r.Origin})
 }
 
 // UnmarshalJSON decodes a signal request.
@@ -678,6 +764,7 @@ func (r *SignalRequest) UnmarshalJSON(data []byte) error {
 		Cwd     string    `json:"cwd"`
 		Signal  string    `json:"signal"`
 		Control bool      `json:"control"`
+		Origin  string    `json:"origin"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -685,16 +772,17 @@ func (r *SignalRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpSignal {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Scope, r.Name, r.Cwd, r.Signal, r.Control = OpSignal, wire.Scope, wire.Name, wire.Cwd, wire.Signal, wire.Control
+	r.Op, r.Scope, r.Name, r.Cwd, r.Signal, r.Control, r.Origin = OpSignal, wire.Scope, wire.Name, wire.Cwd, wire.Signal, wire.Control, wire.Origin
 	return nil
 }
 
 // StopRequest asks the daemon to stop one process group.
 type StopRequest struct {
-	Op    Operation `json:"op"`
-	Scope string    `json:"scope,omitempty"`
-	Name  string    `json:"name"`
-	Cwd   string    `json:"cwd"`
+	Op     Operation `json:"op"`
+	Scope  string    `json:"scope,omitempty"`
+	Name   string    `json:"name"`
+	Cwd    string    `json:"cwd"`
+	Origin string    `json:"origin,omitempty"`
 }
 
 // NewStopRequest builds a stop request.
@@ -705,20 +793,22 @@ func NewStopRequest(name, cwd string) StopRequest {
 // MarshalJSON writes a stop request with its stable operation.
 func (r StopRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op    Operation `json:"op"`
-		Scope string    `json:"scope,omitempty"`
-		Name  string    `json:"name"`
-		Cwd   string    `json:"cwd"`
-	}{Op: OpStop, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd})
+		Op     Operation `json:"op"`
+		Scope  string    `json:"scope,omitempty"`
+		Name   string    `json:"name"`
+		Cwd    string    `json:"cwd"`
+		Origin string    `json:"origin,omitempty"`
+	}{Op: OpStop, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Origin: r.Origin})
 }
 
 // UnmarshalJSON decodes a stop request.
 func (r *StopRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op    Operation `json:"op"`
-		Scope string    `json:"scope"`
-		Name  string    `json:"name"`
-		Cwd   string    `json:"cwd"`
+		Op     Operation `json:"op"`
+		Scope  string    `json:"scope"`
+		Name   string    `json:"name"`
+		Cwd    string    `json:"cwd"`
+		Origin string    `json:"origin"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -726,16 +816,17 @@ func (r *StopRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpStop {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Scope, r.Name, r.Cwd = OpStop, wire.Scope, wire.Name, wire.Cwd
+	r.Op, r.Scope, r.Name, r.Cwd, r.Origin = OpStop, wire.Scope, wire.Name, wire.Cwd, wire.Origin
 	return nil
 }
 
 // RemoveRequest asks the daemon to stop and discard one supervision session.
 type RemoveRequest struct {
-	Op    Operation `json:"op"`
-	Scope string    `json:"scope,omitempty"`
-	Name  string    `json:"name"`
-	Cwd   string    `json:"cwd"`
+	Op     Operation `json:"op"`
+	Scope  string    `json:"scope,omitempty"`
+	Name   string    `json:"name"`
+	Cwd    string    `json:"cwd"`
+	Origin string    `json:"origin,omitempty"`
 }
 
 func NewRemoveRequest(name, cwd string) RemoveRequest {
@@ -744,19 +835,21 @@ func NewRemoveRequest(name, cwd string) RemoveRequest {
 
 func (r RemoveRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op    Operation `json:"op"`
-		Scope string    `json:"scope,omitempty"`
-		Name  string    `json:"name"`
-		Cwd   string    `json:"cwd"`
-	}{Op: OpRemove, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd})
+		Op     Operation `json:"op"`
+		Scope  string    `json:"scope,omitempty"`
+		Name   string    `json:"name"`
+		Cwd    string    `json:"cwd"`
+		Origin string    `json:"origin,omitempty"`
+	}{Op: OpRemove, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Origin: r.Origin})
 }
 
 func (r *RemoveRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op    Operation `json:"op"`
-		Scope string    `json:"scope"`
-		Name  string    `json:"name"`
-		Cwd   string    `json:"cwd"`
+		Op     Operation `json:"op"`
+		Scope  string    `json:"scope"`
+		Name   string    `json:"name"`
+		Cwd    string    `json:"cwd"`
+		Origin string    `json:"origin"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -764,7 +857,7 @@ func (r *RemoveRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpRemove {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Scope, r.Name, r.Cwd = OpRemove, wire.Scope, wire.Name, wire.Cwd
+	r.Op, r.Scope, r.Name, r.Cwd, r.Origin = OpRemove, wire.Scope, wire.Name, wire.Cwd, wire.Origin
 	return nil
 }
 
@@ -788,6 +881,7 @@ type RestartRequest struct {
 	TTYSize   *TTYSize         `json:"tty_size,omitempty"`
 	Restart   string           `json:"restart,omitempty"`
 	StopGrace *time.Duration   `json:"stop_grace,omitempty"`
+	Origin    string           `json:"origin,omitempty"`
 }
 
 // NewRestartRequest builds a restart request that preserves the retained
@@ -813,7 +907,8 @@ func (r RestartRequest) MarshalJSON() ([]byte, error) {
 		TTYSize   *TTYSize         `json:"tty_size,omitempty"`
 		Restart   string           `json:"restart,omitempty"`
 		StopGrace *time.Duration   `json:"stop_grace,omitempty"`
-	}{Op: OpRestart, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: r.Restart, StopGrace: r.StopGrace})
+		Origin    string           `json:"origin,omitempty"`
+	}{Op: OpRestart, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: r.Restart, StopGrace: r.StopGrace, Origin: r.Origin})
 }
 
 // UnmarshalJSON decodes a restart request.
@@ -833,6 +928,7 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 		TTYSize   *TTYSize         `json:"tty_size"`
 		Restart   string           `json:"restart"`
 		StopGrace *time.Duration   `json:"stop_grace"`
+		Origin    string           `json:"origin"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -842,7 +938,7 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	}
 	r.Op, r.Scope, r.Name, r.Cwd, r.Root = OpRestart, wire.Scope, wire.Name, wire.Cwd, wire.Root
 	r.Update, r.Argv, r.Env, r.Source, r.Ready = wire.Update, wire.Argv, wire.Env, wire.Source, wire.Ready
-	r.TTY, r.TTYSize, r.Restart, r.StopGrace = wire.TTY, wire.TTYSize, wire.Restart, wire.StopGrace
+	r.TTY, r.TTYSize, r.Restart, r.StopGrace, r.Origin = wire.TTY, wire.TTYSize, wire.Restart, wire.StopGrace, wire.Origin
 	return nil
 }
 
@@ -850,17 +946,20 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 // source are optional and are used only to stage a known definition before its
 // first launch; arbitrary bytes never appear in this request.
 type InputAttachRequest struct {
-	Op      Operation        `json:"op"`
-	Scope   string           `json:"scope,omitempty"`
-	Name    string           `json:"name"`
-	Cwd     string           `json:"cwd"`
-	Root    string           `json:"root,omitempty"`
-	TTY     bool             `json:"tty"`
-	Argv    []string         `json:"argv,omitempty"`
-	Source  string           `json:"source,omitempty"`
-	Ready   *ReadinessConfig `json:"ready,omitempty"`
-	Columns uint16           `json:"columns,omitempty"`
-	Rows    uint16           `json:"rows,omitempty"`
+	Op             Operation        `json:"op"`
+	ID             string           `json:"id,omitempty"`
+	EventOperation string           `json:"event_operation,omitempty"`
+	Origin         string           `json:"origin,omitempty"`
+	Scope          string           `json:"scope,omitempty"`
+	Name           string           `json:"name"`
+	Cwd            string           `json:"cwd"`
+	Root           string           `json:"root,omitempty"`
+	TTY            bool             `json:"tty"`
+	Argv           []string         `json:"argv,omitempty"`
+	Source         string           `json:"source,omitempty"`
+	Ready          *ReadinessConfig `json:"ready,omitempty"`
+	Columns        uint16           `json:"columns,omitempty"`
+	Rows           uint16           `json:"rows,omitempty"`
 }
 
 func NewInputAttachRequest(name, cwd string) InputAttachRequest {

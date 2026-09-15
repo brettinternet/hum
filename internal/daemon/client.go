@@ -20,18 +20,21 @@ import (
 // Client is one request connection to a daemon. It owns no managed process;
 // closing it only closes this transport.
 type Client struct {
-	conn       net.Conn
-	decoder    *protocol.Decoder
-	encoder    *protocol.Encoder
-	maxLine    int
-	socket     string
-	mu         sync.Mutex
-	stateMu    sync.Mutex
-	closed     bool
-	warningsMu sync.Mutex
-	warnings   []protocol.StartupWarning
-	helloOK    bool
-	helloErr   error
+	conn        net.Conn
+	decoder     *protocol.Decoder
+	encoder     *protocol.Encoder
+	maxLine     int
+	socket      string
+	mu          sync.Mutex
+	stateMu     sync.Mutex
+	closed      bool
+	warningsMu  sync.Mutex
+	warnings    []protocol.StartupWarning
+	eventOp     string
+	eventID     string
+	eventOrigin string
+	helloOK     bool
+	helloErr    error
 }
 
 // StartRequest carries the exact argv, cwd, and environment for a launch.
@@ -41,6 +44,7 @@ type StartRequest = protocol.StartRequest
 type ListRequest = protocol.ListRequest
 type GetRequest = protocol.GetRequest
 type OutputRequest = protocol.OutputRequest
+type EventsRequest = protocol.EventsRequest
 type FollowRequest = protocol.FollowRequest
 type WaitRequest = protocol.WaitRequest
 type SignalRequest = protocol.SignalRequest
@@ -59,6 +63,49 @@ type InputRequest struct {
 	Cwd   string
 	Root  string
 	Data  []byte
+}
+
+// SetEventOperation tags subsequent mutating requests from this command with
+// one shared operation identity. Read-only requests ignore the metadata.
+func (c *Client) SetEventOperation(operation, id, origin string) {
+	if c == nil {
+		return
+	}
+	c.stateMu.Lock()
+	c.eventOp, c.eventID, c.eventOrigin = operation, id, origin
+	c.stateMu.Unlock()
+}
+
+func (c *Client) decoratedRequest(req any, op protocol.Operation) any {
+	switch op {
+	case protocol.OpStart, protocol.OpSignal, protocol.OpStop, protocol.OpRestart, protocol.OpRemove, protocol.OpInputAttach:
+	default:
+		return req
+	}
+	c.stateMu.Lock()
+	operation, id, origin := c.eventOp, c.eventID, c.eventOrigin
+	c.stateMu.Unlock()
+	if operation == "" && id == "" && origin == "" {
+		return req
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return req
+	}
+	var value map[string]any
+	if json.Unmarshal(data, &value) != nil {
+		return req
+	}
+	if operation != "" {
+		value["event_operation"] = operation
+	}
+	if id != "" {
+		value["id"] = id
+	}
+	if origin != "" {
+		value["origin"] = origin
+	}
+	return value
 }
 
 // InputResult reports the bytes acknowledged by the daemon and the launch
@@ -294,6 +341,19 @@ func (c *Client) Output(ctx context.Context, req OutputRequest) (output.ReadResu
 	return outputResultFromProtocol(response.Output), nil
 }
 
+// Events reads the bounded durable service event history.
+func (c *Client) Events(ctx context.Context, req EventsRequest) (protocol.EventsResponse, error) {
+	req.Op = protocol.OpEvents
+	response, err := c.roundTrip(ctx, req, protocol.OpEvents)
+	if err != nil {
+		return protocol.EventsResponse{}, err
+	}
+	if response.Events == nil {
+		return protocol.EventsResponse{}, errors.New("daemon events response omitted payload")
+	}
+	return *response.Events, nil
+}
+
 // Wait opens a fresh connection when this client was dialed from a socket, so
 // independent waits do not block control requests or one another.
 func (c *Client) Wait(ctx context.Context, req WaitRequest) (app.WaitResult, error) {
@@ -453,6 +513,9 @@ func (c *Client) InputAttach(ctx context.Context, req InputAttachRequest) (*Inpu
 		}
 		return nil, err
 	}
+	c.stateMu.Lock()
+	inputClient.eventOp, inputClient.eventID, inputClient.eventOrigin = c.eventOp, c.eventID, c.eventOrigin
+	c.stateMu.Unlock()
 	req.Op = protocol.OpInputAttach
 	if err := inputClient.writeOnly(ctx, req, protocol.OpInputAttach); err != nil {
 		_ = inputClient.Close()
@@ -879,7 +942,7 @@ func (c *Client) roundTripLocked(ctx context.Context, req any, op protocol.Opera
 		return empty, err
 	}
 	defer cleanup()
-	if err := c.encoder.EncodeRequest(req); err != nil {
+	if err := c.encoder.EncodeRequest(c.decoratedRequest(req, op)); err != nil {
 		if invalidateAfterWriteError(err) {
 			c.invalidate()
 		}
@@ -949,7 +1012,7 @@ func (c *Client) writeOnly(ctx context.Context, req any, op protocol.Operation) 
 		return err
 	}
 	defer cleanup()
-	if err := c.encoder.EncodeRequest(req); err != nil {
+	if err := c.encoder.EncodeRequest(c.decoratedRequest(req, op)); err != nil {
 		if invalidateAfterWriteError(err) {
 			c.invalidate()
 		}

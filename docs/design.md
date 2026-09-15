@@ -42,6 +42,8 @@ hum [--project DIR|-C DIR] status [<name>] [--json]
 hum [--project DIR|-C DIR] attach <name> [--tail N]
 hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|system|both] [--tail N] [--after-cursor N]
            [--since DURATION] [--limit-bytes N] [--match REGEX] [--context N] [--follow] [--json]
+hum [--project DIR|-C DIR] events [<name>...] [--since DURATION] [--kind lifecycle|operation]
+           [--failed] [--match REGEX] [--tail N] [--after-cursor N] [--full] [--json]
 hum [--project DIR|-C DIR] wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
 hum [--project DIR|-C DIR] signal <name> <signal> [--json]
@@ -78,10 +80,10 @@ Combined short options are unsupported; MCP fields have no aliases.
 | `-t` | `--timeout` | `start`, `up`, `wait`, `restart` |
 | `-a` | `--all` | `list` |
 | `-s` | `--stream` | `logs` |
-| `-n` | `--tail` | `attach`, `logs` |
-| `-c` | `--after-cursor` | `logs`, `wait` |
+| `-n` | `--tail` | `attach`, `logs`, `events` |
+| `-c` | `--after-cursor` | `logs`, `wait`, `events` |
 | `-b` | `--limit-bytes` | `logs` |
-| `-m` | `--match` | `logs`, `wait` |
+| `-m` | `--match` | `logs`, `wait`, `events` |
 | `-f` | `--follow` | `logs` |
 
 `--force`, `--since`, `--no-wait`, `--tty`, `--stop-processes`, `--runtime-dir`,
@@ -212,6 +214,10 @@ bound response entries and bytes, and slow consumers must page retained data or 
 rather than create daemon-side queues. No implementation draft is warranted by HUM-092.
 
 Decision: defer
+
+HUM-111 supersedes this decision for durable, bounded, queryable service event history: it is an
+operator/agent timeline, not a live process feed. `hum events` uses cursor pages with `next_cursor`,
+`truncated`, and `has_more`; live streams, callbacks, and public socket access remain rejected.
 
 JSON process snapshots include `name`, `source`, `argv`, and the integer `followers` count, plus
 identity, readiness, cursors, and errors when applicable.
@@ -929,11 +935,18 @@ The foundation does not include:
 - queued input
 - remote transport or authentication
 - a web UI
-- persistent process history
+- live event follow streams or callbacks
 - a plugin system
 - OS service installation
 
-The runtime directory contains only the socket, PID/startup/readiness files, durable live-group state, and bounded daemon diagnostics.
+The runtime directory contains the socket, PID/startup/readiness files, durable live-group state,
+bounded daemon diagnostics, and private per-scope event-history payload/cursor files. Event history is
+limited to 2,000 records or 1 MiB with 16 KiB records, survives daemon replacement, and does not
+survive runtime cleanup. Atomic cursor high-water metadata prevents cursor reuse independently of
+oldest-first payload eviction; unreadable cursor metadata makes only history unavailable. A torn tail
+keeps its complete prefix. A malformed payload is treated as empty and diagnosed once per scope per
+daemon lifetime while control operations continue; environment values, input, child output, argv, and
+unbounded raw errors are never persisted as event detail.
 
 ## Optional pseudo-terminals
 

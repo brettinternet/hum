@@ -445,3 +445,13 @@ to select another project. Use `--global` or `-g` only for machine-wide ad-hoc s
 
 `--global` conflicts with `--project` and `list --all`; `init` and `up` reject it. JSON reports
 `scope` as `project` or `global`; global records omit `project_root`.
+
+`hum events [NAME...]` reads recent durable service history without requiring a manifest or a
+running daemon. Use repeatable `--kind`, `--failed`, `--match`, `--since`, `--tail`, and
+`--after-cursor` to narrow bounded pages; `--json` emits schema-versioned event records and trailing
+cursor metadata. Human output fits the terminal width (80 columns when unknown), elides detail first,
+and colors only semantic event words under the usual TTY/`TERM`/`NO_COLOR` policy; `--full` prints
+complete multi-line details. History is private, retained to 2,000 events or 1 MiB per scope, and
+excludes child output, environment, and input. It survives daemon replacement but not runtime-directory
+cleanup. An unreadable cursor high-water mark makes that scope's history unavailable rather than
+reusing cursors; service control remains available.

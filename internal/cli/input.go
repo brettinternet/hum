@@ -75,6 +75,7 @@ func inputCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 		return inputCommandError(cmd, writer, name, err)
 	}
 	defer client.Close()
+	client.SetEventOperation("input", daemon.NewOperationID(), "cli")
 
 	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 	if err != nil {

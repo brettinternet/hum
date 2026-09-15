@@ -633,7 +633,7 @@ func TestToolSchemas(t *testing.T) {
 		}
 		assertSchemaPropertiesDescribed(t, d.Name, d.InputSchema)
 	}
-	want := []string{"start", "up", "down", "list", "status", "logs", "wait", "input", "restart", "stop", "remove", "signal"}
+	want := []string{"start", "up", "down", "list", "status", "logs", "wait", "input", "restart", "stop", "remove", "signal", "events"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("tools=%v want %v", names, want)
 	}

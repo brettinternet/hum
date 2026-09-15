@@ -781,6 +781,7 @@ type readinessTracker struct {
 	pattern  *regexp.Regexp
 	after    output.Cursor
 	hasAfter bool
+	onReady  func(time.Time)
 
 	mu       sync.Mutex
 	ready    bool
@@ -791,12 +792,15 @@ type readinessTracker struct {
 	observer *output.AppendObserver
 }
 
-func newReadinessTracker(store *output.Store, pattern *regexp.Regexp, after output.Cursor, hasAfter bool) *readinessTracker {
+func newReadinessTracker(store *output.Store, pattern *regexp.Regexp, after output.Cursor, hasAfter bool, onReady ...func(time.Time)) *readinessTracker {
 	if store == nil || pattern == nil {
 		return nil
 	}
 	tracker := &readinessTracker{
 		pattern: pattern, after: after, hasAfter: hasAfter,
+	}
+	if len(onReady) != 0 {
+		tracker.onReady = onReady[0]
 	}
 	tracker.observer = store.ObserveAppend(tracker.observe)
 	return tracker
@@ -814,13 +818,17 @@ func (t *readinessTracker) observe(entry output.Entry) {
 		return
 	}
 	t.mu.Lock()
-	if !t.ready {
+	becameReady := !t.ready
+	if becameReady {
 		t.ready = true
 		t.cursor = entry.Cursor
 		t.at = entry.Time
 		t.done.Store(true)
 	}
 	t.mu.Unlock()
+	if becameReady && t.onReady != nil {
+		t.onReady(entry.Time)
+	}
 }
 
 func (t *readinessTracker) snapshot() (bool, output.Cursor, time.Time) {
@@ -909,13 +917,18 @@ func (s *Supervisor) startExecutableReadiness(rec *record, incarnation uint64) {
 				tracker.mu.Lock()
 				tracker.ready = true
 				tracker.at = s.now()
+				readyAt := tracker.at
 				tracker.diagnostic = ""
 				tracker.mu.Unlock()
+				s.emitLifecycle(rec, "ready", "method=exec", readyAt, nil)
 				return
 			}
 			// Cancellation is lifecycle control, not a failed probe attempt;
 			// preserve the last completed diagnostic while stopping a run.
 			if parent.Err() != nil {
+				if errors.Is(parent.Err(), context.DeadlineExceeded) {
+					s.emitLifecycle(rec, "startup_failure", "readiness timeout", s.now(), nil)
+				}
 				return
 			}
 			tracker.mu.Lock()
@@ -1270,6 +1283,20 @@ func (r *record) waitInputOperations() {
 }
 
 // Supervisor owns all launches independently of client request lifetimes.
+// LifecycleEvent is a bounded, payload-free supervisor transition. Hooks must
+// not inspect child argv, environment, output, or input.
+type LifecycleEvent struct {
+	Name     string
+	Scope    string
+	Root     string
+	Cwd      string
+	Event    string
+	Detail   string
+	Time     time.Time
+	ExitCode *int
+	Signal   string
+}
+
 type Supervisor struct {
 	mu sync.RWMutex
 
@@ -1287,6 +1314,7 @@ type Supervisor struct {
 	startProcess   func(process.Spec) (Child, error)
 	persistStart   func(Process) error
 	persistExit    func(Process) error
+	lifecycleEvent func(LifecycleEvent)
 
 	closed          bool
 	launches        sync.WaitGroup
@@ -1513,6 +1541,7 @@ func (s *Supervisor) scheduleRelaunchLocked(rec *record) {
 		if !rec.relaunchExhausted {
 			rec.relaunchExhausted = true
 			s.appendSystemLocked(rec, "gave up after 5 relaunch attempts\n")
+			s.emitLifecycle(rec, "relaunch_exhausted", "attempts=5", s.now(), nil)
 		}
 		return
 	}
@@ -1526,6 +1555,7 @@ func (s *Supervisor) scheduleRelaunchLocked(rec *record) {
 	// still uses this same boundary and rounds up to avoid early claims.
 	rec.nextLaunchAt = next.Truncate(time.Second)
 	s.appendSystemLocked(rec, fmt.Sprintf("relaunching in %ds (attempt %d/5)\n", int(delay/time.Second), attempt))
+	s.emitLifecycle(rec, "relaunch_scheduled", fmt.Sprintf("attempt=%d delay=%s", attempt, delay), s.now(), nil)
 	timer := s.after(delay)
 	go s.relaunchTimer(rec, generation, timer)
 }
@@ -1551,6 +1581,7 @@ func (s *Supervisor) relaunchTimer(rec *record, generation uint64, timer <-chan 
 	rec.automaticStarting = true
 	rec.automaticGeneration = generation
 	s.starting[rec.key] = struct{}{}
+	s.emitLifecycle(rec, "relaunch_attempt", fmt.Sprintf("attempt=%d", rec.relaunches+1), s.now(), nil)
 	request := StartRequest{
 		Name: rec.name, Root: rec.root, Cwd: rec.cwd,
 		automaticRecord: rec, automaticGeneration: generation,
@@ -1570,6 +1601,7 @@ func (s *Supervisor) automaticLaunchFailed(rec *record, generation uint64, launc
 	rec.automaticStarting = false
 	rec.relaunches++
 	s.appendSystemLocked(rec, fmt.Sprintf("relaunch failed: %v\n", launchErr))
+	s.emitLifecycle(rec, "relaunch_failure", fmt.Sprintf("attempt=%d", rec.relaunches), s.now(), nil)
 	s.scheduleRelaunchLocked(rec)
 }
 
@@ -1599,6 +1631,35 @@ func (s *Supervisor) scheduleStability(rec *record, generation, incarnation uint
 // after construction and before it admits launch requests. It is intentionally
 // small so tests and embedders can supply a custom Supervisor without taking
 // ownership of runtime files.
+// SetLifecycleHook installs a bounded transition observer. It must be set
+// before requests are admitted and must not call back into Supervisor.
+func (s *Supervisor) SetLifecycleHook(hook func(LifecycleEvent)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.lifecycleEvent = hook
+	s.mu.Unlock()
+}
+
+func (s *Supervisor) emitLifecycle(rec *record, event, detail string, at time.Time, result *process.Result) {
+	if s == nil || rec == nil || s.lifecycleEvent == nil {
+		return
+	}
+	if at.IsZero() {
+		at = s.now()
+	}
+	value := LifecycleEvent{Name: rec.name, Scope: normalizedScope(rec.scope), Root: rec.root, Cwd: rec.cwd, Event: event, Detail: detail, Time: at}
+	if result != nil {
+		code := result.ExitCode
+		value.ExitCode = &code
+		if result.Signal != nil {
+			value.Signal = result.Signal.Name
+		}
+	}
+	s.lifecycleEvent(value)
+}
+
 func (s *Supervisor) SetPersistenceHooks(start func(Process) error, exit func(Process) error) {
 	if s == nil {
 		return
@@ -1948,7 +2009,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 				launchBoundary = markerErr == nil
 			}
 			if markerErr == nil && source != "" && pattern != nil {
-				tracker = newReadinessTracker(store, pattern, launchCursor, launchBoundary)
+				tracker = newReadinessTracker(store, pattern, launchCursor, launchBoundary, func(at time.Time) {
+					s.emitLifecycle(rec, "ready", "method=match", at, nil)
+				})
 			}
 		})
 		return markerErr
@@ -1963,6 +2026,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		err = markStarted()
 	}
 	if err != nil || child == nil {
+		s.emitLifecycle(rec, "startup_failure", "process launch failed", s.now(), nil)
 		if tracker != nil {
 			tracker.close()
 		}
@@ -2004,6 +2068,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	}
 	started := rec.snapshotLocked()
 	incarnation := rec.incarnation
+	s.emitLifecycle(rec, "launch", "", startedAt, nil)
 	execReady := rec.readyConfig != nil && rec.readyConfig.Method == "exec"
 	s.mu.Unlock()
 	if execReady {
@@ -2413,6 +2478,10 @@ func (s *Supervisor) reconcile(rec *record) {
 		rec.persisting = true
 	}
 	s.mu.Unlock()
+	if !control && terminalProcess.Readiness != nil && terminalProcess.Readiness.State != ReadinessReady {
+		s.emitLifecycle(rec, "startup_failure", "process exited before readiness", result.ExitedAt, &result)
+	}
+	s.emitLifecycle(rec, "exit", "", result.ExitedAt, &result)
 	if input != nil {
 		input.emit(InputEvent{State: InputStopped, LaunchCursor: cursor, TTY: tty})
 	}

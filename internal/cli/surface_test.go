@@ -115,6 +115,7 @@ func TestStatusAndWaitSurface(t *testing.T) {
 		"up":       true,
 		"down":     true,
 		"list":     true,
+		"events":   true,
 		"status":   true,
 		"attach":   true,
 		"logs":     true,
@@ -160,6 +161,7 @@ func TestHelpWordBudgets(t *testing.T) {
 		{name: "up", limit: 200},
 		{name: "down", limit: 200},
 		{name: "list", limit: 200},
+		{name: "events", limit: 200},
 		{name: "status", limit: 200},
 		{name: "attach", limit: 200},
 		{name: "logs", limit: 200},
@@ -276,7 +278,7 @@ func TestAttachSurface(t *testing.T) {
 	}
 	for path, wants := range map[string][]string{
 		"../../README.md":      {"hum attach NAME", "--tail 0", "hum run", "hum logs --follow"},
-		"../../docs/design.md": {"hum attach <name>", "--tail 0", "never starts or restarts", "hum run", "| `-n` | `--tail` | `attach`, `logs` |"},
+		"../../docs/design.md": {"hum attach <name>", "--tail 0", "never starts or restarts", "hum run", "| `-n` | `--tail` | `attach`, `logs`, `events` |"},
 	} {
 		data, err := os.ReadFile(path)
 		if err != nil {

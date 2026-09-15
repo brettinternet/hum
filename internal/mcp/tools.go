@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,37 @@ const (
 	automaticRelaunchLimit = 5
 	maxSinceMilliseconds   = int64((1<<63 - 1) / int64(time.Millisecond))
 )
+
+type eventOperationContextKey struct{}
+
+type EventOperationMetadata struct {
+	Name string
+	ID   string
+}
+
+// EventOperationFromContext exposes the current MCP control operation to the
+// transport adapter without adding it to public tool schemas.
+func EventOperationFromContext(ctx context.Context) EventOperationMetadata {
+	value, _ := ctx.Value(eventOperationContextKey{}).(EventOperationMetadata)
+	return value
+}
+
+func newEventOperationID() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(value[:])
+}
+
+func mutatingTool(name string) bool {
+	switch name {
+	case "start", "up", "down", "input", "restart", "stop", "remove", "signal":
+		return true
+	default:
+		return false
+	}
+}
 
 func sinceCutoffUnixNano(cutoff time.Time) int64 {
 	if cutoff.IsZero() {
@@ -139,6 +172,12 @@ type startupWarningReader interface {
 	StartupWarnings() []protocol.StartupWarning
 }
 
+// eventsClient is optional to preserve the protocol-only test seam for older
+// adapters while exposing the bounded history tool to capable clients.
+type eventsClient interface {
+	Events(context.Context, protocol.EventsRequest) (protocol.EventsResponse, error)
+}
+
 func startupWarnings(client Client) []protocol.StartupWarning {
 	reader, ok := client.(startupWarningReader)
 	if !ok {
@@ -150,10 +189,14 @@ func startupWarnings(client Client) []protocol.StartupWarning {
 // ClientFactory returns the shared CLI daemon client adapter. ensure is true only for start and up.
 type ClientFactory func(context.Context, bool) (Client, error)
 
+// EventReader reads retained history when no daemon is running.
+type EventReader func(context.Context, protocol.EventsRequest) (protocol.EventsResponse, error)
+
 // Options supplies production adapters without introducing a second supervisor or wire client.
 type Options struct {
 	Resolver      Resolver
 	ClientFactory ClientFactory
+	EventReader   EventReader
 	Environment   func() []string
 	Version       string
 }
@@ -409,6 +452,31 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"max_bytes":    map[string]any{"type": "integer", "minimum": 1, "description": "Maximum total text bytes to return across this window's whole entries."},
 	}, "project_root", "name")
 	logsSchema["dependentRequired"] = map[string]any{"context": []string{"match"}}
+	event := objectSchema(map[string]any{
+		"scope":        map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}, "description": "Project or machine-wide scope."},
+		"project_root": root, "names": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 2000, "description": "Optional service-name narrowing."},
+		"since_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Moving request-time duration window."},
+		"kinds":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{string(protocol.EventLifecycle), string(protocol.EventOperation)}}, "description": "Optional lifecycle or operation kinds."},
+		"failed":   map[string]any{"type": "boolean", "description": "Return failures only."}, "match": map[string]any{"type": "string", "description": "Regex applied to name and detail."},
+		"tail": map[string]any{"type": "integer", "minimum": 1, "maximum": 2000, "description": "Bounded page size."}, "after_cursor": map[string]any{"type": "integer", "minimum": 0, "description": "Strictly-exclusive history cursor."}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum encoded response bytes."},
+	})
+	eventRecord := objectSchema(map[string]any{
+		"cursor":       map[string]any{"type": "integer", "minimum": 1},
+		"time":         map[string]any{"type": "string", "format": "date-time"},
+		"kind":         map[string]any{"type": "string", "enum": []string{string(protocol.EventLifecycle), string(protocol.EventOperation)}},
+		"name":         map[string]any{"type": "string"},
+		"event":        map[string]any{"type": "string"},
+		"detail":       map[string]any{"type": "string"},
+		"operation_id": map[string]any{"type": "string"},
+		"origin":       map[string]any{"type": "string", "enum": []string{"cli", "mcp"}},
+		"outcome":      map[string]any{"type": "string"},
+		"exit_code":    map[string]any{"type": "integer"},
+		"signal":       map[string]any{"type": "string"},
+	}, "cursor", "time", "kind", "name", "event")
+	eventOutput := objectSchema(map[string]any{
+		"events": map[string]any{"type": "array", "items": eventRecord}, "next_cursor": map[string]any{"type": "integer", "minimum": 0},
+		"truncated": map[string]any{"type": "boolean"}, "has_more": map[string]any{"type": "boolean"},
+	}, "events", "next_cursor", "truncated", "has_more")
 	definitions := []toolDefinition{
 		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; manifest optionally selects one exact file (relative to project_root or absolute inside it) and disables conventional discovery. Omission retains hum.yaml/conventional discovery. Retained records remain a fallback when the selected file does not declare the requested name. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. It never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
 		{Name: "up", Description: "Start every selected project definition through the hum daemon in declared after dependency order; manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission retains hum.yaml/conventional discovery. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. Independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the selected declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
@@ -422,6 +490,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record while preserving its supervision session.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
 		{Name: "remove", Description: "Stop and discard one named runtime supervision session, or every runtime session in the selected scope when all is true. Bulk removal is lexical, never spans scopes, and does not target unlaunched declarations.", InputSchema: removeSchema, OutputSchema: map[string]any{"type": "object", "oneOf": []any{stop, collectionResults(stop)}}},
 		{Name: "signal", Description: "Send one observational signal to a running declared or ad_hoc process group without changing stop intent or automatic relaunch policy. Signal names are case-insensitive with an optional SIG prefix, and positive decimal values are accepted only when they map to the supported named signal table; the result is canonical and reports sent.", InputSchema: signalSchema, OutputSchema: signalResult},
+		{Name: "events", Description: "Read the bounded durable event history with optional names, lifecycle or operation kinds, failure, regex, time, tail, and cursor filters. Pages are finite and never follow; project_root selects project scope and global selects machine scope. No child output or input payload is retained.", InputSchema: event, OutputSchema: eventOutput},
 	}
 	const scopeDescription = " Scope is project by default or global for machine-wide ad-hoc retained sessions; project_root is required for project scope and forbidden for global scope."
 	for index := range definitions {
@@ -441,25 +510,29 @@ func cloneProperties(src map[string]any) map[string]any {
 }
 
 type commonInput struct {
-	Scope         string  `json:"scope,omitempty"`
-	ProjectRoot   string  `json:"project_root,omitempty"`
-	Manifest      string  `json:"manifest,omitempty"`
-	All           bool    `json:"all,omitempty"`
-	Name          string  `json:"name,omitempty"`
-	NoWait        bool    `json:"no_wait,omitempty"`
-	TimeoutMS     int64   `json:"timeout_ms,omitempty"`
-	After         *uint64 `json:"after,omitempty"`
-	SinceMS       int64   `json:"since_ms,omitempty"`
-	SinceUnixNano int64   `json:"-"`
-	Tail          int     `json:"tail,omitempty"`
-	MaxEntries    int     `json:"max_entries,omitempty"`
-	MaxBytes      int     `json:"max_bytes,omitempty"`
-	Match         string  `json:"match,omitempty"`
-	Context       int     `json:"context,omitempty"`
-	Stream        string  `json:"stream,omitempty"`
-	Text          *string `json:"text,omitempty"`
-	Base64        *string `json:"base64,omitempty"`
-	Signal        string  `json:"signal,omitempty"`
+	Scope         string               `json:"scope,omitempty"`
+	ProjectRoot   string               `json:"project_root,omitempty"`
+	Manifest      string               `json:"manifest,omitempty"`
+	All           bool                 `json:"all,omitempty"`
+	Name          string               `json:"name,omitempty"`
+	NoWait        bool                 `json:"no_wait,omitempty"`
+	TimeoutMS     int64                `json:"timeout_ms,omitempty"`
+	After         *uint64              `json:"after,omitempty"`
+	SinceMS       int64                `json:"since_ms,omitempty"`
+	SinceUnixNano int64                `json:"-"`
+	Tail          int                  `json:"tail,omitempty"`
+	MaxEntries    int                  `json:"max_entries,omitempty"`
+	MaxBytes      int                  `json:"max_bytes,omitempty"`
+	Match         string               `json:"match,omitempty"`
+	Context       int                  `json:"context,omitempty"`
+	Stream        string               `json:"stream,omitempty"`
+	Text          *string              `json:"text,omitempty"`
+	Base64        *string              `json:"base64,omitempty"`
+	Signal        string               `json:"signal,omitempty"`
+	Names         []string             `json:"names,omitempty"`
+	Kinds         []protocol.EventKind `json:"kinds,omitempty"`
+	Failed        bool                 `json:"failed,omitempty"`
+	AfterCursor   *uint64              `json:"after_cursor,omitempty"`
 
 	textSet   bool
 	base64Set bool
@@ -963,7 +1036,7 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	if name == "logs" {
+	if name == "logs" || name == "events" {
 		input.SinceUnixNano, err = captureSinceCutoff(input)
 		if err != nil {
 			return nil, err
@@ -981,8 +1054,14 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		if nameSet == allSet || allSet && !input.All {
 			return nil, &ToolError{Code: "invalid_request", Message: "remove requires exactly one of name or all: true"}
 		}
-	} else if name != "up" && name != "down" && name != "list" && strings.TrimSpace(input.Name) == "" {
+	} else if name != "up" && name != "down" && name != "list" && name != "events" && strings.TrimSpace(input.Name) == "" {
 		return nil, &ToolError{Code: "invalid_request", Message: "name is required"}
+	}
+	if name == "events" {
+		return s.events(ctx, input)
+	}
+	if mutatingTool(name) {
+		ctx = context.WithValue(ctx, eventOperationContextKey{}, EventOperationMetadata{Name: name, ID: newEventOperationID()})
 	}
 	resolution, err := s.resolve(ctx, input.ProjectRoot, input.Manifest)
 	if err != nil {

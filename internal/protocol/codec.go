@@ -158,17 +158,20 @@ func (d *Decoder) decodeRaw() ([]byte, error) {
 // operations. Payload is an alias view of Raw for callers using envelope
 // terminology.
 type Request struct {
-	Op      Operation       `json:"op"`
-	ID      string          `json:"id,omitempty"`
-	Version int             `json:"version,omitempty"`
-	Payload json.RawMessage `json:"-"`
-	Raw     json.RawMessage `json:"-"`
+	Op             Operation       `json:"op"`
+	ID             string          `json:"id,omitempty"`
+	EventOperation string          `json:"event_operation,omitempty"`
+	EventOrigin    string          `json:"origin,omitempty"`
+	Version        int             `json:"version,omitempty"`
+	Payload        json.RawMessage `json:"-"`
+	Raw            json.RawMessage `json:"-"`
 
 	Hello        *HelloRequest        `json:"-"`
 	Start        *StartRequest        `json:"-"`
 	List         *ListRequest         `json:"-"`
 	Get          *GetRequest          `json:"-"`
 	Output       *OutputRequest       `json:"-"`
+	Events       *EventsRequest       `json:"-"`
 	Follow       *FollowRequest       `json:"-"`
 	Wait         *WaitRequest         `json:"-"`
 	Signal       *SignalRequest       `json:"-"`
@@ -185,8 +188,10 @@ type Request struct {
 // UnmarshalJSON dispatches a flattened request object into its operation DTO.
 func (r *Request) UnmarshalJSON(data []byte) error {
 	var header struct {
-		Op Operation `json:"op"`
-		ID string    `json:"id"`
+		Op             Operation `json:"op"`
+		ID             string    `json:"id"`
+		EventOperation string    `json:"event_operation"`
+		EventOrigin    string    `json:"origin"`
 	}
 	if err := json.Unmarshal(data, &header); err != nil {
 		return err
@@ -198,11 +203,11 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 		return &UnknownOperationError{Operation: header.Op}
 	}
 
-	r.Op, r.ID = header.Op, header.ID
+	r.Op, r.ID, r.EventOperation, r.EventOrigin = header.Op, header.ID, header.EventOperation, header.EventOrigin
 	r.Raw = append(r.Raw[:0], data...)
 	r.Payload = append(r.Payload[:0], data...)
 	r.Version = 0
-	r.Hello, r.Start, r.List, r.Get, r.Output, r.Follow, r.Wait, r.Signal, r.Stop, r.Restart, r.Remove, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+	r.Hello, r.Start, r.List, r.Get, r.Output, r.Events, r.Follow, r.Wait, r.Signal, r.Stop, r.Restart, r.Remove, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 	r.InputAttach, r.InputRelease, r.InputWrite, r.InputResize = nil, nil, nil, nil
 
 	var err error
@@ -223,6 +228,9 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	case OpOutput:
 		r.Output = new(OutputRequest)
 		err = json.Unmarshal(data, r.Output)
+	case OpEvents:
+		r.Events = new(EventsRequest)
+		err = json.Unmarshal(data, r.Events)
 	case OpFollow:
 		r.Follow = new(FollowRequest)
 		err = json.Unmarshal(data, r.Follow)
@@ -297,6 +305,9 @@ func (r Request) MarshalJSON() ([]byte, error) {
 	if r.Output != nil {
 		return json.Marshal(r.Output)
 	}
+	if r.Events != nil {
+		return json.Marshal(r.Events)
+	}
 	if r.Follow != nil {
 		return json.Marshal(r.Follow)
 	}
@@ -357,6 +368,7 @@ type ResponseEnvelope struct {
 	Get         *GetResponse
 	Wait        *WaitResponse
 	Output      *OutputResponse
+	Events      *EventsResponse
 	Signal      *SignalResponse
 	Stop        *StopResponse
 	Restart     *RestartResponse
@@ -416,6 +428,10 @@ func (d *Decoder) DecodeResponse() (ResponseEnvelope, error) {
 		result.Output = new(OutputResponse)
 		err = decode(result.Output)
 		result.OK, result.Error = result.Output.OK, result.Output.Error
+	case OpEvents:
+		result.Events = new(EventsResponse)
+		err = decode(result.Events)
+		result.OK, result.Error = result.Events.OK, result.Events.Error
 	case OpSignal:
 		result.Signal = new(SignalResponse)
 		err = decode(result.Signal)

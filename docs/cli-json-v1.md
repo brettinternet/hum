@@ -8,7 +8,7 @@ This contract is separate from Hum's private daemon protocol and from the MCP to
 
 The contract applies when a command that supports `--json` (or `-j`, where documented) is invoked in JSON mode:
 
-- `version`; `doctor`; `init`; detached `run`; `list`; `status`; bounded and followed `logs`; `wait`; `input`; `signal`; `shutdown`
+- `version`; `doctor`; `init`; detached `run`; `list`; `status`; `events`; bounded and followed `logs`; `wait`; `input`; `signal`; `shutdown`
 - `start`, `up`, `down`, `restart`, `stop`, and `remove`
 - terminal errors emitted by any of those commands before or after other machine records
 
@@ -39,6 +39,7 @@ The following table defines the required top-level fields. Fields not listed as 
 | Shutdown result | `shutdown` | `schema_version`, `status` |
 | Wait result | `wait` | `schema_version`, `op`, `ok`, `outcome`, `cursor`, `process_observed`; `exit`, `message`, and `error` depend on the outcome |
 | Bounded log result | single-name `logs` | `schema_version`, `op`, `ok`, `entries`; cursor bounds and truncation flags are optional when not applicable |
+| Event history record | `events` | event records: `schema_version`, `type`, `cursor`, `time`, `kind`, `name`, `event`; trailing metadata: `schema_version`, `type`, `next_cursor`, `truncated`, `has_more` |
 | Named log/launch stream record | aggregate or followed `logs`, `start`, `up` | `schema_version`, `op`, `type`; `name` is required for named records, and the fields below depend on `type` |
 | Terminal error before output | any covered command | `schema_version`, `error` |
 | Terminal stream error | streaming command after prior output | `schema_version`, `op`, `type`, `error`; `type` is `error` and `name` is present when the failure belongs to one process |
@@ -69,3 +70,16 @@ Within version 1 Hum will not:
 - change JSON versus NDJSON framing or stop newline-terminating records.
 
 A change that violates those rules requires a new `schema_version`. Human-readable output, attached-run raw output, MCP schemas, and the private daemon protocol are outside this compatibility promise.
+
+## Event history records
+
+`hum events --json` emits NDJSON records with `schema_version: 1` and `type: "event"`; each event
+contains structured `cursor`, `time`, `kind`, `name`, and `event` fields, with operation origin,
+outcome, and `operation_id` when applicable. One trailing `type: "metadata"` record contains
+`next_cursor`, `truncated`, and `has_more`. Records are cursor ordered, bounded, and never terminal-
+width truncated. Lifecycle records optionally carry exit fields and directly attributable
+`operation_id`; operation records carry `origin`, `outcome`, and `operation_id`. `next_cursor` is the
+last returned cursor when a forward page remains, otherwise the immutable read high-water mark;
+`truncated` reports a cursor gap caused by eviction or discarded data, and `has_more` reports another
+matching forward event. MCP `events` is independently versioned and bounded; it returns the same
+structured fields and has no follow operation.

@@ -285,9 +285,13 @@ func TestDownStopTransportFailureIsError(t *testing.T) {
 
 func TestDownStopsProcessesConcurrentlyWithIndependentConnections(t *testing.T) {
 	const delay = 300 * time.Millisecond
+	concurrency := &downTestConcurrency{}
 	children := map[string]*downTestChild{
 		"alpha": newDownTestChild(8101, delay, nil),
 		"beta":  newDownTestChild(8102, delay, nil),
+	}
+	for _, child := range children {
+		child.concurrency = concurrency
 	}
 	supervisor := downTestSupervisor(t, children)
 	server, runtimeDir := downTestServer(t, supervisor)
@@ -297,9 +301,7 @@ func TestDownStopsProcessesConcurrentlyWithIndependentConnections(t *testing.T) 
 		downStartProcess(t, server, projectRoot, name, "ad_hoc", []string{name})
 	}
 
-	started := time.Now()
 	stdout, stderr, err := stopShutdownRun(t, "down")
-	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("down: %v", err)
 	}
@@ -309,8 +311,8 @@ func TestDownStopsProcessesConcurrentlyWithIndependentConnections(t *testing.T) 
 	if want := "alpha stopped\nbeta stopped\n"; stdout != want {
 		t.Fatalf("down output = %q, want %q", stdout, want)
 	}
-	if elapsed >= 2*delay {
-		t.Fatalf("down took %s for two %s stops; workers were not concurrent", elapsed, delay)
+	if got := concurrency.maximum.Load(); got != int32(len(children)) {
+		t.Fatalf("maximum concurrent stop signals = %d, want %d", got, len(children))
 	}
 	for name, child := range children {
 		if got := child.termCalls.Load(); got != 1 {
@@ -322,15 +324,28 @@ func TestDownStopsProcessesConcurrentlyWithIndependentConnections(t *testing.T) 
 	}
 }
 
+type downTestConcurrency struct {
+	current atomic.Int32
+	maximum atomic.Int32
+}
+
+func (c *downTestConcurrency) enter() func() {
+	current := c.current.Add(1)
+	for maximum := c.maximum.Load(); current > maximum && !c.maximum.CompareAndSwap(maximum, current); maximum = c.maximum.Load() {
+	}
+	return func() { c.current.Add(-1) }
+}
+
 type downTestChild struct {
-	pid       int
-	pgid      int
-	delay     time.Duration
-	stopErr   error
-	done      chan struct{}
-	once      sync.Once
-	termCalls atomic.Int32
-	killCalls atomic.Int32
+	pid         int
+	pgid        int
+	delay       time.Duration
+	stopErr     error
+	done        chan struct{}
+	once        sync.Once
+	termCalls   atomic.Int32
+	killCalls   atomic.Int32
+	concurrency *downTestConcurrency
 }
 
 func newDownTestChild(pid int, delay time.Duration, stopErr error) *downTestChild {
@@ -349,6 +364,9 @@ func (c *downTestChild) Signal(sig os.Signal) error {
 	switch sig {
 	case syscall.SIGTERM:
 		c.termCalls.Add(1)
+		if c.concurrency != nil {
+			defer c.concurrency.enter()()
+		}
 		if c.delay != 0 {
 			time.Sleep(c.delay)
 		}

@@ -80,3 +80,10 @@ remove and shutdown close it. MCP reports `tty` and provides bounded `input` for
 ## Project and global scopes
 
 hum selects project scope automatically from the invocation directory; symlink aliases share a canonical scope while separate worktrees remain distinct. Use `hum --project /path/to/main` (or `-C`) for explicit cross-worktree access, including a removed worktree. Use `hum --global` (`-g`) only for machine-wide ad-hoc retained sessions; it works around lifecycle commands and `run` NAME, conflicts with `--project` and `list --all`, and `init`/`up` reject it. Global `start`/`restart` reuse retained launch specifications without reading a manifest, and child cwd remains the lexical run directory. Project not-found guidance can produce `hum --global logs proxy`; `hum list --all` discovers every scope. MCP tool calls accept `scope`: omit it for project scope with an absolute `project_root`, or pass `scope: "global"` without `project_root`. JSON `scope` is `project` or `global`; global records omit `project_root`.
+
+## Event history
+
+`hum events` shows recent bounded service history without a manifest or daemon. Narrow with names,
+`--since`, repeatable `--kind`, `--failed`, `--match`, `--tail`, or `--after-cursor`; `--json`
+returns structured events and cursor metadata. Retention is private at 2,000 events or 1 MiB per
+scope; input, environment, and child output are never retained.

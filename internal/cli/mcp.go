@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"time"
 
 	"hum/internal/app"
 	"hum/internal/config"
@@ -31,7 +33,7 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 			"Bounded child-output logs and matches use terminal-control-stripped text, while system entries, stored bytes, cursors, and limit accounting remain raw; there is no --raw flag or other raw opt-out. Logs match context expands eligible entries from one immutable snapshot before tail and whole-entry bounds. " +
 			"MCP wait timeout results include process_observed from the same daemon wait request without an extra round trip; false includes no-process guidance. " +
 			"Explicit definitions use deterministic argv-based environment activation with the MCP server environment. ready.exec uses exact direct argv without a shell, probes immediately, retries serially after failures at the configured interval (1s by default), inherits launched cwd/environment, retains only a bounded terminal diagnostic, and never retains probe output; readiness gates startup rather than liveness. " +
-			"The twelve tools are start, up, down, list, status, logs, wait, input, restart, stop, remove, and signal; run, serve, and shutdown are not MCP tools.",
+			"The thirteen tools are start, up, down, list, status, logs, events, wait, input, restart, stop, remove, and signal; events is a bounded read with no follow mode, and run, serve, and shutdown are not MCP tools.",
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 			if err := rejectProjectOverride(cmd, "mcp"); err != nil {
 				return err
@@ -46,6 +48,7 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 			server := mcpserver.NewServer(mcpserver.Options{
 				Resolver:      mcpResolver{},
 				ClientFactory: mcpClientFactory(cfg),
+				EventReader:   mcpEventReader(cfg.RuntimeDir),
 				Environment:   manifestProcessEnv,
 				Version:       version,
 			})
@@ -94,6 +97,32 @@ func (mcpResolver) ResolveManifest(ctx context.Context, root, filename string) (
 	return mcpserver.Resolution{Root: rootPath, Definitions: definitions}, nil
 }
 
+func mcpEventReader(runtimeDir string) mcpserver.EventReader {
+	return func(_ context.Context, request protocol.EventsRequest) (protocol.EventsResponse, error) {
+		var match *regexp.Regexp
+		if request.Match != "" {
+			compiled, err := regexp.Compile(request.Match)
+			if err != nil {
+				return protocol.EventsResponse{}, err
+			}
+			match = compiled
+		}
+		var since time.Time
+		if request.SinceUnixNano != 0 {
+			since = time.Unix(0, request.SinceUnixNano)
+		}
+		history := daemon.NewEventHistory(runtimeDir, request.Scope, request.Root)
+		page, err := history.Read(request.Names, since, request.Kinds, request.Failed, match, request.Tail, request.AfterCursor, request.MaxBytes)
+		if err != nil {
+			if errors.Is(err, daemon.ErrHistoryCursorFuture) {
+				return protocol.EventsResponse{}, protocol.NewWireError(protocol.ErrorInvalidRequest, err.Error(), nil)
+			}
+			return protocol.EventsResponse{}, err
+		}
+		return protocol.NewEventsResponse(page.Events, page.NextCursor, page.Truncated, page.HasMore), nil
+	}
+}
+
 func mcpClientFactory(cfg config.Config) mcpserver.ClientFactory {
 	return func(ctx context.Context, ensure bool) (mcpserver.Client, error) {
 		var client *daemon.Client
@@ -115,6 +144,13 @@ func mcpClientFactory(cfg config.Config) mcpserver.ClientFactory {
 
 type mcpDaemonClient struct{ client *daemon.Client }
 
+func (c *mcpDaemonClient) setEventOperation(ctx context.Context) {
+	metadata := mcpserver.EventOperationFromContext(ctx)
+	if metadata.Name != "" {
+		c.client.SetEventOperation(metadata.Name, metadata.ID, "mcp")
+	}
+}
+
 func (c *mcpDaemonClient) StartupWarnings() []protocol.StartupWarning {
 	if c == nil || c.client == nil {
 		return nil
@@ -124,6 +160,8 @@ func (c *mcpDaemonClient) StartupWarnings() []protocol.StartupWarning {
 
 func (c *mcpDaemonClient) Close() error { return c.client.Close() }
 func (c *mcpDaemonClient) Start(ctx context.Context, request protocol.StartRequest) (protocol.Process, error) {
+	c.setEventOperation(ctx)
+	request.Origin = "mcp"
 	process, err := c.client.Start(ctx, request)
 	return mcpProcess(process), err
 }
@@ -146,6 +184,9 @@ func (c *mcpDaemonClient) Output(ctx context.Context, request protocol.OutputReq
 	result, err := c.client.Output(ctx, request)
 	return mcpOutput(result), err
 }
+func (c *mcpDaemonClient) Events(ctx context.Context, request protocol.EventsRequest) (protocol.EventsResponse, error) {
+	return c.client.Events(ctx, request)
+}
 func (c *mcpDaemonClient) Wait(ctx context.Context, request protocol.WaitRequest) (protocol.WaitResponse, error) {
 	result, err := c.client.Wait(ctx, request)
 	if err != nil {
@@ -156,6 +197,7 @@ func (c *mcpDaemonClient) Wait(ctx context.Context, request protocol.WaitRequest
 	return response, nil
 }
 func (c *mcpDaemonClient) Input(ctx context.Context, request mcpserver.InputRequest) (mcpserver.InputResult, error) {
+	c.setEventOperation(ctx)
 	result, err := c.client.Input(ctx, daemon.InputRequest{Name: request.Name, Scope: request.Scope, Cwd: request.Cwd, Root: request.Root, Data: append([]byte(nil), request.Data...)})
 	if err != nil {
 		var notRunning *daemon.SessionNotRunningError
@@ -167,15 +209,23 @@ func (c *mcpDaemonClient) Input(ctx context.Context, request mcpserver.InputRequ
 	return mcpserver.InputResult{Name: request.Name, Bytes: result.Bytes, LaunchCursor: result.LaunchCursor}, nil
 }
 func (c *mcpDaemonClient) SignalResult(ctx context.Context, request protocol.SignalRequest) (protocol.SignalResult, error) {
-	return c.client.SignalResult(ctx, daemon.SignalRequest{Name: request.Name, Scope: request.Scope, Cwd: request.Cwd, Signal: request.Signal})
+	c.setEventOperation(ctx)
+	request.Origin = "mcp"
+	return c.client.SignalResult(ctx, daemon.SignalRequest{Name: request.Name, Scope: request.Scope, Cwd: request.Cwd, Signal: request.Signal, Origin: request.Origin})
 }
 func (c *mcpDaemonClient) Stop(ctx context.Context, request protocol.StopRequest) error {
+	c.setEventOperation(ctx)
+	request.Origin = "mcp"
 	return c.client.Stop(ctx, request)
 }
 func (c *mcpDaemonClient) Remove(ctx context.Context, request protocol.RemoveRequest) error {
+	c.setEventOperation(ctx)
+	request.Origin = "mcp"
 	return c.client.Remove(ctx, request)
 }
 func (c *mcpDaemonClient) Restart(ctx context.Context, request protocol.RestartRequest) (protocol.Process, error) {
+	c.setEventOperation(ctx)
+	request.Origin = "mcp"
 	process, err := c.client.Restart(ctx, request)
 	return mcpProcess(process), err
 }

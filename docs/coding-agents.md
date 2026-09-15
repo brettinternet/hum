@@ -295,6 +295,15 @@ wait --match "prompt" ──> input ──> wait --match "complete"
 
 The same loop works with bounded `logs` instead of the first `wait`.
 
+## Event history
+
+Use `hum events` for a recent bounded timeline; pass service names or `--kind lifecycle`,
+`--failed`, `--match REGEX`, `--since DURATION`, `--tail N`, and `--after-cursor CURSOR` to narrow
+it. The command reads retained history without starting a daemon. `--json` emits one structured
+record per event followed by metadata (`next_cursor`, `truncated`, and `has_more`). MCP exposes the
+same bounded `events` read and no follow operation. History is private, fixed at 2,000 events or
+1 MiB per scope, and never stores environment, input payloads, or child output.
+
 ## Canonical project scopes
 
 `--file` is resolved from the invocation directory and must resolve to a regular file inside the selected project; without `--project`, the file location infers the canonical Git project. The project root remains the daemon namespace and base for manifest `cwd` values, and all manifest variants share `(project root, process name)` identity. Runtime-only controls remain project-wide and use a file selector only for project identification; they do not parse or restrict records. Overlays, inheritance, environment files, and per-manifest namespaces are not supported.
