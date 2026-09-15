@@ -240,6 +240,7 @@ func (r *ShutdownRequest) UnmarshalJSON(data []byte) error {
 // and interval use the standard duration JSON number on the wire.
 type ReadinessConfig struct {
 	Method   string        `json:"method,omitempty"`
+	Target   string        `json:"target,omitempty"`
 	Match    string        `json:"match,omitempty"`
 	Argv     []string      `json:"argv,omitempty"`
 	Interval time.Duration `json:"interval,omitempty"`
@@ -1115,6 +1116,7 @@ type Exit struct {
 // reconcile the effective declaration without exposing the environment.
 type Readiness struct {
 	Method     string        `json:"method,omitempty"`
+	Target     string        `json:"target,omitempty"`
 	Argv       []string      `json:"argv,omitempty"`
 	Interval   time.Duration `json:"interval,omitempty"`
 	State      string        `json:"state"`

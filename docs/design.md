@@ -2,7 +2,7 @@
 
 ## Scope
 
-Executable readiness is a startup gate: `ready.exec` is a non-empty exact argv executed directly without a shell. The first probe is immediate, then failed attempts retry serially after a positive `interval` (default 1s) until `timeout` (default 30s). Probes inherit cwd and environment; only one bounded terminal diagnostic is retained. This is not liveness monitoring. Method/argv changes report `readiness_exec`; interval and timeout are wait policy.
+Readiness is a startup gate. `ready.exec` is a non-empty exact argv executed directly without a shell; `ready.http` performs GET and accepts only 2xx, and `ready.tcp` waits for a connection. HTTP/TCP targets must be absolute HTTP(S) URLs or host:port using literal IPs or localhost (bracket IPv6). Network probes run in-process, immediately then serially after a positive `interval` (default 1s), with each attempt bounded to 1s and the remaining `timeout` (default 30s). They inherit no environment, follow no redirects, retain only one bounded status/dial diagnostic, and cancel on stop/restart/shutdown. This is not liveness monitoring. Readiness method/target changes report readiness_http/readiness_tcp (and corresponding old/new fields); interval and timeout are wait policy.
 
 hum is a local process supervisor for humans and coding agents.
 
@@ -109,7 +109,7 @@ worktree when DIR exactly matches a canonical root retained by the daemon.
 - `doctor` rejects `--global` and inspects exactly one selected filesystem project. In fixed order it
   checks the supported OS, effective Hum settings, runtime path usability, manifest or conventional
   discovery, environment-file composition and protocol bounds, each process and `ready.exec`
-  executable using its exact cwd and composed environment, and an already-present daemon handshake.
+  executable using its exact cwd and composed environment, readiness_http/readiness_tcp syntax, and an already-present daemon handshake.
   It never starts the daemon, runs process argv or readiness probes, repairs files, or retains state;
   a missing daemon is informational and an incompatible or unreachable existing socket fails.
 - Guidance and stable next-command fields preserve a canonical shell-safe absolute `--project`
@@ -251,7 +251,7 @@ identity, readiness, cursors, and errors when applicable.
 - `up` uses lexical declaration order, attempts every entry, and applies this exit-code
   precedence: request error or `definition_drift` (1), early exit (3), timeout (2), success (0).
 - `definition_drift` includes sorted `changed_fields` for argv, canonical cwd, readiness
-  method/match/exec argv, TTY, normalized restart policy, or `stop_grace` changes and never satisfies
+  method/match/exec argv/http/tcp target, TTY, normalized restart policy, or `stop_grace` changes and never satisfies
   an `after` dependency; CLI `up` exits 1 for drift.
 - A removed manifest-sourced running or recovery-capable record is emitted as
   `removed_definition` with stop/remove guidance such as `hum stop NAME` or `hum remove NAME`.

@@ -143,13 +143,46 @@ func TestStopGraceManifest(t *testing.T) {
 }
 
 func durationPtr(value time.Duration) *time.Duration { return &value }
-func TestExecutableReadinessManifest(t *testing.T) {
+func TestParseReadyManifest(t *testing.T) {
 	cases := []struct {
 		name, ready string
 		wantErr     bool
 	}{
 		{"match", "match: ready", false},
 		{"exec", "exec: [task, health]", false},
+		{"http", "http: http://127.0.0.1:3000/readyz", false},
+		{"tcp", "tcp: \"[::1]:5432\"", false},
+		{"http compressed ipv6", "http: http://[2001:db8::1]/readyz", false},
+		{"http mapped ipv6", "http: http://[::ffff:192.0.2.1]/readyz", false},
+		{"tcp compressed ipv6", "tcp: \"[2001:db8::1]:5432\"", false},
+		{"tcp mapped ipv6", "tcp: \"[::ffff:192.0.2.1]:5432\"", false},
+		{"http empty", "http: \"\"", true},
+		{"http non-string", "http: 123", true},
+		{"http port zero", "http: http://127.0.0.1:0/", true},
+		{"http port max", "http: http://127.0.0.1:65536/", true},
+		{"http port nonnumeric", "http: http://127.0.0.1:abc/", true},
+		{"tcp empty", "tcp: \"\"", true},
+		{"tcp non-string", "tcp: 123", true},
+		{"tcp port zero", "tcp: 127.0.0.1:0", true},
+		{"tcp port max", "tcp: 127.0.0.1:65536", true},
+		{"tcp port nonnumeric", "tcp: 127.0.0.1:abc", true},
+		{"match and http", "match: ready\n      http: http://127.0.0.1:1/", true},
+		{"match and tcp", "match: ready\n      tcp: 127.0.0.1:1", true},
+		{"exec and http", "exec: [probe]\n      http: http://127.0.0.1:1/", true},
+		{"exec and tcp", "exec: [probe]\n      tcp: 127.0.0.1:1", true},
+		{"http and tcp", "http: http://127.0.0.1:1/\n      tcp: 127.0.0.1:1", true},
+		{"http default port", "http: https://localhost/readyz", false},
+		{"http userinfo", "http: http://user@localhost/readyz", true},
+		{"http fragment", "http: http://localhost/readyz#x", true},
+		{"http bad scheme", "http: ftp://localhost/readyz", true},
+		{"http hostname", "http: http://example.com/readyz", true},
+		{"tcp hostname", "tcp: db.example:5432", true},
+		{"tcp missing port", "tcp: 127.0.0.1", true},
+		{"tcp bad port", "tcp: 127.0.0.1:65536", true},
+		{"tcp malformed ipv6", "tcp: \"[:::1]:5432\"", true},
+		{"http malformed ipv6", "http: http://[:::1]:80/", true},
+		{"http interval", "http: http://localhost\n      interval: 10ms", false},
+		{"tcp interval", "tcp: 127.0.0.1:5432\n      interval: 10ms", false},
 		{"positive durations", "exec: [task, health]\n      interval: 250ms\n      timeout: 2.5s", false},
 		{"both", "match: ready\n      exec: [task]", true},
 		{"neither", "timeout: 1s", true},
@@ -168,7 +201,20 @@ func TestExecutableReadinessManifest(t *testing.T) {
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error=%v, wantErr=%v", err, tc.wantErr)
 			}
+			if err != nil && (strings.Contains(tc.name, "http") || strings.Contains(tc.name, "tcp")) && !strings.Contains(err.Error(), "hum.yaml:6") {
+				t.Fatalf("invalid target error lacks file:line: %v", err)
+			}
 			if err == nil {
+				if tc.name == "http" || tc.name == "http default port" || tc.name == "http interval" {
+					if defs[0].Ready.HTTP == "" {
+						t.Fatalf("HTTP target was not retained: %#v", defs[0].Ready)
+					}
+				}
+				if tc.name == "tcp" || tc.name == "tcp interval" {
+					if defs[0].Ready.TCP == "" {
+						t.Fatalf("TCP target was not retained: %#v", defs[0].Ready)
+					}
+				}
 				if tc.name == "exec" {
 					if !reflect.DeepEqual(defs[0].Ready.Exec, []string{"task", "health"}) {
 						t.Fatalf("exec argv=%#v, want exact parsed argv", defs[0].Ready.Exec)

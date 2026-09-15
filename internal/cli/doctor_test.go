@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"hum/internal/project"
@@ -15,6 +19,134 @@ import (
 	urfavecli "github.com/urfave/cli/v3"
 	"golang.org/x/sys/unix"
 )
+
+func TestDoctorReadinessSyntax(t *testing.T) {
+	for _, test := range []struct {
+		name, ready string
+		wantFail    bool
+	}{
+		{"http-ipv4", "http: http://127.0.0.1:0/readyz", false},
+		{"http-localhost", "http: https://localhost:0/", false},
+		{"tcp-ipv4", "tcp: \"127.0.0.1:0\"", false},
+		{"tcp-ipv6", "tcp: \"[::1]:0\"", false},
+		{"http-hostname", "http: http://example.invalid/", true},
+		{"tcp-missing-port", "tcp: \"127.0.0.1\"", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ready := test.ready
+			var listener net.Listener
+			var connections atomic.Int32
+			if !test.wantFail {
+				network, address := "tcp", "127.0.0.1:0"
+				if test.name == "tcp-ipv6" {
+					network, address = "tcp6", "[::1]:0"
+				}
+				var err error
+				listener, err = net.Listen(network, address)
+				if err != nil {
+					t.Fatal(err)
+				}
+				go func() {
+					for {
+						conn, err := listener.Accept()
+						if err != nil {
+							return
+						}
+						connections.Add(1)
+						conn.Close()
+					}
+				}()
+				port := listener.Addr().(*net.TCPAddr).Port
+				if strings.HasPrefix(test.name, "http") {
+					host, scheme := "127.0.0.1", "http"
+					if test.name == "http-localhost" {
+						host, scheme = "localhost", "https"
+					}
+					ready = fmt.Sprintf("http: %s://%s:%d/", scheme, host, port)
+				} else if test.name == "tcp-ipv6" {
+					ready = fmt.Sprintf("tcp: \"[::1]:%d\"", port)
+				} else {
+					ready = fmt.Sprintf("tcp: \"127.0.0.1:%d\"", port)
+				}
+			}
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  app:\n    argv: [/bin/sh]\n    ready:\n      "+ready+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, _, _, runErr := runDoctorTest(t, context.Background(), root, "--json")
+			if listener != nil {
+				listener.Close()
+				if connections.Load() != 0 {
+					t.Fatalf("doctor opened %d readiness connections", connections.Load())
+				}
+			}
+			if test.wantFail {
+				if runErr == nil || result.OK {
+					t.Fatalf("invalid readiness accepted: err=%v result=%+v", runErr, result)
+				}
+			} else if runErr != nil || !result.OK {
+				t.Fatalf("valid readiness failed: err=%v result=%+v", runErr, result)
+			}
+		})
+	}
+}
+
+func TestDoctorRejectedReadinessMakesNoConnections(t *testing.T) {
+	for _, test := range []struct{ name, method, invalid string }{
+		{"ipv4-fragment", "http", "fragment"}, {"ipv4-userinfo", "http", "userinfo"}, {"ipv4-port", "tcp", "port"},
+		{"ipv6-fragment", "http", "v6-fragment"}, {"ipv6-userinfo", "http", "v6-userinfo"}, {"localhost-port", "http", "localhost-port"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			network, address := "tcp", "127.0.0.1:0"
+			if strings.HasPrefix(test.name, "ipv6") {
+				network, address = "tcp6", "[::1]:0"
+			}
+			listener, err := net.Listen(network, address)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			var connections atomic.Int32
+			go func() {
+				for {
+					conn, err := listener.Accept()
+					if err != nil {
+						return
+					}
+					connections.Add(1)
+					conn.Close()
+				}
+			}()
+			port := listener.Addr().(*net.TCPAddr).Port
+			host := "127.0.0.1"
+			if strings.HasPrefix(test.name, "ipv6") {
+				host = "[::1]"
+			}
+			ready := "tcp: \"" + host + ":" + strconv.Itoa(port) + "junk\""
+			if test.method == "http" {
+				ready = "http: http://" + host + ":" + strconv.Itoa(port) + "/"
+				switch test.invalid {
+				case "fragment", "v6-fragment":
+					ready += "#bad"
+				case "userinfo", "v6-userinfo":
+					ready = "http://user@" + host + ":" + strconv.Itoa(port) + "/"
+				case "localhost-port":
+					ready = "http: http://localhost:" + strconv.Itoa(port) + ":"
+				}
+			}
+			root := t.TempDir()
+			manifest := "version: 1\nprocesses:\n  app:\n    argv: [/bin/sh]\n    ready:\n      " + ready + "\n"
+			if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, _, _, runErr := runDoctorTest(t, context.Background(), root, "--json")
+			listener.Close()
+			if runErr == nil || result.OK || connections.Load() != 0 {
+				t.Fatalf("rejected readiness: err=%v result=%+v connections=%d", runErr, result, connections.Load())
+			}
+		})
+	}
+}
 
 func TestDoctorHumanColorsStatusLabels(t *testing.T) {
 	result := newDoctorResult([]doctorCheck{

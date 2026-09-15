@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,89 @@ import (
 )
 
 const manifestWorkflowTimeout = 30 * time.Second
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+	return port
+}
+
+func TestManifestHTTPReadiness(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := integrationHum(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir)
+	t.Cleanup(func() { _ = testutil.Run(t, hum, root, env, "shutdown", "--stop-processes") })
+	port, timeoutPort := freeTCPPort(t), freeTCPPort(t)
+	manifest := fmt.Sprintf(`version: 1
+processes:
+  web:
+    argv: [/usr/bin/python3, -c, "import http.server,time; time.sleep(.2); H=type('H',(http.server.BaseHTTPRequestHandler,),{'do_GET':lambda self:(self.send_response(204),self.end_headers()),'log_message':lambda *a:None}); http.server.HTTPServer(('127.0.0.1',%d),H).serve_forever()"]
+    ready:
+      http: http://127.0.0.1:%d/
+      interval: 20ms
+      timeout: 3s
+`, port, port)
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := testutil.Run(t, hum, root, env, "up", "--detach")
+	if result.Code != 0 || result.Err != nil {
+		t.Fatalf("HTTP up: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(fmt.Sprintf(manifest+"  timeout:\n    argv: [/bin/sh, -c, 'sleep 10']\n    ready:\n      http: http://127.0.0.1:%d/\n      timeout: 200ms\n", timeoutPort)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	timedOut := testutil.Run(t, hum, root, env, "up", "--detach")
+	if timedOut.Code != 2 {
+		t.Fatalf("HTTP timeout: code=%d stdout=%q stderr=%q", timedOut.Code, timedOut.Stdout, timedOut.Stderr)
+	}
+}
+
+func TestManifestTCPReadiness(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := integrationHum(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir)
+	t.Cleanup(func() { _ = testutil.Run(t, hum, root, env, "shutdown", "--stop-processes") })
+	port, timeoutPort := freeTCPPort(t), freeTCPPort(t)
+	manifest := fmt.Sprintf(`version: 1
+processes:
+  db:
+    argv: [/usr/bin/python3, -c, "import socket,time; time.sleep(.2); s=socket.socket(); s.bind(('127.0.0.1',%d)); s.listen() ; time.sleep(10)"]
+    ready:
+      tcp: 127.0.0.1:%d
+      interval: 20ms
+      timeout: 3s
+`, port, port)
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := testutil.Run(t, hum, root, env, "up", "--detach")
+	if result.Code != 0 || result.Err != nil {
+		t.Fatalf("TCP up: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(fmt.Sprintf(manifest+"  timeout:\n    argv: [/bin/sh, -c, 'sleep 10']\n    ready:\n      tcp: 127.0.0.1:%d\n      timeout: 200ms\n", timeoutPort)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	timedOut := testutil.Run(t, hum, root, env, "up", "--detach")
+	if timedOut.Code != 2 {
+		t.Fatalf("TCP timeout: code=%d stdout=%q stderr=%q", timedOut.Code, timedOut.Stdout, timedOut.Stderr)
+	}
+}
 
 func TestManifestEnvironmentLifecycle(t *testing.T) {
 	lifecycleRequireUnix(t)

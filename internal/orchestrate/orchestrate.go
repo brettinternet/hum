@@ -57,6 +57,7 @@ type Definition struct {
 // ReadinessConfig describes output matching or a direct executable.
 type ReadinessConfig struct {
 	Method   string
+	Target   string
 	Match    string
 	Argv     []string
 	Interval time.Duration
@@ -67,6 +68,7 @@ type ReadinessConfig struct {
 // snapshot.
 type Readiness struct {
 	Method     string
+	Target     string
 	Argv       []string
 	Interval   time.Duration
 	State      string
@@ -370,12 +372,6 @@ func DefinitionMatchesProcess(definition Definition, process Process) bool {
 	return SameManifestSource(process.Source, definition.Source)
 }
 
-func processReadinessMatch(process Process) (bool, string) {
-	if process.Readiness == nil || process.Readiness.State == ReadinessRunningUnverified || process.Readiness.Method == "exec" {
-		return false, ""
-	}
-	return true, process.Readiness.Match
-}
 func readinessMethod(config *ReadinessConfig) string {
 	if config == nil {
 		return ""
@@ -399,28 +395,36 @@ func DefinitionChangedFields(root string, definition Definition, process Process
 	if CanonicalCwd(root, definition.Cwd) != CanonicalCwd(root, process.Cwd) {
 		changed = append(changed, "cwd")
 	}
-	definitionReady, definitionMatch := false, ""
 	definitionMethod := readinessMethod(definition.Ready)
-	if definition.Ready != nil {
-		definitionReady, definitionMatch = true, definition.Ready.Match
-	}
-	processReady, processMatch := processReadinessMatch(process)
 	processMethod := ""
-	var processArgv []string
-	if process.Readiness != nil {
-		processMethod = readinessMethod(&ReadinessConfig{Method: process.Readiness.Method, Match: process.Readiness.Match, Argv: process.Readiness.Argv})
-		processArgv = process.Readiness.Argv
+	if process.Readiness != nil && process.Readiness.State != ReadinessRunningUnverified {
+		processMethod = readinessMethod(&ReadinessConfig{Method: process.Readiness.Method, Target: process.Readiness.Target, Match: process.Readiness.Match, Argv: process.Readiness.Argv})
 	}
-	var definitionArgv []string
-	if definition.Ready != nil {
-		definitionArgv = definition.Ready.Argv
-	}
-	if definitionMethod == "exec" || processMethod == "exec" {
-		if definitionMethod != processMethod || !slices.Equal(definitionArgv, processArgv) {
-			changed = append(changed, "readiness_exec")
+	readinessChanged := func(method string) bool {
+		if method == "" {
+			return false
 		}
-	} else if definitionReady != processReady || definitionMatch != processMatch {
-		changed = append(changed, "readiness_match")
+		if definitionMethod != method || processMethod != method {
+			return definitionMethod == method || processMethod == method
+		}
+		if definition.Ready == nil || process.Readiness == nil {
+			return true
+		}
+		switch method {
+		case "match":
+			return definition.Ready.Match != process.Readiness.Match
+		case "exec":
+			return !slices.Equal(definition.Ready.Argv, process.Readiness.Argv)
+		case "http", "tcp":
+			return definition.Ready.Target != process.Readiness.Target
+		default:
+			return true
+		}
+	}
+	for _, method := range []string{"match", "exec", "http", "tcp"} {
+		if readinessChanged(method) {
+			changed = append(changed, "readiness_"+method)
+		}
 	}
 	if definition.StopGrace == nil {
 		if !process.StopGraceInherited {
@@ -626,7 +630,7 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 	default:
 		return result, nil
 	}
-	if process.Readiness.Method == "exec" || readinessMethod(definition.Ready) == "exec" {
+	if process.Readiness.Method == "exec" || process.Readiness.Method == "http" || process.Readiness.Method == "tcp" || readinessMethod(definition.Ready) == "exec" || readinessMethod(definition.Ready) == "http" || readinessMethod(definition.Ready) == "tcp" {
 		for {
 			current, err := getCurrent()
 			if err != nil {

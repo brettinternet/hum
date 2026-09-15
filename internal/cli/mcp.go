@@ -244,7 +244,7 @@ func mcpProcess(process app.Process) protocol.Process {
 		result.NextCursor = &cursor
 	}
 	if process.Readiness != nil {
-		readiness := &protocol.Readiness{Method: process.Readiness.Method, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
+		readiness := &protocol.Readiness{Method: process.Readiness.Method, Target: process.Readiness.Target, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
 		if process.Readiness.Cursor != nil {
 			cursor := protocol.Cursor(*process.Readiness.Cursor)
 			readiness.Cursor = &cursor

@@ -42,6 +42,33 @@ func TestExecutableReadinessRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadinessHTTPAndTCPTargetRoundTrip(t *testing.T) {
+	for _, method := range []string{"http", "tcp"} {
+		input := ReadinessConfig{Method: method, Target: "http://127.0.0.1:1"}
+		if method == "tcp" {
+			input.Target = "[::1]:1"
+		}
+		raw, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output ReadinessConfig
+		if err := json.Unmarshal(raw, &output); err != nil {
+			t.Fatal(err)
+		}
+		if output.Method != input.Method || output.Target != input.Target {
+			t.Fatalf("%s target round trip = %#v", method, output)
+		}
+	}
+	var legacy ReadinessConfig
+	if err := json.Unmarshal([]byte(`{"method":"exec","argv":["probe"],"interval":1000000000,"timeout":30000000000}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Target != "" || legacy.Method != "exec" || len(legacy.Argv) != 1 {
+		t.Fatalf("legacy readiness decode = %#v", legacy)
+	}
+}
+
 func TestProcessFollowerCountRoundTrip(t *testing.T) {
 	encoded, err := json.Marshal(Process{Name: "watched", Followers: 3})
 	if err != nil {

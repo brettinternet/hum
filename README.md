@@ -136,14 +136,20 @@ ready:
   timeout: 30s
 ```
 
-Or check an HTTP readiness endpoint:
+Native HTTP and TCP readiness probes avoid shelling out:
 
 ```yaml
 ready:
-  exec: [curl, --fail, --silent, --show-error, "http://127.0.0.1:3000/readyz"]
+  http: http://127.0.0.1:3000/readyz
   interval: 1s
   timeout: 30s
+# or: tcp: 127.0.0.1:5432
 ```
+
+`ready.http` uses GET and accepts only 2xx; `ready.tcp` is ready when a connection is accepted.
+Targets must use a literal IP or `localhost` (with bracketed IPv6), and probes are startup-only,
+non-shell, bounded, and canceled on stop/restart. Environment variables are not expanded in targets;
+repeat a value such as `PORT` literally. `hum doctor` validates syntax without connecting.
 
 JSON and redirected output stay bounded:
 
@@ -170,7 +176,8 @@ hum down
 `hum status` shows a compact project overview. `hum status NAME` adds readiness and diagnostics.
 
 `hum start NAME` does not start dependencies. `ready.exec` runs exact argv without a shell, inherits
-cwd/env, and retries every second by default. It gates startup, not liveness. `hum down` stops project
+cwd/env, and retries every second by default; `ready.http` and `ready.tcp` run in-process with the
+same retry policy. All readiness methods gate startup, not liveness. `hum down` stops project
 processes concurrently. See [design and command semantics](docs/design.md).
 
 ### Manifest environments
@@ -243,7 +250,7 @@ hum restart -F hum.test.yaml api
 - `--file` is unavailable on `version`, `serve`, `shutdown`, `mcp`, and `skill`.
 
 Run `hum doctor` before launching work to check the selected project, Hum settings, runtime path,
-manifest environments, process and `ready.exec` executables, and any already-present daemon. It never
+manifest environments, process and `ready.exec` executables, readiness_http/readiness_tcp syntax, and any already-present daemon. It never
 starts the daemon, executes a process or readiness probe, repairs files, or retains state; an absent
 daemon is informational. Human output ends with PASS/WARN/FAIL/INFO counts. `--json` emits one
 schema-versioned object, and the command exits 1 only when a check fails or usage is invalid.

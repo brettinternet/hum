@@ -15,7 +15,7 @@ import (
 func TestProtocolRoundTripAllFields(t *testing.T) {
 	stamp := time.Date(2026, time.September, 10, 12, 34, 56, 123, time.UTC)
 	cursor, next := Cursor(7), Cursor(8)
-	ready := &ReadinessConfig{Method: "exec", Argv: []string{"probe", "ready"}, Match: "ready", Interval: 250 * time.Millisecond, Timeout: 3 * time.Second}
+	ready := &ReadinessConfig{Method: "exec", Target: "http://127.0.0.1:1", Argv: []string{"probe", "ready"}, Match: "ready", Interval: 250 * time.Millisecond, Timeout: 3 * time.Second}
 	tty := &TTYSize{Columns: 120, Rows: 40}
 	stopGrace := 2 * time.Second
 	requests := []any{
@@ -93,7 +93,7 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 	}
 	requireEveryFieldPopulated(t, requests, nil)
 
-	process := Process{Name: "process", Source: "manifest", Scope: ScopeProject, Root: "/project", TTY: true, PID: 41, PGID: 42, Cwd: "/work", Argv: []string{"tool"}, Start: stamp, LaunchCursor: cursor, NextCursor: &next, State: StateExited, Exit: &Exit{Code: -1, Time: stamp, Error: "failed", Signal: &SignalInfo{Name: "SIGTERM", Number: 15}}, ExitCode: -1, ExitedAt: stamp, RestartCount: 2, Followers: 3, Restart: RestartOnFailure, StopGrace: stopGrace, StopGraceInherited: true, Relaunches: 4, NextLaunchAt: &stamp, Readiness: &Readiness{Method: "exec", Argv: []string{"probe", "ready"}, Interval: 250 * time.Millisecond, State: ReadinessReady, Cursor: &cursor, Time: stamp, Match: "ready", Diagnostic: "status 1"}}
+	process := Process{Name: "process", Source: "manifest", Scope: ScopeProject, Root: "/project", TTY: true, PID: 41, PGID: 42, Cwd: "/work", Argv: []string{"tool"}, Start: stamp, LaunchCursor: cursor, NextCursor: &next, State: StateExited, Exit: &Exit{Code: -1, Time: stamp, Error: "failed", Signal: &SignalInfo{Name: "SIGTERM", Number: 15}}, ExitCode: -1, ExitedAt: stamp, RestartCount: 2, Followers: 3, Restart: RestartOnFailure, StopGrace: stopGrace, StopGraceInherited: true, Relaunches: 4, NextLaunchAt: &stamp, Readiness: &Readiness{Method: "exec", Target: "http://127.0.0.1:1", Argv: []string{"probe", "ready"}, Interval: 250 * time.Millisecond, State: ReadinessReady, Cursor: &cursor, Time: stamp, Match: "ready", Diagnostic: "status 1"}}
 	entries := []OutputEntry{{Cursor: cursor, Stream: StreamStdout, Time: stamp, Text: "output"}}
 	wireError := NewWireError(ErrorInvalidRequest, "bad", map[string]any{"client": 18, "daemon": 19})
 	responses := []any{

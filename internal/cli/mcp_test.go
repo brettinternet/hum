@@ -13,8 +13,23 @@ import (
 	"testing"
 	"time"
 
+	"hum/internal/app"
+
 	"hum/internal/testutil"
 )
+
+func TestReadinessHTTPMCPAdapter(t *testing.T) {
+	for _, method := range []string{"http", "tcp"} {
+		target := "http://127.0.0.1:1/readyz"
+		if method == "tcp" {
+			target = "[::1]:1"
+		}
+		got := mcpProcess(app.Process{Readiness: &app.Readiness{Method: method, Target: target, State: app.ReadinessStarting}})
+		if got.Readiness == nil || got.Readiness.Method != method || got.Readiness.Target != target {
+			t.Fatalf("%s MCP readiness = %#v", method, got.Readiness)
+		}
+	}
+}
 
 func TestMCPHelp(t *testing.T) {
 	var output, errorOutput bytes.Buffer

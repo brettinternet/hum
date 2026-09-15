@@ -8,6 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +64,9 @@ func validateReadinessConfig(input *ReadinessConfig) (*ReadinessConfig, *regexp.
 	config := *input
 	config.Argv = append([]string(nil), input.Argv...)
 	if config.Method == "" {
+		if config.Target != "" {
+			return nil, nil, fmt.Errorf("%w: readiness network target requires method", ErrInvalidRequest)
+		}
 		if config.Match != "" && len(config.Argv) != 0 {
 			return nil, nil, fmt.Errorf("%w: readiness requires exactly one method", ErrInvalidRequest)
 		}
@@ -70,9 +76,10 @@ func validateReadinessConfig(input *ReadinessConfig) (*ReadinessConfig, *regexp.
 			config.Method = "match"
 		}
 	}
-	if config.Method == "exec" {
-		if config.Match != "" {
-			return nil, nil, fmt.Errorf("%w: readiness exec cannot include match", ErrInvalidRequest)
+	switch config.Method {
+	case "exec":
+		if config.Match != "" || config.Target != "" {
+			return nil, nil, fmt.Errorf("%w: readiness exec cannot include match or target", ErrInvalidRequest)
 		}
 		if len(config.Argv) == 0 {
 			return nil, nil, fmt.Errorf("%w: readiness exec argv must not be empty", ErrInvalidRequest)
@@ -82,18 +89,37 @@ func validateReadinessConfig(input *ReadinessConfig) (*ReadinessConfig, *regexp.
 				return nil, nil, fmt.Errorf("%w: readiness exec argv[%d] must not be empty", ErrInvalidRequest, i)
 			}
 		}
-		if config.Interval == 0 {
-			config.Interval = time.Second
+	case "http", "tcp":
+		if config.Match != "" || len(config.Argv) != 0 {
+			return nil, nil, fmt.Errorf("%w: readiness %s cannot include match or exec argv", ErrInvalidRequest, config.Method)
 		}
-		if config.Interval <= 0 {
-			return nil, nil, fmt.Errorf("%w: readiness interval must be positive", ErrInvalidRequest)
+		if config.Target == "" {
+			return nil, nil, fmt.Errorf("%w: readiness %s target must not be empty", ErrInvalidRequest, config.Method)
 		}
-	} else if config.Method != "match" {
+		var targetErr error
+		if config.Method == "http" {
+			targetErr = projectpkg.ValidateHTTPReadinessTarget(config.Target)
+		} else {
+			targetErr = projectpkg.ValidateTCPReadinessTarget(config.Target)
+		}
+		if targetErr != nil {
+			return nil, nil, fmt.Errorf("%w: readiness %s target: %v", ErrInvalidRequest, config.Method, targetErr)
+		}
+	case "match":
+		if config.Target != "" || len(config.Argv) != 0 {
+			return nil, nil, fmt.Errorf("%w: readiness match cannot include target or exec argv", ErrInvalidRequest)
+		}
+	default:
 		return nil, nil, fmt.Errorf("%w: unknown readiness method %q", ErrInvalidRequest, config.Method)
-	} else if len(config.Argv) != 0 {
-		return nil, nil, fmt.Errorf("%w: readiness match cannot include exec argv", ErrInvalidRequest)
-	} else if config.Interval != 0 {
-		return nil, nil, fmt.Errorf("%w: readiness interval requires exec readiness", ErrInvalidRequest)
+	}
+	if config.Method == "match" && config.Interval != 0 {
+		return nil, nil, fmt.Errorf("%w: readiness interval requires exec, http, or tcp readiness", ErrInvalidRequest)
+	}
+	if config.Method != "match" && config.Interval == 0 {
+		config.Interval = time.Second
+	}
+	if config.Interval < 0 {
+		return nil, nil, fmt.Errorf("%w: readiness interval must be positive", ErrInvalidRequest)
 	}
 	if config.Timeout == 0 {
 		config.Timeout = 30 * time.Second
@@ -130,6 +156,7 @@ func restartPolicyForSource(source string, policy RestartPolicy) RestartPolicy {
 type ReadinessConfig struct {
 	Method   string
 	Match    string
+	Target   string
 	Argv     []string
 	Interval time.Duration
 	Timeout  time.Duration
@@ -139,6 +166,7 @@ type ReadinessConfig struct {
 // process or a terminal record. Exec readiness has no output cursor.
 type Readiness struct {
 	Method     string
+	Target     string
 	Argv       []string
 	Interval   time.Duration
 	State      string
@@ -854,6 +882,8 @@ func (t *readinessTracker) close() {
 // executableReadinessTracker owns probes for exactly one process incarnation.
 // Probe output is deliberately kept outside the supervised output store.
 type executableReadinessTracker struct {
+	method     string
+	target     string
 	argv       []string
 	interval   time.Duration
 	maxBytes   int
@@ -884,7 +914,7 @@ func (s *Supervisor) startExecutableReadiness(rec *record, incarnation uint64) {
 	// read lock here would allow stop/restart to detach the old tracker while
 	// this launch installs a new one.
 	s.mu.Lock()
-	if s.records[rec.key] != rec || rec.terminal || rec.incarnation != incarnation || rec.readyConfig == nil || len(rec.readyConfig.Argv) == 0 {
+	if s.records[rec.key] != rec || rec.terminal || rec.incarnation != incarnation || rec.readyConfig == nil || (rec.readyConfig.Method == "exec" && len(rec.readyConfig.Argv) == 0) {
 		s.mu.Unlock()
 		return
 	}
@@ -894,7 +924,7 @@ func (s *Supervisor) startExecutableReadiness(rec *record, incarnation uint64) {
 	cwd := rec.cwd
 	limit := s.maxLineBytes
 	parent, cancel := context.WithTimeout(context.Background(), config.Timeout)
-	tracker := &executableReadinessTracker{argv: argv, interval: config.Interval, maxBytes: limit, cancel: cancel, done: make(chan struct{})}
+	tracker := &executableReadinessTracker{method: config.Method, target: config.Target, argv: argv, interval: config.Interval, maxBytes: limit, cancel: cancel, done: make(chan struct{})}
 	rec.execTracker = tracker
 	s.mu.Unlock()
 	go func() {
@@ -912,7 +942,13 @@ func (s *Supervisor) startExecutableReadiness(rec *record, incarnation uint64) {
 				}
 			}
 			first = false
-			diagnostic, exitErr := runReadinessProbe(parent, argv, cwd, env, limit)
+			var diagnostic string
+			var exitErr error
+			if tracker.method == "exec" {
+				diagnostic, exitErr = runReadinessProbe(parent, argv, cwd, env, limit)
+			} else {
+				diagnostic, exitErr = runNetworkReadinessProbe(parent, tracker.method, tracker.target, limit)
+			}
 			if exitErr == nil {
 				tracker.mu.Lock()
 				tracker.ready = true
@@ -920,13 +956,18 @@ func (s *Supervisor) startExecutableReadiness(rec *record, incarnation uint64) {
 				readyAt := tracker.at
 				tracker.diagnostic = ""
 				tracker.mu.Unlock()
-				s.emitLifecycle(rec, "ready", "method=exec", readyAt, nil)
+				s.emitLifecycle(rec, "ready", "method="+tracker.method, readyAt, nil)
 				return
 			}
 			// Cancellation is lifecycle control, not a failed probe attempt;
 			// preserve the last completed diagnostic while stopping a run.
 			if parent.Err() != nil {
 				if errors.Is(parent.Err(), context.DeadlineExceeded) {
+					if diagnostic != "" {
+						tracker.mu.Lock()
+						tracker.diagnostic = diagnostic
+						tracker.mu.Unlock()
+					}
 					s.emitLifecycle(rec, "startup_failure", "readiness timeout", s.now(), nil)
 				}
 				return
@@ -941,6 +982,58 @@ func (s *Supervisor) startExecutableReadiness(rec *record, incarnation uint64) {
 			}
 		}
 	}()
+}
+
+func runNetworkReadinessProbe(parent context.Context, method, target string, maxBytes int) (string, error) {
+	if err := parent.Err(); err != nil {
+		return "", err
+	}
+	attempt := time.Second
+	if deadline, ok := parent.Deadline(); ok && time.Until(deadline) < attempt {
+		attempt = time.Until(deadline)
+	}
+	if attempt <= 0 {
+		return "", context.DeadlineExceeded
+	}
+	ctx, cancel := context.WithTimeout(parent, attempt)
+	defer cancel()
+	if method == "tcp" {
+		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", target)
+		if err != nil {
+			return capProbeDiagnostic("dial: "+networkProbeError(err), maxBytes), err
+		}
+		_ = conn.Close()
+		return "", nil
+	}
+	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return capProbeDiagnostic("request: "+networkProbeError(err), maxBytes), err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return capProbeDiagnostic("dial: "+networkProbeError(err), maxBytes), err
+	}
+	status := resp.StatusCode
+	_ = resp.Body.Close()
+	if status < 200 || status >= 300 {
+		return capProbeDiagnostic(fmt.Sprintf("status %d", status), maxBytes), fmt.Errorf("readiness status %d", status)
+	}
+	return "", nil
+}
+
+func networkProbeError(err error) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr != nil {
+		err = urlErr.Err
+	}
+	message := err.Error()
+	if query := strings.IndexByte(message, '?'); query >= 0 {
+		message = message[:query]
+	}
+	return message
 }
 
 func runReadinessProbe(parent context.Context, argv []string, cwd string, env []string, maxBytes int) (string, error) {
@@ -2069,9 +2162,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	started := rec.snapshotLocked()
 	incarnation := rec.incarnation
 	s.emitLifecycle(rec, "launch", "", startedAt, nil)
-	execReady := rec.readyConfig != nil && rec.readyConfig.Method == "exec"
+	startReadyProbe := rec.readyConfig != nil && (rec.readyConfig.Method == "exec" || rec.readyConfig.Method == "http" || rec.readyConfig.Method == "tcp")
 	s.mu.Unlock()
-	if execReady {
+	if startReadyProbe {
 		s.startExecutableReadiness(rec, incarnation)
 	}
 	if input != nil {
@@ -2374,7 +2467,7 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 	restarted := rec.snapshotLocked()
 	incarnation := rec.incarnation
 	s.mu.Unlock()
-	if rec.readyConfig != nil && rec.readyConfig.Method == "exec" {
+	if rec.readyConfig != nil && (rec.readyConfig.Method == "exec" || rec.readyConfig.Method == "http" || rec.readyConfig.Method == "tcp") {
 		s.startExecutableReadiness(rec, incarnation)
 	}
 	if input != nil {
@@ -3983,12 +4076,12 @@ func (r *record) snapshotLocked() Process {
 		switch {
 		case r.readyConfig == nil:
 			model.Readiness = &Readiness{State: ReadinessRunningUnverified}
-		case r.readyConfig.Method == "exec":
+		case r.readyConfig.Method == "exec" || r.readyConfig.Method == "http" || r.readyConfig.Method == "tcp":
 			ready, at, diagnostic := r.execTracker.snapshot()
 			if r.execTracker == nil {
 				ready, at, diagnostic = r.execReady, r.execReadyAt, r.execDiagnostic
 			}
-			model.Readiness = &Readiness{Method: "exec", Argv: append([]string(nil), r.readyConfig.Argv...), Interval: r.readyConfig.Interval, State: ReadinessStarting, Time: at, Diagnostic: diagnostic}
+			model.Readiness = &Readiness{Method: r.readyConfig.Method, Target: r.readyConfig.Target, Argv: append([]string(nil), r.readyConfig.Argv...), Interval: r.readyConfig.Interval, State: ReadinessStarting, Time: at, Diagnostic: diagnostic}
 			if ready {
 				model.Readiness.State = ReadinessReady
 			}
@@ -4005,7 +4098,7 @@ func (r *record) snapshotLocked() Process {
 	// relaunch. It is needed to reconcile the retained launch specification
 	// without exposing the launch environment.
 	if r.terminal && r.readyConfig != nil {
-		if r.readyConfig.Method == "exec" {
+		if r.readyConfig.Method == "exec" || r.readyConfig.Method == "http" || r.readyConfig.Method == "tcp" {
 			ready, at, diagnostic := r.execTracker.snapshot()
 			if r.execTracker == nil {
 				ready, at, diagnostic = r.execReady, r.execReadyAt, r.execDiagnostic
@@ -4014,7 +4107,7 @@ func (r *record) snapshotLocked() Process {
 			if ready {
 				state = ReadinessReady
 			}
-			model.Readiness = &Readiness{Method: "exec", Argv: append([]string(nil), r.readyConfig.Argv...), Interval: r.readyConfig.Interval, State: state, Time: at, Diagnostic: diagnostic}
+			model.Readiness = &Readiness{Method: r.readyConfig.Method, Target: r.readyConfig.Target, Argv: append([]string(nil), r.readyConfig.Argv...), Interval: r.readyConfig.Interval, State: state, Time: at, Diagnostic: diagnostic}
 		} else if r.relaunchPending || r.relaunchExhausted {
 			model.Readiness = &Readiness{Method: "match", State: ReadinessStarting, Match: r.readyConfig.Match}
 		}

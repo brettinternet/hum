@@ -421,6 +421,13 @@ func TestUpAdapterParity(t *testing.T) {
 	}
 }
 
+func TestCLIAppProcessPreservesReadinessTarget(t *testing.T) {
+	got := cliAppProcess(orchestrate.Process{Readiness: &orchestrate.Readiness{Method: "http", Target: "http://127.0.0.1:1/"}})
+	if got.Readiness == nil || got.Readiness.Target != "http://127.0.0.1:1/" {
+		t.Fatalf("CLI app readiness = %#v", got.Readiness)
+	}
+}
+
 func TestExecutableReadiness(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -503,11 +510,11 @@ func TestExecutableReadiness(t *testing.T) {
 		t.Fatalf("unchanged match readiness drift=%#v, want no changed fields", matchDrift)
 	}
 	matchToExec := orchestrate.DefinitionDriftResult(root, sharedDefinition, cliOrchestrateProcess(matchProcess))
-	if !reflect.DeepEqual(matchToExec.ChangedFields, []string{"readiness_exec"}) {
+	if !reflect.DeepEqual(matchToExec.ChangedFields, []string{"readiness_exec", "readiness_match"}) {
 		t.Fatalf("CLI match-to-exec readiness drift=%#v, want readiness_exec", matchToExec)
 	}
 	execToMatch := orchestrate.DefinitionDriftResult(root, cliOrchestrateDefinition(matchDefinition), current)
-	if !reflect.DeepEqual(execToMatch.ChangedFields, []string{"readiness_exec"}) {
+	if !reflect.DeepEqual(execToMatch.ChangedFields, []string{"readiness_exec", "readiness_match"}) {
 		t.Fatalf("CLI exec-to-match readiness drift=%#v, want readiness_exec", execToMatch)
 	}
 }

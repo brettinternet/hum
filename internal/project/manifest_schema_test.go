@@ -70,6 +70,43 @@ func TestManifestSchemaContract(t *testing.T) {
 	readiness := schemaObject(t, schema, "$defs", "readiness")
 	assertClosedSchemaObject(t, "readiness", readiness)
 	assertSchemaKeys(t, "readiness", readiness, readyFields)
+	httpPattern, _ := schemaObject(t, readiness, "properties", "http")["pattern"].(string)
+	tcpPattern, _ := schemaObject(t, readiness, "properties", "tcp")["pattern"].(string)
+	httpRE, err := regexp.Compile(httpPattern)
+	if err != nil {
+		t.Fatalf("HTTP schema pattern: %v", err)
+	}
+	tcpRE, err := regexp.Compile(tcpPattern)
+	if err != nil {
+		t.Fatalf("TCP schema pattern: %v", err)
+	}
+	for _, test := range []struct{ name, http, tcp string }{
+		{"valid compressed", "http://[2001:db8::1]/ready", "[2001:db8::1]:443"},
+		{"valid mapped", "http://[::ffff:192.0.2.1]/ready", "[::ffff:192.0.2.1]:443"},
+		{"malformed prefix", "http://[:::1]/ready", "[:::1]:443"},
+		{"malformed short", "http://[1:2]/ready", "[1:2]:443"},
+	} {
+		httpSchema, tcpSchema := httpRE.MatchString(test.http), tcpRE.MatchString(test.tcp)
+		httpParsed, tcpParsed := validateHTTPTarget(test.http) == nil, validateTCPTarget(test.tcp) == nil
+		if httpSchema != httpParsed || tcpSchema != tcpParsed {
+			t.Errorf("%s schema/parser parity: HTTP %v/%v TCP %v/%v", test.name, httpSchema, httpParsed, tcpSchema, tcpParsed)
+		}
+	}
+	for _, test := range []struct {
+		name, method string
+		value        any
+		want         bool
+	}{
+		{"empty HTTP", "http", "", false}, {"empty TCP", "tcp", "", false},
+		{"non-string HTTP", "http", 123, false}, {"valid HTTP", "http", "http://127.0.0.1:80/", true},
+		{"valid TCP", "tcp", "[::1]:80", true},
+	} {
+		if got := schemaReadinessTargetAccepts(readiness, test.method, test.value); got != test.want {
+			t.Errorf("schema readiness %s %q accepted=%v want=%v", test.name, test.value, got, test.want)
+		}
+	}
+
+	assertReadinessDocumentCorpus(t, readiness)
 
 	namePattern := regexp.MustCompile(manifestNamePattern)
 	for _, test := range []struct {
@@ -122,8 +159,8 @@ func TestManifestSchemaContract(t *testing.T) {
 	}
 
 	oneOf, ok := readiness["oneOf"].([]any)
-	if !ok || len(oneOf) != 2 || !requiredOnly(oneOf[0], "match") || !requiredOnly(oneOf[1], "exec") {
-		t.Fatalf("readiness oneOf = %#v, want exactly match or exec", readiness["oneOf"])
+	if !ok || len(oneOf) != 4 || !requiredOnly(oneOf[0], "match") || !requiredOnly(oneOf[1], "exec") || !requiredOnly(oneOf[2], "http") || !requiredOnly(oneOf[3], "tcp") {
+		t.Fatalf("readiness oneOf = %#v, want exactly one readiness method", readiness["oneOf"])
 	}
 
 	for _, test := range []struct {
@@ -240,6 +277,153 @@ func requiredOnly(value any, key string) bool {
 	}
 	required, ok := object["required"].([]any)
 	return ok && len(required) == 1 && required[0] == key
+}
+
+type readinessSchemaCase struct {
+	name   string
+	ready  string
+	fields map[string]any
+}
+
+func assertReadinessDocumentCorpus(t *testing.T, readiness map[string]any) {
+	t.Helper()
+	cases := []readinessSchemaCase{
+		{"match", "match: ready", map[string]any{"match": "ready"}},
+		{"exec", "exec: [probe]", map[string]any{"exec": []any{"probe"}}},
+		{"http IPv4 explicit", "http: http://127.0.0.1:8080/ready", map[string]any{"http": "http://127.0.0.1:8080/ready"}},
+		{"http localhost default", "http: https://localhost/ready", map[string]any{"http": "https://localhost/ready"}},
+		{"http compressed IPv6", "http: http://[2001:db8::1]/ready", map[string]any{"http": "http://[2001:db8::1]/ready"}},
+		{"http mapped IPv6", "http: http://[::ffff:192.0.2.1]/ready", map[string]any{"http": "http://[::ffff:192.0.2.1]/ready"}},
+		{"tcp IPv4 explicit", "tcp: 127.0.0.1:8080", map[string]any{"tcp": "127.0.0.1:8080"}},
+		{"tcp localhost", "tcp: localhost:8080", map[string]any{"tcp": "localhost:8080"}},
+		{"tcp compressed IPv6", "tcp: \"[2001:db8::1]:443\"", map[string]any{"tcp": "[2001:db8::1]:443"}},
+		{"tcp mapped IPv6", "tcp: \"[::ffff:192.0.2.1]:443\"", map[string]any{"tcp": "[::ffff:192.0.2.1]:443"}},
+		{"http empty", "http: \"\"", map[string]any{"http": ""}}, {"http non-string", "http: 123", map[string]any{"http": 123}},
+		{"tcp empty", "tcp: \"\"", map[string]any{"tcp": ""}}, {"tcp non-string", "tcp: 123", map[string]any{"tcp": 123}},
+		{"http port zero", "http: http://127.0.0.1:0/", map[string]any{"http": "http://127.0.0.1:0/"}}, {"http port max", "http: http://127.0.0.1:65536/", map[string]any{"http": "http://127.0.0.1:65536/"}}, {"http port nonnumeric", "http: http://127.0.0.1:abc/", map[string]any{"http": "http://127.0.0.1:abc/"}},
+		{"http bad scheme", "http: ftp://localhost/", map[string]any{"http": "ftp://localhost/"}}, {"http bad host", "http: http://example.com/", map[string]any{"http": "http://example.com/"}}, {"http userinfo", "http: http://user@localhost/", map[string]any{"http": "http://user@localhost/"}}, {"http fragment", "http: http://localhost/#ready", map[string]any{"http": "http://localhost/#ready"}},
+		{"tcp missing port", "tcp: 127.0.0.1", map[string]any{"tcp": "127.0.0.1"}}, {"tcp port zero", "tcp: 127.0.0.1:0", map[string]any{"tcp": "127.0.0.1:0"}}, {"tcp port max", "tcp: 127.0.0.1:65536", map[string]any{"tcp": "127.0.0.1:65536"}}, {"tcp port nonnumeric", "tcp: 127.0.0.1:abc", map[string]any{"tcp": "127.0.0.1:abc"}}, {"tcp bad host", "tcp: example.com:80", map[string]any{"tcp": "example.com:80"}}, {"tcp malformed IPv6", "tcp: \"[:::1]:80\"", map[string]any{"tcp": "[:::1]:80"}}, {"http malformed IPv6", "http: http://[:::1]:80/", map[string]any{"http": "http://[:::1]:80/"}},
+		{"match and exec", "match: ready\n      exec: [probe]", map[string]any{"match": "ready", "exec": []any{"probe"}}}, {"match and http", "match: ready\n      http: http://127.0.0.1:1/", map[string]any{"match": "ready", "http": "http://127.0.0.1:1/"}}, {"match and tcp", "match: ready\n      tcp: 127.0.0.1:1", map[string]any{"match": "ready", "tcp": "127.0.0.1:1"}}, {"exec and http", "exec: [probe]\n      http: http://127.0.0.1:1/", map[string]any{"exec": []any{"probe"}, "http": "http://127.0.0.1:1/"}}, {"exec and tcp", "exec: [probe]\n      tcp: 127.0.0.1:1", map[string]any{"exec": []any{"probe"}, "tcp": "127.0.0.1:1"}}, {"http and tcp", "http: http://127.0.0.1:1/\n      tcp: 127.0.0.1:1", map[string]any{"http": "http://127.0.0.1:1/", "tcp": "127.0.0.1:1"}},
+		{"match interval", "match: ready\n      interval: 10ms", map[string]any{"match": "ready", "interval": "10ms"}}, {"exec interval", "exec: [probe]\n      interval: 10ms", map[string]any{"exec": []any{"probe"}, "interval": "10ms"}}, {"http interval", "http: http://127.0.0.1:1/\n      interval: 10ms", map[string]any{"http": "http://127.0.0.1:1/", "interval": "10ms"}}, {"tcp interval", "tcp: 127.0.0.1:1\n      interval: 10ms", map[string]any{"tcp": "127.0.0.1:1", "interval": "10ms"}},
+		{"unknown property", "match: ready\n      extra: true", map[string]any{"match": "ready", "extra": true}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTestManifest(t, root, "version: 1\nprocesses:\n  web:\n    argv: [server]\n    ready:\n      "+test.ready+"\n")
+			_, parseErr := LoadDefinitions(root)
+			schemaAccepted := schemaReadinessDocumentAccepts(readiness, test.fields)
+			if schemaAccepted != (parseErr == nil) {
+				t.Fatalf("schema/parser disagreement: schema=%v parser=%v error=%v document=%#v", schemaAccepted, parseErr == nil, parseErr, test.fields)
+			}
+		})
+	}
+}
+
+func schemaReadinessDocumentAccepts(readiness map[string]any, document map[string]any) bool {
+	properties, ok := readiness["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	for key, value := range document {
+		property, ok := properties[key].(map[string]any)
+		if !ok {
+			return false
+		}
+		switch property["type"] {
+		case "string":
+			text, ok := value.(string)
+			if !ok {
+				return false
+			}
+			if pattern, ok := property["pattern"].(string); ok && !schemaPatternAccepts(pattern, text) {
+				return false
+			}
+		case "array":
+			items, ok := value.([]any)
+			if !ok || len(items) < int(property["minItems"].(float64)) {
+				return false
+			}
+			itemSchema := property["items"].(map[string]any)
+			for _, item := range items {
+				text, ok := item.(string)
+				if !ok || len(text) < int(itemSchema["minLength"].(float64)) {
+					return false
+				}
+			}
+		default:
+			return false
+		}
+	}
+	oneOf, ok := readiness["oneOf"].([]any)
+	if !ok {
+		return false
+	}
+	matches := 0
+	for _, raw := range oneOf {
+		required := raw.(map[string]any)["required"].([]any)
+		if len(required) == 1 {
+			if _, present := document[required[0].(string)]; present {
+				matches++
+			}
+		}
+	}
+	if matches != 1 {
+		return false
+	}
+	if _, present := document["interval"]; present {
+		if _, ok := document["exec"]; !ok {
+			if _, ok := document["http"]; !ok {
+				if _, ok := document["tcp"]; !ok {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func schemaPatternAccepts(pattern, value string) bool {
+	if strings.Contains(pattern, "(?=.*[1-9])") && !strings.ContainsAny(value, "123456789") {
+		return false
+	}
+	pattern = strings.Replace(pattern, "(?=.*[1-9])", "", 1)
+	return regexp.MustCompile(pattern).MatchString(value)
+}
+
+func schemaReadinessTargetAccepts(readiness map[string]any, method string, value any) bool {
+	properties, ok := readiness["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	property, ok := properties[method].(map[string]any)
+	if !ok || property["type"] != "string" {
+		return false
+	}
+	text, ok := value.(string)
+	if !ok {
+		return false
+	}
+	pattern, ok := property["pattern"].(string)
+	if !ok || !regexp.MustCompile(pattern).MatchString(text) {
+		return false
+	}
+	oneOf, ok := readiness["oneOf"].([]any)
+	if !ok {
+		return false
+	}
+	matches := 0
+	for _, raw := range oneOf {
+		variant, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		required, ok := variant["required"].([]any)
+		if ok && len(required) == 1 && required[0] == method {
+			matches++
+		}
+	}
+	return matches == 1
 }
 
 func schemaDurationMatches(pattern, value string) bool {

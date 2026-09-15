@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -515,6 +519,369 @@ func TestExecutableReadiness(t *testing.T) {
 	if ready.Readiness.Diagnostic != "" {
 		t.Fatalf("ready readiness retained failure diagnostic %q", ready.Readiness.Diagnostic)
 	}
+}
+
+func TestReadinessConfigNetworkValidation(t *testing.T) {
+	for _, config := range []*ReadinessConfig{
+		{Method: "http", Target: "http://example.invalid/"},
+		{Method: "tcp", Target: "db.example:1"},
+		{Method: "http", Target: "http://127.0.0.1:1/", Match: "ready"},
+		{Method: "tcp", Target: "127.0.0.1:1", Argv: []string{"probe"}},
+		{Method: "", Target: "http://127.0.0.1:1/"},
+	} {
+		if _, _, err := validateReadinessConfig(config); err == nil {
+			t.Fatalf("invalid readiness accepted: %#v", config)
+		}
+	}
+}
+
+func TestReadinessHTTP(t *testing.T) {
+	root := makeProject(t, false)
+	var ready atomic.Bool
+	var attempts atomic.Int32
+	var active, maxActive atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		current := active.Add(1)
+		defer active.Add(-1)
+		for previous := maxActive.Load(); current > previous && !maxActive.CompareAndSwap(previous, current); previous = maxActive.Load() {
+		}
+		if !ready.Load() {
+			time.Sleep(20 * time.Millisecond)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	s := testSupervisor(t, Options{MaxLineBytes: 64})
+	p, err := s.Start(StartRequest{Name: "http-ready", Source: "manifest", Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 5"}, Ready: &ReadinessConfig{Method: "http", Target: server.URL, Interval: 10 * time.Millisecond, Timeout: time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current, getErr := s.Get(root, "http-ready")
+		if getErr == nil && current.Readiness != nil && current.Readiness.Diagnostic == "status 503" {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	ready.Store(true)
+	got := waitForReadinessState(t, s, root, "http-ready", ReadinessReady)
+	if got.Readiness.Target != server.URL || got.Readiness.Diagnostic != "" || attempts.Load() < 2 || maxActive.Load() != 1 {
+		t.Fatalf("HTTP readiness = %#v, attempts=%d", got.Readiness, attempts.Load())
+	}
+	_ = p
+}
+
+func TestReadinessHTTPRestart(t *testing.T) {
+	root := makeProject(t, false)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer server.Close()
+	s := testSupervisor(t, Options{})
+	if _, err := s.Start(StartRequest{Name: "http-restart", Source: "manifest", Root: root, Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 5"}, Ready: &ReadinessConfig{Method: "http", Target: server.URL, Timeout: time.Second}}); err != nil {
+		t.Fatal(err)
+	}
+	waitForReadinessState(t, s, root, "http-restart", ReadinessReady)
+	if _, err := s.Restart(context.Background(), root, "http-restart"); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForReadinessState(t, s, root, "http-restart", ReadinessReady)
+	if got.Readiness == nil || got.Readiness.Method != "http" || got.Readiness.Target != server.URL {
+		t.Fatalf("restarted HTTP readiness = %#v", got.Readiness)
+	}
+}
+
+func TestReadinessTCP(t *testing.T) {
+	root := makeProject(t, false)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	s := testSupervisor(t, Options{})
+	interval := 100 * time.Millisecond
+	_, err = s.Start(StartRequest{Name: "tcp-ready", Source: "manifest", Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 5"}, Ready: &ReadinessConfig{Method: "tcp", Target: address, Interval: interval, Timeout: time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		got, getErr := s.Get(root, "tcp-ready")
+		if getErr == nil && got.Readiness != nil && strings.Contains(got.Readiness.Diagnostic, "dial:") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("initial refused TCP attempt did not retain a dial diagnostic")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	listener, err = net.Listen("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	listeningAt := time.Now()
+	time.Sleep(interval / 3)
+	beforeRetry, err := s.Get(root, "tcp-ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeRetry.Readiness == nil || beforeRetry.Readiness.State != ReadinessStarting {
+		t.Fatalf("TCP probe retried before interval: %#v", beforeRetry.Readiness)
+	}
+	got := waitForReadinessState(t, s, root, "tcp-ready", ReadinessReady)
+	if got.Readiness.Target != address || got.Readiness.Method != "tcp" || time.Since(listeningAt) < interval/2 {
+		t.Fatalf("TCP readiness = %#v after %s", got.Readiness, time.Since(listeningAt))
+	}
+	if _, err := s.Restart(context.Background(), root, "tcp-ready"); err != nil {
+		t.Fatal(err)
+	}
+	got = waitForReadinessState(t, s, root, "tcp-ready", ReadinessReady)
+	if got.Readiness == nil || got.Readiness.Target != address {
+		t.Fatalf("restarted TCP readiness = %#v", got.Readiness)
+	}
+
+	timeoutListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeoutAddress := timeoutListener.Addr().String()
+	_ = timeoutListener.Close()
+	timeoutSupervisor := testSupervisor(t, Options{})
+	if _, err := timeoutSupervisor.Start(StartRequest{Name: "tcp-timeout", Source: "manifest", Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 5"}, Ready: &ReadinessConfig{Method: "tcp", Target: timeoutAddress, Interval: 30 * time.Millisecond, Timeout: 140 * time.Millisecond}}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(220 * time.Millisecond)
+	timedOut, err := timeoutSupervisor.Get(root, "tcp-timeout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timedOut.Readiness == nil || timedOut.Readiness.State != ReadinessStarting || !strings.Contains(timedOut.Readiness.Diagnostic, "dial:") {
+		t.Fatalf("TCP timeout readiness = %#v, want starting with last dial diagnostic", timedOut.Readiness)
+	}
+}
+
+func TestReadinessHTTPLifecycleCancellationAndIncarnationIsolation(t *testing.T) {
+	for _, mode := range []string{"stop", "child-exit", "restart", "shutdown"} {
+		t.Run(mode, func(t *testing.T) {
+			root := makeProject(t, false)
+			entered := make(chan struct{}, 4)
+			canceled := make(chan struct{}, 4)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				entered <- struct{}{}
+				<-r.Context().Done()
+				canceled <- struct{}{}
+			}))
+			defer server.Close()
+			zero := time.Duration(0)
+			children := []*processStopGraceChild{{pid: 971, done: make(chan struct{})}, {pid: 972, done: make(chan struct{})}}
+			index := atomic.Int32{}
+			s := testSupervisor(t, Options{StartProcess: func(process.Spec) (Child, error) {
+				i := int(index.Add(1)) - 1
+				if i >= len(children) {
+					i = len(children) - 1
+				}
+				return children[i], nil
+			}})
+			if _, err := s.Start(StartRequest{Name: "network-lifecycle", Source: "manifest", Root: root, Cwd: root, Argv: []string{"server"}, StopGrace: &zero, Ready: &ReadinessConfig{Method: "http", Target: server.URL, Timeout: 5 * time.Second}}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("network probe did not start")
+			}
+			switch mode {
+			case "stop":
+				if err := s.Stop(context.Background(), root, "network-lifecycle"); err != nil {
+					t.Fatal(err)
+				}
+			case "child-exit":
+				children[0].finish()
+			case "restart":
+				restarted, err := s.Restart(context.Background(), root, "network-lifecycle")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if restarted.Readiness == nil || restarted.Readiness.State != ReadinessStarting {
+					t.Fatalf("restarted readiness = %#v, want old incarnation isolated", restarted.Readiness)
+				}
+			case "shutdown":
+				if err := s.Shutdown(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-canceled:
+			case <-time.After(time.Second):
+				t.Fatal("network probe was not canceled")
+			}
+			if mode == "restart" {
+				select {
+				case <-entered:
+				case <-time.After(time.Second):
+					t.Fatal("replacement network probe did not start")
+				}
+				children[1].finish()
+			}
+		})
+	}
+}
+
+func TestReadinessHTTPTimeoutRetainsDiagnostic(t *testing.T) {
+	root := makeProject(t, false)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	defer server.Close()
+	s := testSupervisor(t, Options{MaxLineBytes: 32})
+	if _, err := s.Start(StartRequest{Name: "http-timeout", Source: "manifest", Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 5"}, Ready: &ReadinessConfig{Method: "http", Target: server.URL, Timeout: 100 * time.Millisecond}}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current, err := s.Get(root, "http-timeout")
+		if err == nil && current.Readiness != nil && current.Readiness.Diagnostic != "" {
+			if !strings.Contains(current.Readiness.Diagnostic, "context deadline exceeded") {
+				t.Fatalf("diagnostic=%q", current.Readiness.Diagnostic)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("HTTP timeout diagnostic was not retained")
+}
+
+func TestReadinessHTTPNetworkSemantics(t *testing.T) {
+	t.Run("connections close after every probe", func(t *testing.T) {
+		var closed atomic.Int32
+		server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+		server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+			if state == http.StateClosed {
+				closed.Add(1)
+			}
+		}
+		server.Start()
+		defer server.Close()
+		for i := 0; i < 3; i++ {
+			if diagnostic, err := runNetworkReadinessProbe(context.Background(), "http", server.URL, 64); err != nil || diagnostic != "" {
+				t.Fatalf("probe %d result=%q err=%v", i, diagnostic, err)
+			}
+		}
+		deadline := time.Now().Add(time.Second)
+		for closed.Load() < 3 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if closed.Load() < 3 {
+			t.Fatalf("closed connections=%d, want at least 3", closed.Load())
+		}
+	})
+	t.Run("redirects and body are not accepted as ready", func(t *testing.T) {
+		target := httptest.NewServer(http.RedirectHandler("/final", http.StatusTemporaryRedirect))
+		defer target.Close()
+		diagnostic, err := runNetworkReadinessProbe(context.Background(), "http", target.URL, 64)
+		if err == nil || diagnostic != "status 307" {
+			t.Fatalf("redirect result=%q err=%v", diagnostic, err)
+		}
+	})
+	t.Run("proxy is ignored and body is not retained", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+			_, _ = w.Write([]byte(strings.Repeat("body", 1000)))
+		}))
+		defer server.Close()
+		old := os.Getenv("HTTP_PROXY")
+		_ = os.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+		defer os.Setenv("HTTP_PROXY", old)
+		diagnostic, err := runNetworkReadinessProbe(context.Background(), "http", server.URL, 8)
+		if err != nil || diagnostic != "" {
+			t.Fatalf("proxy/body result=%q err=%v", diagnostic, err)
+		}
+	})
+	t.Run("proxy environment cannot intercept literal target", func(t *testing.T) {
+		var proxyHits atomic.Int32
+		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { proxyHits.Add(1); w.WriteHeader(http.StatusNoContent) }))
+		defer proxy.Close()
+		old := os.Getenv("HTTP_PROXY")
+		_ = os.Setenv("HTTP_PROXY", proxy.URL)
+		defer os.Setenv("HTTP_PROXY", old)
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		_, _ = runNetworkReadinessProbe(ctx, "http", "http://example.invalid:1/", 64)
+		if proxyHits.Load() != 0 {
+			t.Fatalf("readiness used configured proxy %d times", proxyHits.Load())
+		}
+	})
+	t.Run("body is not read after successful headers", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "100000000")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}))
+		defer server.Close()
+		started := time.Now()
+		diagnostic, err := runNetworkReadinessProbe(context.Background(), "http", server.URL, 64)
+		if err != nil || diagnostic != "" || time.Since(started) > 500*time.Millisecond {
+			t.Fatalf("body-read result=%q err=%v elapsed=%s", diagnostic, err, time.Since(started))
+		}
+	})
+	t.Run("TCP refusal reports diagnostic", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := listener.Addr().String()
+		listener.Close()
+		diagnostic, err := runNetworkReadinessProbe(context.Background(), "tcp", target, 64)
+		if err == nil || !strings.Contains(diagnostic, "dial:") {
+			t.Fatalf("TCP refusal result=%q err=%v", diagnostic, err)
+		}
+	})
+	t.Run("one second attempt cap is distinct from remaining timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+		defer server.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		defer cancel()
+		started := time.Now()
+		diagnostic, err := runNetworkReadinessProbe(ctx, "http", server.URL, 64)
+		elapsed := time.Since(started)
+		if err == nil || diagnostic == "" || elapsed < 900*time.Millisecond || elapsed > 1300*time.Millisecond {
+			t.Fatalf("attempt cap result=%q err=%v elapsed=%s", diagnostic, err, elapsed)
+		}
+	})
+	t.Run("TLS verification and diagnostic cap", func(t *testing.T) {
+		tls := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+		defer tls.Close()
+		diagnostic, err := runNetworkReadinessProbe(context.Background(), "http", tls.URL, 12)
+		if err == nil || len(diagnostic) > 12 || !strings.Contains(diagnostic, "dial:") {
+			t.Fatalf("TLS result=%q err=%v", diagnostic, err)
+		}
+		status := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
+		defer status.Close()
+		diagnostic, err = runNetworkReadinessProbe(context.Background(), "http", status.URL, 8)
+		if err == nil || len(diagnostic) > 8 || diagnostic != "status 5" {
+			t.Fatalf("capped status=%q err=%v", diagnostic, err)
+		}
+	})
+	t.Run("remaining deadline and cancellation retain only failed attempts", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+		defer server.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		started := time.Now()
+		diagnostic, err := runNetworkReadinessProbe(ctx, "http", server.URL, 64)
+		if err == nil || time.Since(started) > 500*time.Millisecond || diagnostic == "" {
+			t.Fatalf("deadline result=%q err=%v elapsed=%s", diagnostic, err, time.Since(started))
+		}
+		ctx, cancel = context.WithCancel(context.Background())
+		cancel()
+		diagnostic, err = runNetworkReadinessProbe(ctx, "http", server.URL, 64)
+		if err == nil || diagnostic != "" {
+			t.Fatalf("cancellation result=%q err=%v", diagnostic, err)
+		}
+	})
 }
 
 func TestExecutableReadinessProbeSchedulingAndEnvironment(t *testing.T) {

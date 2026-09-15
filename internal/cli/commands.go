@@ -2502,6 +2502,7 @@ type restartOutputResult struct {
 	Readiness           string           `json:"readiness"`
 	ReadinessMatch      string           `json:"readiness_match,omitempty"`
 	ReadinessMethod     string           `json:"readiness_method,omitempty"`
+	ReadinessTarget     string           `json:"readiness_target,omitempty"`
 	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
 	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
 	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
@@ -2532,7 +2533,7 @@ func restartOutputFromProcess(process app.Process, definition project.Definition
 		Relaunches:   process.Relaunches,
 		NextLaunchAt: process.NextLaunchAt,
 	}
-	result.ReadinessMatch, result.ReadinessMethod, result.ReadinessArgv, result.ReadinessInterval, result.ReadinessDiagnostic = processReadinessMetadata(process)
+	result.ReadinessMatch, result.ReadinessMethod, result.ReadinessTarget, result.ReadinessArgv, result.ReadinessInterval, result.ReadinessDiagnostic = processReadinessMetadata(process)
 	if result.Name == "" {
 		result.Name = definition.Name
 	}
@@ -2564,7 +2565,7 @@ func restartOutputFromManifest(result manifestLaunchResult, process app.Process,
 		Restart:        result.Restart,
 		Relaunches:     result.Relaunches,
 		NextLaunchAt:   result.NextLaunchAt,
-		ReadinessMatch: result.ReadinessMatch, ReadinessMethod: result.ReadinessMethod,
+		ReadinessMatch: result.ReadinessMatch, ReadinessMethod: result.ReadinessMethod, ReadinessTarget: result.ReadinessTarget,
 		ReadinessArgv: append([]string(nil), result.ReadinessArgv...), ReadinessInterval: result.ReadinessInterval,
 		ReadinessDiagnostic: result.ReadinessDiagnostic,
 	}
@@ -2626,7 +2627,7 @@ func renderRestartOutputHuman(writer io.Writer, result restartOutputResult) erro
 		Name: legacy.Name, Source: result.Source, Argv: append([]string(nil), result.Argv...), PID: legacy.PID,
 		Restarts: legacy.Restarts, LaunchCursor: legacy.LaunchCursor, Restart: result.Restart,
 		Relaunches: result.Relaunches, NextLaunchAt: result.NextLaunchAt, Readiness: result.Readiness,
-		ReadinessMatch: result.ReadinessMatch, ReadinessMethod: result.ReadinessMethod,
+		ReadinessMatch: result.ReadinessMatch, ReadinessMethod: result.ReadinessMethod, ReadinessTarget: result.ReadinessTarget,
 		ReadinessArgv: append([]string(nil), result.ReadinessArgv...), ReadinessInterval: result.ReadinessInterval,
 		ReadinessDiagnostic: result.ReadinessDiagnostic, ReadyCursor: result.ReadyCursor,
 	}

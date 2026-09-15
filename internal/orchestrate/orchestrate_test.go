@@ -101,6 +101,76 @@ func TestExecutableReadiness(t *testing.T) {
 	})
 }
 
+func TestReadinessHTTPDrift(t *testing.T) {
+	root := t.TempDir()
+	definition := Definition{Name: "web", Source: "manifest", Cwd: root, Argv: []string{"web"}, Ready: &ReadinessConfig{Method: "http", Target: "http://127.0.0.1:1/readyz"}}
+	process := Process{Name: "web", Source: "manifest", Cwd: root, Argv: []string{"web"}, State: "running", Readiness: &Readiness{Method: "http", Target: "http://127.0.0.1:2/readyz"}, StopGraceInherited: true}
+	got := DefinitionDriftResult(root, definition, process)
+	if !reflect.DeepEqual(got.ChangedFields, []string{"readiness_http"}) {
+		t.Fatalf("HTTP drift = %#v", got.ChangedFields)
+	}
+}
+
+func TestReadinessHTTPPolicyDoesNotDrift(t *testing.T) {
+	root := t.TempDir()
+	definition := Definition{Name: "web", Source: "manifest", Cwd: root, Argv: []string{"web"}, Ready: &ReadinessConfig{Method: "http", Target: "http://127.0.0.1:1/ready", Interval: time.Second, Timeout: 30 * time.Second}}
+	process := Process{Name: "web", Source: "manifest", Cwd: root, Argv: []string{"web"}, State: "running", StopGraceInherited: true, Readiness: &Readiness{Method: "http", Target: definition.Ready.Target, Interval: 5 * time.Second, State: ReadinessStarting}}
+	if got := DefinitionDriftResult(root, definition, process); len(got.ChangedFields) != 0 {
+		t.Fatalf("HTTP policy drift = %v", got.ChangedFields)
+	}
+}
+
+func TestReadinessTCPDrift(t *testing.T) {
+	root := t.TempDir()
+	definition := Definition{Name: "db", Source: "manifest", Cwd: root, Argv: []string{"db"}, Ready: &ReadinessConfig{Method: "tcp", Target: "127.0.0.1:1"}}
+	process := Process{Name: "db", Source: "manifest", Cwd: root, Argv: []string{"db"}, State: "running", Readiness: &Readiness{Method: "tcp", Target: "127.0.0.1:2"}, StopGraceInherited: true}
+	got := DefinitionDriftResult(root, definition, process)
+	if !reflect.DeepEqual(got.ChangedFields, []string{"readiness_tcp"}) {
+		t.Fatalf("TCP drift = %#v", got.ChangedFields)
+	}
+}
+
+func TestReadinessDriftAllMethodPairs(t *testing.T) {
+	root := t.TempDir()
+	methods := []string{"", "match", "exec", "http", "tcp"}
+	makeConfig := func(method string) *ReadinessConfig {
+		if method == "" {
+			return nil
+		}
+		config := &ReadinessConfig{Method: method, Match: "ready", Argv: []string{"probe"}, Target: "http://127.0.0.1:1/"}
+		if method == "tcp" {
+			config.Target = "127.0.0.1:1"
+		}
+		return config
+	}
+	for _, oldMethod := range methods {
+		for _, newMethod := range methods {
+			t.Run(oldMethod+"-to-"+newMethod, func(t *testing.T) {
+				definition := Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, Ready: makeConfig(newMethod)}
+				process := Process{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, State: "running", StopGraceInherited: true}
+				if oldMethod != "" {
+					config := makeConfig(oldMethod)
+					process.Readiness = &Readiness{Method: oldMethod, Match: config.Match, Argv: config.Argv, Target: config.Target, State: ReadinessStarting}
+				}
+				got := DefinitionChangedFields(root, definition, process)
+				want := []string{}
+				if oldMethod != newMethod {
+					if oldMethod != "" {
+						want = append(want, "readiness_"+oldMethod)
+					}
+					if newMethod != "" {
+						want = append(want, "readiness_"+newMethod)
+					}
+				}
+				sort.Strings(want)
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("old=%q new=%q got=%v want=%v", oldMethod, newMethod, got, want)
+				}
+			})
+		}
+	}
+}
+
 func TestOrchestrateUp(t *testing.T) {
 	root := t.TempDir()
 	t.Run("readiness success timeout early exit", func(t *testing.T) {

@@ -66,6 +66,31 @@ func TestProcessStopGraceDaemonManifestFallback(t *testing.T) {
 	}
 }
 
+func TestReadinessHTTPTargetRoundTrip(t *testing.T) {
+	config := &protocol.ReadinessConfig{Method: "http", Target: "http://127.0.0.1:3000/readyz"}
+	appConfig := appReadinessConfigFromProtocol(config)
+	if appConfig == nil || appConfig.Method != config.Method || appConfig.Target != config.Target {
+		t.Fatalf("protocol to app readiness = %#v", appConfig)
+	}
+	item := app.Process{Name: "api", Readiness: &app.Readiness{Method: "http", Target: config.Target, State: app.ReadinessStarting}}
+	wire := protocolProcessFromApp(item)
+	if wire.Readiness == nil || wire.Readiness.Method != config.Method || wire.Readiness.Target != config.Target {
+		t.Fatalf("app to protocol readiness = %#v", wire.Readiness)
+	}
+	back := appProcessFromProtocol(wire)
+	if back.Readiness == nil || back.Readiness.Target != config.Target {
+		t.Fatalf("protocol to app round trip = %#v", back.Readiness)
+	}
+}
+
+func TestReadinessTCPTargetRoundTrip(t *testing.T) {
+	config := &protocol.ReadinessConfig{Method: "tcp", Target: "[::1]:5432"}
+	appConfig := appReadinessConfigFromProtocol(config)
+	if appConfig == nil || appConfig.Method != config.Method || appConfig.Target != config.Target {
+		t.Fatalf("TCP protocol to app readiness = %#v", appConfig)
+	}
+}
+
 func TestExecutableReadiness(t *testing.T) {
 	if protocol.Version != 20 {
 		t.Fatalf("wire protocol version=%d, want 20 for executable readiness", protocol.Version)

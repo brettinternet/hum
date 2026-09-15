@@ -295,6 +295,7 @@ type listProcessJSON struct {
 	Readiness           string           `json:"readiness,omitempty"`
 	ReadinessMatch      string           `json:"readiness_match,omitempty"`
 	ReadinessMethod     string           `json:"readiness_method,omitempty"`
+	ReadinessTarget     string           `json:"readiness_target,omitempty"`
 	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
 	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
 	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
@@ -319,6 +320,7 @@ type statusJSON struct {
 	Readiness           string                    `json:"readiness,omitempty"`
 	ReadinessMatch      string                    `json:"readiness_match,omitempty"`
 	ReadinessMethod     string                    `json:"readiness_method,omitempty"`
+	ReadinessTarget     string                    `json:"readiness_target,omitempty"`
 	ReadinessArgv       []string                  `json:"readiness_argv,omitempty"`
 	ReadinessInterval   time.Duration             `json:"readiness_interval,omitempty"`
 	ReadinessDiagnostic string                    `json:"readiness_diagnostic,omitempty"`
@@ -363,7 +365,7 @@ func statusJSONFor(process app.Process) statusJSON {
 		NextCursor:         protocol.Cursor(process.NextCursor),
 	}
 	result.Readiness, result.ReadyCursor = processReadinessFields(process)
-	result.ReadinessMatch, result.ReadinessMethod, result.ReadinessArgv, result.ReadinessInterval, result.ReadinessDiagnostic = processReadinessMetadata(process)
+	result.ReadinessMatch, result.ReadinessMethod, result.ReadinessTarget, result.ReadinessArgv, result.ReadinessInterval, result.ReadinessDiagnostic = processReadinessMetadata(process)
 	if result.Argv == nil {
 		result.Argv = []string{}
 	}
@@ -409,6 +411,7 @@ type restartResult struct {
 	Readiness           string           `json:"readiness,omitempty"`
 	ReadinessMatch      string           `json:"readiness_match,omitempty"`
 	ReadinessMethod     string           `json:"readiness_method,omitempty"`
+	ReadinessTarget     string           `json:"readiness_target,omitempty"`
 	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
 	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
 	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
@@ -534,7 +537,7 @@ func processJSON(process app.Process) listProcessJSON {
 		result.NextCursor = &nextCursor
 	}
 	result.Readiness, result.ReadyCursor = processReadinessFields(process)
-	result.ReadinessMatch, result.ReadinessMethod, result.ReadinessArgv, result.ReadinessInterval, result.ReadinessDiagnostic = processReadinessMetadata(process)
+	result.ReadinessMatch, result.ReadinessMethod, result.ReadinessTarget, result.ReadinessArgv, result.ReadinessInterval, result.ReadinessDiagnostic = processReadinessMetadata(process)
 	if result.Argv == nil {
 		result.Argv = []string{}
 	}
@@ -802,6 +805,9 @@ func appendReadinessDetailCells(row *listRow, process app.Process) {
 	}
 	if readiness.Method != "" {
 		*row = append(*row, plainListCell("readiness_method="+readiness.Method))
+	}
+	if readiness.Target != "" {
+		*row = append(*row, plainListCell("readiness_target="+readiness.Target))
 	}
 	if len(readiness.Argv) != 0 {
 		*row = append(*row, plainListCell("readiness_argv="+shellJoin(readiness.Argv)))
@@ -1182,6 +1188,12 @@ func buildManifestLaunchTable(results []manifestLaunchResult, full bool) listTab
 			if result.ReadinessMethod != "" {
 				detail += "method=" + result.ReadinessMethod
 			}
+			if result.ReadinessTarget != "" {
+				if detail != "" {
+					detail += " "
+				}
+				detail += "target=" + result.ReadinessTarget
+			}
 			if len(result.ReadinessArgv) != 0 {
 				if detail != "" {
 					detail += " "
@@ -1194,7 +1206,7 @@ func buildManifestLaunchTable(results []manifestLaunchResult, full bool) listTab
 				}
 				detail += "interval=" + result.ReadinessInterval.String()
 			}
-			if result.ReadinessConfigured && result.ReadinessMethod != "exec" {
+			if result.ReadinessConfigured && (result.ReadinessMethod == "" || result.ReadinessMethod == "match") {
 				if detail != "" {
 					detail += " "
 				}
@@ -1289,6 +1301,9 @@ func renderManifestLaunchHumanWithPolicy(w io.Writer, result manifestLaunchResul
 	}
 	if result.ReadinessMethod != "" {
 		line += " readiness_method=" + result.ReadinessMethod
+	}
+	if result.ReadinessTarget != "" {
+		line += " readiness_target=" + result.ReadinessTarget
 	}
 	if len(result.ReadinessArgv) != 0 {
 		line += " readiness_argv=" + shellJoin(result.ReadinessArgv)
@@ -1392,6 +1407,9 @@ func renderRestartHuman(w io.Writer, result restartResult) error {
 	if result.ReadinessMethod != "" {
 		line += " readiness_method=" + result.ReadinessMethod
 	}
+	if result.ReadinessTarget != "" {
+		line += " readiness_target=" + result.ReadinessTarget
+	}
 	if len(result.ReadinessArgv) != 0 {
 		line += " readiness_argv=" + shellJoin(result.ReadinessArgv)
 	}
@@ -1488,6 +1506,11 @@ func renderStatusHumanWithPolicy(w io.Writer, process app.Process, colors colorP
 	}
 	if status.ReadinessMethod != "" {
 		if _, err := fmt.Fprintf(w, "readiness_method: %s\n", status.ReadinessMethod); err != nil {
+			return err
+		}
+	}
+	if status.ReadinessTarget != "" {
+		if _, err := fmt.Fprintf(w, "readiness_target: %s\n", status.ReadinessTarget); err != nil {
 			return err
 		}
 	}

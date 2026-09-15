@@ -334,6 +334,64 @@ func TestUpSummaryOutputTable(t *testing.T) {
 	}
 }
 
+func TestReadinessHTTPAndTCPStatusListFullRenderTarget(t *testing.T) {
+	process := app.Process{Name: "web", Source: "manifest", State: app.StateRunning, Readiness: &app.Readiness{Method: "tcp", Target: "[::1]:8080", State: app.ReadinessReady}}
+	var status bytes.Buffer
+	if err := renderStatusHuman(&status, process); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status.String(), "readiness_target: [::1]:8080") {
+		t.Fatalf("status target rendering = %q", status.String())
+	}
+	var list bytes.Buffer
+	if err := writeListTable(&list, buildListTable([]app.Process{process}, false, true), colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(list.String(), "readiness_target=[::1]:8080") {
+		t.Fatalf("list target rendering = %q", list.String())
+	}
+	encoded, err := json.Marshal(statusJSONFor(process))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"readiness_target":"[::1]:8080"`) {
+		t.Fatalf("status JSON target = %s", encoded)
+	}
+	var restart bytes.Buffer
+	restartValue := restartResult{Name: "web", Source: "manifest", ReadinessMethod: "http", ReadinessTarget: "http://127.0.0.1:8080/ready"}
+	if err := renderRestartHuman(&restart, restartValue); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(restart.String(), "readiness_method=http readiness_target=http://127.0.0.1:8080/ready") {
+		t.Fatalf("restart target rendering = %q", restart.String())
+	}
+	encoded, err = json.Marshal(restartOutputResult{Name: "web", ReadinessMethod: "http", ReadinessTarget: "http://127.0.0.1:8080/ready"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"readiness_target":"http://127.0.0.1:8080/ready"`) {
+		t.Fatalf("restart JSON target = %s", encoded)
+	}
+}
+
+func TestReadinessHTTPAndTCPFullLaunchRendersMethodAndTargetSeparately(t *testing.T) {
+	var output bytes.Buffer
+	result := manifestLaunchResult{Name: "web", Outcome: "started", Source: "manifest", ReadinessConfigured: true, ReadinessMethod: "http", ReadinessTarget: "http://127.0.0.1:8080/ready"}
+	if err := renderManifestLaunchTableWithPolicy(&output, []manifestLaunchResult{result}, true, colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "method=http target=http://127.0.0.1:8080/ready") {
+		t.Fatalf("full launch target rendering = %q", output.String())
+	}
+	output.Reset()
+	if err := renderManifestLaunchHuman(&output, result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "readiness_method=http readiness_target=http://127.0.0.1:8080/ready") {
+		t.Fatalf("human launch target rendering = %q", output.String())
+	}
+}
+
 func TestUpSummaryOutputFullPreservesEmptyMatcher(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
@@ -395,6 +453,25 @@ func TestStatusSummaryOmitsLongReadinessDetails(t *testing.T) {
 	for _, hidden := range []string{"READINESS_DETAILS", "readiness_method", "readiness_argv", "readiness_interval", "readiness_diagnostic", "very/long", "diagnostic"} {
 		if strings.Contains(output.String(), hidden) {
 			t.Errorf("status summary contains readiness detail %q: %q", hidden, output.String())
+		}
+	}
+}
+
+func TestReadinessHTTPAndTCPRender(t *testing.T) {
+	for _, method := range []string{"http", "tcp"} {
+		target := "http://127.0.0.1:1/readyz"
+		if method == "tcp" {
+			target = "[::1]:1"
+		}
+		process := app.Process{Name: "probe", Source: "manifest", State: app.StateRunning, Readiness: &app.Readiness{Method: method, Target: target, State: app.ReadinessStarting}}
+		var output bytes.Buffer
+		encoded, err := json.Marshal(listJSON{Processes: []listProcessJSON{processJSON(process)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		output.Write(encoded)
+		if !strings.Contains(output.String(), `"readiness_method":"`+method+`"`) || !strings.Contains(output.String(), `"readiness_target":"`+target+`"`) {
+			t.Fatalf("%s render = %s", method, output.String())
 		}
 	}
 }

@@ -375,7 +375,8 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"stop_grace":           map[string]any{"type": "integer", "minimum": 0},
 		"stop_grace_inherited": map[string]any{"type": "boolean"},
 		"next_launch_at":       map[string]any{"type": "string"},
-		"readiness_method":     map[string]any{"type": "string", "enum": []string{"match", "exec"}},
+		"readiness_method":     map[string]any{"type": "string", "enum": []string{"match", "exec", "http", "tcp"}},
+		"readiness_target":     map[string]any{"type": "string"},
 		"readiness_argv":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"readiness_interval":   map[string]any{"type": "integer", "minimum": 0},
 		"readiness_diagnostic": map[string]any{"type": "string"},
@@ -709,7 +710,7 @@ func mcpDefinition(definition Definition) orchestrate.Definition {
 				method = "exec"
 			}
 		}
-		shared.Ready = &orchestrate.ReadinessConfig{Method: method, Match: definition.Ready.Match, Argv: append([]string(nil), definition.Ready.Argv...), Interval: definition.Ready.Interval, Timeout: definition.Ready.Timeout}
+		shared.Ready = &orchestrate.ReadinessConfig{Method: method, Target: definition.Ready.Target, Match: definition.Ready.Match, Argv: append([]string(nil), definition.Ready.Argv...), Interval: definition.Ready.Interval, Timeout: definition.Ready.Timeout}
 	}
 	return shared
 }
@@ -734,7 +735,7 @@ func orchestrateProcess(process protocol.Process) orchestrate.Process {
 		}
 	}
 	if process.Readiness != nil {
-		readiness := &orchestrate.Readiness{Method: process.Readiness.Method, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
+		readiness := &orchestrate.Readiness{Method: process.Readiness.Method, Target: process.Readiness.Target, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
 		if process.Readiness.Cursor != nil {
 			cursor := uint64(*process.Readiness.Cursor)
 			readiness.Cursor = &cursor
@@ -765,7 +766,7 @@ func protocolProcess(process orchestrate.Process) protocol.Process {
 		}
 	}
 	if process.Readiness != nil {
-		readiness := &protocol.Readiness{Method: process.Readiness.Method, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
+		readiness := &protocol.Readiness{Method: process.Readiness.Method, Target: process.Readiness.Target, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval, State: process.Readiness.State, Time: process.Readiness.Time, Match: process.Readiness.Match, Diagnostic: process.Readiness.Diagnostic}
 		if process.Readiness.Cursor != nil {
 			cursor := protocol.Cursor(*process.Readiness.Cursor)
 			readiness.Cursor = &cursor
@@ -803,7 +804,7 @@ func stoppedProcess(root string, definition Definition) protocol.Process {
 				method = "exec"
 			}
 		}
-		process.Readiness = &protocol.Readiness{Method: method, Match: definition.Ready.Match, Argv: append([]string(nil), definition.Ready.Argv...), Interval: definition.Ready.Interval}
+		process.Readiness = &protocol.Readiness{Method: method, Target: definition.Ready.Target, Match: definition.Ready.Match, Argv: append([]string(nil), definition.Ready.Argv...), Interval: definition.Ready.Interval}
 	}
 	return process
 }
@@ -1109,7 +1110,7 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 		Start: func(ctx context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
 			var ready *protocol.ReadinessConfig
 			if request.Ready != nil {
-				ready = &protocol.ReadinessConfig{Method: request.Ready.Method, Match: request.Ready.Match, Argv: append([]string(nil), request.Ready.Argv...), Interval: request.Ready.Interval, Timeout: request.Ready.Timeout}
+				ready = &protocol.ReadinessConfig{Method: request.Ready.Method, Target: request.Ready.Target, Match: request.Ready.Match, Argv: append([]string(nil), request.Ready.Argv...), Interval: request.Ready.Interval, Timeout: request.Ready.Timeout}
 			}
 			current, err := client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Scope: resolution.Scope, Name: request.Name, Argv: append([]string(nil), request.Argv...), Cwd: request.Cwd, Root: request.Root, Env: append([]string(nil), request.Env...), Source: request.Source, Ready: ready, TTY: request.TTY, Restart: request.Restart, StopGrace: request.StopGrace})
 			return orchestrateProcess(current), err
@@ -1218,7 +1219,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 			// durable readiness wait still observes this incarnation.
 			if process.Readiness == nil && retainedReady != nil {
 				process.Readiness = &protocol.Readiness{
-					Method: retainedReady.Method, Argv: append([]string(nil), retainedReady.Argv...),
+					Method: retainedReady.Method, Target: retainedReady.Target, Argv: append([]string(nil), retainedReady.Argv...),
 					Interval: retainedReady.Interval, State: protocol.ReadinessStarting,
 					Match: retainedReady.Match, Diagnostic: retainedReady.Diagnostic,
 				}
@@ -1234,7 +1235,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 			}
 			definition := Definition{
 				Name: input.Name, Source: process.Source, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
-				Ready: &protocol.ReadinessConfig{Method: method, Match: process.Readiness.Match, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval},
+				Ready: &protocol.ReadinessConfig{Method: method, Target: process.Readiness.Target, Match: process.Readiness.Match, Argv: append([]string(nil), process.Readiness.Argv...), Interval: process.Readiness.Interval},
 			}
 			timeout, timeoutErr := readinessTimeout(input.TimeoutMS, definition)
 			if timeoutErr != nil {
@@ -1794,6 +1795,7 @@ type restartResult struct {
 	Readiness           string           `json:"readiness"`
 	ReadinessMatch      string           `json:"readiness_match,omitempty"`
 	ReadinessMethod     string           `json:"readiness_method,omitempty"`
+	ReadinessTarget     string           `json:"readiness_target,omitempty"`
 	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
 	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
 	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
@@ -1853,6 +1855,7 @@ func restartResultForProcess(process protocol.Process, name, outcome, message st
 	if process.Readiness != nil {
 		result.ReadinessMatch = process.Readiness.Match
 		result.ReadinessMethod = process.Readiness.Method
+		result.ReadinessTarget = process.Readiness.Target
 		result.ReadinessArgv = append([]string(nil), process.Readiness.Argv...)
 		result.ReadinessInterval = process.Readiness.Interval
 		result.ReadinessDiagnostic = process.Readiness.Diagnostic
@@ -1938,7 +1941,7 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 	}
 	if definition.Ready != nil && process.Readiness == nil && process.State == "running" {
 		process.Readiness = &protocol.Readiness{
-			Method: definition.Ready.Method, Argv: append([]string(nil), definition.Ready.Argv...),
+			Method: definition.Ready.Method, Target: definition.Ready.Target, Argv: append([]string(nil), definition.Ready.Argv...),
 			Interval: definition.Ready.Interval, State: protocol.ReadinessStarting, Match: definition.Ready.Match,
 		}
 		if process.Readiness.Method == "" {

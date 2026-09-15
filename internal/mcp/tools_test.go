@@ -241,7 +241,7 @@ func (f *fakeClient) Start(_ context.Context, req protocol.StartRequest) (protoc
 		}
 	}
 	if req.Ready != nil {
-		p.Readiness = &protocol.Readiness{Method: req.Ready.Method, Argv: append([]string(nil), req.Ready.Argv...), Interval: req.Ready.Interval, State: protocol.ReadinessStarting, Match: req.Ready.Match, Diagnostic: f.readinessDiagnostic}
+		p.Readiness = &protocol.Readiness{Method: req.Ready.Method, Target: req.Ready.Target, Argv: append([]string(nil), req.Ready.Argv...), Interval: req.Ready.Interval, State: protocol.ReadinessStarting, Match: req.Ready.Match, Diagnostic: f.readinessDiagnostic}
 	}
 	f.processes[req.Name] = p
 	return p, nil
@@ -278,7 +278,7 @@ func (f *fakeClient) Get(_ context.Context, req protocol.GetRequest) (protocol.P
 		return p, nil
 	}
 	if p.Readiness != nil && !f.keepStarting && (f.readyBeforeWait || f.waited[req.Name]) {
-		p.Readiness = &protocol.Readiness{Method: p.Readiness.Method, Argv: append([]string(nil), p.Readiness.Argv...), Interval: p.Readiness.Interval, State: protocol.ReadinessReady, Cursor: p.NextCursor, Match: p.Readiness.Match, Diagnostic: p.Readiness.Diagnostic}
+		p.Readiness = &protocol.Readiness{Method: p.Readiness.Method, Target: p.Readiness.Target, Argv: append([]string(nil), p.Readiness.Argv...), Interval: p.Readiness.Interval, State: protocol.ReadinessReady, Cursor: p.NextCursor, Match: p.Readiness.Match, Diagnostic: p.Readiness.Diagnostic}
 	}
 	return p, nil
 }
@@ -364,7 +364,7 @@ func (f *fakeClient) Restart(_ context.Context, req protocol.RestartRequest) (pr
 		p.Argv = append([]string(nil), req.Argv...)
 		p.Readiness = nil
 		if req.Ready != nil {
-			p.Readiness = &protocol.Readiness{Method: req.Ready.Method, Argv: append([]string(nil), req.Ready.Argv...), Interval: req.Ready.Interval, State: protocol.ReadinessStarting, Match: req.Ready.Match, Diagnostic: f.readinessDiagnostic}
+			p.Readiness = &protocol.Readiness{Method: req.Ready.Method, Target: req.Ready.Target, Argv: append([]string(nil), req.Ready.Argv...), Interval: req.Ready.Interval, State: protocol.ReadinessStarting, Match: req.Ready.Match, Diagnostic: f.readinessDiagnostic}
 		}
 	}
 	f.processes[req.Name] = p
@@ -1287,6 +1287,57 @@ func TestRetainedExecutableReadinessStartWaitsWithoutOutput(t *testing.T) {
 	}
 }
 
+func TestReadinessHTTPAndTCPResults(t *testing.T) {
+	for _, method := range []string{"http", "tcp"} {
+		target := "http://127.0.0.1:1/readyz"
+		if method == "tcp" {
+			target = "[::1]:1"
+		}
+		process := protocol.Process{Name: "probe", Source: "manifest", State: "running", Readiness: &protocol.Readiness{Method: method, Target: target, State: protocol.ReadinessStarting}}
+		result := restartResultForProcess(process, "probe", "started", "")
+		if result.ReadinessMethod != method || result.ReadinessTarget != target {
+			t.Fatalf("%s MCP result = %#v", method, result)
+		}
+	}
+}
+
+func TestReadinessHTTPAndTCPMCPStartStatusList(t *testing.T) {
+	root := t.TempDir()
+	for _, method := range []string{"http", "tcp"} {
+		target := "http://127.0.0.1:1/readyz"
+		if method == "tcp" {
+			target = "[::1]:1"
+		}
+		ready := &protocol.ReadinessConfig{Method: method, Target: target, Interval: 20 * time.Millisecond, Timeout: time.Second}
+		definitions := []Definition{{Name: "probe", Source: "manifest", Argv: []string{"server"}, Cwd: root, Ready: ready}}
+		client := &fakeClient{readyBeforeWait: true}
+		server, resolvedRoot, _ := newTestServer(t, definitions, client)
+		input := commonInput{Name: "probe"}
+		value, err := server.start(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		started := value.(launchResult)
+		if started.Process.Readiness.Target != target {
+			t.Fatalf("%s MCP start target=%q", method, started.Process.Readiness.Target)
+		}
+		statusValue, err := server.status(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, "probe")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if statusValue.(protocol.Process).Readiness.Target != target {
+			t.Fatalf("%s MCP status target lost", method)
+		}
+		listValue, err := server.list(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listValue.([]protocol.Process)[0].Readiness.Target != target {
+			t.Fatalf("%s MCP list target lost", method)
+		}
+	}
+}
+
 func TestExecutableReadiness(t *testing.T) {
 	root := t.TempDir()
 	argv := []string{"probe", "--service", "api"}
@@ -1387,11 +1438,11 @@ func TestExecutableReadiness(t *testing.T) {
 		t.Fatalf("unchanged MCP match readiness drift=%#v, want no changed fields", matchDrift)
 	}
 	matchToExec := orchestrate.DefinitionDriftResult(resolvedRoot, mcpDefinition(definitions[0]), orchestrateProcess(matchProcess))
-	if !reflect.DeepEqual(matchToExec.ChangedFields, []string{"readiness_exec"}) {
+	if !reflect.DeepEqual(matchToExec.ChangedFields, []string{"readiness_exec", "readiness_match"}) {
 		t.Fatalf("MCP match-to-exec readiness drift=%#v, want readiness_exec", matchToExec)
 	}
 	execToMatch := orchestrate.DefinitionDriftResult(resolvedRoot, mcpDefinition(matchDefinition), orchestrateProcess(*startResult.Process))
-	if !reflect.DeepEqual(execToMatch.ChangedFields, []string{"readiness_exec"}) {
+	if !reflect.DeepEqual(execToMatch.ChangedFields, []string{"readiness_exec", "readiness_match"}) {
 		t.Fatalf("MCP exec-to-match readiness drift=%#v, want readiness_exec", execToMatch)
 	}
 }

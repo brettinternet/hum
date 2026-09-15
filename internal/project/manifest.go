@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +55,8 @@ var (
 	readyFields = map[string]struct{}{
 		"match":    {},
 		"exec":     {},
+		"http":     {},
+		"tcp":      {},
 		"interval": {},
 		"timeout":  {},
 	}
@@ -78,11 +83,13 @@ type Definition struct {
 	StopGrace   *time.Duration
 }
 
-// ReadyDefinition describes the output expression or direct executable and
-// timeout used to determine whether a manifest process is ready.
+// ReadyDefinition describes the output expression, direct executable, or
+// native network target used to determine whether a manifest process is ready.
 type ReadyDefinition struct {
 	Match    string
 	Exec     []string
+	HTTP     string
+	TCP      string
 	Interval time.Duration
 	Timeout  time.Duration
 }
@@ -531,11 +538,30 @@ func parseReady(filename, context string, node *yaml.Node) (*ReadyDefinition, er
 	}
 	matchNode, hasMatch := fields["match"]
 	execNode, hasExec := fields["exec"]
-	if hasMatch == hasExec {
-		return nil, manifestError(filename, readyContext, "requires exactly one of %q or %q", "match", "exec")
+	httpNode, hasHTTP := fields["http"]
+	tcpNode, hasTCP := fields["tcp"]
+	readyNodeError := func(node *yaml.Node, context, format string, args ...any) error {
+		line := 0
+		if node != nil {
+			line = node.Line
+		}
+		if line > 0 {
+			return fmt.Errorf("%s:%d: %s: %s", filename, line, context, fmt.Sprintf(format, args...))
+		}
+		return manifestError(filename, context, format, args...)
+	}
+	methods := 0
+	for _, present := range []bool{hasMatch, hasExec, hasHTTP, hasTCP} {
+		if present {
+			methods++
+		}
+	}
+	if methods != 1 {
+		return nil, readyNodeError(node, readyContext, "requires exactly one of match, exec, http, or tcp")
 	}
 	definition := &ReadyDefinition{Timeout: defaultReadyTimeout}
-	if hasMatch {
+	switch {
+	case hasMatch:
 		if !isStringScalar(matchNode) {
 			return nil, manifestError(filename, readyContext, "match must be a string")
 		}
@@ -543,22 +569,42 @@ func parseReady(filename, context string, node *yaml.Node) (*ReadyDefinition, er
 		if _, err := regexp.Compile(definition.Match); err != nil {
 			return nil, manifestError(filename, readyContext, "invalid match regular expression %q: %v", definition.Match, err)
 		}
-	} else {
+	case hasExec:
 		definition.Exec, err = parseArgv(filename, readyContext+".exec", execNode)
 		if err != nil {
 			return nil, err
 		}
-		definition.Interval = time.Second
-		if intervalNode, ok := fields["interval"]; ok {
-			if !isStringScalar(intervalNode) {
-				return nil, manifestError(filename, readyContext, "interval must be a duration string")
-			}
-			parsed, parseErr := time.ParseDuration(intervalNode.Value)
-			if parseErr != nil || parsed <= 0 {
-				return nil, manifestError(filename, readyContext, "interval must be a positive duration")
-			}
-			definition.Interval = parsed
+	case hasHTTP:
+		if !isStringScalar(httpNode) {
+			return nil, readyNodeError(httpNode, readyContext+".http", "must be a string")
 		}
+		if err := validateHTTPTarget(httpNode.Value); err != nil {
+			return nil, readyNodeError(httpNode, readyContext+".http", "%v", err)
+		}
+		definition.HTTP = httpNode.Value
+	case hasTCP:
+		if !isStringScalar(tcpNode) {
+			return nil, readyNodeError(tcpNode, readyContext+".tcp", "must be a string")
+		}
+		if err := validateTCPTarget(tcpNode.Value); err != nil {
+			return nil, readyNodeError(tcpNode, readyContext+".tcp", "%v", err)
+		}
+		definition.TCP = tcpNode.Value
+	}
+	if intervalNode, ok := fields["interval"]; ok {
+		if hasMatch {
+			return nil, manifestError(filename, readyContext, "interval is only valid with exec, http, or tcp")
+		}
+		if !isStringScalar(intervalNode) {
+			return nil, manifestError(filename, readyContext, "interval must be a duration string")
+		}
+		parsed, parseErr := time.ParseDuration(intervalNode.Value)
+		if parseErr != nil || parsed <= 0 {
+			return nil, manifestError(filename, readyContext, "interval must be a positive duration")
+		}
+		definition.Interval = parsed
+	} else if !hasMatch {
+		definition.Interval = time.Second
 	}
 	if timeoutNode, ok := fields["timeout"]; ok {
 		if !isStringScalar(timeoutNode) {
@@ -573,12 +619,70 @@ func parseReady(filename, context string, node *yaml.Node) (*ReadyDefinition, er
 		}
 		definition.Timeout = parsed
 	}
-	if hasMatch {
-		if _, hasInterval := fields["interval"]; hasInterval {
-			return nil, manifestError(filename, readyContext, "interval is only valid with exec")
+	return definition, nil
+}
+
+func validateLiteralHost(host string) error {
+	if host == "localhost" {
+		return nil
+	}
+	if net.ParseIP(host) == nil {
+		return errors.New("host must be a literal IP address or localhost")
+	}
+	return nil
+}
+
+func validatePort(port string) error {
+	if port == "" {
+		return errors.New("port is required")
+	}
+	for _, digit := range port {
+		if digit < '0' || digit > '9' {
+			return errors.New("port must be decimal")
 		}
 	}
-	return definition, nil
+	value, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || value < 1 || value > 65535 {
+		return errors.New("port must be decimal in range 1..65535")
+	}
+	return nil
+}
+
+// ValidateHTTPReadinessTarget validates an HTTP readiness target without connecting.
+func ValidateHTTPReadinessTarget(target string) error { return validateHTTPTarget(target) }
+
+func validateHTTPTarget(target string) error {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
+		return errors.New("must be an absolute http:// or https:// URL")
+	}
+	if u.User != nil || strings.Contains(target, "#") {
+		return errors.New("userinfo and fragments are not allowed")
+	}
+	if err := validateLiteralHost(u.Hostname()); err != nil {
+		return err
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return validatePort("")
+	}
+	if port := u.Port(); port != "" {
+		return validatePort(port)
+	}
+	return nil
+}
+
+// ValidateTCPReadinessTarget validates a TCP readiness target without connecting.
+func ValidateTCPReadinessTarget(target string) error { return validateTCPTarget(target) }
+
+func validateTCPTarget(target string) error {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		return errors.New("must be host:port with bracketed IPv6")
+	}
+	if err := validateLiteralHost(host); err != nil {
+		return err
+	}
+	return validatePort(port)
 }
 
 func normalizeCwd(root, filename, context, value string) (string, error) {
