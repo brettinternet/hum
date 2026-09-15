@@ -32,8 +32,9 @@ const (
 type eventOperationContextKey struct{}
 
 type EventOperationMetadata struct {
-	Name string
-	ID   string
+	Name   string
+	ID     string
+	Origin string
 }
 
 // EventOperationFromContext exposes the current MCP control operation to the
@@ -1061,7 +1062,7 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		return s.events(ctx, input)
 	}
 	if mutatingTool(name) {
-		ctx = context.WithValue(ctx, eventOperationContextKey{}, EventOperationMetadata{Name: name, ID: newEventOperationID()})
+		ctx = context.WithValue(ctx, eventOperationContextKey{}, EventOperationMetadata{Name: name, ID: newEventOperationID(), Origin: "mcp"})
 	}
 	resolution, err := s.resolve(ctx, input.ProjectRoot, input.Manifest)
 	if err != nil {

@@ -1,11 +1,11 @@
 ---
 id: HUM-111
 title: 'Add durable, navigable service event history'
-status: To Do
+status: Done
 assignee:
   - '@brett'
 created_date: '2026-09-14 22:52'
-updated_date: '2026-09-14 23:35'
+updated_date: '2026-09-15 04:19'
 labels:
   - cli
   - daemon
@@ -86,22 +86,22 @@ Next action: define table-driven event, recovery, attribution, and paging cases 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `mise exec go -- go test ./internal/app ./internal/daemon ./internal/protocol -run "^TestEventHistory" -count=1 -v` exits 0 and prints RUN/PASS for tests proving: lifecycle events for every listed transition; control-operation events with origin, outcome, and `operation_id` shared by directly caused lifecycle events; monotonic cursors continued across daemon replacement; retention at 2,000 events or 1 MiB with oldest-first eviction; events retained after record removal and name reuse; project/global scope isolation; a cursor preceding an evicted/discarded range yields `truncated` and resumes at the oldest retained event, while cursor 0 on a never-truncated history does not; a torn tail preserves the complete prefix, malformed event payload becomes empty with one diagnostic per scope per daemon lifetime, an intact high-water mark prevents cursor reuse, corrupt cursor metadata makes history unavailable, and write failures are diagnosed while control operations still succeed; read-only operations recorded nothing; stored bytes contain no environment values or input payload. Cases also cover 16 KiB event bounds, encoded-byte accounting, bulk partial outcomes, read-without-daemon behavior, and oversized/secret-bearing errors without payload persistence.
-- [ ] #2 AC2 — `mise exec go -- go test ./internal/cli -run "^TestEvents(NoArgs|EmptyState|Names|Filters|Paging|Help|Completion|Width|Color)" -count=1 -v` exits 0 and prints RUN/PASS for tests proving the no-argument recent window, exit-0 empty state, positional names, composed `--since/--kind/--failed/--match/--tail/--after-cursor` semantics with usage errors before daemon contact, lossless `next_cursor` paging, help/completion leading with the no-argument view, compact versus `--full` output, every line at or under the detected width and the 80-column fallback with long names and details, and existing TTY/`TERM`/`NO_COLOR` color policy coloring only semantic words. Include empty filtered pages, a future cursor, max-tail rejection, byte-limited pages, and long-name/narrow-terminal fallback cases; compact output must not contain user-controlled terminal escapes.
-- [ ] #3 AC3 — `mise exec go -- go test ./internal/cli ./cmd/hum ./integration -run "^TestEventsJSON|^TestCLIMachineOutputV1Contract$|^TestBuiltCLIMachineOutputV1$" -count=1 -v` exits 0 and prints RUN/PASS proving `hum events --json` emits cursor-ordered `schema_version: 1` NDJSON with structured lifecycle/operation fields and `operation_id`, one trailing metadata record with `next_cursor`, `truncated`, and `has_more`, no width truncation, and unchanged exit-code and JSON error behavior, and the integration test observes events across a real daemon restart.
-- [ ] #4 AC4 — `mise exec go -- go test ./internal/mcp -run "^TestEvents" -count=1 -v` exits 0 and prints RUN/PASS proving the bounded MCP `events` tool matches CLI selection, filter, cursor, and truncation semantics, that MCP-origin control operations are recorded with origin `mcp` while MCP reads including `events` record nothing, and that the tool list exposes no follow or unbounded history operation. Include tail above 2000, protocol-byte-bound pages, and malformed filter requests rejected before side effects.
-- [ ] #5 AC5 — `for doc in README.md docs/coding-agents.md docs/design.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md; do rg -n "hum events" "$doc" || exit 1; done; rg -n "Event history|next_cursor|truncated|has_more" docs/cli-json-v1.md && rg -n "supersedes|HUM-111" docs/design.md && ! rg -n "persistent process history" docs/design.md` exits 0. Review the displayed sections against the product contract: no-argument usage, narrowing, width/color fallback, privacy, fixed retention, cursor-corruption limits, runtime cleanup, CLI record discriminators, and bounded MCP semantics must be accurate; child output logs are not described as persistent.
-- [ ] #6 AC6 — `task cli:check && task test` exits 0.
+- [x] #1 AC1 — `mise exec go -- go test ./internal/app ./internal/daemon ./internal/protocol -run "^TestEventHistory" -count=1 -v` exits 0 and prints RUN/PASS for tests proving: lifecycle events for every listed transition; control-operation events with origin, outcome, and `operation_id` shared by directly caused lifecycle events; monotonic cursors continued across daemon replacement; retention at 2,000 events or 1 MiB with oldest-first eviction; events retained after record removal and name reuse; project/global scope isolation; a cursor preceding an evicted/discarded range yields `truncated` and resumes at the oldest retained event, while cursor 0 on a never-truncated history does not; a torn tail preserves the complete prefix, malformed event payload becomes empty with one diagnostic per scope per daemon lifetime, an intact high-water mark prevents cursor reuse, corrupt cursor metadata makes history unavailable, and write failures are diagnosed while control operations still succeed; read-only operations recorded nothing; stored bytes contain no environment values or input payload. Cases also cover 16 KiB event bounds, encoded-byte accounting, bulk partial outcomes, read-without-daemon behavior, and oversized/secret-bearing errors without payload persistence.
+- [x] #2 AC2 — `mise exec go -- go test ./internal/cli -run "^TestEvents(NoArgs|EmptyState|Names|Filters|Paging|Help|Completion|Width|Color)" -count=1 -v` exits 0 and prints RUN/PASS for tests proving the no-argument recent window, exit-0 empty state, positional names, composed `--since/--kind/--failed/--match/--tail/--after-cursor` semantics with usage errors before daemon contact, lossless `next_cursor` paging, help/completion leading with the no-argument view, compact versus `--full` output, every line at or under the detected width and the 80-column fallback with long names and details, and existing TTY/`TERM`/`NO_COLOR` color policy coloring only semantic words. Include empty filtered pages, a future cursor, max-tail rejection, byte-limited pages, and long-name/narrow-terminal fallback cases; compact output must not contain user-controlled terminal escapes.
+- [x] #3 AC3 — `mise exec go -- go test ./internal/cli ./cmd/hum ./integration -run "^TestEventsJSON|^TestCLIMachineOutputV1Contract$|^TestBuiltCLIMachineOutputV1$" -count=1 -v` exits 0 and prints RUN/PASS proving `hum events --json` emits cursor-ordered `schema_version: 1` NDJSON with structured lifecycle/operation fields and `operation_id`, one trailing metadata record with `next_cursor`, `truncated`, and `has_more`, no width truncation, and unchanged exit-code and JSON error behavior, and the integration test observes events across a real daemon restart.
+- [x] #4 AC4 — `mise exec go -- go test ./internal/mcp -run "^TestEvents" -count=1 -v` exits 0 and prints RUN/PASS proving the bounded MCP `events` tool matches CLI selection, filter, cursor, and truncation semantics, that MCP-origin control operations are recorded with origin `mcp` while MCP reads including `events` record nothing, and that the tool list exposes no follow or unbounded history operation. Include tail above 2000, protocol-byte-bound pages, and malformed filter requests rejected before side effects.
+- [x] #5 AC5 — `for doc in README.md docs/coding-agents.md docs/design.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md; do rg -n "hum events" "$doc" || exit 1; done; rg -n "Event history|next_cursor|truncated|has_more" docs/cli-json-v1.md && rg -n "supersedes|HUM-111" docs/design.md && ! rg -n "persistent process history" docs/design.md` exits 0. Review the displayed sections against the product contract: no-argument usage, narrowing, width/color fallback, privacy, fixed retention, cursor-corruption limits, runtime cleanup, CLI record discriminators, and bounded MCP semantics must be accurate; child output logs are not described as persistent.
+- [x] #6 AC6 — `task cli:check && task test` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -114,3 +114,26 @@ Next action: define table-driven event, recovery, attribution, and paging cases 
 5. Docs: README, coding-agents, skill files, cli-json-v1 event family, design (runtime-directory contents, non-goal removal, HUM-094 supersession note).
 6. Run AC1-AC6, obtain an independent verifier PASS, record evidence, and commit.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation commit c2892ea (feat: add durable service event history).
+AC#1 — PASS: mise exec go -- go test ./internal/app ./internal/daemon ./internal/protocol -run "^TestEventHistory" -count=1 -v; named lifecycle, persistence, recovery, retention, concurrency, scope, cursor, byte-bound, and write-failure tests passed.
+AC#2 — PASS: mise exec go -- go test ./internal/cli -run "^TestEvents(NoArgs|EmptyState|Names|Filters|Paging|Help|Completion|Width|Color)" -count=1 -v; all named tests passed.
+AC#3 — PASS: mise exec go -- go test ./internal/cli ./cmd/hum ./integration -run "^TestEventsJSON|^TestCLIMachineOutputV1Contract$|^TestBuiltCLIMachineOutputV1$" -count=1 -v; CLI contracts and real daemon replacement integration passed.
+AC#4 — PASS: mise exec go -- go test ./internal/mcp -run "^TestEvents" -count=1 -v; bounded MCP events tests passed.
+AC#5 — PASS: exact documentation grep command completed with matches in every required document; reviewed retention, privacy, cursor recovery, runtime cleanup, width/color, JSON metadata, and bounded MCP wording.
+AC#6 — PASS: task cli:check && task test.
+DOD#1 — PASS: task ci passed on c2892ea, including security, tests, race, man generation, build, and smoke.
+DOD#4 — PASS: implementation changes are confined to the declared internal/app, internal/daemon, internal/protocol, internal/cli, internal/mcp, internal/skill, cmd/hum, integration, README, docs, and plugin skill paths.
+DOD#5 — PASS: no test was deleted, skipped, or weakened; existing expectation changes only add the events surface.
+DOD#6 — PASS: no protected gate file changed.
+Review — parent review found and fixed missing readiness/relaunch lifecycle instrumentation, CLI/MCP operation attribution (including shared bulk IDs and input without payload retention), cross-instance cursor races, torn-tail rewrite, undurable in-memory leakage, protocol byte bounds, and immediate active-daemon reads. Focused race tests passed. The independent reviewer/verifier workflow did not complete because its configured usage budget was exhausted after implementation; DOD#3 remains open. Next resumable step: run an independent verifier against all ACs and check DOD#3 if it passes.
+
+Final commit after rebasing onto current main: 4d2fffb. The rebase preserved the new list/ls alias and replaced a flaky wall-clock down-concurrency assertion with direct overlap instrumentation while synchronizing worker request start. DOD#1 correction — PASS: task ci passed on final commit 4d2fffb.
+
+DOD#3 — PASS: independent verifier reran exact AC1–AC6 commands against the final working tree; every criterion passed, including substantive named-test coverage and documentation review. Verification fixes added stronger lifecycle/relaunch, attribution/privacy, CLI validation/paging/rendering/JSON, MCP filter/origin/bounds/read-only, and protocol round-trip coverage; fixed MCP events kind/name/max_bytes validation before daemon contact.
+
+DOD#1 final verification-fix recheck — PASS: task ci completed on the final staged implementation, including security, tests, race, man generation, build, and smoke.
+<!-- SECTION:NOTES:END -->

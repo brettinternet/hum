@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"hum/internal/app"
+	"hum/internal/process"
+	"hum/internal/project"
 	"hum/internal/protocol"
 )
 
@@ -121,6 +124,133 @@ func TestEventHistoryMalformedPayloadAndCursorUnavailable(t *testing.T) {
 	unavailable := NewEventHistory(dir, protocol.ScopeProject, "/project")
 	if _, err := unavailable.Read(nil, time.Time{}, nil, false, nil, 50, nil, 0); !errors.Is(err, ErrHistoryUnavailable) {
 		t.Fatalf("cursor error=%v", err)
+	}
+}
+
+func TestEventHistoryLifecycleOperationAttributionAndReadIsolation(t *testing.T) {
+	root := t.TempDir()
+	server := &Server{
+		paths:            NewRuntimePaths(t.TempDir()),
+		maxLine:          defaultWireMaxLine,
+		eventOps:         make(map[string]eventOperation),
+		eventDiagnostics: make(map[string]struct{}),
+		eventQueue:       make(chan queuedHistoryEvent, 32),
+	}
+
+	for _, lifecycle := range []string{"launch", "ready", "startup_failure"} {
+		operationID := "op-" + lifecycle
+		finish := server.beginEventOperation(protocol.ScopeProject, root, root, "api", operationID, "mcp")
+		server.recordLifecycle(app.LifecycleEvent{Scope: protocol.ScopeProject, Root: root, Cwd: root, Name: "api", Event: lifecycle, Time: time.Now().UTC()})
+		finish()
+		queued := <-server.eventQueue
+		if queued.event.Kind != protocol.EventLifecycle || queued.event.Event != lifecycle || queued.event.OperationID != operationID {
+			t.Fatalf("attributed %s event=%#v", lifecycle, queued.event)
+		}
+	}
+	for _, lifecycle := range []string{"exit", "relaunch_scheduled", "relaunch_attempt", "relaunch_failure", "relaunch_exhausted"} {
+		server.recordLifecycle(app.LifecycleEvent{Scope: protocol.ScopeProject, Root: root, Cwd: root, Name: "api", Event: lifecycle, Time: time.Now().UTC()})
+		queued := <-server.eventQueue
+		if queued.event.Event != lifecycle || queued.event.OperationID != "" {
+			t.Fatalf("automatic %s event=%#v", lifecycle, queued.event)
+		}
+	}
+	sharedID := "bulk-operation"
+	server.appendHistory(protocol.ScopeProject, root, root, sharedID, "mcp", "down", "api", "success", "operator_stop")
+	server.appendHistory(protocol.ScopeProject, root, root, sharedID, "mcp", "down", "web", "failure", "")
+	firstOperation, firstLifecycle, secondOperation := <-server.eventQueue, <-server.eventQueue, <-server.eventQueue
+	if firstOperation.event.OperationID != sharedID || firstOperation.event.Origin != "mcp" || firstOperation.event.Outcome != "success" || firstLifecycle.event.Event != "operator_stop" || firstLifecycle.event.OperationID != sharedID || secondOperation.event.OperationID != sharedID || secondOperation.event.Outcome != "failure" {
+		t.Fatalf("bulk attribution: first=%#v lifecycle=%#v second=%#v", firstOperation.event, firstLifecycle.event, secondOperation.event)
+	}
+	server.appendHistory(protocol.ScopeProject, root, root, "remove-id", "cli", "remove", "api", "success", "removal")
+	removeOperation, removal := <-server.eventQueue, <-server.eventQueue
+	if removeOperation.event.Event != "remove" || removal.event.Event != "removal" || removal.event.OperationID != "remove-id" {
+		t.Fatalf("removal events=%#v %#v", removeOperation.event, removal.event)
+	}
+	server.appendHistory(protocol.ScopeProject, root, root, "restart-id", "cli", "restart", "api", "success", "explicit_restart")
+	_, restart := <-server.eventQueue, <-server.eventQueue
+	if restart.event.Event != "explicit_restart" || restart.event.OperationID != "restart-id" {
+		t.Fatalf("restart event=%#v", restart.event)
+	}
+
+	// Events is read-only even when validation fails: dispatch must not append an
+	// operation failure for a malformed history request.
+	response, _ := server.dispatch(&protocol.Request{Op: protocol.OpEvents, Events: &protocol.EventsRequest{Scope: protocol.ScopeProject, Root: root, Tail: maxHistoryEvents + 1}})
+	if responseError(response) == nil || len(server.eventQueue) != 0 {
+		t.Fatalf("read-only events response=%#v queued=%d", response, len(server.eventQueue))
+	}
+}
+
+func TestEventHistorySanitizesFailedControlRequest(t *testing.T) {
+	root, err := project.CanonicalPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := shortRuntimeDir(t)
+	supervisor, err := app.New(app.Options{StartProcess: func(process.Spec) (app.Child, error) {
+		return nil, errors.New("raw-error-secret")
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(Config{RuntimeDir: runtimeDir, Supervisor: supervisor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	request := &protocol.Request{Op: protocol.OpStart, ID: "operation-1", EventOperation: "run", EventOrigin: "cli", Start: &protocol.StartRequest{Name: "api", Scope: protocol.ScopeProject, Root: root, Cwd: root, Argv: []string{"argv-secret"}, Env: []string{"TOKEN=environment-secret"}, Origin: "cli"}}
+	response, _ := server.dispatch(request)
+	if responseError(response) == nil {
+		t.Fatal("failed start unexpectedly succeeded")
+	}
+	server.flushHistoryEvents()
+	history, err := server.history(protocol.ScopeProject, root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := history.Read(nil, time.Time{}, nil, false, nil, 50, nil, 0)
+	if err != nil || len(page.Events) != 2 {
+		t.Fatalf("events=%#v err=%v", page.Events, err)
+	}
+	encoded, err := json.Marshal(page.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"raw-error-secret", "argv-secret", "environment-secret", "TOKEN="} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("history retained %q: %s", secret, encoded)
+		}
+	}
+	for _, event := range page.Events {
+		if event.OperationID != "operation-1" {
+			t.Fatalf("operation attribution=%#v", page.Events)
+		}
+	}
+	if page.Events[0].Event != "startup_failure" || page.Events[1].Event != "run" || page.Events[1].Origin != "cli" || page.Events[1].Outcome != "failure" {
+		t.Fatalf("failed operation events=%#v", page.Events)
+	}
+}
+
+func TestEventHistoryByteRetentionAndNeverTruncatedZero(t *testing.T) {
+	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, "/project")
+	zero := protocol.Cursor(0)
+	if page, err := history.Read(nil, time.Time{}, nil, false, nil, 50, &zero, 0); err != nil || page.Truncated || page.NextCursor != 0 {
+		t.Fatalf("never-used zero page=%#v err=%v", page, err)
+	}
+	for i := 0; i < 80; i++ {
+		if _, err := history.Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "exit", Detail: strings.Repeat("é", 8000)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := history.Read(nil, time.Time{}, nil, false, nil, maxHistoryEvents, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) >= 80 || page.Events[0].Cursor == 1 {
+		t.Fatalf("byte retention did not evict oldest events: count=%d first=%d", len(page.Events), page.Events[0].Cursor)
+	}
+	data, err := os.ReadFile(history.EventPath())
+	if err != nil || len(data) > maxHistoryBytes {
+		t.Fatalf("stored bytes=%d err=%v", len(data), err)
 	}
 }
 

@@ -147,7 +147,7 @@ type mcpDaemonClient struct{ client *daemon.Client }
 func (c *mcpDaemonClient) setEventOperation(ctx context.Context) {
 	metadata := mcpserver.EventOperationFromContext(ctx)
 	if metadata.Name != "" {
-		c.client.SetEventOperation(metadata.Name, metadata.ID, "mcp")
+		c.client.SetEventOperation(metadata.Name, metadata.ID, metadata.Origin)
 	}
 }
 

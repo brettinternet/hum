@@ -20,6 +20,20 @@ func (s *Server) events(ctx context.Context, input commonInput) (any, error) {
 			return nil, &ToolError{Code: "invalid_request", Message: "match must be a valid regular expression"}
 		}
 	}
+	for _, kind := range input.Kinds {
+		if kind != protocol.EventLifecycle && kind != protocol.EventOperation {
+			return nil, &ToolError{Code: "invalid_request", Message: "kinds must contain only lifecycle or operation"}
+		}
+	}
+	validName := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	for _, name := range input.Names {
+		if !validName.MatchString(name) {
+			return nil, &ToolError{Code: "invalid_request", Message: "names must contain valid service names"}
+		}
+	}
+	if input.MaxBytes < 0 {
+		return nil, &ToolError{Code: "invalid_request", Message: "max_bytes must not be negative"}
+	}
 	client, err := s.client(ctx, false)
 	if err != nil {
 		if client != nil {

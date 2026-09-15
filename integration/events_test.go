@@ -58,12 +58,16 @@ func TestEventsJSON(t *testing.T) {
 }
 
 type eventJSON struct {
-	Cursor      uint64 `json:"cursor"`
-	Type        string `json:"type"`
-	Kind        string `json:"kind"`
-	Event       string `json:"event"`
-	Origin      string `json:"origin"`
-	OperationID string `json:"operation_id"`
+	SchemaVersion int    `json:"schema_version"`
+	Cursor        uint64 `json:"cursor"`
+	Type          string `json:"type"`
+	Kind          string `json:"kind"`
+	Event         string `json:"event"`
+	Origin        string `json:"origin"`
+	OperationID   string `json:"operation_id"`
+	NextCursor    uint64 `json:"next_cursor"`
+	Truncated     bool   `json:"truncated"`
+	HasMore       bool   `json:"has_more"`
 }
 
 func eventCursors(events []eventJSON) []uint64 {
@@ -80,14 +84,35 @@ func readEvents(t *testing.T, result testutil.Result) []eventJSON {
 		t.Fatalf("events: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
 	}
 	var events []eventJSON
-	for _, line := range strings.Split(strings.TrimSpace(result.Stdout), "\n") {
+	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
+	metadataRecords := 0
+	var previous uint64
+	for index, line := range lines {
 		var value eventJSON
 		if err := json.Unmarshal([]byte(line), &value); err != nil {
 			t.Fatalf("decode event line %q: %v", line, err)
 		}
-		if value.Type == "event" {
-			events = append(events, value)
+		if value.SchemaVersion != 1 {
+			t.Fatalf("record %d schema_version=%d", index, value.SchemaVersion)
 		}
+		switch value.Type {
+		case "event":
+			if metadataRecords != 0 || value.Cursor <= previous || value.Kind == "" || value.Event == "" {
+				t.Fatalf("invalid ordered event record %d: %#v", index, value)
+			}
+			previous = value.Cursor
+			events = append(events, value)
+		case "metadata":
+			metadataRecords++
+			if index != len(lines)-1 || value.NextCursor < previous {
+				t.Fatalf("metadata must trail events and advance cursor: %#v", value)
+			}
+		default:
+			t.Fatalf("record %d has unknown type %q", index, value.Type)
+		}
+	}
+	if metadataRecords != 1 {
+		t.Fatalf("metadata records=%d stdout=%q", metadataRecords, result.Stdout)
 	}
 	return events
 }

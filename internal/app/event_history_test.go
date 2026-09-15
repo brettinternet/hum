@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -56,6 +57,48 @@ func TestEventHistoryLifecycleKinds(t *testing.T) {
 	for event, seen := range want {
 		if !seen {
 			t.Errorf("missing %s event in %#v", event, events)
+		}
+	}
+}
+
+func TestEventHistoryAutomaticRelaunchKinds(t *testing.T) {
+	launches := make([]relaunchTestLaunch, maxAutomaticRelaunches+1)
+	launches[0].code = 1
+	for index := 1; index < len(launches); index++ {
+		launches[index].spawnErr = errors.New("secret-bearing relaunch failure")
+	}
+	harness := newRelaunchTestHarness(t, launches, 20)
+	var mu sync.Mutex
+	seen := make(map[string][]LifecycleEvent)
+	harness.s.SetLifecycleHook(func(event LifecycleEvent) {
+		mu.Lock()
+		seen[event.Event] = append(seen[event.Event], event)
+		mu.Unlock()
+	})
+	if _, err := harness.s.Start(StartRequest{Name: "api", Source: "manifest", Root: harness.root, Cwd: harness.root, Argv: []string{"fake"}, Restart: RestartOnFailure}); err != nil {
+		t.Fatal(err)
+	}
+	harness.child(0).release()
+	for attempt, delay := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second} {
+		waitForRelaunch(t, harness.s, harness.root, "api", func(process Process) bool { return process.NextLaunchAt != nil && process.Relaunches == attempt })
+		harness.timers.wait(delay)
+		if !harness.timers.fire(delay) {
+			t.Fatalf("missing relaunch timer %d", attempt+1)
+		}
+	}
+	waitForRelaunch(t, harness.s, harness.root, "api", func(process Process) bool {
+		return process.State == StateExited && process.Relaunches == maxAutomaticRelaunches && process.NextLaunchAt == nil
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	for _, kind := range []string{"exit", "relaunch_scheduled", "relaunch_attempt", "relaunch_failure", "relaunch_exhausted"} {
+		if len(seen[kind]) == 0 {
+			t.Errorf("missing %s event in %#v", kind, seen)
+		}
+	}
+	for _, event := range seen["relaunch_failure"] {
+		if strings.Contains(event.Detail, "secret-bearing") {
+			t.Fatalf("relaunch event retained raw error: %#v", event)
 		}
 	}
 }
