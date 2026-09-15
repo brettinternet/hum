@@ -1,13 +1,14 @@
 ---
 id: HUM-115
 title: Publish Hum in the mise registry
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-14 23:16'
-updated_date: '2026-09-14 23:35'
+updated_date: '2026-09-15 14:16'
 labels:
   - tooling
   - docs
+  - cancelled
 milestone: m-5
 dependencies: []
 references:
@@ -64,3 +65,28 @@ The upstream modified-file contract is registry/hum.toml only (required generate
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-09-15 preparation evidence: Upstream jdx/mise main at 55d3b4fc789d76fbaa486cb523f92cc974ce67c7 still has no registry/hum.toml. Prepared upstream-only commit 7d80c65a617c5e1e3f0e94722919839f7085fbe6 adding registry/hum.toml with github:brettinternet/hum, bins=[hum], semver ordering, and hum version smoke test.
+
+Local validation on Darwin arm64: mise run build passed with development binary 2026.9.9-DEBUG. MISE_DEBUG=1 target/debug/mise test-tool hum passed and ran hum version 0.13.0. An isolated direct-backend run with separate MISE_CONFIG_DIR, MISE_DATA_DIR, MISE_STATE_DIR, and MISE_CACHE_DIR passed: mise exec github:brettinternet/hum@latest -- hum version --json | jq schema assertion returned true for release v0.13.0. Debug output recorded GitHub API digest checksum verification and the checksum phase for hum-0.13.0-macos-arm64.tar.gz. taplo format --check, taplo check, and git diff --check passed for registry/hum.toml.
+
+Publication blocker: current docs/contributing.md requires new shorthand tools to be widely used, normally thousands of GitHub stars, active maintenance, and third-party use, and says personal/niche tools do not qualify. gh repo view reports Hum has 1 star and 0 forks. No upstream PR was opened or pushed. Human decision required: defer registry submission until popularity evidence satisfies policy (recommended), or explicitly authorize a likely-to-be-rejected upstream push/PR despite that policy. README.md and docs/development.md remain intentionally unchanged because AC1/AC2 require a merged PR and released mise first.
+
+2026-09-15 decision: defer upstream submission until Hum satisfies mise registry popularity/third-party-use policy. Prepared entry for later recreation:
+backends = ["github:brettinternet/hum"]
+bins = ["hum"]
+description = "Bounded process interface for humans and coding agents"
+test = { cmd = "hum version", expected = "hum version {{version}}" }
+version_order = "semver"
+
+Objective unblock condition: credible popularity evidence meeting current jdx/mise contribution requirements, followed by renewed explicit authorization to push/open the upstream PR. Prepared checkout will be cleaned up per request; commit hash is historical evidence only. Backlog.md has no Blocked status, so the item is returned to To Do with this blocker recorded.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cancelled by owner on 2026-09-15. The upstream registry submission is intentionally abandoned because Hum does not meet jdx/mise current popularity and third-party-use requirements. No upstream PR was opened and Hum documentation was not changed.
+<!-- SECTION:FINAL_SUMMARY:END -->
