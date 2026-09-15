@@ -183,9 +183,9 @@ func loadManifestOrEmpty(ctx context.Context, cwd string) (manifestState, error)
 	if err != nil {
 		return manifestState{}, err
 	}
-	manifest := newManifestState(root, []project.Definition{})
-	manifest.missing = true
-	return manifest, nil
+	emptyManifest := newManifestState(root, []project.Definition{})
+	emptyManifest.missing = true
+	return emptyManifest, nil
 }
 
 func readinessConfig(definition project.Definition) *protocol.ReadinessConfig {
