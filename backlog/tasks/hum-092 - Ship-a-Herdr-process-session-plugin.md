@@ -74,7 +74,7 @@ Non-goals: compatibility with Hum releases that do not report machine-output ver
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Claimed with worklease resource backlog-md:/Users/brett/dev/me/hum/.git:backlog:HUM-092. Implementing in isolated HWT workspace w7D on agent/HUM-092-herdr-plugin.
+Claimed with worklease resource backlog-md:/Users/brett/dev/me/hum/.git:backlog:HUM-092. Implemented in an isolated worktree on agent/HUM-092-herdr-plugin.
 
 AC#1 evidence: python3 -m unittest discover -s plugins/herdr -p test_*.py -v passed 12 tests covering schema discovery, project/list discovery, running and stopped selection, exact logs/attach/lifecycle argv, metacharacter safety, and unsupported/empty/unavailable states.
 AC#2 evidence: task test passed all Go packages and the 12 Herdr plugin tests through the normal test task.

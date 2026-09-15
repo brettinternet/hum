@@ -24,8 +24,7 @@
 ## Git and GitHub
 
 - Only use a worktree/branch when directed to do so.
-- Agent-created branches MUST be created as worktrees under `.worktrees/`; do not create branches in the primary checkout.
-- Run any documented worktree setup from inside the new worktree before making changes.
-- After a merged worktree branch is no longer needed, remove the worktree, delete the branch, and prune stale worktree metadata before handoff.
+- Agent-created branches MUST be created as Worktrunk worktrees under `.worktrees/`; do not create branches in the primary checkout. Use `mise exec worktrunk -- wt switch --create <branch> --base main --no-cd --format=json`; `.config/wt.toml` prepares the checkout before use.
+- After a merged worktree branch is no longer needed, use `mise exec worktrunk -- wt remove <branch> --foreground --format=json` to remove the checkout and eligible branch.
 - Use `gh` for GitHub operations; do not construct raw API calls or open GitHub URLs in a browser.
 - Do not push or open a pull request without explicit instruction.

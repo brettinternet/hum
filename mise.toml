@@ -4,6 +4,7 @@ git-cliff = "2.14.1"
 gitleaks = "8.30.1"
 lefthook = "2.1.12"
 task = "3.53.1"
+worktrunk = "0.77.0"
 staticcheck = "2026.2.1"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.8.0"
 
