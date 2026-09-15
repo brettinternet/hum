@@ -126,11 +126,9 @@ func loadDoctorManifest(ctx context.Context, selection projectSelection) (manife
 		if err != nil {
 			return manifestState{}, false, &project.ConfigurationError{Source: selection.manifest.Relative, Err: err}
 		}
-		byName := make(map[string]project.Definition, len(definitions))
-		for _, definition := range definitions {
-			byName[definition.Name] = definition
-		}
-		return manifestState{root: selection.manifest.Root, defs: definitions, byName: byName, display: selection.manifest.Relative}, true, nil
+		manifest := newManifestState(selection.manifest.Root, definitions)
+		manifest.display = selection.manifest.Relative
+		return manifest, true, nil
 	}
 	definitions, err := project.ResolveDefinitionsReadOnly(ctx, selection.root)
 	if err != nil {
@@ -138,13 +136,9 @@ func loadDoctorManifest(ctx context.Context, selection projectSelection) (manife
 		if !errors.As(err, &noCandidate) {
 			return manifestState{}, false, err
 		}
-		return manifestState{root: selection.root, defs: []project.Definition{}, byName: make(map[string]project.Definition)}, false, nil
+		return newManifestState(selection.root, []project.Definition{}), false, nil
 	}
-	byName := make(map[string]project.Definition, len(definitions))
-	for _, definition := range definitions {
-		byName[definition.Name] = definition
-	}
-	return manifestState{root: selection.root, defs: definitions, byName: byName}, true, nil
+	return newManifestState(selection.root, definitions), true, nil
 }
 
 func diagnoseDoctorConfig(version, buildTime string, input config.Input, add func(string, string, string, map[string]any)) config.Config {

@@ -31,6 +31,14 @@ type manifestState struct {
 	display      string
 }
 
+func newManifestState(root string, defs []project.Definition) manifestState {
+	byName := make(map[string]project.Definition, len(defs))
+	for _, definition := range defs {
+		byName[definition.Name] = definition
+	}
+	return manifestState{root: root, defs: defs, byName: byName}
+}
+
 // loadManifest resolves the project manifest for cwd. Command-backed
 // discovery honours ctx so caller cancellation reaps a hung probe.
 func loadManifest(ctx context.Context, cwd string) (manifestState, error) {
@@ -47,11 +55,7 @@ func loadManifest(ctx context.Context, cwd string) (manifestState, error) {
 	if err != nil {
 		return manifestState{}, err
 	}
-	byName := make(map[string]project.Definition, len(defs))
-	for _, definition := range defs {
-		byName[definition.Name] = definition
-	}
-	return manifestState{root: root, defs: defs, byName: byName}, nil
+	return newManifestState(root, defs), nil
 }
 
 func loadManifestSelection(ctx context.Context, selection projectSelection) (manifestState, error) {
@@ -62,11 +66,9 @@ func loadManifestSelection(ctx context.Context, selection projectSelection) (man
 	if err != nil {
 		return manifestState{}, &project.ConfigurationError{Source: selection.manifest.Relative, Err: err}
 	}
-	byName := make(map[string]project.Definition, len(defs))
-	for _, definition := range defs {
-		byName[definition.Name] = definition
-	}
-	return manifestState{root: selection.manifest.Root, defs: defs, byName: byName, display: selection.manifest.Relative}, nil
+	manifest := newManifestState(selection.manifest.Root, defs)
+	manifest.display = selection.manifest.Relative
+	return manifest, nil
 }
 
 func prepareManifestEnvironments(manifest *manifestState, names []string, baseline []string, includeDependencies bool) error {
@@ -166,11 +168,7 @@ func loadManifestOrEmpty(ctx context.Context, cwd string) (manifestState, error)
 	if err != nil {
 		return manifestState{}, err
 	}
-	return manifestState{
-		root:   root,
-		defs:   []project.Definition{},
-		byName: make(map[string]project.Definition),
-	}, nil
+	return newManifestState(root, []project.Definition{}), nil
 }
 
 func readinessConfig(definition project.Definition) *protocol.ReadinessConfig {
