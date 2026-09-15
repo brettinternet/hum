@@ -20,8 +20,7 @@ hum logs api --stream stderr --tail 50 --json
 hum wait api --match "ready" --timeout 30s --json
 ```
 
-Tools get lifecycle state, bounded structured output, readiness, and stable cursors. Herdr provides
-panes; its Hum plugin uses Hum for process state.
+Tools get lifecycle state, bounded structured output, readiness, and stable cursors.
 
 Run a process and follow its retained logs
 
