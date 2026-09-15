@@ -241,14 +241,14 @@ processes:
 	}
 	relaunchIntegrationWaitLaunchCount(t, marker, 1)
 	pending := relaunchIntegrationWaitDaemonPending(t, runtimeDir, project, "crash", nil)
-	if pending.Source != "manifest" || !reflect.DeepEqual(pending.Argv, []string{fixture, "relaunch", marker}) || pending.NextLaunchAt == nil {
+	if pending.Source != "manifest:hum.yaml" || !reflect.DeepEqual(pending.Argv, []string{fixture, "relaunch", marker}) || pending.NextLaunchAt == nil {
 		t.Fatalf("initial pending status = %#v", pending)
 	}
 	pendingDeadline := *pending.NextLaunchAt
 	pendingCursor := pending.LaunchCursor
 
 	assertPending := func(label string, state relaunchIntegrationStatus) {
-		if state.Source != "manifest" || !reflect.DeepEqual(state.Argv, []string{fixture, "relaunch", marker}) || state.State != "exited" || state.Restart != "on-failure" || state.Relaunches != 0 || state.NextLaunchAt == nil || !state.NextLaunchAt.Equal(pendingDeadline) || state.LaunchCursor != pendingCursor || state.Readiness != "" {
+		if state.Source != "manifest:hum.yaml" || !reflect.DeepEqual(state.Argv, []string{fixture, "relaunch", marker}) || state.State != "exited" || state.Restart != "on-failure" || state.Relaunches != 0 || state.NextLaunchAt == nil || !state.NextLaunchAt.Equal(pendingDeadline) || state.LaunchCursor != pendingCursor || state.Readiness != "" {
 			t.Fatalf("%s pending state = %#v, want unchanged recovery", label, state)
 		}
 	}
@@ -321,7 +321,7 @@ processes:
 	if err := json.Unmarshal(restartedRaw, &restarted); err != nil {
 		t.Fatalf("decode targeted MCP restart %q: %v", restartedRaw, err)
 	}
-	if restarted.Name != "crash" || restarted.Source != "manifest" || !reflect.DeepEqual(restarted.Argv, []string{fixture, "relaunch", marker}) || restarted.State != "running" || restarted.Restart != "on-failure" || restarted.Relaunches != 0 || restarted.NextLaunchAt != nil || restarted.LaunchCursor == pendingAfterStart.LaunchCursor {
+	if restarted.Name != "crash" || restarted.Source != "manifest:hum.yaml" || !reflect.DeepEqual(restarted.Argv, []string{fixture, "relaunch", marker}) || restarted.State != "running" || restarted.Restart != "on-failure" || restarted.Relaunches != 0 || restarted.NextLaunchAt != nil || restarted.LaunchCursor == pendingAfterStart.LaunchCursor {
 		t.Fatalf("targeted MCP restart result = %#v, want immediate new running incarnation", restarted)
 	}
 	relaunchIntegrationWaitLaunchCount(t, marker, 3)

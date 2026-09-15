@@ -127,7 +127,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum start NAME... [--no-wait] [--timeout DURATION] [--json]",
 			ArgsUsage:     "NAME...",
 			ShellComplete: completeProcessNames,
-			Description:   "Idempotently ensure named sessions are running from hum.yaml or conventional discovery; start never pulls in prerequisites and waits for readiness unless --no-wait. ready.exec uses exact argv with no shell; probes are immediate-first, serial, 1s by default, inherit cwd/environment, retain bounded diagnostics, and gate startup—not liveness; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.\n\nExamples:\n  hum start api",
+			Description:   "Idempotently ensure named sessions are running from hum.yaml; without it, unresolved names return manifest_missing. start never pulls in prerequisites and waits for readiness unless --no-wait; ready.exec uses exact argv with no shell, probes are immediate-first and serial, retain bounded diagnostics, and gate startup—not liveness; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.\n\nExamples:\n  hum start api",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn; default waits for readiness"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "readiness limit; omit for the manifest timeout"},
@@ -2717,6 +2717,9 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 	client, err := daemonClient(ctx, cfg)
 	if err != nil {
 		if daemonUnavailable(err) {
+			if manifest.missing {
+				return projectGuidanceError(&project.ManifestMissingError{Root: manifest.root}, manifest.selector)
+			}
 			for _, name := range names {
 				if definition, ok := manifest.byName[name]; ok {
 					return newCLIUnavailableError(manifestUnavailableMessage(definition, manifest.selector))
@@ -2728,6 +2731,14 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 	}
 	defer client.Close()
 	client.SetEventOperation("restart", daemon.NewOperationID(), "cli")
+	if manifest.missing {
+		for _, name := range names {
+			retained, retainedErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: cwd})
+			if retainedErr != nil || len(retained.Argv) == 0 {
+				return projectGuidanceError(&project.ManifestMissingError{Root: manifest.root}, manifest.selector)
+			}
+		}
+	}
 
 	results := make([]restartOutputResult, 0, len(names))
 	for _, name := range names {
@@ -2904,10 +2915,8 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 		return newCLIUsageError(errors.New("hum --global up is not supported; use hum --global run NAME -- COMMAND"))
 	}
 	cwd := selection.cwd
-	// A genuinely empty hum.yaml stays inert (HUM-033). No hum.yaml and no
-	// discovered convention is an error when there is nothing to report: the
-	// error is deferred so an existing daemon can still surface removed manifest
-	// sessions, and it replaces the empty-manifest message otherwise.
+	// An empty hum.yaml stays inert (HUM-033). A missing hum.yaml is deferred
+	// so an existing daemon can still surface retained runtime records.
 	var manifest manifestState
 	var noCandidateErr error
 	if selection.hasManifest {
@@ -2916,8 +2925,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 		manifest, err = loadManifest(ctx, cwd)
 	}
 	if err != nil {
-		var noCandidate *project.NoCandidateError
-		if !errors.As(err, &noCandidate) {
+		if !errors.Is(err, project.ErrManifestMissing) {
 			return err
 		}
 		noCandidateErr = err
@@ -3086,8 +3094,7 @@ func manifestLaunchCommand(ctx context.Context, cmd *urfavecli.Command, version,
 		manifest, err = loadManifest(ctx, cwd)
 	}
 	if err != nil {
-		var noCandidate *project.NoCandidateError
-		if !errors.As(err, &noCandidate) {
+		if !errors.Is(err, project.ErrManifestMissing) {
 			return err
 		}
 		cfg, configErr := cliConfig(cmd, version, buildTime)
@@ -3178,6 +3185,21 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	}
 	defer client.Close()
 	client.SetEventOperation(cmd.Name, daemon.NewOperationID(), "cli")
+	if manifest.missing && !ordered {
+		for _, name := range names {
+			if _, declared := manifest.byName[name]; declared {
+				continue
+			}
+			retained, retainedErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: app.ScopeProject, Cwd: manifest.root})
+			if retainedErr != nil || len(retained.Argv) == 0 {
+				missing := noCandidateErr
+				if missing == nil {
+					missing = &project.ManifestMissingError{Root: manifest.root}
+				}
+				return projectGuidanceError(missing, manifest.selector)
+			}
+		}
+	}
 	var followSession *upLogFollowSession
 	if followOutput {
 		followSession, err = startUpLogFollow(ctx, cmd, client, cwd, names, manifest, writer, progressWriter, followSince, cfg.ReadEntries, int(cfg.ReadBytes))

@@ -62,8 +62,8 @@ func TestInitThenUp(t *testing.T) {
 	}
 	launch := launches[0]
 	wantArgv := []string{"npm", "run", "dev"}
-	if launch.Name != "dev" || launch.Source != "manifest" || launch.Outcome != "running_unverified" {
-		t.Fatalf("hum up launch = %#v, want name=dev source=manifest outcome=running_unverified", launch)
+	if launch.Name != "dev" || launch.Source != "manifest:hum.yaml" || launch.Outcome != "running_unverified" {
+		t.Fatalf("hum up launch = %#v, want name=dev source=manifest:hum.yaml outcome=running_unverified", launch)
 	}
 	if !reflect.DeepEqual(launch.Argv, wantArgv) {
 		t.Fatalf("hum up argv = %#v, want discovery argv %#v", launch.Argv, wantArgv)

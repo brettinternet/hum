@@ -107,8 +107,8 @@ worktree when DIR exactly matches a canonical root retained by the daemon.
 - `init` writes at the resolved root, and `list --all` uses the selected project while merging
   unlaunched declarations.
 - `doctor` rejects `--global` and inspects exactly one selected filesystem project. In fixed order it
-  checks the supported OS, effective Hum settings, runtime path usability, manifest or conventional
-  discovery, environment-file composition and protocol bounds, each process and `ready.exec`
+  checks the supported OS, effective Hum settings, runtime path usability, the explicit manifest,
+  environment-file composition and protocol bounds, each process and `ready.exec`
   executable using its exact cwd and composed environment, readiness_http/readiness_tcp syntax, and an already-present daemon handshake.
   It never starts the daemon, runs process argv or readiness probes, repairs files, or retains state;
   a missing daemon is informational and an incompatible or unreachable existing socket fails.
@@ -325,7 +325,7 @@ Human `hum up` has an attached interactive mode and bounded startup progress.
 
 ### Command semantics
 
-`init` resolves the project and zero-config candidates without launching or starting the daemon.
+`init` reads the project and conservative source candidates without launching or starting the daemon.
 
 - It exclusively creates `hum.yaml`: one discovered candidate produces a definition; none or
   several produce a commented, valid template.
@@ -373,8 +373,7 @@ session.
 
 - `run <name> -- <command>...` creates an ad hoc session or replaces a stopped session's
   retained ad hoc launch spec; it keeps existing conflict rules while running.
-- A missing zero-config candidate permits the ad hoc form; malformed, ambiguous, and
-  introspection failures do not.
+- A missing manifest does not affect the ad hoc form; malformed manifests remain authoritative.
 - A resolved name cannot be occupied by a conflicting ad hoc run.
 
 `restart` uses the current resolved definition and client environment.
@@ -508,8 +507,8 @@ The nearest Git project root contains the default authoritative `hum.yaml`; comp
   existing daemon for removed manifest-sourced recovery sessions.
 - With no such records, human output is exactly `No processes are declared in hum.yaml.` and
   `--json` emits no NDJSON records.
-- Discovery occurs only when the file is absent.
-- Without `--file`, `hum.yaml` is authoritative and conventional discovery runs only when it is absent. With `--file`, Hum loads exactly that file: no fallback, discovery, overlays, inheritance, or merging. The selected file is reported as `manifest:<project-root-relative-path>` while the default source remains `manifest`.
+- Runtime resolution never performs conventional discovery.
+- Without `--file`, `hum.yaml` is the only default declaration source. If it is absent, definition-requiring commands return `manifest_missing` naming the project root and suggesting `hum init` or `hum run NAME -- COMMAND`. With `--file`, Hum loads exactly that file: no fallback, discovery, overlays, inheritance, or merging. The selected file is reported as `manifest:<project-root-relative-path>` and the default source is `manifest:hum.yaml`.
 - All manifests in one Git project share the `(project root, process name)` runtime namespace. The project root, not the manifest directory, is the default child cwd and base for manifest `cwd` values.
 - Runtime-only operations remain project-wide; a file selector validates and identifies the project but does not parse the manifest or restrict retained records. `list --all` remains a cross-project view.
 
@@ -571,8 +570,8 @@ Parsing is strict and single-document.
   regexes or durations, unsafe cwd, empty/non-string argv, shell text, malformed `after` values,
   unknown or unready dependencies, duplicate/self references, and cycles of any length are
   errors with file, process, and indexed-field context such as `process "web".after[1]`.
-- Definitions are name-sorted and carry `source: manifest`; discovered definitions always have
-  no dependencies.
+- Definitions are name-sorted and carry `source: manifest:<path>`; init candidates retain their
+  detector source values and have no dependencies.
 
 The manifest defines processes, their client-side launch dependencies, and an
 optional deterministic environment composition. `environment.inherit` defaults
@@ -612,11 +611,11 @@ environment mutation. Limits are 16 file entries, 1 MiB actual bytes per file,
 separators. The marshaled request must also fit the existing 8 MiB protocol line
 limit. CLI and MCP do not activate mise, nvm, direnv, or shell hooks.
 
-### Zero-config discovery
+### Init source detection
 
-Without `hum.yaml`, hum inspects supported root-level conventions without
-executing task bodies or launching candidates. Exactly one candidate resolves
-to `dev`, rooted at the project, with no inferred readiness:
+`hum init` inspects supported root-level conventions read-only, without
+executing task bodies or launching candidates. Exactly one candidate becomes
+`dev`, rooted at the project, with no inferred readiness:
 
 | Source | Required `dev` entry | argv |
 | --- | --- | --- |
@@ -630,22 +629,14 @@ to `dev`, rooted at the project, with no inferred readiness:
 | bin/dev | executable file | `./bin/dev` |
 | Mix | literal `{:phoenix, ...}` dependency in `mix.exs` | `mix phx.server` |
 
-Implicit discovery never evaluates repository code itself; the Task, Just, and mise probes run
-those tools' own listing commands, and mise additionally honours its trust prompt for the
-repository's configuration. Discovery probes honour cancellation from both the CLI command
-context and `hum mcp`, so an interrupted command reaps a hung probe. Mix detection reads `mix.exs` as text,
-ignores comments and quoted values, and recognizes only a literal Phoenix dependency tuple;
-dynamic declarations fail closed and require an explicit `hum.yaml`. This static check may
-identify the launch command, but `mix.exs` is evaluated only if the user later starts it.
-Mise, Task, and Just retain their documented metadata commands, which are cancellable and run
-inside the repository trust boundary. Command-backed sources are skipped when their executable
-is unavailable.
+Init detection never evaluates repository code itself; it reads supported declarations with
+bounded read-only detectors. Mix detection reads `mix.exs` as text, ignores comments and quoted
+values, and recognizes only a literal Phoenix dependency tuple. Dynamic declarations fail closed
+and require an explicit `hum.yaml`.
 
 - No candidates produce a typed `NoCandidateError`; several produce an `AmbiguityError` listing
   all sources.
-- Malformed configuration and failed or malformed required introspection produce typed
-  `ConfigurationError` and `IntrospectionError`; caller cancellation stops command-backed
-  discovery and propagates unchanged.
+- Malformed source files produce typed `ConfigurationError`; caller cancellation propagates unchanged.
 - All wrap their sentinel and work with `errors.As`.
 
 For package.json, `packageManager` selects bun, pnpm, yarn, or npm (ignoring an optional version
@@ -657,15 +648,14 @@ suffix) and rejects other or non-string values.
 - Multiple files in one family are allowed; conflicting families are errors.
 - With no lockfile, npm is used.
 
-Discovery does not scan nested packages or infer language/framework commands
-(except confirmed `mix phx.server`), Docker Compose, multiple processes, ports,
-readiness, or launch ordering. It never tries commands to see what succeeds.
+Init detection does not scan nested packages or infer language/framework commands beyond the
+listed read-only sources. It never tries commands to see what succeeds.
 
-Strict definition commands (`up`, `start`, and argv-free `run`) resolve before daemon startup.
+Strict definition commands (`up`, `start`, and argv-free `run`) resolve `hum.yaml` before daemon startup.
 
-- Ad hoc `run` alone treats `NoCandidate` as no definition.
-- Control commands also treat it as no definition and may access existing runtime records.
-- Every other resolution error propagates before daemon control.
+- Ad hoc `run NAME -- COMMAND` remains independent of manifest resolution.
+- Runtime-only commands may access existing records without a manifest.
+- An absent manifest returns `manifest_missing`; malformed or explicit manifest errors remain authoritative.
 
 ## Readiness and output
 

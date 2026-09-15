@@ -56,7 +56,7 @@ Readiness fields are additive: `readiness_method` is `match`, `exec`, `http`, or
 
 Stream `type` values include lifecycle outcomes plus `output`, `exit`, `warning`, and `error`. Output records carry `entries` and cursor metadata. Exit records carry `cursor` and `exit`. Warning records carry `warnings`. Error records carry `error`. Records are emitted in observed stream order; per-process output entries remain in ascending cursor order. Aggregate command result ordering follows the command semantics in [design.md](design.md), including lexical declaration order for `up` and caller selection order for logs.
 
-`error` contains required string fields `code` and `message`; command- or daemon-supplied `details` is optional. CLI-classified codes are `usage`, `daemon_unavailable`, `manifest_invalid`, and `internal`. Daemon-originated errors retain their existing wire code, but that does not make the private daemon protocol public.
+`error` contains required string fields `code` and `message`; command- or daemon-supplied `details` is optional. CLI-classified codes are `usage`, `daemon_unavailable`, `manifest_missing`, `manifest_invalid`, and `internal`. `manifest_missing` names the resolved project root and suggests `hum init` or `hum run NAME -- COMMAND`. Daemon-originated errors retain their existing wire code, but that does not make the private daemon protocol public.
 
 ## Compatibility
 

@@ -78,7 +78,7 @@ func TestResolvedProjectInstructions(t *testing.T) {
 
 	for _, instruction := range []string{
 		"Use MCP as the primary integration",
-		"Try bounded `hum up --detach` first",
+		"Try bounded `hum up --detach` when a committed `hum.yaml` is present",
 		"interactive plain `hum up`",
 		"waits for readiness by default",
 		"hum start <name>",
@@ -90,16 +90,13 @@ func TestResolvedProjectInstructions(t *testing.T) {
 		"hum restart <name>",
 		"hum down",
 		"everything in the current project",
-		"absent `hum.yaml` is normal",
-		"conservative discovery",
-		"exactly one candidate named `dev`",
-		"no candidate or is ambiguous",
-		"multiple commands",
-		"custom cwd",
+		"Without a manifest",
+		"Init source detection",
+		"conservative read-only detection",
+		"launches no subprocess",
+		"Commit the manifest before using",
+		"ad-hoc",
 		"readiness",
-		"ask the developer to run `hum init`",
-		"commit the resulting `hum.yaml`",
-		"Do not run `hum init` yourself",
 		"Never derive or run underlying development commands",
 		"including npm, bun, yarn, or pnpm-style commands",
 		"Never use raw `hum run ... -- ...`",
@@ -119,12 +116,9 @@ func TestResolvedProjectInstructions(t *testing.T) {
 			t.Errorf("SKILL.md missing lifecycle instruction %q", instruction)
 		}
 	}
-	rawRunWarning := "Never use raw `hum run ... -- ...`"
 	foregroundContract := "`hum run NAME -- COMMAND` owns exactly one incarnation: it streams raw child output, propagates the child exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. Use `hum run NAME --detach -- COMMAND` for daemon ownership, and `hum attach NAME` or `hum logs NAME --follow` for durable observation."
-	rawRunCommand := regexp.MustCompile(`\bhum[[:space:]]+run\b`)
-	withoutContract := strings.ReplaceAll(strings.ReplaceAll(content, rawRunWarning, ""), foregroundContract, "")
-	if rawRunCommand.MatchString(withoutContract) {
-		t.Error("SKILL.md must not instruct a raw hum run command outside its human-facing lifecycle contract")
+	if !strings.Contains(content, foregroundContract) {
+		t.Error("SKILL.md missing ad-hoc run ownership contract")
 	}
 
 	packageManagerCommand := regexp.MustCompile(`(^|[^[:alnum:]_-])(npm|bun|yarn|pnpm)[[:space:]]+[^[:space:]]+`)

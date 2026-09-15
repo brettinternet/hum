@@ -551,7 +551,7 @@ func TestLifecycleHelp(t *testing.T) {
 			want: []string{
 				"named sessions",
 				"idempotently",
-				"hum.yaml or conventional discovery",
+				"hum.yaml; without it, unresolved names return manifest_missing",
 				"never pulls in prerequisites",
 				"--no-wait",
 				"--timeout",

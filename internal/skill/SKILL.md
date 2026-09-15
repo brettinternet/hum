@@ -9,7 +9,7 @@ Use MCP as the primary integration. Use this skill only for shell-only fallback 
 
 ## Start and inspect
 
-- Try bounded `hum up --detach` first; interactive plain `hum up` keeps following aggregate output after startup. Silent services may use `ready.http` (GET, any 2xx) or `ready.tcp` (accepted connection) with literal IP/localhost targets; these startup-only probes run in-process, do not expand `PORT`, and are bounded/canceled like other readiness methods. When `hum.yaml` declares `after`, up starts independent roots concurrently and launches each dependent only after every direct prerequisite is observed `ready`. It waits for readiness by default; each process's readiness timeout starts at its own launch or first running observation; results settle in lexical order. Silent services may use `ready.exec` with exact argv; probes run directly without a shell and gate startup rather than monitor liveness.
+- Try bounded `hum up --detach` when a committed `hum.yaml` is present; interactive plain `hum up` keeps following aggregate output after startup. Without a manifest, definition-requiring commands return `manifest_missing`; use `hum init` or the ad-hoc form `hum run NAME -- COMMAND`. Silent services may use `ready.http` (GET, any 2xx) or `ready.tcp` (accepted connection) with literal IP/localhost targets; these startup-only probes run in-process, do not expand `PORT`, and are bounded/canceled like other readiness methods. When `hum.yaml` declares `after`, up starts independent roots concurrently and launches each dependent only after every direct prerequisite is observed `ready`. It waits for readiness by default; each process's readiness timeout starts at its own launch or first running observation; results settle in lexical order. Silent services may use `ready.exec` with exact argv; probes run directly without a shell and gate startup rather than monitor liveness.
 - Use `hum start <name>` for one resolved process; it waits for readiness unless you opt out. `start NAME...` is explicit-only and never pulls in `after` prerequisites. For a running or recovery-capable manifest record, changed argv, canonical cwd, readiness method, readiness matcher or exec argv, TTY, normalized restart policy, or `stop_grace` returns `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance; CLI `up` exits 1 for drift and the drift cannot satisfy an `after` gate.
 - `after` lists must name unique same-manifest processes that declare `ready`; cycles, unknown names, duplicates, self-reference, malformed lists, and dependencies without readiness are manifest errors. `up --no-wait` is rejected before daemon contact when any `after` is declared.
 - Use `hum list` for compact discovery, and `hum list --full` to inspect each process's source and readiness.
@@ -28,8 +28,7 @@ Use MCP as the primary integration. Use this skill only for shell-only fallback 
 
 ## Crash relaunch policy
 
-Only explicit manifest definitions may set `restart: on-failure`; discovered and
-ad-hoc sessions remain `never`. Manifest values are strict. Spawn failures
+Only explicit manifest definitions may set `restart: on-failure`; ad-hoc sessions remain `never`. Manifest values are strict. Spawn failures
 consume attempts, an automatic launch that survives 30 seconds resets the
 counter, and explicit start/up/restart/stop/down/remove or shutdown cancels
 pending work. Automatic attempts reuse the last effective launch specification.
@@ -38,10 +37,9 @@ attached through backoff and exhaustion, and retained bounded logs include the
 failed incarnation and system boundaries. Inspect those logs before editing
 again. The failing incarnation's retained output is the diagnostic source.
 
-## Conservative discovery
+## Init source detection
 
-An absent `hum.yaml` is normal when conservative discovery resolves exactly one candidate named `dev`.
-If discovery finds no candidate or is ambiguous, or if you need multiple commands, a custom cwd, or readiness, ask the developer to run `hum init` and commit the resulting `hum.yaml`. Do not run `hum init` yourself.
+`hum init` performs conservative read-only detection of supported project source files and creates a template or a single candidate in `hum.yaml`. It launches no subprocess. Commit the manifest before using `hum up` or `hum start`; use `hum run NAME -- COMMAND` for ad-hoc work.
 
 ## Foreground run ownership
 

@@ -56,6 +56,7 @@ func TestRestartCLIJSONAndHumanResults(t *testing.T) {
 
 func TestRestartCLIMissingMiddleStopsProcessing(t *testing.T) {
 	projectRoot := stopShutdownTestProject(t)
+	writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  first:\n    argv: [/bin/sh, -c, sleep 30]\n  trailing:\n    argv: [/bin/sh, -c, sleep 30]\n")
 	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 
@@ -110,7 +111,8 @@ func TestRestartCLIMissingMiddleStopsProcessing(t *testing.T) {
 
 func TestRestartCLIInvalidMissingAndUnavailable(t *testing.T) {
 	t.Run("invalid and missing", func(t *testing.T) {
-		_ = stopShutdownTestProject(t)
+		projectRoot := stopShutdownTestProject(t)
+		writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  missing:\n    argv: [/bin/sh, -c, sleep 30]\n")
 		_, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 		if _, _, err := stopShutdownRun(t, "restart", "bad name"); err == nil {
@@ -123,10 +125,12 @@ func TestRestartCLIInvalidMissingAndUnavailable(t *testing.T) {
 	})
 
 	t.Run("unavailable daemon", func(t *testing.T) {
+		projectRoot := stopShutdownTestProject(t)
+		writeManifestCLITestFile(t, projectRoot, "version: 1\nprocesses:\n  api:\n    argv: [/bin/sh, -c, sleep 30]\n")
 		runtimeDir := filepath.Join(t.TempDir(), "runtime")
 		t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 		stdout, stderr, err := stopShutdownRun(t, "restart", "api")
-		if err == nil || stdout != "" || stderr != "" || err.Error() != logsUnavailableMessage {
+		if err == nil || stdout != "" || stderr != "" || err.Error() != "Nothing is running in this project. Start it with hum start api." {
 			t.Fatalf("unavailable restart: err=%v stdout=%q stderr=%q", err, stdout, stderr)
 		}
 		if _, statErr := os.Stat(runtimeDir); !os.IsNotExist(statErr) {

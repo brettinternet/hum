@@ -1,15 +1,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"hum/internal/daemon"
 	"hum/internal/project"
 )
 
@@ -21,22 +22,6 @@ func writeDiscoveredBin(t *testing.T, root string) {
 	}
 	if err := os.WriteFile(filepath.Join(bin, "dev"), []byte("#!/bin/sh\nsleep 30\n"), 0o700); err != nil {
 		t.Fatalf("write bin/dev: %v", err)
-	}
-}
-
-func assertDiscoveryDefinition(t *testing.T, definition manifestLaunchResult, outcome string) {
-	t.Helper()
-	if definition.Name != "dev" {
-		t.Fatalf("definition name = %q, want dev", definition.Name)
-	}
-	if definition.Source != "bin_dev" {
-		t.Fatalf("definition source = %q, want bin_dev", definition.Source)
-	}
-	if !reflect.DeepEqual(definition.Argv, []string{"./bin/dev"}) {
-		t.Fatalf("definition argv = %#v, want [./bin/dev]", definition.Argv)
-	}
-	if definition.Outcome != outcome {
-		t.Fatalf("definition outcome = %q, want %q", definition.Outcome, outcome)
 	}
 }
 
@@ -54,145 +39,95 @@ func assertRuntimeDirEmpty(t *testing.T, runtimeDir string) {
 	}
 }
 
-func TestDiscoveredUp(t *testing.T) {
-	root := stopShutdownTestProject(t)
-	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
-	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
-	writeDiscoveredBin(t, root)
-
-	stdout, stderr, err := stopShutdownRun(t, "up", "--json")
-	if err != nil {
-		t.Fatalf("discovered up: %v (stderr: %s)", err, stderr)
-	}
-	results := manifestCLILaunchResults(t, stdout)
-	if len(results) != 1 {
-		t.Fatalf("discovered up returned %d results, want 1: %s", len(results), stdout)
-	}
-	assertDiscoveryDefinition(t, results[0], "running_unverified")
-	if results[0].Readiness != "running_unverified" {
-		t.Fatalf("discovered up readiness = %q, want running_unverified", results[0].Readiness)
-	}
-	if results[0].ReadyCursor != nil {
-		t.Fatalf("discovered up unexpectedly reported ready cursor %v", results[0].ReadyCursor)
-	}
-
-	stdout, stderr, err = stopShutdownRun(t, "status", "--json", "dev")
-	if err != nil {
-		t.Fatalf("discovered status: %v (stderr: %s)", err, stderr)
-	}
-	var status statusJSON
-	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
-		t.Fatalf("decode discovered status: %v", err)
-	}
-	if status.Source != "bin_dev" || !reflect.DeepEqual(status.Argv, []string{"./bin/dev"}) {
-		t.Fatalf("discovered status identity = %+v", status)
-	}
-	if status.Readiness != "running_unverified" {
-		t.Fatalf("discovered status readiness = %q, want running_unverified", status.Readiness)
-	}
-}
-
-func TestDiscoveredStart(t *testing.T) {
-	root := stopShutdownTestProject(t)
-	_, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
-	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
-	writeDiscoveredBin(t, root)
-
-	stdout, stderr, err := stopShutdownRun(t, "start", "--json", "dev")
-	if err != nil {
-		t.Fatalf("discovered start: %v (stderr: %s)", err, stderr)
-	}
-	results := manifestCLILaunchResults(t, stdout)
-	if len(results) != 1 {
-		t.Fatalf("discovered start returned %d results, want 1: %s", len(results), stdout)
-	}
-	assertDiscoveryDefinition(t, results[0], "running_unverified")
-	if results[0].Readiness != "running_unverified" {
-		t.Fatalf("discovered start readiness = %q, want running_unverified", results[0].Readiness)
-	}
-
-	if _, _, err := stopShutdownRun(t, "stop", "dev"); err != nil {
-		t.Fatalf("stop discovered process: %v", err)
-	}
-	stdout, stderr, err = stopShutdownRun(t, "run", "--detach", "--json", "dev")
-	if err != nil {
-		t.Fatalf("run discovered definition: %v (stderr: %s)", err, stderr)
-	}
-	var runResultValue runResult
-	if err := json.Unmarshal([]byte(stdout), &runResultValue); err != nil {
-		t.Fatalf("decode discovered run: %v", err)
-	}
-	if runResultValue.Name != "dev" || runResultValue.Source != "bin_dev" || !reflect.DeepEqual(runResultValue.Argv, []string{"./bin/dev"}) {
-		t.Fatalf("discovered run identity = %+v", runResultValue)
-	}
-	if runResultValue.Outcome != "running_unverified" || runResultValue.Readiness != "running_unverified" || runResultValue.ReadyCursor != nil {
-		t.Fatalf("discovered run readiness = %+v", runResultValue)
-	}
-
-	stdout, stderr, err = stopShutdownRun(t, "restart", "--json", "dev")
-	if err != nil {
-		t.Fatalf("restart discovered definition: %v (stderr: %s)", err, stderr)
-	}
-	var restarted restartResult
-	if err := json.Unmarshal([]byte(stdout), &restarted); err != nil {
-		t.Fatalf("decode discovered restart: %v", err)
-	}
-	if restarted.Source != "bin_dev" || !reflect.DeepEqual(restarted.Argv, []string{"./bin/dev"}) {
-		t.Fatalf("discovered restart identity = %+v", restarted)
-	}
-	if restarted.Readiness != "running_unverified" || restarted.ReadyCursor != nil {
-		t.Fatalf("discovered restart readiness = %q cursor %v", restarted.Readiness, restarted.ReadyCursor)
-	}
-}
-
-func TestDiscoveredList(t *testing.T) {
+func TestManifestMissingUp(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	runtimeDir := filepath.Join(t.TempDir(), "runtime")
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 	writeDiscoveredBin(t, root)
+	_, _, err := stopShutdownRun(t, "up")
+	if !errors.Is(err, project.ErrManifestMissing) {
+		t.Fatalf("up error = %v, want manifest_missing", err)
+	}
+	assertRuntimeDirEmpty(t, runtimeDir)
+}
 
+func TestManifestMissingStart(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	runtimeDir := filepath.Join(t.TempDir(), "runtime")
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeDiscoveredBin(t, root)
+	_, _, err := stopShutdownRun(t, "start", "dev")
+	if !errors.Is(err, project.ErrManifestMissing) {
+		t.Fatalf("start error = %v, want manifest_missing", err)
+	}
+	assertRuntimeDirEmpty(t, runtimeDir)
+}
+
+func TestManifestMissingList(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	runtimeDir := filepath.Join(t.TempDir(), "runtime")
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeDiscoveredBin(t, root)
 	stdout, stderr, err := stopShutdownRun(t, "list", "--json")
 	if err != nil {
-		t.Fatalf("discovered list without daemon: %v (stderr: %s)", err, stderr)
+		t.Fatalf("list without daemon: %v (stderr: %s)", err, stderr)
 	}
 	var listed listJSON
 	if err := json.Unmarshal([]byte(stdout), &listed); err != nil {
-		t.Fatalf("decode discovered list: %v", err)
+		t.Fatalf("decode list: %v", err)
 	}
-	if len(listed.Processes) != 1 {
-		t.Fatalf("discovered list returned %d processes, want 1", len(listed.Processes))
-	}
-	process := listed.Processes[0]
-	if process.Name != "dev" || process.Source != "bin_dev" || process.State != "stopped" || !reflect.DeepEqual(process.Argv, []string{"./bin/dev"}) {
-		t.Fatalf("discovered stopped process = %+v", process)
+	if len(listed.Processes) != 0 {
+		t.Fatalf("list returned %d processes, want empty", len(listed.Processes))
 	}
 	if _, err := os.Stat(runtimeDir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("read-only discovered list touched runtime directory: %v", err)
-	}
-
-	_, runtimeDir = stopShutdownTestServer(t, 2*time.Second)
-	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
-	if _, _, err := stopShutdownRun(t, "start", "--no-wait", "dev"); err != nil {
-		t.Fatalf("start discovered process for list: %v", err)
-	}
-	stdout, stderr, err = stopShutdownRun(t, "list", "--full")
-	if err != nil {
-		t.Fatalf("discovered human list: %v (stderr: %s)", err, stderr)
-	}
-	if !strings.Contains(stdout, "NAME") || !strings.Contains(stdout, "SOURCE") || !strings.Contains(stdout, "bin_dev") || !strings.Contains(stdout, "./bin/dev") || !strings.Contains(stdout, "readiness=running_unverified") {
-		t.Fatalf("discovered human list omitted metadata: %q", stdout)
+		t.Fatalf("read-only list touched runtime directory: %v", err)
 	}
 }
 
-func TestDiscoveryErrors(t *testing.T) {
+func TestManifestMissingListReturnsRetainedRecords(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	client, err := daemon.Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Start(context.Background(), daemon.StartRequest{Name: "retained", Root: root, Cwd: root, Source: "ad_hoc", Argv: []string{"/bin/sh", "-c", "sleep 30"}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+	stdout, stderr, err := stopShutdownRun(t, "list", "--json")
+	if err != nil || !strings.Contains(stdout, `"name":"retained"`) {
+		t.Fatalf("retained list: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+}
+
+func TestManifestMissingStatusRemainsRuntimeOnly(t *testing.T) {
+	_ = stopShutdownTestProject(t)
+	runtimeDir := filepath.Join(t.TempDir(), "runtime")
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+
+	if stdout, stderr, err := stopShutdownRun(t, "status", "--json"); err != nil {
+		t.Fatalf("aggregate status failed: %v; stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	_, _, err := stopShutdownRun(t, "status", "missing", "--json")
+	if err == nil || errors.Is(err, project.ErrManifestMissing) {
+		t.Fatalf("named status error = %v, want existing not-found semantics", err)
+	}
+	if stdout, stderr, err := stopShutdownRun(t, "list", "--all", "--json"); err != nil {
+		t.Fatalf("list --all changed: %v; stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if stdout, stderr, err := stopShutdownRun(t, "--global", "list", "--json"); err != nil {
+		t.Fatalf("global list changed: %v; stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	assertRuntimeDirEmpty(t, runtimeDir)
+}
+
+func TestManifestMissingCommandMatrix(t *testing.T) {
 	commands := [][]string{
 		{"up"},
 		{"start", "dev"},
-		{"run", "dev"},
 		{"restart", "dev"},
-		{"status", "dev"},
-		{"logs", "dev"},
-		{"wait", "dev"},
 	}
 	for _, args := range commands {
 		name := strings.Join(args, "-")
@@ -208,9 +143,8 @@ func TestDiscoveryErrors(t *testing.T) {
 			if err == nil {
 				t.Fatalf("%s unexpectedly succeeded", strings.Join(args, " "))
 			}
-			var configuration *project.ConfigurationError
-			if !errors.As(err, &configuration) {
-				t.Fatalf("%s error = %v, want ConfigurationError", strings.Join(args, " "), err)
+			if !errors.Is(err, project.ErrManifestMissing) {
+				t.Fatalf("%s error = %v, want manifest_missing", strings.Join(args, " "), err)
 			}
 			assertRuntimeDirEmpty(t, runtimeDir)
 		})
@@ -227,9 +161,8 @@ func TestDiscoveryErrors(t *testing.T) {
 		if err == nil {
 			t.Fatal("start dev unexpectedly succeeded")
 		}
-		var configuration *project.ConfigurationError
-		if !errors.As(err, &configuration) {
-			t.Fatalf("start dev error = %v, want ConfigurationError", err)
+		if !errors.Is(err, project.ErrManifestMissing) {
+			t.Fatalf("start dev error = %v, want manifest_missing", err)
 		}
 		assertRuntimeDirEmpty(t, runtimeDir)
 	})
@@ -243,9 +176,8 @@ func TestDiscoveryErrors(t *testing.T) {
 		if err == nil {
 			t.Fatalf("no-candidate up unexpectedly succeeded: stdout %q stderr %q", stdout, stderr)
 		}
-		var noCandidate *project.NoCandidateError
-		if !errors.As(err, &noCandidate) {
-			t.Fatalf("no-candidate up error = %v, want NoCandidateError", err)
+		if !errors.Is(err, project.ErrManifestMissing) {
+			t.Fatalf("no-candidate up error = %v, want manifest_missing", err)
 		}
 		if stdout != "" || stderr != "" {
 			t.Fatalf("no-candidate up output = stdout %q stderr %q, want empty (harness does not print the returned error)", stdout, stderr)
@@ -267,9 +199,8 @@ func TestDiscoveryErrors(t *testing.T) {
 			if err == nil {
 				t.Fatalf("%s unexpectedly succeeded", strings.Join(args, " "))
 			}
-			var noCandidate *project.NoCandidateError
-			if !errors.As(err, &noCandidate) {
-				t.Fatalf("%s error = %v, want NoCandidateError", strings.Join(args, " "), err)
+			if !errors.Is(err, project.ErrManifestMissing) {
+				t.Fatalf("%s error = %v, want manifest_missing", strings.Join(args, " "), err)
 			}
 			assertRuntimeDirEmpty(t, runtimeDir)
 		})
@@ -295,12 +226,8 @@ func TestDiscoveryErrors(t *testing.T) {
 		if err == nil {
 			t.Fatal("start dev unexpectedly succeeded from false Make discovery")
 		}
-		var noCandidate *project.NoCandidateError
-		if !errors.As(err, &noCandidate) {
-			t.Fatalf("start dev error = %v, want NoCandidateError", err)
-		}
-		if noCandidate.Root != root {
-			t.Fatalf("no-candidate root = %q, want %q", noCandidate.Root, root)
+		if !errors.Is(err, project.ErrManifestMissing) {
+			t.Fatalf("start dev error = %v, want manifest_missing", err)
 		}
 		assertRuntimeDirEmpty(t, runtimeDir)
 		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -348,40 +275,21 @@ func TestDiscoveryErrors(t *testing.T) {
 		if err == nil {
 			t.Fatal("start dev unexpectedly succeeded from directive-only Make input")
 		}
-		var noCandidate *project.NoCandidateError
-		if !errors.As(err, &noCandidate) {
-			t.Fatalf("start dev error = %v, want NoCandidateError", err)
-		}
-		if noCandidate.Root != root {
-			t.Fatalf("no-candidate root = %q, want %q", noCandidate.Root, root)
+		if !errors.Is(err, project.ErrManifestMissing) {
+			t.Fatalf("start dev error = %v, want manifest_missing", err)
 		}
 		assertRuntimeDirEmpty(t, runtimeDir)
 	})
 
-	t.Run("representative strict launch discovery errors", func(t *testing.T) {
+	t.Run("malformed conventional files are ignored at runtime", func(t *testing.T) {
 		for _, test := range []struct {
 			name     string
 			filename string
 			contents string
 			args     []string
-			kind     string
-			source   string
 		}{
-			{
-				name:     "null package script",
-				filename: "package.json",
-				contents: `{"scripts":{"dev":null}}`,
-				args:     []string{"start", "dev"},
-				kind:     "configuration",
-				source:   "package_json",
-			},
-			{
-				name:     "target-specific make assignment",
-				filename: "Makefile",
-				contents: "dev: FOO = bar\n",
-				args:     []string{"up"},
-				kind:     "no-candidate-up",
-			},
+			{name: "null package script", filename: "package.json", contents: `{"scripts":{"dev":null}}`, args: []string{"start", "dev"}},
+			{name: "target-specific make assignment", filename: "Makefile", contents: "dev: FOO = bar\n", args: []string{"up"}},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				root := stopShutdownTestProject(t)
@@ -392,42 +300,8 @@ func TestDiscoveryErrors(t *testing.T) {
 				t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 
 				stdout, stderr, err := stopShutdownRun(t, test.args...)
-				switch test.kind {
-				case "configuration":
-					var configuration *project.ConfigurationError
-					if !errors.As(err, &configuration) {
-						t.Fatalf("%s error = %v, want ConfigurationError", strings.Join(test.args, " "), err)
-					}
-					if configuration.Source != test.source {
-						t.Fatalf("configuration source = %q, want %q", configuration.Source, test.source)
-					}
-					if configuration.Path != filepath.Join(root, test.filename) {
-						t.Fatalf("configuration path = %q, want %q", configuration.Path, filepath.Join(root, test.filename))
-					}
-				case "no-candidate":
-					if err == nil {
-						t.Fatalf("%s unexpectedly succeeded", strings.Join(test.args, " "))
-					}
-					var noCandidate *project.NoCandidateError
-					if !errors.As(err, &noCandidate) {
-						t.Fatalf("%s error = %v, want NoCandidateError", strings.Join(test.args, " "), err)
-					}
-					if noCandidate.Root != root {
-						t.Fatalf("no-candidate root = %q, want %q", noCandidate.Root, root)
-					}
-				case "no-candidate-up":
-					if err == nil {
-						t.Fatalf("%s unexpectedly succeeded: stdout %q stderr %q", strings.Join(test.args, " "), stdout, stderr)
-					}
-					var noCandidate *project.NoCandidateError
-					if !errors.As(err, &noCandidate) {
-						t.Fatalf("%s error = %v, want NoCandidateError", strings.Join(test.args, " "), err)
-					}
-					if stdout != "" || stderr != "" {
-						t.Fatalf("%s output = stdout %q stderr %q, want empty", strings.Join(test.args, " "), stdout, stderr)
-					}
-				default:
-					t.Fatalf("unknown expected error kind %q", test.kind)
+				if !errors.Is(err, project.ErrManifestMissing) {
+					t.Fatalf("%s error = %v, want ErrManifestMissing; stdout=%q stderr=%q", strings.Join(test.args, " "), err, stdout, stderr)
 				}
 				assertRuntimeDirEmpty(t, runtimeDir)
 			})

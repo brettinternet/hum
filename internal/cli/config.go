@@ -133,6 +133,7 @@ const (
 	jsonErrorUsage             protocol.ErrorCode = "usage"
 	jsonErrorDaemonUnavailable protocol.ErrorCode = "daemon_unavailable"
 	jsonErrorManifestInvalid   protocol.ErrorCode = "manifest_invalid"
+	jsonErrorManifestMissing   protocol.ErrorCode = "manifest_missing"
 	jsonErrorInternal          protocol.ErrorCode = "internal"
 )
 
@@ -154,6 +155,9 @@ func classifyJSONError(err error) *protocol.WireError {
 	var active *daemon.ActiveProcessesError
 	if errors.As(err, &active) {
 		return protocol.NewWireError(protocol.ErrorActiveProcesses, err.Error(), nil)
+	}
+	if errors.Is(err, project.ErrManifestMissing) {
+		return protocol.NewWireError(jsonErrorManifestMissing, err.Error(), nil)
 	}
 	if errors.Is(err, project.ErrConfiguration) || errors.Is(err, project.ErrAmbiguous) || errors.Is(err, project.ErrIntrospection) {
 		return protocol.NewWireError(jsonErrorManifestInvalid, err.Error(), nil)

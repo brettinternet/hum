@@ -1,26 +1,40 @@
 package project
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 )
 
 // ErrNoCandidate reports that no supported conventional development entrypoint
-// was found in a project root.
+// was found by hum init in a project root.
 var ErrNoCandidate = errors.New("no conventional development candidate")
+
+// ErrManifestMissing reports that a declaration was required but hum.yaml was absent.
+var ErrManifestMissing = errors.New("manifest is missing")
+
+// ManifestMissingError identifies the project that needs an explicit declaration.
+type ManifestMissingError struct {
+	Root string
+}
+
+func (e *ManifestMissingError) Error() string {
+	if e == nil {
+		return ErrManifestMissing.Error()
+	}
+	return fmt.Sprintf("%s in %s: run hum init to create hum.yaml, or use hum run NAME -- COMMAND", ErrManifestMissing, e.Root)
+}
+
+func (e *ManifestMissingError) Unwrap() error { return ErrManifestMissing }
 
 // ErrAmbiguous reports that more than one supported conventional development
 // entrypoint was found in a project root.
@@ -167,17 +181,8 @@ var supportedDiscoverySources = []string{
 	"mix",
 }
 
-type discoveryLookPathFunc func(string) (string, error)
-type discoveryCommandFunc func(context.Context, string, ...string) ([]byte, error)
 type discoveryReadFileFunc func(string) ([]byte, error)
 type discoveryDetector func(context.Context, string) (Definition, bool, error)
-
-// These package-private seams keep detector tests deterministic. Production
-// resolution leaves them pointed at exec.LookPath and os/exec.
-var (
-	discoveryLookPath discoveryLookPathFunc = exec.LookPath
-	discoveryCommand  discoveryCommandFunc  = runDiscoveryCommand
-)
 
 // ManifestSelection identifies one validated manifest and its project scope.
 type ManifestSelection struct {
@@ -257,14 +262,13 @@ func ResolveExplicitDefinitions(ctx context.Context, selection ManifestSelection
 	return LoadDefinitionsFile(selection.Root, selection.Path, selection.Relative, selection.Source)
 }
 
-// ResolveDefinitions returns the explicit hum.yaml definitions when that file
-// exists. Only an absent hum.yaml invokes conventional root discovery.
+// ResolveDefinitions returns only explicit hum.yaml definitions.
 func ResolveDefinitions(root string) ([]Definition, error) {
 	return ResolveDefinitionsContext(context.Background(), root)
 }
 
-// ResolveDefinitionsContext resolves project definitions while allowing command-backed
-// discovery to be cancelled by the caller.
+// ResolveDefinitionsContext resolves only hum.yaml. An absent default manifest
+// is actionable instead of triggering conventional runtime discovery.
 func ResolveDefinitionsContext(ctx context.Context, root string) ([]Definition, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -273,14 +277,31 @@ func ResolveDefinitionsContext(ctx context.Context, root string) ([]Definition, 
 	if err != nil {
 		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: err}
 	}
-	definitions, present, err := loadDefinitions(root)
-	if err != nil {
-		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: err}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	if present {
-		return definitions, nil
+	manifestPath := filepath.Join(root, "hum.yaml")
+	contents, readErr := readDiscoveryDeclaration(manifestPath)
+	if readErr == nil {
+		definitions, parseErr := parseDefinitions(root, contents, filepath.Dir(manifestPath), manifestPath, "manifest")
+		if parseErr != nil {
+			return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: parseErr}
+		}
+		return runtimeManifestDefinitions(definitions), nil
 	}
-	return discoverDefinitionsContext(ctx, root)
+	if !errors.Is(readErr, os.ErrNotExist) {
+		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: fmt.Errorf("%s: open: %w", manifestPath, readErr)}
+	}
+	return nil, &ManifestMissingError{Root: root}
+}
+
+func runtimeManifestDefinitions(definitions []Definition) []Definition {
+	for index := range definitions {
+		if definitions[index].Source == "manifest" {
+			definitions[index].Source = "manifest:hum.yaml"
+		}
+	}
+	return definitions
 }
 
 // ResolveExplicitDefinitionsReadOnly loads exactly the selected manifest with
@@ -293,9 +314,9 @@ func ResolveExplicitDefinitionsReadOnly(selection ManifestSelection) ([]Definiti
 	return parseDefinitions(selection.Root, contents, filepath.Dir(selection.Path), selection.Relative, selection.Source)
 }
 
-// ResolveDefinitionsReadOnly resolves hum.yaml and conventional definitions
-// without running task-runner introspection commands. It is intended for
-// observational diagnostics that must not execute any project-owned command.
+// ResolveDefinitionsReadOnly resolves hum.yaml and conservative conventional
+// init candidates without running project-owned commands. It is intended for
+// observational diagnostics and initialization.
 func ResolveDefinitionsReadOnly(ctx context.Context, root string) ([]Definition, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -311,11 +332,15 @@ func ResolveDefinitionsReadOnly(ctx context.Context, root string) ([]Definition,
 		if parseErr != nil {
 			return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: parseErr}
 		}
-		return definitions, nil
+		return runtimeManifestDefinitions(definitions), nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: fmt.Errorf("%s: open: %w", manifestPath, err)}
 	}
+	return resolveReadOnlyCandidates(ctx, root)
+}
+
+func resolveReadOnlyCandidates(ctx context.Context, root string) ([]Definition, error) {
 	if err := validateReadOnlyDiscoveryFiles(root); err != nil {
 		return nil, err
 	}
@@ -559,55 +584,6 @@ func slicesContain(values []string, target string) bool {
 	return false
 }
 
-func discoverDefinitions(root string) ([]Definition, error) {
-	return discoverDefinitionsContext(context.Background(), root)
-}
-
-func discoverDefinitionsContext(ctx context.Context, root string) ([]Definition, error) {
-	detectors := []discoveryDetector{
-		detectMise,
-		detectTask,
-		detectJust,
-		detectMake,
-		detectPackage,
-		detectDeno,
-		detectComposer,
-		detectBinDev,
-		detectMix,
-	}
-	candidates := make([]Definition, 0, len(detectors))
-	for _, detector := range detectors {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		candidate, found, err := detector(ctx, root)
-		if err != nil {
-			return nil, err
-		}
-		if found {
-			candidates = append(candidates, candidate)
-		}
-	}
-	if len(candidates) == 0 {
-		return nil, &NoCandidateError{
-			Root:      root,
-			Supported: append([]string(nil), supportedDiscoveryConventions...),
-		}
-	}
-	if len(candidates) > 1 {
-		sources := make([]string, len(candidates))
-		for i, candidate := range candidates {
-			sources[i] = candidate.Source
-		}
-		return nil, &AmbiguityError{
-			Root:       root,
-			Sources:    sources,
-			Candidates: append([]Definition(nil), candidates...),
-		}
-	}
-	return candidates, nil
-}
-
 func discoveredDefinition(root, source string, argv ...string) Definition {
 	return Definition{
 		Name:    "dev",
@@ -618,305 +594,6 @@ func discoveredDefinition(root, source string, argv ...string) Definition {
 		After:   []string{},
 		Restart: RestartNever,
 	}
-}
-
-// discoveryCommandTimeout bounds each introspection command so a hung task
-// runner cannot stall CLI resolution or the single-threaded MCP server.
-var discoveryCommandTimeout = 10 * time.Second
-
-func runDiscoveryCommand(ctx context.Context, root string, argv ...string) ([]byte, error) {
-	if len(argv) == 0 || argv[0] == "" {
-		return nil, errors.New("empty discovery command")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	commandCtx, cancel := context.WithTimeout(ctx, discoveryCommandTimeout)
-	defer cancel()
-	command := exec.CommandContext(commandCtx, argv[0], argv[1:]...)
-	command.Dir = root
-	command.WaitDelay = time.Second
-	out, err := command.Output()
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, ctxErr
-	}
-	if commandCtx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("%s did not finish within %s", strings.Join(argv, " "), discoveryCommandTimeout)
-	}
-	return out, err
-}
-
-func commandOutput(ctx context.Context, root, source, path string, skipEmptyFailure bool, argv ...string) ([]byte, bool, error) {
-	lookup := discoveryLookPath
-	if lookup == nil {
-		lookup = exec.LookPath
-	}
-	if _, err := lookup(argv[0]); err != nil {
-		return nil, false, nil
-	}
-	run := discoveryCommand
-	if run == nil {
-		run = runDiscoveryCommand
-	}
-	output, err := run(ctx, root, argv...)
-	if ctx != nil && ctx.Err() != nil {
-		// Caller cancellation is neither a missing tool nor a failed
-		// introspection; the empty-output shortcut below must not hide it.
-		return nil, false, ctx.Err()
-	}
-	if err != nil {
-		// Mise and Task commonly report that their declaration file is
-		// absent with an empty failure. Task reserves exit code 100 for a
-		// missing Taskfile and may also write a diagnostic to stdout.
-		// A declared Justfile or mix.exs, however, must surface a failed
-		// introspection.
-		if skipEmptyFailure && (len(bytes.TrimSpace(output)) == 0 || source == "task" && commandExitCode(err) == 100) {
-			return nil, false, nil
-		}
-		return nil, false, &IntrospectionError{Source: source, Path: path, Argv: append([]string(nil), argv...), Err: err}
-	}
-	return output, true, nil
-}
-
-func commandExitCode(err error) int {
-	type exitCoder interface {
-		ExitCode() int
-	}
-	var coder exitCoder
-	if errors.As(err, &coder) {
-		return coder.ExitCode()
-	}
-	return -1
-}
-
-func detectMise(ctx context.Context, root string) (Definition, bool, error) {
-	output, ran, err := commandOutput(ctx, root, "mise", "", true, "mise", "tasks", "--local", "--json")
-	if err != nil || !ran {
-		return Definition{}, false, err
-	}
-	found, err := parseTaskJSON("mise", output)
-	if err != nil {
-		return Definition{}, false, &IntrospectionError{Source: "mise", Argv: []string{"mise", "tasks", "--local", "--json"}, Err: err}
-	}
-	if !found {
-		return Definition{}, false, nil
-	}
-	return discoveredDefinition(root, "mise", "mise", "run", "dev"), true, nil
-}
-
-func detectTask(ctx context.Context, root string) (Definition, bool, error) {
-	output, ran, err := commandOutput(ctx, root, "task", "", true, "task", "--dir", root, "--list-all", "--json")
-	if err != nil || !ran {
-		return Definition{}, false, err
-	}
-	found, err := parseTaskJSON("task", output)
-	if err != nil {
-		return Definition{}, false, &IntrospectionError{Source: "task", Argv: []string{"task", "--dir", root, "--list-all", "--json"}, Err: err}
-	}
-	if !found {
-		return Definition{}, false, nil
-	}
-	return discoveredDefinition(root, "task", "task", "dev"), true, nil
-}
-
-func parseTaskJSON(source string, output []byte) (bool, error) {
-	value, err := decodeJSON(output)
-	if err != nil {
-		return false, fmt.Errorf("%s output is not valid JSON: %w", source, err)
-	}
-	entries, err := taskEntries(value)
-	if err != nil {
-		return false, fmt.Errorf("%s output has invalid task records: %w", source, err)
-	}
-	for _, entry := range entries {
-		name, aliases, err := taskEntryNames(entry)
-		if err != nil {
-			return false, fmt.Errorf("%s output has invalid task record: %w", source, err)
-		}
-		if name == "dev" {
-			return true, nil
-		}
-		for _, alias := range aliases {
-			if alias == "dev" {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
-func taskEntries(value any) ([]any, error) {
-	switch typed := value.(type) {
-	case []any:
-		return typed, nil
-	case map[string]any:
-		if raw, ok := typed["tasks"]; ok {
-			entries, ok := raw.([]any)
-			if !ok {
-				return nil, errors.New("tasks must be an array")
-			}
-			return entries, nil
-		}
-		if raw, ok := typed["data"]; ok {
-			return taskEntries(raw)
-		}
-		// Some versions expose a name-keyed task map. Accept it without
-		// inspecting any task body or metadata.
-		entries := make([]any, 0, len(typed))
-		for name, record := range typed {
-			if _, ok := record.(map[string]any); !ok {
-				return nil, errors.New("task map values must be objects")
-			}
-			entries = append(entries, map[string]any{"name": name})
-		}
-		return entries, nil
-	default:
-		return nil, errors.New("top-level value must be an array or object")
-	}
-}
-
-func taskEntryNames(value any) (string, []string, error) {
-	switch typed := value.(type) {
-	case string:
-		return typed, nil, nil
-	case map[string]any:
-		raw, ok := typed["name"]
-		if !ok {
-			return "", nil, errors.New("missing name")
-		}
-		name, ok := raw.(string)
-		if !ok {
-			return "", nil, errors.New("name must be a string")
-		}
-		rawAliases, ok := typed["aliases"]
-		if !ok {
-			return name, nil, nil
-		}
-		values, ok := rawAliases.([]any)
-		if !ok {
-			return "", nil, errors.New("aliases must be an array")
-		}
-		aliases := make([]string, len(values))
-		for i, value := range values {
-			alias, ok := value.(string)
-			if !ok {
-				return "", nil, errors.New("aliases must contain strings")
-			}
-			aliases[i] = alias
-		}
-		return name, aliases, nil
-	default:
-		return "", nil, errors.New("record must be an object")
-	}
-}
-
-func detectJust(ctx context.Context, root string) (Definition, bool, error) {
-	path, present, err := rootFile(root, []string{"justfile", "Justfile", ".justfile"}, "just")
-	if err != nil || !present {
-		return Definition{}, false, err
-	}
-	argv := []string{"just", "--unstable", "--dump", "--dump-format", "json", "--justfile", path}
-	output, ran, err := commandOutput(ctx, root, "just", path, false, argv...)
-	if err != nil || !ran {
-		return Definition{}, false, err
-	}
-	found, err := parseJustJSON(output)
-	if err != nil {
-		return Definition{}, false, &IntrospectionError{Source: "just", Path: path, Argv: append([]string(nil), argv...), Err: err}
-	}
-	if !found {
-		return Definition{}, false, nil
-	}
-	return discoveredDefinition(root, "just", "just", "dev"), true, nil
-}
-
-func parseJustJSON(output []byte) (bool, error) {
-	value, err := decodeJSON(output)
-	if err != nil {
-		return false, fmt.Errorf("just dump is not valid JSON: %w", err)
-	}
-	object, ok := value.(map[string]any)
-	if !ok {
-		return false, errors.New("just dump must be an object")
-	}
-	raw, ok := object["recipes"]
-	if !ok {
-		return false, errors.New("just dump is missing recipes")
-	}
-	switch recipes := raw.(type) {
-	case map[string]any:
-		return justRecipeMapHasPublicDev(recipes)
-	case []any:
-		return justRecipeArrayHasPublicDev(recipes)
-	default:
-		return false, errors.New("just recipes must be an object")
-	}
-}
-
-func justRecipeMapHasPublicDev(recipes map[string]any) (bool, error) {
-	publicDev := false
-	for name, rawRecipe := range recipes {
-		recipe, ok := rawRecipe.(map[string]any)
-		if !ok {
-			return false, fmt.Errorf("just recipe %q must be an object", name)
-		}
-		private, err := justRecipePrivate(recipe)
-		if err != nil {
-			return false, fmt.Errorf("just recipe %q %w", name, err)
-		}
-		if name == "dev" && !private {
-			publicDev = true
-		}
-	}
-	return publicDev, nil
-}
-
-func justRecipeArrayHasPublicDev(recipes []any) (bool, error) {
-	publicDev := false
-	devSeen := false
-	for _, rawRecipe := range recipes {
-		recipe, ok := rawRecipe.(map[string]any)
-		if !ok {
-			return false, errors.New("just recipe must be an object")
-		}
-		rawName, ok := recipe["name"]
-		if !ok {
-			return false, errors.New("just recipe is missing name")
-		}
-		name, ok := rawName.(string)
-		if !ok {
-			return false, errors.New("just recipe name must be a string")
-		}
-		private, err := justRecipePrivate(recipe)
-		if err != nil {
-			return false, fmt.Errorf("just recipe %q %w", name, err)
-		}
-		if name != "dev" {
-			continue
-		}
-		if devSeen {
-			return false, errors.New("just dump contains duplicate dev recipes")
-		}
-		devSeen = true
-		publicDev = !private
-	}
-	return publicDev, nil
-}
-
-func justRecipePrivate(recipe map[string]any) (bool, error) {
-	rawPrivate, ok := recipe["private"]
-	if !ok {
-		return false, nil
-	}
-	private, ok := rawPrivate.(bool)
-	if !ok {
-		return false, errors.New("private must be a boolean")
-	}
-	return private, nil
-}
-
-func detectMake(ctx context.Context, root string) (Definition, bool, error) {
-	return detectMakeWithReader(ctx, root, os.ReadFile)
 }
 
 func detectMakeReadOnly(ctx context.Context, root string) (Definition, bool, error) {
@@ -1179,10 +856,6 @@ func isMakeSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n'
 }
 
-func detectPackage(ctx context.Context, root string) (Definition, bool, error) {
-	return detectPackageWithReader(ctx, root, os.ReadFile)
-}
-
 func detectPackageReadOnly(ctx context.Context, root string) (Definition, bool, error) {
 	return detectPackageWithReader(ctx, root, readDiscoveryDeclaration)
 }
@@ -1298,10 +971,6 @@ func packageRunnerFromLockfiles(root string) (string, error) {
 	return families[0], nil
 }
 
-func detectDeno(ctx context.Context, root string) (Definition, bool, error) {
-	return detectDenoWithReader(ctx, root, os.ReadFile)
-}
-
 func detectDenoReadOnly(ctx context.Context, root string) (Definition, bool, error) {
 	return detectDenoWithReader(ctx, root, readDiscoveryDeclaration)
 }
@@ -1371,10 +1040,6 @@ func validateTaskValue(raw json.RawMessage) error {
 	return errors.New("task must be a string or array of strings")
 }
 
-func detectComposer(ctx context.Context, root string) (Definition, bool, error) {
-	return detectComposerWithReader(ctx, root, os.ReadFile)
-}
-
 func detectComposerReadOnly(ctx context.Context, root string) (Definition, bool, error) {
 	return detectComposerWithReader(ctx, root, readDiscoveryDeclaration)
 }
@@ -1431,10 +1096,6 @@ func detectBinDev(_ context.Context, root string) (Definition, bool, error) {
 		return Definition{}, false, nil
 	}
 	return discoveredDefinition(root, "bin_dev", "./bin/dev"), true, nil
-}
-
-func detectMix(ctx context.Context, root string) (Definition, bool, error) {
-	return detectMixWithReader(ctx, root, os.ReadFile)
 }
 
 func detectMixReadOnly(ctx context.Context, root string) (Definition, bool, error) {
@@ -1517,22 +1178,6 @@ func stripElixirCommentsAndStrings(contents []byte) []byte {
 		}
 	}
 	return cleaned
-}
-
-func decodeJSON(data []byte) (any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return nil, err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return nil, errors.New("trailing JSON value")
-		}
-		return nil, err
-	}
-	return value, nil
 }
 
 func decodeJSONObject(data []byte) (map[string]json.RawMessage, error) {

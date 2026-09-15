@@ -23,6 +23,7 @@ import (
 
 type manifestState struct {
 	root         string
+	missing      bool
 	defs         []project.Definition
 	byName       map[string]project.Definition
 	environments map[string][]string
@@ -39,8 +40,8 @@ func newManifestState(root string, defs []project.Definition) manifestState {
 	return manifestState{root: root, defs: defs, byName: byName}
 }
 
-// loadManifest resolves the project manifest for cwd. Command-backed
-// discovery honours ctx so caller cancellation reaps a hung probe.
+// loadManifest resolves the explicit project manifest for cwd. Runtime
+// commands never inspect conventional project files.
 func loadManifest(ctx context.Context, cwd string) (manifestState, error) {
 	root, err := app.DiscoverProjectRoot(cwd)
 	if err != nil {
@@ -160,15 +161,16 @@ func loadManifestOrEmpty(ctx context.Context, cwd string) (manifestState, error)
 	if err == nil {
 		return manifest, nil
 	}
-	var noCandidate *project.NoCandidateError
-	if !errors.As(err, &noCandidate) {
+	if !errors.Is(err, project.ErrManifestMissing) {
 		return manifestState{}, err
 	}
 	root, err := app.DiscoverProjectRoot(cwd)
 	if err != nil {
 		return manifestState{}, err
 	}
-	return newManifestState(root, []project.Definition{}), nil
+	manifest := newManifestState(root, []project.Definition{})
+	manifest.missing = true
+	return manifest, nil
 }
 
 func readinessConfig(definition project.Definition) *protocol.ReadinessConfig {

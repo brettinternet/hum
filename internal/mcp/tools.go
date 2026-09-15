@@ -94,7 +94,7 @@ func captureSinceCutoff(input commonInput) (int64, error) {
 // ErrDaemonUnavailable identifies a missing daemon without coupling MCP to the daemon package.
 var ErrDaemonUnavailable = errors.New("daemon unavailable")
 
-// Definition is one explicit or discovered project process.
+// Definition is one explicit project process.
 type Definition struct {
 	Name        string
 	Environment *project.EnvironmentSpec `json:"-"`
@@ -110,9 +110,10 @@ type Definition struct {
 
 // Resolution is the canonical project root and its process definitions.
 type Resolution struct {
-	Root        string
-	Scope       string
-	Definitions []Definition
+	Root            string
+	Scope           string
+	Definitions     []Definition
+	ManifestMissing bool
 }
 
 // InputRequest is the protocol-independent one-shot input seam used by MCP.
@@ -293,9 +294,9 @@ func stringProperty(description string) map[string]any {
 
 func (s *Server) toolDefinitions() []toolDefinition {
 	root := stringProperty("Absolute path to an existing project directory; hum resolves its nearest Git root or uses the directory itself.")
-	nameResolved := stringProperty("Declared or conventionally discovered process name.")
+	nameResolved := stringProperty("Explicitly declared project process name.")
 	nameExisting := stringProperty("Name of any existing project runtime record, including an ad_hoc process launched by hum run.")
-	manifest := map[string]any{"type": "string", "minLength": 1, "description": "Optional manifest path; relative paths resolve from project_root, absolute paths must remain inside it, and explicit selection disables conventional discovery."}
+	manifest := map[string]any{"type": "string", "minLength": 1, "description": "Optional exact manifest path; relative paths resolve from project_root and absolute paths must remain inside it."}
 	waitProps := map[string]any{
 		"project_root": root,
 		"manifest":     manifest,
@@ -480,15 +481,15 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"truncated": map[string]any{"type": "boolean"}, "has_more": map[string]any{"type": "boolean"},
 	}, "events", "next_cursor", "truncated", "has_more")
 	definitions := []toolDefinition{
-		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; manifest optionally selects one exact file (relative to project_root or absolute inside it) and disables conventional discovery. Omission retains hum.yaml/conventional discovery. Retained records remain a fallback when the selected file does not declare the requested name. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. It never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
-		{Name: "up", Description: "Start every selected project definition through the hum daemon in declared after dependency order; manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission retains hum.yaml/conventional discovery. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. Independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the selected declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc or discovered records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches; discovered definitions remain never. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
+		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses only hum.yaml and returns manifest_missing when a declaration is required. Retained records remain a fallback when no manifest declares the requested name. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. It never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
+		{Name: "up", Description: "Start every selected project definition through the hum daemon in declared after dependency order; manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses only hum.yaml and returns manifest_missing when no retained manifest record can be reported. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. Independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the selected declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop every running runtime record in the selected scope and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
-		{Name: "list", Description: "Merge selected stopped declarations with all daemon runtime records in the selected project scope, including readiness method, exact exec argv, interval, and bounded terminal diagnostic plus match output, and including ad_hoc records; retained records win by name. manifest optionally selects one exact file (relative to project_root or absolute inside it) and disables conventional discovery; omission retains hum.yaml/conventional discovery. Use all from project scope to discover every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
+		{Name: "list", Description: "Merge selected stopped declarations with all daemon runtime records in the selected project scope, including readiness method, exact exec argv, interval, and bounded terminal diagnostic plus match output, and including ad_hoc records; retained records win by name. manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses only hum.yaml. A missing default manifest still returns retained records or an empty result. Use all from project scope to inspect every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record with readiness method, exact exec argv, interval, and bounded terminal diagnostic when configured; match readiness retains match and cursor. This tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
 		{Name: "logs", Description: "Read one immutable bounded cursor-based output snapshot for an existing declared or ad_hoc runtime record. stream selects stdout, stderr, supervision-only system entries, or both; both includes all three streams. match selects entries and context expands each match by eligible entries on both sides; windows merge in cursor order before tail and whole-entry bounds. Context requires match and is unavailable for live following. since_ms uses one request-time cutoff and composes with stream and cursor boundaries. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: logsSchema, OutputSchema: output},
 		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms. Timeout results include process_observed from the same daemon wait request without an extra round trip; false means no runtime record for NAME was observed and includes actionable guidance.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Write one exact, bounded payload to an already-running TTY incarnation at its initial launch cursor with at-most-once behavior; never starts, waits, queues, retries, resends, retains, or explicitly echoes input and fails immediately on ownership conflict.", InputSchema: inputSchema, OutputSchema: inputResult},
-		{Name: "restart", Description: "Restart a selected definition using the current server environment, or an existing retained ad_hoc or removed-definition record using its recorded launch specification. manifest optionally selects one exact file (relative to project_root or absolute inside it) and disables conventional discovery; omission retains hum.yaml/conventional discovery. A requested name absent from the selected file uses the existing retained-record fallback. Results expose readiness method, exact argv, interval, and bounded terminal diagnostic while preserving match output. exec uses direct argv without a shell, starts immediately, retries serially after failures, inherits cwd/environment, and never retains probe output; readiness gates startup, not liveness. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
+		{Name: "restart", Description: "Restart a selected definition using the current server environment, or an existing retained ad_hoc or removed-definition record using its recorded launch specification. manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses only hum.yaml and returns manifest_missing when neither it nor a retained record declares the name. A requested name absent from the selected file uses the existing retained-record fallback. Results expose readiness method, exact argv, interval, and bounded terminal diagnostic while preserving match output. exec uses direct argv without a shell, starts immediately, retries serially after failures, inherits cwd/environment, and never retains probe output; readiness gates startup, not liveness. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
 		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record while preserving its supervision session.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
 		{Name: "remove", Description: "Stop and discard one named runtime supervision session, or every runtime session in the selected scope when all is true. Bulk removal is lexical, never spans scopes, and does not target unlaunched declarations.", InputSchema: removeSchema, OutputSchema: map[string]any{"type": "object", "oneOf": []any{stop, collectionResults(stop)}}},
 		{Name: "signal", Description: "Send one observational signal to a running declared or ad_hoc process group without changing stop intent or automatic relaunch policy. Signal names are case-insensitive with an optional SIG prefix, and positive decimal values are accepted only when they map to the supported named signal table; the result is canonical and reports sent.", InputSchema: signalSchema, OutputSchema: signalResult},
@@ -637,14 +638,14 @@ func (s *Server) resolve(ctx context.Context, root, manifest string) (Resolution
 		}
 		resolution, err = resolver.ResolveManifest(ctx, root, manifest)
 	}
-	if err != nil {
-		return Resolution{}, err
-	}
 	if resolution.Root == "" {
+		if err != nil {
+			return Resolution{}, err
+		}
 		return Resolution{}, errors.New("resolver returned an empty project root")
 	}
 	resolution.Scope = protocol.ScopeProject
-	return resolution, nil
+	return resolution, err
 }
 
 func (s *Server) client(ctx context.Context, ensure bool) (Client, error) {
@@ -1066,7 +1067,7 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		ctx = context.WithValue(ctx, eventOperationContextKey{}, EventOperationMetadata{Name: name, ID: newEventOperationID(), Origin: "mcp"})
 	}
 	resolution, err := s.resolve(ctx, input.ProjectRoot, input.Manifest)
-	if err != nil {
+	if err != nil && !errors.Is(err, project.ErrManifestMissing) {
 		return nil, mapError(err)
 	}
 	switch name {
@@ -1188,11 +1189,17 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 	if !ok {
 		client, err := s.client(ctx, true)
 		if err != nil {
+			if resolution.ManifestMissing && unavailable(err) {
+				return nil, &ToolError{Code: "manifest_missing", Message: (&project.ManifestMissingError{Root: resolution.Root}).Error()}
+			}
 			return nil, mapError(err)
 		}
 		defer client.Close()
 		process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: input.Name, Scope: resolution.Scope, Cwd: resolution.Root})
 		if err != nil {
+			if resolution.ManifestMissing {
+				return nil, &ToolError{Code: "manifest_missing", Message: (&project.ManifestMissingError{Root: resolution.Root}).Error()}
+			}
 			mapped := mapError(err)
 			return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process definition or retained session %q not found", input.Name), Details: mapped.Details}
 		}
@@ -1306,6 +1313,9 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		client, err := s.client(ctx, false)
 		if err != nil {
 			if unavailable(err) {
+				if resolution.ManifestMissing {
+					return nil, &ToolError{Code: "manifest_missing", Message: (&project.ManifestMissingError{Root: resolution.Root}).Error()}
+				}
 				return []launchResult{}, nil
 			}
 			return nil, mapError(err)
@@ -1317,7 +1327,11 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 			return nil, mapError(err)
 		}
 		recordStartupWarnings(ctx, startupWarnings(client))
-		return mcpRemovedDefinitionResults(resolution, processes), nil
+		results := mcpRemovedDefinitionResults(resolution, processes)
+		if resolution.ManifestMissing && len(results) == 0 {
+			return nil, &ToolError{Code: "manifest_missing", Message: (&project.ManifestMissingError{Root: resolution.Root}).Error()}
+		}
+		return results, nil
 	}
 	prepared, prepErr := s.prepareEnvironments(resolution)
 	if prepErr != nil {
@@ -1894,12 +1908,18 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 	}
 	client, err := s.client(ctx, false)
 	if err != nil {
+		if resolution.ManifestMissing && unavailable(err) {
+			return nil, &ToolError{Code: "manifest_missing", Message: (&project.ManifestMissingError{Root: resolution.Root}).Error()}
+		}
 		return nil, mapError(err)
 	}
 	defer client.Close()
 
 	if !declared {
 		if process, getErr := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Scope: resolution.Scope, Cwd: resolution.Root}); getErr != nil {
+			if resolution.ManifestMissing {
+				return nil, &ToolError{Code: "manifest_missing", Message: (&project.ManifestMissingError{Root: resolution.Root}).Error()}
+			}
 			return nil, mapError(getErr)
 		} else {
 			definition = Definition{Name: name, Source: process.Source, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...)}

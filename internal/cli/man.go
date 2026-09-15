@@ -64,7 +64,7 @@ func WriteManPage(writer io.Writer, root *urfavecli.Command, date string) error 
 	writeManSection(&page, "FILES")
 	fmt.Fprintln(&page, ".TP")
 	fmt.Fprintln(&page, ".B hum.yaml")
-	writeManText(&page, "Optional project manifest. Hum searches from the selected directory to the nearest Git root. Use --file PATH or -F PATH to select one complete manifest inside the project; without it, hum.yaml is authoritative and discovery runs only when hum.yaml is absent.")
+	writeManText(&page, "Optional project manifest. Hum searches from the selected directory to the nearest Git root. Use --file PATH or -F PATH to select one complete manifest inside the project; without it, hum.yaml is the only default declaration source; definition-requiring commands return manifest_missing.")
 	writeManSection(&page, "ENVIRONMENT")
 	writeManDefinition(&page, "HUM_RUNTIME_DIR", "Override the daemon runtime directory.")
 	writeManDefinition(&page, "XDG_RUNTIME_DIR", "Base runtime directory when HUM_RUNTIME_DIR is unset.")
@@ -173,7 +173,7 @@ func manCommandDescription(command *urfavecli.Command) string {
 	case "run":
 		return "Run a named process and start the daemon if needed. A declared process needs only its name. For an ad-hoc process, put -- before its command. By default Hum shows its output and Ctrl+C stops it; --detach leaves it running in the background."
 	case "start":
-		return "Start named processes from hum.yaml or project discovery. Already-running processes are left alone. Unlike hum up, this command does not start dependencies. It waits for configured readiness checks unless --no-wait is used. Readiness confirms startup only; it does not monitor later health.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 exit before ready."
+		return "Start named processes from hum.yaml. Already-running processes are left alone. Unlike hum up, this command does not start dependencies. It waits for configured readiness checks unless --no-wait is used. Readiness confirms startup only; it does not monitor later health.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 exit before ready."
 	case "up":
 		return "Start every process in hum.yaml. Independent processes start together; dependent processes wait for their prerequisites to become ready. By default Hum follows process output. Use --detach to return after readiness or --no-wait to return after spawning.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 early exit or failed recovery; 130 interrupted startup (processes launched by this invocation are stopped)."
 	case "logs":

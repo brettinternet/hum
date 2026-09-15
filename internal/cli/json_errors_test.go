@@ -177,6 +177,54 @@ func TestJSONErrorsBeforeOutput(t *testing.T) {
 	})
 }
 
+func TestManifestMissingHumanAndJSONErrors(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	t.Setenv("HUM_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
+
+	stdout, stderr, err := jsonErrorTestRun(t, "up", "--project", projectRoot, "--json")
+	if err == nil || stderr != "" {
+		t.Fatalf("JSON up error = %v, stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	got := decodeJSONErrorObject(t, stdout)
+	if got.Code != string(jsonErrorManifestMissing) {
+		t.Fatalf("JSON error code = %q, want manifest_missing", got.Code)
+	}
+	for _, text := range []string{projectRoot, "init to create hum.yaml", "hum run NAME -- COMMAND"} {
+		if !strings.Contains(got.Message, text) {
+			t.Errorf("JSON error %q missing %q", got.Message, text)
+		}
+	}
+
+	_, _, err = jsonErrorTestRun(t, "up", "--project", projectRoot)
+	if err == nil {
+		t.Fatal("human up unexpectedly succeeded")
+	}
+	for _, text := range []string{projectRoot, "init to create hum.yaml", "hum run NAME -- COMMAND"} {
+		if !strings.Contains(err.Error(), text) {
+			t.Errorf("human error %q missing %q", err, text)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte("version: 1\nprocesses:\n  broken: [not, a, process]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err = jsonErrorTestRun(t, "up", "--project", projectRoot, "--json")
+	if err == nil || decodeJSONErrorObject(t, stdout).Code != string(jsonErrorManifestInvalid) {
+		t.Fatalf("invalid default manifest fell back: err=%v stdout=%q", err, stdout)
+	}
+	if err := os.Remove(filepath.Join(projectRoot, "hum.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	alternate := filepath.Join(projectRoot, "hum.dev.yaml")
+	if err := os.WriteFile(alternate, []byte("version: 1\nprocesses:\n  broken: [not, a, process]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err = jsonErrorTestRun(t, "up", "--project", projectRoot, "--file", alternate, "--json")
+	if err == nil || decodeJSONErrorObject(t, stdout).Code != string(jsonErrorManifestInvalid) {
+		t.Fatalf("invalid explicit manifest fell back: err=%v stdout=%q", err, stdout)
+	}
+}
+
 func TestJSONErrorClassificationIgnoresMessageText(t *testing.T) {
 	for _, message := range []string{
 		"runtime requires a process name",

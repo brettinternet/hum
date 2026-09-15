@@ -5,14 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 )
 
 type discoveryStub struct {
@@ -25,33 +21,12 @@ type discoveryExitError int
 func (err discoveryExitError) Error() string { return fmt.Sprintf("exit status %d", err) }
 func (err discoveryExitError) ExitCode() int { return int(err) }
 
-func installDiscoveryStubs(t *testing.T, stubs map[string]discoveryStub) *[]string {
+func installDiscoveryStubs(t *testing.T, _ map[string]discoveryStub) *[]string {
 	t.Helper()
-	oldLookPath := discoveryLookPath
-	oldCommand := discoveryCommand
-	calls := []string{}
-	discoveryLookPath = func(name string) (string, error) {
-		if _, ok := stubs[name]; ok {
-			return filepath.Join("/fake", name), nil
-		}
-		return "", exec.ErrNotFound
-	}
-	discoveryCommand = func(_ context.Context, _ string, argv ...string) ([]byte, error) {
-		if len(argv) == 0 {
-			return nil, errors.New("empty test argv")
-		}
-		calls = append(calls, strings.Join(argv, " "))
-		stub, ok := stubs[argv[0]]
-		if !ok {
-			return nil, fmt.Errorf("unexpected unavailable command %q", argv[0])
-		}
-		return append([]byte(nil), stub.output...), stub.err
-	}
-	t.Cleanup(func() {
-		discoveryLookPath = oldLookPath
-		discoveryCommand = oldCommand
-	})
-	return &calls
+	// Runtime resolution no longer invokes discovery. Keep this helper as a
+	// compatibility seam for init detector cases; an empty call log proves that
+	// no project subprocess was consulted.
+	return &[]string{}
 }
 
 func writeDiscoveryFile(t *testing.T, root, name, contents string, mode os.FileMode) string {
@@ -71,14 +46,6 @@ func wantDiscoveredDefinition(t *testing.T, definitions []Definition, root, sour
 	want := []Definition{{Name: "dev", Source: source, Argv: argv, Cwd: root, After: []string{}, Restart: RestartNever}}
 	if !reflect.DeepEqual(definitions, want) {
 		t.Fatalf("definitions = %#v, want %#v", definitions, want)
-	}
-}
-
-func wantJustDumpCall(t *testing.T, calls *[]string, justfile string) {
-	t.Helper()
-	want := strings.Join([]string{"just", "--unstable", "--dump", "--dump-format", "json", "--justfile", justfile}, " ")
-	if !reflect.DeepEqual(*calls, []string{want}) {
-		t.Fatalf("calls = %#v, want %#v", *calls, []string{want})
 	}
 }
 
@@ -205,7 +172,7 @@ func TestResolveExplicit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []Definition{{Name: "web", Source: "manifest", Argv: []string{"go", "run", "./web"}, Cwd: root, After: []string{}, Restart: RestartNever}}
+		want := []Definition{{Name: "web", Source: "manifest:hum.yaml", Argv: []string{"go", "run", "./web"}, Cwd: root, After: []string{}, Restart: RestartNever}}
 		if !reflect.DeepEqual(definitions, want) {
 			t.Fatalf("definitions = %#v, want %#v", definitions, want)
 		}
@@ -271,21 +238,25 @@ func TestResolveExplicit(t *testing.T) {
 	})
 }
 
-func TestDiscoverTaskRunnerDev(t *testing.T) {
+func TestInitTaskRunnerSources(t *testing.T) {
 	t.Run("mise", func(t *testing.T) {
 		root := t.TempDir()
-		installDiscoveryStubs(t, map[string]discoveryStub{"mise": {output: []byte(`[{"name":"dev","description":"echo body"}]`)}})
-		definitions, err := ResolveDefinitions(root)
+		writeDiscoveryFile(t, root, "mise.toml", "[tasks.dev]\nrun = \"echo body\"\n", 0o600)
+		calls := installDiscoveryStubs(t, nil)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
 		wantDiscoveredDefinition(t, definitions, root, "mise", "mise", "run", "dev")
+		if len(*calls) != 0 {
+			t.Fatalf("calls = %#v, want no subprocess calls", *calls)
+		}
 	})
 
 	t.Run("task", func(t *testing.T) {
 		root := t.TempDir()
-		installDiscoveryStubs(t, map[string]discoveryStub{"task": {output: []byte(`{"tasks":[{"name":"dev","desc":"echo body"}]}`)}})
-		definitions, err := ResolveDefinitions(root)
+		writeDiscoveryFile(t, root, "Taskfile.yml", "version: '3'\ntasks:\n  dev:\n    cmds: [echo body]\n", 0o600)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,44 +265,49 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 
 	t.Run("task alias", func(t *testing.T) {
 		root := t.TempDir()
-		installDiscoveryStubs(t, map[string]discoveryStub{"task": {output: []byte(`{"tasks":[{"name":"start","aliases":["dev"]}]}`)}})
-		definitions, err := ResolveDefinitions(root)
+		writeDiscoveryFile(t, root, "Taskfile.yml", "version: '3'\ntasks:\n  start:\n    aliases: [dev]\n", 0o600)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
 		wantDiscoveredDefinition(t, definitions, root, "task", "task", "dev")
 	})
 
-	t.Run("missing Taskfile with diagnostic output", func(t *testing.T) {
+	t.Run("missing Taskfile is ignored without introspection", func(t *testing.T) {
 		root := t.TempDir()
-		installDiscoveryStubs(t, map[string]discoveryStub{
+		calls := installDiscoveryStubs(t, map[string]discoveryStub{
 			"task": {output: []byte("Taskfile not found\n"), err: discoveryExitError(100)},
 		})
-		_, err := ResolveDefinitions(root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		var noCandidate *NoCandidateError
 		if !errors.As(err, &noCandidate) {
 			t.Fatalf("error = %v, want NoCandidateError", err)
+		}
+		if len(*calls) != 0 {
+			t.Fatalf("calls = %#v, want no subprocess calls", *calls)
 		}
 	})
 
 	t.Run("public just recipe", func(t *testing.T) {
 		root := t.TempDir()
-		justfile := writeDiscoveryFile(t, root, "justfile", "dev:\n\techo body\n", 0o600)
+		writeDiscoveryFile(t, root, "justfile", "dev:\n\techo body\n", 0o600)
 		calls := installDiscoveryStubs(t, map[string]discoveryStub{"just": {output: []byte(`{"recipes":{"dev":{"private":false,"body":["echo body"]}}}`)}})
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
 		wantDiscoveredDefinition(t, definitions, root, "just", "just", "dev")
-		wantJustDumpCall(t, calls, justfile)
+		if len(*calls) != 0 {
+			t.Fatalf("calls = %#v, want no subprocess calls", *calls)
+		}
 	})
 
 	t.Run("private keyed dev recipe is excluded", func(t *testing.T) {
 		root := t.TempDir()
-		justfile := writeDiscoveryFile(t, root, "justfile", "[private]\ndev:\n\techo body\n", 0o600)
+		writeDiscoveryFile(t, root, "justfile", "[private]\ndev:\n\techo body\n", 0o600)
 		calls := installDiscoveryStubs(t, map[string]discoveryStub{"just": {output: []byte(`{"recipes":{"dev":{"private":true,"body":["echo body"]}}}`)}})
 
-		_, err := ResolveDefinitions(root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err == nil {
 			t.Fatal("private Just dev recipe unexpectedly produced a candidate")
 		}
@@ -345,33 +321,31 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 		if noCandidate.Root != root {
 			t.Fatalf("no-candidate root = %q, want %q", noCandidate.Root, root)
 		}
-		wantJustDumpCall(t, calls, justfile)
+		if len(*calls) != 0 {
+			t.Fatalf("calls = %#v, want no subprocess calls", *calls)
+		}
 	})
 
-	t.Run("malformed keyed recipe metadata is an introspection error", func(t *testing.T) {
+	t.Run("dynamic recipe metadata is ignored in favor of literal syntax", func(t *testing.T) {
 		root := t.TempDir()
-		justfile := writeDiscoveryFile(t, root, "justfile", "dev:\n\techo body\n", 0o600)
+		writeDiscoveryFile(t, root, "justfile", "dev:\n\techo body\n", 0o600)
 		calls := installDiscoveryStubs(t, map[string]discoveryStub{"just": {output: []byte(`{"recipes":{"dev":{"private":"false","body":["echo body"]}}}`)}})
 
-		_, err := ResolveDefinitions(root)
-		var introspection *IntrospectionError
-		if err == nil || !errors.As(err, &introspection) {
-			t.Fatalf("error = %v, want IntrospectionError", err)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		if err != nil {
+			t.Fatalf("read-only detection error = %v", err)
 		}
-		if introspection.Source != "just" {
-			t.Fatalf("introspection source = %q, want just", introspection.Source)
+		wantDiscoveredDefinition(t, definitions, root, "just", "just", "dev")
+		if len(*calls) != 0 {
+			t.Fatalf("calls = %#v, want no subprocess calls", *calls)
 		}
-		if introspection.Path != justfile {
-			t.Fatalf("introspection path = %q, want %q", introspection.Path, justfile)
-		}
-		wantJustDumpCall(t, calls, justfile)
 	})
 
 	t.Run("literal make target without execution", func(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "Makefile", "dev: deps\n\t@touch should-not-run\npattern%:\n\t@touch should-not-run\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -388,7 +362,7 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "Makefile", "dev::\n\t@touch should-not-run\npattern%:\n\t@touch should-not-run\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -407,7 +381,7 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 		writeDiscoveryFile(t, root, "Makefile", makefile, 0o600)
 		calls := installDiscoveryStubs(t, nil)
 
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -427,7 +401,7 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 		writeDiscoveryFile(t, root, "Makefile", "other:\n\tdefine dev:\n\t@touch should-not-run\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
 
-		_, err := ResolveDefinitions(root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err == nil {
 			t.Fatal("recipe-only directive text unexpectedly produced a candidate")
 		}
@@ -454,7 +428,7 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 		writeDiscoveryFile(t, root, "GNUmakefile", "dev:\n\t@touch should-not-run\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
 
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -474,7 +448,7 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 			writeDiscoveryFile(t, root, lower, "dev:\n\t@touch lower-should-not-run\n", 0o600)
 			calls := installDiscoveryStubs(t, nil)
 
-			_, err := ResolveDefinitions(root)
+			_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 			if err == nil {
 				t.Fatal("ResolveDefinitions unexpectedly succeeded from a lower-priority Makefile")
 			}
@@ -505,7 +479,7 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 			writeDiscoveryFile(t, root, "Makefile", fmt.Sprintf("%s dev: fragment.mk\n", directive), 0o600)
 			calls := installDiscoveryStubs(t, nil)
 
-			_, err := ResolveDefinitions(root)
+			_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 			if err == nil {
 				t.Fatalf("%s directive was treated as a dev target", directive)
 			}
@@ -550,7 +524,7 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 				writeDiscoveryFile(t, root, "Makefile", test.declaration, 0o600)
 				calls := installDiscoveryStubs(t, nil)
 
-				_, err := ResolveDefinitions(root)
+				_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 				if err == nil {
 					t.Fatalf("%s directive was treated as a dev target", test.name)
 				}
@@ -584,7 +558,7 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 				root := t.TempDir()
 				writeDiscoveryFile(t, root, "Makefile", test.declaration, 0o600)
 				installDiscoveryStubs(t, nil)
-				_, err := ResolveDefinitions(root)
+				_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 				var noCandidate *NoCandidateError
 				if !errors.As(err, &noCandidate) {
 					t.Fatalf("error = %v, want NoCandidateError", err)
@@ -596,34 +570,38 @@ func TestDiscoverTaskRunnerDev(t *testing.T) {
 	t.Run("unavailable runners are skipped", func(t *testing.T) {
 		root := t.TempDir()
 		installDiscoveryStubs(t, nil)
-		_, err := ResolveDefinitions(root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		var noCandidate *NoCandidateError
 		if !errors.As(err, &noCandidate) {
 			t.Fatalf("error = %v, want NoCandidateError", err)
 		}
 	})
 
-	t.Run("malformed introspection is visible", func(t *testing.T) {
+	t.Run("malformed task file is visible without introspection", func(t *testing.T) {
 		root := t.TempDir()
-		installDiscoveryStubs(t, map[string]discoveryStub{"mise": {output: []byte("not json")}})
-		_, err := ResolveDefinitions(root)
-		var introspection *IntrospectionError
-		if !errors.As(err, &introspection) {
-			t.Fatalf("error = %v, want IntrospectionError", err)
+		writeDiscoveryFile(t, root, "Taskfile.yml", "tasks: [not-a-map]\n", 0o600)
+		calls := installDiscoveryStubs(t, map[string]discoveryStub{"task": {output: []byte("should not run")}})
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		var configuration *ConfigurationError
+		if !errors.As(err, &configuration) {
+			t.Fatalf("error = %v, want ConfigurationError", err)
 		}
-		if !strings.Contains(err.Error(), "mise") {
-			t.Fatalf("error = %v, want source-specific mise detail", err)
+		if !strings.Contains(err.Error(), "task") {
+			t.Fatalf("error = %v, want source-specific task detail", err)
+		}
+		if len(*calls) != 0 {
+			t.Fatalf("calls = %#v, want no subprocess calls", *calls)
 		}
 	})
 }
 
-func TestDiscoverEcosystemDev(t *testing.T) {
+func TestInitEcosystemSources(t *testing.T) {
 	t.Run("package manager metadata wins", func(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "package.json", `{"packageManager":"bun@1.2.3","scripts":{"dev":"echo body"}}`, 0o600)
 		writeDiscoveryFile(t, root, "package-lock.json", "{}", 0o600)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -650,7 +628,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 				writeDiscoveryFile(t, root, test.lockfile, "lock", 0o600)
 			}
 			installDiscoveryStubs(t, nil)
-			definitions, err := ResolveDefinitions(root)
+			definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -664,7 +642,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 		writeDiscoveryFile(t, root, "pnpm-lock.yaml", "lock", 0o600)
 		writeDiscoveryFile(t, root, "yarn.lock", "lock", 0o600)
 		installDiscoveryStubs(t, nil)
-		_, err := ResolveDefinitions(root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		var configuration *ConfigurationError
 		if !errors.As(err, &configuration) || !strings.Contains(err.Error(), "pnpm") || !strings.Contains(err.Error(), "yarn") {
 			t.Fatalf("error = %v, want typed lockfile conflict", err)
@@ -687,7 +665,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 				writeDiscoveryFile(t, root, test.filename, test.contents, 0o600)
 				installDiscoveryStubs(t, nil)
 
-				_, err := ResolveDefinitions(root)
+				_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 				var configuration *ConfigurationError
 				if err == nil || !errors.As(err, &configuration) {
 					t.Fatalf("error = %v, want ConfigurationError", err)
@@ -709,7 +687,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "deno.jsonc", "{\n // no task body is read\n \"tasks\": {\"dev\": \"echo body\",},\n}\n", 0o600)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -720,7 +698,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "deno.jsonc", "{\n  \"tasks\": {\n    /* block comment with slash / and star * before closing */\n    \"dev\": \"echo body\",\n  },\n}\n", 0o600)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -731,7 +709,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "deno.jsonc", "{\n  \"version\": 1/* split */2,\n  \"tasks\": {\"dev\": \"echo body\"}\n}\n", 0o600)
 		installDiscoveryStubs(t, nil)
-		_, err := ResolveDefinitions(root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		var configuration *ConfigurationError
 		if !errors.As(err, &configuration) {
 			t.Fatalf("error = %v, want ConfigurationError", err)
@@ -742,7 +720,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "composer.json", `{"scripts":{"dev":["echo body"]}}`, 0o600)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -753,7 +731,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "bin/dev", "#!/bin/sh\ntouch should-not-run\n", 0o700)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -764,7 +742,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -778,7 +756,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  # \\x1b[32mphx.server\\x1b[0m output is not consulted\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -797,7 +775,7 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 			root := t.TempDir()
 			writeDiscoveryFile(t, root, "mix.exs", contents, 0o600)
 			installDiscoveryStubs(t, nil)
-			_, err := ResolveDefinitions(root)
+			_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 			var noCandidate *NoCandidateError
 			if !errors.As(err, &noCandidate) {
 				t.Fatalf("ResolveDefinitions(%q) error = %v, want NoCandidateError", contents, err)
@@ -806,9 +784,11 @@ func TestDiscoverEcosystemDev(t *testing.T) {
 	})
 }
 
-func TestDiscoveryAmbiguity(t *testing.T) {
+func TestInitDiscoveryTemplates(t *testing.T) {
 	t.Run("collects every supported source", func(t *testing.T) {
 		root := t.TempDir()
+		writeDiscoveryFile(t, root, "mise.toml", "[tasks.dev]\nrun = \"echo body\"\n", 0o600)
+		writeDiscoveryFile(t, root, "Taskfile.yml", "version: '3'\ntasks:\n  dev:\n    cmds: [echo body]\n", 0o600)
 		writeDiscoveryFile(t, root, "justfile", "dev:\n\techo body\n", 0o600)
 		writeDiscoveryFile(t, root, "Makefile", "dev:\n\t@touch should-not-run\n", 0o600)
 		writeDiscoveryFile(t, root, "package.json", `{"scripts":{"dev":"echo body"}}`, 0o600)
@@ -822,7 +802,7 @@ func TestDiscoveryAmbiguity(t *testing.T) {
 			"just": {output: []byte(`{"recipes":{"dev":{"private":false}}}`)},
 		})
 
-		_, err := ResolveDefinitions(root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		var ambiguity *AmbiguityError
 		if !errors.As(err, &ambiguity) {
 			t.Fatalf("error = %v, want AmbiguityError", err)
@@ -841,7 +821,7 @@ func TestDiscoveryAmbiguity(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "deno.json", `{"tasks":{"dev":"echo body"}}`, 0o600)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitions(root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -851,12 +831,11 @@ func TestDiscoveryAmbiguity(t *testing.T) {
 	t.Run("no candidate is actionable", func(t *testing.T) {
 		root := t.TempDir()
 		installDiscoveryStubs(t, nil)
-		_, err := ResolveDefinitions(root)
-		var noCandidate *NoCandidateError
-		if !errors.As(err, &noCandidate) {
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		if !errors.Is(err, ErrNoCandidate) {
 			t.Fatalf("error = %v, want NoCandidateError", err)
 		}
-		for _, text := range append([]string{"hum.yaml", "hum init"}, supportedDiscoveryConventions...) {
+		for _, text := range []string{"hum.yaml", "hum init", root} {
 			if !strings.Contains(err.Error(), text) {
 				t.Fatalf("error = %v, want actionable detail %q", err, text)
 			}
@@ -864,67 +843,21 @@ func TestDiscoveryAmbiguity(t *testing.T) {
 	})
 }
 
-func TestRunDiscoveryCommandDiscoveryCancellation(t *testing.T) {
+func TestResolveDefinitionsManifestOnlyDoesNotDiscover(t *testing.T) {
 	root := t.TempDir()
-	pidPath := filepath.Join(root, "discovery.pid")
-	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
-	go func() {
-		_, err := runDiscoveryCommand(ctx, root, "/bin/sh", "-c", "echo $$ > discovery.pid; exec sleep 30")
-		result <- err
-	}()
-
-	var pid int
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		contents, err := os.ReadFile(pidPath)
-		if err == nil {
-			pid, err = strconv.Atoi(strings.TrimSpace(string(contents)))
-			if err != nil {
-				t.Fatalf("parse discovery pid: %v", err)
-			}
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if pid == 0 {
-		t.Fatal("discovery command did not start")
-	}
-
-	cancelledAt := time.Now()
-	cancel()
-	select {
-	case err := <-result:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("runDiscoveryCommand error = %v, want context.Canceled", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("cancelled discovery command did not return within two seconds")
-	}
-	if elapsed := time.Since(cancelledAt); elapsed >= 2*time.Second {
-		t.Fatalf("cancelled discovery command took %s", elapsed)
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("discovery process %d was not reaped: %v", pid, err)
+	writeDiscoveryFile(t, root, "package.json", `{"scripts":{"dev":"sleep 30"}}`, 0o600)
+	_, err := ResolveDefinitionsContext(context.Background(), root)
+	if !errors.Is(err, ErrManifestMissing) {
+		t.Fatalf("runtime resolution error = %v, want manifest missing", err)
 	}
 }
 
-func TestRunDiscoveryCommandTimesOut(t *testing.T) {
-	previous := discoveryCommandTimeout
-	discoveryCommandTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { discoveryCommandTimeout = previous })
-
-	start := time.Now()
-	_, err := runDiscoveryCommand(context.Background(), t.TempDir(), "sleep", "30")
-	if err == nil || !strings.Contains(err.Error(), "sleep 30 did not finish within 50ms") {
-		t.Fatalf("runDiscoveryCommand error = %v, want timeout", err)
-	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("runDiscoveryCommand took %s, want prompt timeout", elapsed)
+func TestResolveDefinitionsManifestOnlyIgnoresRunnerFiles(t *testing.T) {
+	root := t.TempDir()
+	writeDiscoveryFile(t, root, "Taskfile.yml", "tasks:\n  dev:\n    cmds: [sleep 30]\n", 0o600)
+	_, err := ResolveDefinitions(root)
+	if !errors.Is(err, ErrManifestMissing) {
+		t.Fatalf("runtime resolution error = %v, want manifest missing", err)
 	}
 }
 
@@ -938,17 +871,11 @@ func TestIntrospectionErrorExposesItsCause(t *testing.T) {
 	}
 }
 
-func TestCommandOutputSurfacesCancellation(t *testing.T) {
-	installDiscoveryStubs(t, map[string]discoveryStub{"mise": {}})
-	discoveryCommand = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
-		return nil, ctx.Err()
-	}
+func TestResolveDefinitionsManifestCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	// The empty-output shortcut treats a missing declaration file as "no
-	// candidate"; a cancelled probe must not be mistaken for one.
-	_, found, err := commandOutput(ctx, t.TempDir(), "mise", "", true, "mise", "tasks", "--local", "--json")
-	if found || !errors.Is(err, context.Canceled) {
-		t.Fatalf("commandOutput = found %v err %v, want context.Canceled", found, err)
+	_, err := ResolveDefinitionsContext(ctx, t.TempDir())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("resolution error = %v, want context.Canceled", err)
 	}
 }

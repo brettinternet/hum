@@ -28,7 +28,7 @@ func mcpCLICommand(version, buildTime string, writer io.Writer) *urfavecli.Comma
 		ArgsUsage: "",
 		Description: "Run a stdio Model Context Protocol server for one-time coding-agent registration. " +
 			"Requests with IDs run concurrently up to 64 in flight; a 65th request returns -32001 without starting, duplicate in-flight IDs return -32600, and notifications/cancelled returns -32800. Responses are serialized, and EOF or parent cancellation cancels handlers and joins the response writer. " +
-			"Every tool accepts scope (project by default or global). project_root is required for project and rejected for global; global addresses machine-wide ad_hoc retained sessions, and list all includes them. up honors manifest after readiness dependencies with concurrent roots, lexical results, and sorted direct blocked_by skips; no_wait is rejected before daemon contact when after is declared. start is explicitly named and never pulls in prerequisites. start and up accept only resolved explicit or discovered definitions and may start the daemon; status, logs, wait, input, restart, and stop control existing declared or ad_hoc records and never start it. " +
+			"Every tool accepts scope (project by default or global). project_root is required for project and rejected for global; global addresses machine-wide ad_hoc retained sessions, and list all includes them. up honors manifest after readiness dependencies with concurrent roots, lexical results, and sorted direct blocked_by skips; no_wait is rejected before daemon contact when after is declared. start is explicitly named and never pulls in prerequisites. start and up accept only resolved explicit definitions and may start the daemon; without a manifest unresolved names return manifest_missing. status, logs, wait, input, restart, and stop control existing declared or ad_hoc records and never start it. " +
 			"A process handed off by hum run is available as ad_hoc while its daemon retains the record; daemon shutdown or replacement loses that launch definition. " +
 			"Bounded child-output logs and matches use terminal-control-stripped text, while system entries, stored bytes, cursors, and limit accounting remain raw; there is no --raw flag or other raw opt-out. Logs match context expands eligible entries from one immutable snapshot before tail and whole-entry bounds. " +
 			"MCP wait timeout results include process_observed from the same daemon wait request without an extra round trip; false includes no-process guidance. " +
@@ -70,8 +70,15 @@ func (mcpResolver) ResolveManifest(ctx context.Context, root, filename string) (
 		err      error
 	)
 	if filename == "" {
-		manifest, loadErr := loadManifestOrEmpty(ctx, root)
+		manifest, loadErr := loadManifest(ctx, root)
 		if loadErr != nil {
+			if errors.Is(loadErr, project.ErrManifestMissing) {
+				rootPath, rootErr := app.DiscoverProjectRoot(root)
+				if rootErr != nil {
+					return mcpserver.Resolution{}, rootErr
+				}
+				return mcpserver.Resolution{Root: rootPath, ManifestMissing: true}, loadErr
+			}
 			return mcpserver.Resolution{}, loadErr
 		}
 		rootPath, defs = manifest.root, manifest.defs

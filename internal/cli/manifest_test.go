@@ -34,7 +34,7 @@ func writeManifestCLITestFile(t *testing.T, root, contents string) {
 	}
 }
 
-func TestManifestFileSelection(t *testing.T) {
+func TestManifestMissingExplicitFileSelection(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
 		t.Fatal(err)
@@ -372,11 +372,11 @@ func TestUpAdapterParity(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	definition := project.Definition{
-		Name: "api", Source: "manifest", Cwd: ".", Argv: []string{"new"},
+		Name: "api", Source: "manifest:hum.yaml", Cwd: ".", Argv: []string{"new"},
 		Ready: &project.ReadyDefinition{Match: "new"}, After: []string{"db"},
 	}
 	process := app.Process{
-		Name: "api", Source: "manifest", Root: root, Cwd: root, Argv: []string{"old"},
+		Name: "api", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"old"},
 		State: app.StateRunning, PID: 41, LaunchCursor: 9, StopGraceInherited: true,
 		Readiness: &app.Readiness{State: app.ReadinessStarting, Match: "old"},
 	}
@@ -386,7 +386,7 @@ func TestUpAdapterParity(t *testing.T) {
 		t.Fatalf("CLI adapter drift=%#v", drift)
 	}
 	sharedSkipped := orchestrate.Result{Name: "web", Outcome: "skipped", BlockedBy: []string{"api", "db"}, Guidance: ""}
-	skipped := cliManifestLaunchResult(project.Definition{Name: "web", Source: "manifest", Argv: []string{"web"}}, sharedSkipped)
+	skipped := cliManifestLaunchResult(project.Definition{Name: "web", Source: "manifest:hum.yaml", Argv: []string{"web"}}, sharedSkipped)
 	if skipped.Name != "web" || skipped.Outcome != "skipped" || !reflect.DeepEqual(skipped.BlockedBy, []string{"api", "db"}) || skipped.Guidance != "" {
 		t.Fatalf("CLI adapter skipped=%#v", skipped)
 	}
@@ -394,7 +394,7 @@ func TestUpAdapterParity(t *testing.T) {
 	nextLaunch := time.Now().Add(time.Minute)
 	exitCode := 23
 	retained := manifestLaunchResult{
-		Name: "web", Outcome: "skipped", Source: "manifest", Argv: []string{"web"}, State: string(app.StateExited),
+		Name: "web", Outcome: "skipped", Source: "manifest:hum.yaml", Argv: []string{"web"}, State: string(app.StateExited),
 		Restart: string(app.RestartOnFailure), Relaunches: 2, NextLaunchAt: &nextLaunch, ExitCode: &exitCode,
 	}
 	retainedRoundTrip := cliManifestLaunchResult(project.Definition{Name: "web"}, cliSharedLaunchResult(project.Definition{Name: "web"}, retained, nil))
@@ -403,7 +403,7 @@ func TestUpAdapterParity(t *testing.T) {
 	}
 
 	readiness := manifestLaunchResult{
-		Name: "web", Outcome: "started", Source: "manifest", Argv: []string{"web"}, State: string(app.StateRunning), PID: func() *int { value := 41; return &value }(),
+		Name: "web", Outcome: "started", Source: "manifest:hum.yaml", Argv: []string{"web"}, State: string(app.StateRunning), PID: func() *int { value := 41; return &value }(),
 		Readiness: app.ReadinessStarting, ReadinessConfigured: true, ReadinessMethod: "exec",
 		ReadinessArgv: []string{"probe", "--service", "web"}, ReadinessInterval: 125 * time.Millisecond,
 		ReadinessDiagnostic: "status 1", ReadyCursor: func() *uint64 { value := uint64(17); return &value }(),
@@ -413,8 +413,8 @@ func TestUpAdapterParity(t *testing.T) {
 		t.Fatalf("CLI adapter readiness snapshot=%#v", readinessRoundTrip)
 	}
 
-	stale := app.Process{Name: "api", Source: "manifest", Argv: []string{"api"}, State: app.StateRunning, PID: 41, Restart: app.RestartNever}
-	freshExit := manifestLaunchResult{Name: "api", Outcome: "exited_before_ready", Source: "manifest", Argv: []string{"api"}, State: string(app.StateExited), Restart: string(app.RestartNever), ExitCode: &exitCode}
+	stale := app.Process{Name: "api", Source: "manifest:hum.yaml", Argv: []string{"api"}, State: app.StateRunning, PID: 41, Restart: app.RestartNever}
+	freshExit := manifestLaunchResult{Name: "api", Outcome: "exited_before_ready", Source: "manifest:hum.yaml", Argv: []string{"api"}, State: string(app.StateExited), Restart: string(app.RestartNever), ExitCode: &exitCode}
 	freshRoundTrip := cliManifestLaunchResult(definition, cliSharedLaunchResult(definition, freshExit, &stale))
 	if freshRoundTrip.State != string(app.StateExited) || freshRoundTrip.PID != nil || freshRoundTrip.ExitCode == nil || *freshRoundTrip.ExitCode != exitCode {
 		t.Fatalf("CLI adapter fresh readiness snapshot=%#v", freshRoundTrip)
@@ -432,7 +432,7 @@ func TestExecutableReadiness(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	argv := []string{"probe", "--service", "api"}
-	definition := project.Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"server"}, Ready: &project.ReadyDefinition{Exec: argv, Interval: 125 * time.Millisecond, Timeout: 2 * time.Second}}
+	definition := project.Definition{Name: "api", Source: "manifest:hum.yaml", Cwd: root, Argv: []string{"server"}, Ready: &project.ReadyDefinition{Exec: argv, Interval: 125 * time.Millisecond, Timeout: 2 * time.Second}}
 	sharedDefinition := cliOrchestrateDefinition(definition)
 	if sharedDefinition.Ready == nil || sharedDefinition.Ready.Method != "exec" || !reflect.DeepEqual(sharedDefinition.Ready.Argv, argv) || sharedDefinition.Ready.Interval != definition.Ready.Interval {
 		t.Fatalf("CLI readiness definition=%#v, want executable argv and interval", sharedDefinition.Ready)
@@ -446,14 +446,14 @@ func TestExecutableReadiness(t *testing.T) {
 		IsNotFound: func(error) bool { return true },
 		Start: func(_ context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
 			startRequest = request
-			return orchestrate.Process{Name: "api", Source: "manifest", Root: root, Cwd: root, Argv: []string{"server"}, State: "running", PID: 42, LaunchCursor: 7, Readiness: &orchestrate.Readiness{Method: "exec", Argv: argv, Interval: definition.Ready.Interval, State: orchestrate.ReadinessStarting}}, nil
+			return orchestrate.Process{Name: "api", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"server"}, State: "running", PID: 42, LaunchCursor: 7, Readiness: &orchestrate.Readiness{Method: "exec", Argv: argv, Interval: definition.Ready.Interval, State: orchestrate.ReadinessStarting}}, nil
 		},
 	})
 	if started.Result.Outcome != "started" || startRequest.Ready == nil || startRequest.Ready.Method != "exec" || !reflect.DeepEqual(startRequest.Ready.Argv, argv) || startRequest.Ready.Interval != definition.Ready.Interval {
 		t.Fatalf("CLI start result=%#v request=%#v, want executable readiness propagated", started.Result, startRequest)
 	}
 
-	current := cliOrchestrateProcess(app.Process{Name: "api", Source: "manifest", Root: root, Cwd: root, Argv: []string{"server"}, State: app.StateRunning, PID: 42, LaunchCursor: 7, StopGraceInherited: true, Readiness: &app.Readiness{Method: "exec", Argv: argv, Interval: definition.Ready.Interval, State: app.ReadinessStarting, Diagnostic: "status 1"}})
+	current := cliOrchestrateProcess(app.Process{Name: "api", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"server"}, State: app.StateRunning, PID: 42, LaunchCursor: 7, StopGraceInherited: true, Readiness: &app.Readiness{Method: "exec", Argv: argv, Interval: definition.Ready.Interval, State: app.ReadinessStarting, Diagnostic: "status 1"}})
 	waits := 0
 	result, err := orchestrate.WaitForReadiness(context.Background(), root, sharedDefinition, current, "started", time.Second, orchestrate.ReadinessOperations{
 		Get: func(context.Context, string, string) (orchestrate.Process, error) {
@@ -503,8 +503,8 @@ func TestExecutableReadiness(t *testing.T) {
 	if execDrift.Outcome != "definition_drift" || !reflect.DeepEqual(execDrift.ChangedFields, []string{"readiness_exec"}) {
 		t.Fatalf("CLI executable readiness drift=%#v, want readiness_exec", execDrift)
 	}
-	matchDefinition := project.Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"server"}, Ready: &project.ReadyDefinition{Match: "ready"}}
-	matchProcess := app.Process{Name: "api", Source: "manifest", Root: root, Cwd: root, Argv: []string{"server"}, State: app.StateRunning, StopGraceInherited: true, Readiness: &app.Readiness{Method: "match", Match: "ready", State: app.ReadinessStarting}}
+	matchDefinition := project.Definition{Name: "api", Source: "manifest:hum.yaml", Cwd: root, Argv: []string{"server"}, Ready: &project.ReadyDefinition{Match: "ready"}}
+	matchProcess := app.Process{Name: "api", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"server"}, State: app.StateRunning, StopGraceInherited: true, Readiness: &app.Readiness{Method: "match", Match: "ready", State: app.ReadinessStarting}}
 	matchDrift := orchestrate.DefinitionDriftResult(root, cliOrchestrateDefinition(matchDefinition), cliOrchestrateProcess(matchProcess))
 	if len(matchDrift.ChangedFields) != 0 {
 		t.Fatalf("unchanged match readiness drift=%#v, want no changed fields", matchDrift)
@@ -632,9 +632,9 @@ func TestUpEmptyManifestValidatesInput(t *testing.T) {
 }
 
 func TestManifestLaunchResultPreservesEmptyReadinessMatcher(t *testing.T) {
-	definition := project.Definition{Name: "worker", Source: "manifest", Cwd: "/project", Argv: []string{"worker"}, Ready: &project.ReadyDefinition{Match: ""}}
+	definition := project.Definition{Name: "worker", Source: "manifest:hum.yaml", Cwd: "/project", Argv: []string{"worker"}, Ready: &project.ReadyDefinition{Match: ""}}
 	process := app.Process{
-		Name: "worker", Source: "manifest", Root: "/project", Cwd: "/project", Argv: []string{"worker"},
+		Name: "worker", Source: "manifest:hum.yaml", Root: "/project", Cwd: "/project", Argv: []string{"worker"},
 		State: app.StateExited, StopGraceInherited: true, Readiness: &app.Readiness{State: app.ReadinessStarting, Match: ""},
 	}
 	result := manifestLaunchResultFor(definition, process, "recovery_pending")
@@ -656,7 +656,7 @@ func TestUpPreservesEmptyReadinessMatcherInNDJSON(t *testing.T) {
 	nextCursor := protocol.Cursor(1)
 	processes := map[string]protocol.Process{
 		"worker": {
-			Name: "worker", Source: "manifest", Root: root, Cwd: root, Argv: []string{"worker"},
+			Name: "worker", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"worker"},
 			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting},
 			NextCursor: &nextCursor, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 2, NextLaunchAt: &next,
 		},
@@ -692,11 +692,11 @@ func TestUpPreservesCrashRecovery(t *testing.T) {
 	exhaustedNextCursor := protocol.Cursor(29)
 	processes := map[string]protocol.Process{
 		"pending": {
-			Name: "pending", Source: "manifest", Root: root, Cwd: root, Argv: []string{"pending"},
+			Name: "pending", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"pending"},
 			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}, LaunchCursor: 11, NextCursor: &pendingNextCursor, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 2, NextLaunchAt: &next,
 		},
 		"exhausted": {
-			Name: "exhausted", Source: "manifest", Root: root, Cwd: root, Argv: []string{"exhausted"},
+			Name: "exhausted", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"exhausted"},
 			State: "exited", Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}, LaunchCursor: 19, NextCursor: &exhaustedNextCursor, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 5,
 		},
 	}
@@ -730,7 +730,7 @@ processes:
 		t.Fatalf("up order = %#v, want lexical order", results)
 	}
 	for _, result := range results {
-		if result.Source != "manifest" || result.State != "exited" || result.Restart != protocol.RestartOnFailure || result.Readiness != "" || result.ReadinessMatch != "ready" {
+		if result.Source != "manifest:hum.yaml" || result.State != "exited" || result.Restart != protocol.RestartOnFailure || result.Readiness != "" || result.ReadinessMatch != "ready" {
 			t.Fatalf("recovery result = %#v, want exited manifest on-failure without readiness", result)
 		}
 		if result.LaunchCursor == nil {
@@ -859,7 +859,7 @@ processes:
 	if results[1].Name != "worker" || results[1].Outcome != "running_unverified" {
 		t.Fatalf("worker start result = %+v", results[1])
 	}
-	if results[0].Source != "manifest" || !reflect.DeepEqual(results[0].Argv, []string{"/bin/sh", "-c", "printf ready; sleep 30"}) {
+	if results[0].Source != "manifest:hum.yaml" || !reflect.DeepEqual(results[0].Argv, []string{"/bin/sh", "-c", "printf ready; sleep 30"}) {
 		t.Fatalf("web launch identity = %+v", results[0])
 	}
 
@@ -903,7 +903,7 @@ func TestManifestReadinessSurvivesExitAfterMatch(t *testing.T) {
 
 		next := protocol.Cursor(1)
 		process := protocol.Process{
-			Name: "web", Source: "manifest", Root: "/tmp/project", PID: 123,
+			Name: "web", Source: "manifest:hum.yaml", Root: "/tmp/project", PID: 123,
 			Cwd: "/tmp/project", Argv: []string{"fixture"}, LaunchCursor: 0,
 			NextCursor: &next, State: string(app.StateRunning), StopGraceInherited: true,
 		}
@@ -955,11 +955,11 @@ func TestManifestReadinessSurvivesExitAfterMatch(t *testing.T) {
 		t.Fatalf("hello: %v", err)
 	}
 	definition := project.Definition{
-		Name: "web", Source: "manifest", Argv: []string{"fixture"},
+		Name: "web", Source: "manifest:hum.yaml", Argv: []string{"fixture"},
 		Ready: &project.ReadyDefinition{Match: "ready"},
 	}
 	process := app.Process{
-		Name: "web", Source: "manifest", Root: "/tmp/project",
+		Name: "web", Source: "manifest:hum.yaml", Root: "/tmp/project",
 		PID: 123, Cwd: "/tmp/project", Argv: []string{"fixture"},
 		State: app.StateRunning, LaunchCursor: 0,
 		Readiness: &app.Readiness{State: app.ReadinessStarting, Match: "ready"},
@@ -1014,13 +1014,13 @@ func TestManifestReadinessRefreshesExitedSnapshot(t *testing.T) {
 
 		next := protocol.Cursor(1)
 		running := protocol.Process{
-			Name: "web", Source: "manifest", Root: "/tmp/project", PID: 123,
+			Name: "web", Source: "manifest:hum.yaml", Root: "/tmp/project", PID: 123,
 			Cwd: "/tmp/project", Argv: []string{"fixture"}, LaunchCursor: 0,
 			NextCursor: &next, State: string(app.StateRunning), StopGraceInherited: true,
 			Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"},
 		}
 		exited := protocol.Process{
-			Name: "web", Source: "manifest", Root: "/tmp/project", PID: 0,
+			Name: "web", Source: "manifest:hum.yaml", Root: "/tmp/project", PID: 0,
 			Cwd: "/tmp/project", Argv: []string{"fixture"}, LaunchCursor: 0,
 			NextCursor: &next, State: string(app.StateExited), StopGraceInherited: true, ExitCode: 7,
 		}
@@ -1066,11 +1066,11 @@ func TestManifestReadinessRefreshesExitedSnapshot(t *testing.T) {
 		t.Fatalf("hello: %v", err)
 	}
 	definition := project.Definition{
-		Name: "web", Source: "manifest", Argv: []string{"fixture"},
+		Name: "web", Source: "manifest:hum.yaml", Argv: []string{"fixture"},
 		Ready: &project.ReadyDefinition{Match: "ready"},
 	}
 	process := app.Process{
-		Name: "web", Source: "manifest", Root: "/tmp/project",
+		Name: "web", Source: "manifest:hum.yaml", Root: "/tmp/project",
 		PID: 123, Cwd: "/tmp/project", Argv: []string{"fixture"},
 		State: app.StateRunning, LaunchCursor: 0,
 		Readiness: &app.Readiness{State: app.ReadinessStarting, Match: "ready"},
@@ -1736,12 +1736,12 @@ processes:
 	pid, launchCursor, readyCursor := 42, uint64(7), uint64(9)
 	var final bytes.Buffer
 	if err := renderManifestLaunchHuman(&final, manifestLaunchResult{
-		Name: "alpha", Argv: []string{"/bin/sh", "-c", "printf ready"}, Source: "manifest", Outcome: "started",
+		Name: "alpha", Argv: []string{"/bin/sh", "-c", "printf ready"}, Source: "manifest:hum.yaml", Outcome: "started",
 		PID: &pid, LaunchCursor: &launchCursor, Readiness: app.ReadinessReady, ReadyCursor: &readyCursor,
 	}); err != nil {
 		t.Fatalf("render final human summary: %v", err)
 	}
-	if want := "started alpha (manifest: /bin/sh -c 'printf ready') pid=42 launch_cursor=7 readiness=ready ready_cursor=9\n"; final.String() != want {
+	if want := "started alpha (manifest:hum.yaml: /bin/sh -c 'printf ready') pid=42 launch_cursor=7 readiness=ready ready_cursor=9\n"; final.String() != want {
 		t.Fatalf("final human summary = %q, want %q", final.String(), want)
 	}
 }
@@ -2040,7 +2040,7 @@ processes:
 	if len(result.Processes) != 2 {
 		t.Fatalf("manifest list returned %d processes, want 2", len(result.Processes))
 	}
-	if result.Processes[0].Name != "api" || result.Processes[0].Source != "manifest" || result.Processes[0].Root != root {
+	if result.Processes[0].Name != "api" || result.Processes[0].Source != "manifest:hum.yaml" || result.Processes[0].Root != root {
 		t.Fatalf("first manifest list process = %+v", result.Processes[0])
 	}
 	if !reflect.DeepEqual(result.Processes[0].Argv, []string{"go", "run", "./api", "--port=8080"}) {
@@ -2057,7 +2057,7 @@ processes:
 	if err != nil {
 		t.Fatalf("full human manifest list: %v (stderr: %s)", err, stderr)
 	}
-	if !strings.Contains(stdout, "source=manifest") || !strings.Contains(stdout, "argv=go run ./api --port=8080") {
+	if !strings.Contains(stdout, "source=manifest:hum.yaml") || !strings.Contains(stdout, "argv=go run ./api --port=8080") {
 		t.Fatalf("human manifest list omitted source/argv: %s", stdout)
 	}
 }
@@ -2130,7 +2130,7 @@ processes:
 	if err := json.Unmarshal([]byte(stdout), &restarted); err != nil {
 		t.Fatalf("decode restart result: %v (%s)", err, stdout)
 	}
-	if restarted.Source != "manifest" || !reflect.DeepEqual(restarted.Argv, []string{"/bin/sh", "-c", command}) {
+	if restarted.Source != "manifest:hum.yaml" || !reflect.DeepEqual(restarted.Argv, []string{"/bin/sh", "-c", command}) {
 		t.Fatalf("restart identity = %+v", restarted)
 	}
 	store, err := server.Supervisor().Output(root, "web")
@@ -2200,7 +2200,7 @@ processes:
 	if err := json.Unmarshal([]byte(stdout), &waiting); err != nil {
 		t.Fatalf("decode waiting status: %v", err)
 	}
-	if waiting.Source != "manifest" || waiting.Readiness != "starting" {
+	if waiting.Source != "manifest:hum.yaml" || waiting.Readiness != "starting" {
 		t.Fatalf("waiting status = %+v", waiting)
 	}
 
@@ -2212,7 +2212,7 @@ processes:
 	if err := json.Unmarshal([]byte(stdout), &plain); err != nil {
 		t.Fatalf("decode plain status: %v", err)
 	}
-	if plain.Source != "manifest" || plain.Readiness != "running_unverified" {
+	if plain.Source != "manifest:hum.yaml" || plain.Readiness != "running_unverified" {
 		t.Fatalf("plain status = %+v", plain)
 	}
 
@@ -2398,14 +2398,14 @@ func TestUpReportsRemovedManifestSessions(t *testing.T) {
 	}
 	currentNextCursor := protocol.Cursor(10)
 	processes := map[string]protocol.Process{
-		"current":    {Name: "current", Source: "manifest", Root: root, Cwd: root, Argv: []string{"current"}, State: "running", PID: 10, LaunchCursor: 1, NextCursor: &currentNextCursor, StopGraceInherited: true},
-		"running":    {Name: "running", Source: "manifest", Root: root, Cwd: root, Argv: []string{"running"}, State: "running", PID: 11, LaunchCursor: 2, StopGraceInherited: true},
-		"pending":    {Name: "pending", Source: "manifest", Root: root, Cwd: root, Argv: []string{"pending"}, State: "exited", LaunchCursor: 3, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 2, NextLaunchAt: &next},
-		"exhausted":  {Name: "exhausted", Source: "manifest", Root: root, Cwd: root, Argv: []string{"exhausted"}, State: "exited", LaunchCursor: 4, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 5},
-		"stopped":    {Name: "stopped", Source: "manifest", Root: root, Cwd: root, Argv: []string{"stopped"}, State: "exited", LaunchCursor: 5},
+		"current":    {Name: "current", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"current"}, State: "running", PID: 10, LaunchCursor: 1, NextCursor: &currentNextCursor, StopGraceInherited: true},
+		"running":    {Name: "running", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"running"}, State: "running", PID: 11, LaunchCursor: 2, StopGraceInherited: true},
+		"pending":    {Name: "pending", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"pending"}, State: "exited", LaunchCursor: 3, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 2, NextLaunchAt: &next},
+		"exhausted":  {Name: "exhausted", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"exhausted"}, State: "exited", LaunchCursor: 4, Restart: protocol.RestartOnFailure, StopGraceInherited: true, Relaunches: 5},
+		"stopped":    {Name: "stopped", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"stopped"}, State: "exited", LaunchCursor: 5},
 		"ad_hoc":     {Name: "ad_hoc", Source: "ad_hoc", Root: root, Cwd: root, Argv: []string{"ad_hoc"}, State: "running", PID: 12, LaunchCursor: 6},
 		"discovered": {Name: "discovered", Source: "package_json", Root: root, Cwd: root, Argv: []string{"discovered"}, State: "running", PID: 13, LaunchCursor: 7},
-		"other":      {Name: "other", Source: "manifest", Root: otherRoot, Cwd: otherRoot, Argv: []string{"other"}, State: "running", PID: 14, LaunchCursor: 8},
+		"other":      {Name: "other", Source: "manifest:hum.yaml", Root: otherRoot, Cwd: otherRoot, Argv: []string{"other"}, State: "running", PID: 14, LaunchCursor: 8},
 	}
 	runtimeDir, _, done := manifestCLIRecoveryStubDaemon(t, processes)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
@@ -2442,11 +2442,11 @@ processes:
 	}
 }
 
-func TestUpReportsRemovedManifestSessionsWithoutManifest(t *testing.T) {
+func TestManifestMissingUpReportsRemovedManifestSessions(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	processes := map[string]protocol.Process{
 		"removed": {
-			Name: "removed", Source: "manifest", Root: root, Cwd: root, Argv: []string{"removed"},
+			Name: "removed", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"removed"},
 			State: "running", PID: 11, LaunchCursor: 2, StopGraceInherited: true,
 		},
 	}
@@ -2465,6 +2465,29 @@ func TestUpReportsRemovedManifestSessionsWithoutManifest(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("removed stub daemon did not observe CLI connection close")
+	}
+}
+
+func TestManifestMissingRetainedStartAndRestart(t *testing.T) {
+	for _, command := range []string{"start", "restart"} {
+		t.Run(command, func(t *testing.T) {
+			root := stopShutdownTestProject(t)
+			server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
+			t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+			client, err := daemon.Dial(context.Background(), server.Paths().Socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Start(context.Background(), daemon.StartRequest{Name: "retained", Root: root, Cwd: root, Source: "ad_hoc", Argv: []string{"/bin/sh", "-c", "sleep 30"}}); err != nil {
+				t.Fatal(err)
+			}
+			_ = client.Close()
+
+			stdout, stderr, err := stopShutdownRun(t, command, "retained", "--no-wait", "--json")
+			if err != nil {
+				t.Fatalf("retained %s without manifest: %v; stdout=%q stderr=%q", command, err, stdout, stderr)
+			}
+		})
 	}
 }
 
@@ -2529,7 +2552,7 @@ processes:
 			if results[0].Guidance != "hum restart web" || results[0].ReadinessMatch != "old" {
 				t.Fatalf("start after %s guidance/readiness = %+v", test.name, results[0])
 			}
-			if results[0].Source != "manifest" || !reflect.DeepEqual(results[0].Argv, []string{"/bin/sh", "-c", "echo new; sleep 0.3; echo old; sleep 30"}) {
+			if results[0].Source != "manifest:hum.yaml" || !reflect.DeepEqual(results[0].Argv, []string{"/bin/sh", "-c", "echo new; sleep 0.3; echo old; sleep 30"}) {
 				t.Fatalf("start after %s identity = %+v", test.name, results[0])
 			}
 		})
@@ -2579,4 +2602,28 @@ func waitForManifestMarker(filename, want string) error {
 		return fmt.Errorf("read restart marker %q: %w", filename, err)
 	}
 	return fmt.Errorf("restart marker = %q, want %q", string(contents), want)
+}
+
+func TestManifestMissingResolution(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"scripts":{"dev":"echo ignored"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadManifest(context.Background(), root)
+	if !errors.Is(err, project.ErrManifestMissing) {
+		t.Fatalf("loadManifest error = %v, want manifest_missing", err)
+	}
+	var missing *project.ManifestMissingError
+	if !errors.As(err, &missing) || missing.Root != root {
+		t.Fatalf("manifest error = %#v, want root %q", err, root)
+	}
+	for _, guidance := range []string{"hum init", "hum run NAME -- COMMAND", root} {
+		if !strings.Contains(err.Error(), guidance) {
+			t.Errorf("manifest error %q missing guidance %q", err, guidance)
+		}
+	}
+	wire := classifyJSONError(err)
+	if wire.Code != jsonErrorManifestMissing || !strings.Contains(wire.Message, root) {
+		t.Fatalf("JSON error = %#v, want manifest_missing with root", wire)
+	}
 }

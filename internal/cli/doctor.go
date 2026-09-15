@@ -80,18 +80,18 @@ func doctorCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		declarationPresent bool
 	)
 	if selectionErr != nil {
-		add("project.discovery", doctorFail, selectionErr.Error(), nil)
+		add("project.manifest", doctorFail, selectionErr.Error(), nil)
 	} else if err := ctx.Err(); err != nil {
-		add("project.discovery", doctorFail, "project inspection canceled", nil)
+		add("project.manifest", doctorFail, "project inspection canceled", nil)
 	} else {
 		manifest, declarationPresent, selectionErr = loadDoctorManifest(ctx, selection)
 		if selectionErr != nil {
-			add("project.discovery", doctorFail, selectionErr.Error(), nil)
+			add("project.manifest", doctorFail, selectionErr.Error(), map[string]any{"project_root": selection.root})
 		} else if !declarationPresent {
-			add("project.discovery", doctorFail, "no manifest or supported conventional process was found", map[string]any{"project_root": selection.root})
+			add("project.manifest", doctorFail, (&project.ManifestMissingError{Root: selection.root}).Error(), map[string]any{"project_root": selection.root})
 		} else {
 			manifest.selector = selection.selector
-			add("project.discovery", doctorPass, fmt.Sprintf("resolved %d process definition(s)", len(manifest.defs)), map[string]any{"project_root": manifest.root, "manifest": manifestDisplayName(manifest)})
+			add("project.manifest", doctorPass, fmt.Sprintf("resolved %d process definition(s)", len(manifest.defs)), map[string]any{"project_root": manifest.root, "manifest": manifestDisplayName(manifest)})
 			if err := prepareManifestEnvironments(&manifest, nil, os.Environ(), true); err != nil {
 				add("environment.composition", doctorFail, err.Error(), nil)
 			} else if !doctorEnvironmentsFitProtocol(manifest) {
@@ -130,13 +130,12 @@ func loadDoctorManifest(ctx context.Context, selection projectSelection) (manife
 		manifest.display = selection.manifest.Relative
 		return manifest, true, nil
 	}
-	definitions, err := project.ResolveDefinitionsReadOnly(ctx, selection.root)
+	definitions, err := project.ResolveDefinitionsContext(ctx, selection.root)
 	if err != nil {
-		var noCandidate *project.NoCandidateError
-		if !errors.As(err, &noCandidate) {
-			return manifestState{}, false, err
+		if errors.Is(err, project.ErrManifestMissing) {
+			return newManifestState(selection.root, []project.Definition{}), false, nil
 		}
-		return newManifestState(selection.root, []project.Definition{}), false, nil
+		return manifestState{}, false, err
 	}
 	return newManifestState(selection.root, definitions), true, nil
 }

@@ -104,7 +104,7 @@ func TestDownWorkflow(t *testing.T) {
 		t.Fatalf("up result names = %#v, want lexical [alpha zeta]", got)
 	}
 	for _, launch := range launches {
-		if launch.Source != "manifest" || launch.Outcome == "error" || launch.PID == nil || *launch.PID <= 0 {
+		if launch.Source != "manifest:hum.yaml" || launch.Outcome == "error" || launch.PID == nil || *launch.PID <= 0 {
 			t.Fatalf("up result = %#v, want successful manifest launch with positive PID", launch)
 		}
 	}
@@ -117,8 +117,8 @@ func TestDownWorkflow(t *testing.T) {
 		t.Fatalf("first project list after up = %#v, want %d manifest processes", firstBefore, len(definitions))
 	}
 	downWorkflowAssertRunning(t, firstBefore, firstRoot, map[string]string{
-		"alpha": "manifest",
-		"zeta":  "manifest",
+		"alpha": "manifest:hum.yaml",
+		"zeta":  "manifest:hum.yaml",
 	})
 
 	adHoc := testutil.Run(t, hum, firstRoot, env, "run", "ad-hoc", "--detach", "--json", "--", fixture, "stream", adHocMarker)
@@ -140,8 +140,8 @@ func TestDownWorkflow(t *testing.T) {
 	}
 	downWorkflowAssertRunning(t, firstWithAdHoc, firstRoot, map[string]string{
 		"ad-hoc": "ad_hoc",
-		"alpha":  "manifest",
-		"zeta":   "manifest",
+		"alpha":  "manifest:hum.yaml",
+		"zeta":   "manifest:hum.yaml",
 	})
 
 	second := testutil.Run(t, hum, secondRoot, env, "run", "second", "--detach", "--json", "--", fixture, "stream", secondMarker)
@@ -296,7 +296,7 @@ func downWorkflowAssertManifestNotRunning(t *testing.T, processes []downWorkflow
 		if !ok {
 			t.Fatalf("first-project list omitted declared process %q: %#v", name, processes)
 		}
-		if process.Source != "manifest" || (process.State != "stopped" && process.State != "exited") {
+		if process.Source != "manifest:hum.yaml" || (process.State != "stopped" && process.State != "exited") {
 			t.Errorf("declared process %q after down = %#v, want a non-running manifest record", name, process)
 		}
 	}

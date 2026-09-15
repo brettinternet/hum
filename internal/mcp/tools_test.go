@@ -2770,6 +2770,94 @@ func TestScopeDocs(t *testing.T) {
 	}
 }
 
+func TestManifestMissingRuntimeOnlyTools(t *testing.T) {
+	root := t.TempDir()
+	server := NewServer(Options{
+		ClientFactory: func(context.Context, bool) (Client, error) {
+			return &fakeClient{processes: map[string]protocol.Process{}}, nil
+		},
+	})
+	for _, name := range []string{"logs", "wait", "input", "stop", "remove", "signal", "down"} {
+		t.Run(name, func(t *testing.T) {
+			values := []any{root, "name", "dev"}
+			if name == "input" {
+				values = append(values, "text", "x")
+			}
+			_, err := server.callTool(context.Background(), name, args(root, values[1:]...))
+			if mapError(err).Code == "manifest_missing" {
+				t.Fatalf("runtime-only tool returned manifest_missing: %v", err)
+			}
+		})
+	}
+}
+
+func TestManifestMissingMCPMatrix(t *testing.T) {
+	root := t.TempDir()
+	newServer := func(client *fakeClient) *Server {
+		resolver := fakeResolver{
+			resolution: Resolution{Root: root, ManifestMissing: true},
+			err:        &project.ManifestMissingError{Root: root},
+		}
+		return NewServer(Options{Resolver: resolver, ClientFactory: func(context.Context, bool) (Client, error) { return client, nil }})
+	}
+
+	for _, name := range []string{"start", "restart", "up"} {
+		t.Run("unresolved "+name, func(t *testing.T) {
+			client := &fakeClient{processes: map[string]protocol.Process{}}
+			values := []any{root}
+			if name != "up" {
+				values = append(values, "name", "missing", "no_wait", true)
+			}
+			_, err := newServer(client).callTool(context.Background(), name, args(root, values[1:]...))
+			if got := mapError(err).Code; got != "manifest_missing" {
+				t.Fatalf("%s error = %v (code %q), want manifest_missing", name, err, got)
+			}
+		})
+	}
+
+	t.Run("list remains an empty read", func(t *testing.T) {
+		value, err := newServer(&fakeClient{processes: map[string]protocol.Process{}}).callTool(context.Background(), "list", args(root))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if processes := value.([]protocol.Process); len(processes) != 0 {
+			t.Fatalf("list = %#v, want empty", processes)
+		}
+	})
+
+	t.Run("list returns retained records", func(t *testing.T) {
+		client := &fakeClient{processes: map[string]protocol.Process{
+			"retained": {Name: "retained", Root: root, Cwd: root, Scope: protocol.ScopeProject, Source: "ad_hoc", Argv: []string{"echo", "retained"}, State: protocol.StateRunning},
+		}}
+		value, err := newServer(client).callTool(context.Background(), "list", args(root))
+		if err != nil {
+			t.Fatal(err)
+		}
+		processes := value.([]protocol.Process)
+		if len(processes) != 1 || processes[0].Name != "retained" {
+			t.Fatalf("list = %#v, want retained record", processes)
+		}
+	})
+
+	t.Run("named status keeps not-found", func(t *testing.T) {
+		_, err := newServer(&fakeClient{processes: map[string]protocol.Process{}}).callTool(context.Background(), "status", args(root, "name", "missing"))
+		if got := mapError(err).Code; got != string(protocol.ErrorNotFound) {
+			t.Fatalf("status error = %v (code %q), want not_found", err, got)
+		}
+	})
+
+	for _, name := range []string{"start", "restart"} {
+		t.Run("retained "+name, func(t *testing.T) {
+			client := &fakeClient{processes: map[string]protocol.Process{
+				"retained": {Name: "retained", Root: root, Cwd: root, Scope: protocol.ScopeProject, Source: "ad_hoc", Argv: []string{"echo", "retained"}, State: protocol.StateExited},
+			}}
+			if _, err := newServer(client).callTool(context.Background(), name, args(root, "name", "retained", "no_wait", true)); err != nil {
+				t.Fatalf("retained %s failed: %v", name, err)
+			}
+		})
+	}
+}
+
 func TestManifestSelection(t *testing.T) {
 	root := t.TempDir()
 	definitions := []Definition{

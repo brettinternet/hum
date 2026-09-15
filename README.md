@@ -98,8 +98,10 @@ parser remains authoritative.
 
 ## Start processes
 
-Without `hum.yaml`, `hum up` finds conventional `dev` tasks in Mise, Task, Just, Make,
-`package.json`, Deno, Composer, `bin/dev`, and Mix projects with a literal Phoenix dependency.
+Hum has two declaration paths: commit an explicit `hum.yaml` (or select one with `--file`),
+or use `hum run NAME -- COMMAND` for one-off ad-hoc work. Commands that resolve definitions do not
+infer processes from other project files; without a manifest, `hum up` and named `start`/`restart`
+return `manifest_missing` with guidance to run `hum init` or `hum run NAME -- COMMAND`.
 
 For multiple processes, add `hum.yaml`:
 
@@ -244,7 +246,7 @@ hum restart -F hum.test.yaml api
 - A relative selector starts from the invocation directory.
 - Ad-hoc runs use the selected directory; manifest `cwd` stays project-relative.
 - `--file` must name a regular file inside the project.
-- Without `--file`, Hum uses `hum.yaml`, or conventional discovery when it is absent.
+- Without `--file`, Hum uses `hum.yaml`; it is the only default declaration source.
 - All manifests share one project namespace. The same process name cannot run twice through separate files.
 - Runtime-only commands use `--file` only to identify the project.
 - `--file` is unavailable on `version`, `serve`, `shutdown`, `mcp`, and `skill`.

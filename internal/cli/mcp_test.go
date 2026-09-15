@@ -7,15 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	"hum/internal/app"
-
-	"hum/internal/testutil"
+	"hum/internal/project"
 )
 
 func TestReadinessHTTPMCPAdapter(t *testing.T) {
@@ -50,146 +46,81 @@ func TestMCPHelp(t *testing.T) {
 	}
 }
 
-func TestImplicitMixDiscoveryDoesNotExecuteProjectCode(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		run  func(*testing.T) error
-	}{
-		{name: "list", run: func(t *testing.T) error {
-			_, _, err := stopShutdownRun(t, "list", "--json")
-			return err
-		}},
-		{name: "status", run: func(t *testing.T) error {
-			output, _, err := stopShutdownRun(t, "status", "--json", "dev")
-			if err != nil {
-				return err
-			}
-			if got := statusDecodeJSON(t, output); got.State != "stopped" {
-				return fmt.Errorf("discovered status state = %q, want stopped", got.State)
-			}
-			return nil
-		}},
-		{name: "completion", run: func(t *testing.T) error {
-			_, _, err := runCompletionForTest(t, "start", "--generate-shell-completion")
-			return err
-		}},
-		{name: "init", run: func(t *testing.T) error {
-			_, _, err := stopShutdownRun(t, "init", "--json")
-			return err
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
+func TestManifestlessCommandsDoNotExecuteMix(t *testing.T) {
+	for _, command := range []string{"list", "status", "completion", "init"} {
+		t.Run(command, func(t *testing.T) {
 			root := stopShutdownTestProject(t)
 			runtimeDir := filepath.Join(t.TempDir(), "runtime")
 			t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
 			sentinel := filepath.Join(root, "mix-evaluated")
-			mixSource := fmt.Sprintf("defmodule App.MixProject do\n  File.write!(%q, \"evaluated\")\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", sentinel)
-			if err := os.WriteFile(filepath.Join(root, "mix.exs"), []byte(mixSource), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "mix.exs"), []byte(fmt.Sprintf("File.write!(%q, \"evaluated\")\ndefmodule App.MixProject do\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", sentinel)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			bin := t.TempDir()
-			mixCommand := fmt.Sprintf("#!/bin/sh\ntouch %s\nexit 99\n", sentinel)
-			if err := os.WriteFile(filepath.Join(bin, "mix"), []byte(mixCommand), 0o700); err != nil {
+			if err := os.WriteFile(filepath.Join(bin, "mix"), []byte("#!/bin/sh\n: > \"$SENTINEL\"\nexit 99\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
+			t.Setenv("SENTINEL", sentinel)
 			t.Setenv("PATH", bin)
 
-			if err := test.run(t); err != nil {
-				t.Fatalf("%s discovery: %v", test.name, err)
+			switch command {
+			case "list":
+				if _, _, err := stopShutdownRun(t, "list", "--json"); err != nil {
+					t.Fatalf("list: %v", err)
+				}
+			case "status":
+				_, _, err := stopShutdownRun(t, "status", "dev", "--json")
+				if err == nil || errors.Is(err, project.ErrManifestMissing) {
+					t.Fatalf("status error = %v, want not-found", err)
+				}
+			case "completion":
+				if _, _, err := runCompletionForTest(t, "start", "--generate-shell-completion"); err != nil {
+					t.Fatalf("completion: %v", err)
+				}
+			case "init":
+				if _, _, err := stopShutdownRun(t, "init", "--json"); err != nil {
+					t.Fatalf("init: %v", err)
+				}
 			}
 			if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("%s evaluated mix.exs or invoked Mix: %v", test.name, err)
+				t.Fatalf("%s evaluated mix.exs or invoked Mix: %v", command, err)
 			}
 		})
 	}
 }
 
-func waitForDiscoveryPID(t *testing.T, path string) int {
-	t.Helper()
-	testutil.WaitForText(t, path, "\n", 5*time.Second)
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read discovery pid: %v", err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(contents)))
-	if err != nil || pid <= 0 {
-		t.Fatalf("parse discovery pid %q: %v", contents, err)
-	}
-	return pid
-}
-
-func TestMCPDiscoveryCancellationReapsCommand(t *testing.T) {
+func TestManifestResolutionCancellationDoesNotLaunchCommand(t *testing.T) {
 	root := t.TempDir()
+	marker := filepath.Join(root, "mise-executed")
 	bin := t.TempDir()
-	pidPath := filepath.Join(root, "mise.pid")
-	misePath := filepath.Join(bin, "mise")
-	script := fmt.Sprintf("#!/bin/sh\necho $$ > %s\nexec /bin/sleep 30\n", pidPath)
-	if err := os.WriteFile(misePath, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "mise"), []byte("#!/bin/sh\n: > \"$SENTINEL\"\nexit 99\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-
+	t.Setenv("SENTINEL", marker)
 	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
-	go func() {
-		_, err := (mcpResolver{}).Resolve(ctx, root)
-		result <- err
-	}()
-
-	pid := waitForDiscoveryPID(t, pidPath)
 	cancel()
-	select {
-	case err := <-result:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("resolver error = %v, want context.Canceled", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("MCP discovery did not cancel within two seconds")
+	_, err := (mcpResolver{}).Resolve(ctx, root)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("resolver error = %v, want context.Canceled", err)
 	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("discovery process %d was not reaped: %v", pid, err)
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resolution launched mise: %v", err)
 	}
 }
 
-func TestCLIDiscoveryCancellationReapsCommand(t *testing.T) {
+func TestManifestlessProjectDoesNotExecuteConventionalSources(t *testing.T) {
 	root := stopShutdownTestProject(t)
-	t.Setenv("HUM_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
-	bin := t.TempDir()
-	pidPath := filepath.Join(root, "mise.pid")
-	script := fmt.Sprintf("#!/bin/sh\necho $$ > %s\nexec /bin/sleep 30\n", pidPath)
-	if err := os.WriteFile(filepath.Join(bin, "mise"), []byte(script), 0o700); err != nil {
+	sentinel := filepath.Join(root, "mix-evaluated")
+	if err := os.WriteFile(filepath.Join(root, "mix.exs"), []byte(fmt.Sprintf("File.write!(%q, \"evaluated\")\n", sentinel)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", bin)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	result := make(chan error, 1)
-	var stdout, stderr bytes.Buffer
-	go func() {
-		result <- cliServeRunInvoke(ctx, []string{"list", "--json"}, &stdout, &stderr)
-	}()
-
-	pid := waitForDiscoveryPID(t, pidPath)
-	cancel()
-	select {
-	case err := <-result:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("list error = %v, want context.Canceled; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("CLI discovery did not cancel within two seconds")
-	}
-	process, err := os.FindProcess(pid)
+	_, _, err := stopShutdownRun(t, "list", "--json")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("manifestless list failed: %v", err)
 	}
-	if err := process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("discovery process %d was not reaped: %v", pid, err)
+	if _, statErr := os.Stat(sentinel); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("manifestless inspection evaluated conventional source: %v", statErr)
 	}
 }
 
@@ -202,7 +133,7 @@ func TestMCPConcurrencyDescription(t *testing.T) {
 	}
 }
 
-func TestMCPManifestSelection(t *testing.T) {
+func TestManifestMissingMCPExplicitSelection(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  default:\n    argv: [default]\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -218,6 +149,15 @@ func TestMCPManifestSelection(t *testing.T) {
 	if err != nil || len(selected.Definitions) != 1 || selected.Definitions[0].Name != "default" {
 		t.Fatalf("omitted manifest = %#v, err=%v", selected, err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  broken: [not, a, process]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.Resolve(context.Background(), root); err == nil || errors.Is(err, project.ErrManifestMissing) {
+		t.Fatalf("invalid default manifest fell back: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  default:\n    argv: [default]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	selected, err = resolver.ResolveManifest(context.Background(), root, "hum.dev.yaml")
 	if err != nil || len(selected.Definitions) != 1 || selected.Definitions[0].Name != "dev" || selected.Definitions[0].Source != "manifest:hum.dev.yaml" || selected.Definitions[0].Cwd != filepath.Join(selected.Root, "sub") {
 		t.Fatalf("explicit manifest = %#v, err=%v", selected, err)
@@ -232,6 +172,13 @@ func TestMCPManifestSelection(t *testing.T) {
 	}
 	if _, err := resolver.ResolveManifest(context.Background(), root, outside); err == nil {
 		t.Fatal("outside manifest accepted")
+	}
+	invalid := filepath.Join(root, "invalid.yaml")
+	if err := os.WriteFile(invalid, []byte("version: 1\nprocesses:\n  broken: [not, a, process]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.ResolveManifest(context.Background(), root, invalid); err == nil || errors.Is(err, project.ErrManifestMissing) {
+		t.Fatalf("invalid explicit manifest fell back: %v", err)
 	}
 	t.Run("explicit selection disables discovery", func(t *testing.T) {
 		discoveryRoot := t.TempDir()

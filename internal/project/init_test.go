@@ -9,6 +9,28 @@ import (
 	"testing"
 )
 
+func TestInitDoesNotLaunchDiscoveryExecutables(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	marker := filepath.Join(root, "discovery-executed")
+	t.Setenv("SENTINEL", marker)
+	t.Setenv("PATH", bin)
+	for _, name := range []string{"mise", "task", "just", "mix"} {
+		writeDiscoveryFile(t, bin, name, "#!/bin/sh\n: > \"$SENTINEL\"\nexit 99\n", 0o700)
+	}
+	writeDiscoveryFile(t, root, "mise.toml", "[tasks.dev]\nrun = \"echo dev\"\n", 0o600)
+	writeDiscoveryFile(t, root, "Taskfile.yml", "version: '3'\ntasks:\n  dev:\n    cmds: [echo dev]\n", 0o600)
+	writeDiscoveryFile(t, root, "justfile", "dev:\n  echo dev\n", 0o600)
+	writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", 0o600)
+
+	if _, err := InitManifest(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("hum init launched a discovery executable: %v", err)
+	}
+}
+
 func TestInitManifestSchemaDirective(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -60,8 +61,8 @@ func (e *ManifestExistsError) Error() string {
 func (e *ManifestExistsError) Unwrap() error { return ErrManifestExists }
 
 // InitManifest resolves the nearest project root and creates hum.yaml from
-// conventional development discovery. Existing manifests are never read or
-// changed unless force is true, and no discovered command is launched.
+// conservative read-only source detection. Existing manifests are never read
+// or changed unless force is true, and no project command is launched.
 // The optional force argument preserves the original no-force call shape for
 // project callers while allowing hum init --force to publish replacements.
 func InitManifest(start string, force ...bool) (InitResult, error) {
@@ -167,7 +168,7 @@ func initForceDestination(path string, force bool) (bool, error) {
 }
 
 func initCandidates(root string) ([]Definition, InitOutcome, string, error) {
-	candidates, err := discoverDefinitions(root)
+	candidates, err := resolveReadOnlyCandidates(context.Background(), root)
 	if err == nil {
 		return candidates, InitOutcomeGenerated, "", nil
 	}

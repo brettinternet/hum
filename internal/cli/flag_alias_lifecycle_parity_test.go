@@ -349,7 +349,7 @@ func flagAliasLifecycleManifest(t *testing.T, variant, command, timeoutFlag, jso
 			exitCode: manifestCLIExitCode(err),
 			stderr:   stderr,
 		}
-		if snapshot.name != "web" || snapshot.outcome != "timed_out" || snapshot.source != "manifest" || !reflect.DeepEqual(snapshot.argv, argv) || snapshot.exitCode != 2 || snapshot.stderr != "" {
+		if snapshot.name != "web" || snapshot.outcome != "timed_out" || snapshot.source != "manifest:hum.yaml" || !reflect.DeepEqual(snapshot.argv, argv) || snapshot.exitCode != 2 || snapshot.stderr != "" {
 			t.Fatalf("%s %v = %#v", command, args, snapshot)
 		}
 	})

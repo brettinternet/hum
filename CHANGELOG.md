@@ -2,6 +2,12 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## Unreleased
+
+### Changed
+
+- **breaking:** Require `hum.yaml` or `--file` for declared lifecycle definitions; use `hum run NAME -- COMMAND` for ad-hoc work. `hum init` remains read-only source detection.
+
 ## [v0.13.0](https://github.com/brettinternet/hum/compare/v0.12.2...v0.13.0) - 2026-09-13
 
 ### Added

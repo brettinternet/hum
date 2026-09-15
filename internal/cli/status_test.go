@@ -151,7 +151,7 @@ func TestStatusSummaryJSON(t *testing.T) {
 		t.Fatalf("status summary processes = %#v, want api and worker", got.Processes)
 	}
 	for _, process := range got.Processes {
-		if process.Source != "manifest" || process.State != string(app.StateStopped) || process.Root != projectRoot {
+		if process.Source != "manifest:hum.yaml" || process.State != string(app.StateStopped) || process.Root != projectRoot {
 			t.Errorf("status summary process = %#v, want stopped manifest in %q", process, projectRoot)
 		}
 	}
@@ -345,7 +345,7 @@ func TestStatusDeclaredProcessWithoutDaemon(t *testing.T) {
 		t.Fatalf("declared status --json: err=%v stderr=%q output=%q", err, stderr, output)
 	}
 	got := statusDecodeJSON(t, output)
-	if got.Name != "api" || got.Source != "manifest" || got.ProjectRoot != projectRoot || got.State != string(app.StateStopped) {
+	if got.Name != "api" || got.Source != "manifest:hum.yaml" || got.ProjectRoot != projectRoot || got.State != string(app.StateStopped) {
 		t.Errorf("declared status JSON = %#v, want stopped manifest api in %q", got, projectRoot)
 	}
 	if !reflect.DeepEqual(got.Argv, []string{"task", "dev"}) {

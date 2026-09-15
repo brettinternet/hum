@@ -323,7 +323,7 @@ func TestAlternateManifestSelection(t *testing.T) {
 		t.Fatalf("default shared start: code=%d err=%v stdout=%q stderr=%q", sharedStarted.Code, sharedStarted.Err, sharedStarted.Stdout, sharedStarted.Stderr)
 	}
 	sharedConflict := testutil.Run(t, hum, projectRoot, env, "start", "shared", "--file", "hum.dev.yaml", "--no-wait", "--json")
-	if sharedConflict.Code == 0 || sharedConflict.Err == nil || !strings.Contains(sharedConflict.Stdout, `"outcome":"definition_drift"`) || !strings.Contains(sharedConflict.Stdout, `"source":"manifest"`) || !strings.Contains(sharedConflict.Stdout, "--file hum.dev.yaml restart shared") {
+	if sharedConflict.Code == 0 || sharedConflict.Err == nil || !strings.Contains(sharedConflict.Stdout, `"outcome":"definition_drift"`) || !strings.Contains(sharedConflict.Stdout, `"source":"manifest:hum.yaml"`) || !strings.Contains(sharedConflict.Stdout, "--file hum.dev.yaml restart shared") {
 		t.Fatalf("cross-manifest shared identity: code=%d err=%v stdout=%q stderr=%q", sharedConflict.Code, sharedConflict.Err, sharedConflict.Stdout, sharedConflict.Stderr)
 	}
 	started := testutil.Run(t, hum, projectRoot, env, "start", "dev", "--file", alternate, "--no-wait", "--json")
@@ -1055,8 +1055,8 @@ func TestManifestWorkflow(t *testing.T) {
 	launchByName := make(map[string]manifestLaunchResult, len(launches))
 	for _, launch := range launches {
 		launchByName[launch.Name] = launch
-		if launch.Source != "manifest" {
-			t.Errorf("up result %q source = %q, want manifest", launch.Name, launch.Source)
+		if launch.Source != "manifest:hum.yaml" {
+			t.Errorf("up result %q source = %q, want manifest:hum.yaml", launch.Name, launch.Source)
 		}
 		if launch.Error == nil && len(launch.Argv) == 0 {
 			t.Errorf("up result %q omitted argv", launch.Name)
@@ -1094,8 +1094,8 @@ func TestManifestWorkflow(t *testing.T) {
 		if !ok {
 			t.Fatalf("list omitted successful manifest process %q: %#v", name, listed)
 		}
-		if process.Source != "manifest" || process.State != "running" || process.PID <= 0 {
-			t.Fatalf("manifest process %q = %#v, want running source=manifest", name, process)
+		if process.Source != "manifest:hum.yaml" || process.State != "running" || process.PID <= 0 {
+			t.Fatalf("manifest process %q = %#v, want running source=manifest:hum.yaml", name, process)
 		}
 		if !testutil.ProcessAlive(process.PID) {
 			t.Fatalf("successful manifest process %q (PID %d) did not survive failed entry", name, process.PID)
@@ -1136,7 +1136,7 @@ func TestManifestWorkflow(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(status.Stdout)), &statusProcess); err != nil {
 		t.Fatalf("decode status --json: %v; output=%q", err, status.Stdout)
 	}
-	if statusProcess.Name != "gamma-retained" || statusProcess.Source != "manifest" || statusProcess.Readiness != "ready" {
+	if statusProcess.Name != "gamma-retained" || statusProcess.Source != "manifest:hum.yaml" || statusProcess.Readiness != "ready" {
 		t.Fatalf("status process = %#v, want manifest gamma-retained ready", statusProcess)
 	}
 	if statusProcess.ReadyCursor == nil {
@@ -1176,8 +1176,8 @@ func TestManifestWorkflow(t *testing.T) {
 		t.Fatalf("ad-hoc argv = %#v, want %#v", adHocProcess.Argv, adHocArgs)
 	}
 	for _, name := range []string{"alpha-ready", "gamma-retained", "zeta-plain"} {
-		if merged[name].Source != "manifest" {
-			t.Fatalf("merged list %q source = %q, want manifest", name, merged[name].Source)
+		if merged[name].Source != "manifest:hum.yaml" {
+			t.Fatalf("merged list %q source = %q, want manifest:hum.yaml", name, merged[name].Source)
 		}
 	}
 
@@ -1255,8 +1255,8 @@ func manifestLaunchNames(results []manifestLaunchResult) []string {
 
 func manifestAssertLaunch(t *testing.T, result manifestLaunchResult, outcome string, wantArgv []string) {
 	t.Helper()
-	if result.Name == "" || result.Source != "manifest" || result.Outcome != outcome {
-		t.Fatalf("launch result = %#v, want source=manifest outcome=%q", result, outcome)
+	if result.Name == "" || result.Source != "manifest:hum.yaml" || result.Outcome != outcome {
+		t.Fatalf("launch result = %#v, want source=manifest:hum.yaml outcome=%q", result, outcome)
 	}
 	if !reflect.DeepEqual(result.Argv, wantArgv) {
 		t.Fatalf("launch %q argv = %#v, want %#v", result.Name, result.Argv, wantArgv)

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -232,7 +233,7 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	startedProcess, ok := started["process"].(map[string]any)
-	if started["name"] != "api" || started["outcome"] != "started" || !ok || startedProcess["source"] != "manifest" {
+	if started["name"] != "api" || started["outcome"] != "started" || !ok || startedProcess["source"] != "manifest:hum.yaml" {
 		t.Fatalf("start=%s", startRaw)
 	}
 	if _, ok := startedProcess["env"]; ok {
@@ -275,10 +276,12 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	zeroRaw, isErr := session.call(t, "start", zeroRoot, map[string]any{"name": "dev"})
-	if isErr || !strings.Contains(string(zeroRaw), `"running_unverified"`) {
-		t.Fatalf("zero-config start=%s error=%v", zeroRaw, isErr)
+	if !isErr || !strings.Contains(string(zeroRaw), `"code":"manifest_missing"`) {
+		t.Fatalf("manifestless start=%s error=%v", zeroRaw, isErr)
 	}
-	testutil.WaitForFile(t, zeroMarker+".started", lifecycleTimeout)
+	if _, err := os.Stat(zeroMarker + ".started"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("manifestless start executed conventional source: %v", err)
+	}
 
 	adHocMarker := filepath.Join(t.TempDir(), "adhoc")
 	run := testutil.Run(t, hum, explicit, runtime.env, "run", "transient", "--detach", "--", fixture, "stream", adHocMarker)
@@ -353,8 +356,8 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 		t.Fatalf("ad hoc restart changed launch spec: %s", adRestart)
 	}
 	stopRaw, isErr := session.call(t, "stop", zeroRoot, map[string]any{"name": "dev"})
-	if isErr || !strings.Contains(string(stopRaw), `"stopped"`) {
-		t.Fatalf("stop=%s error=%v", stopRaw, isErr)
+	if isErr || !strings.Contains(string(stopRaw), `"not_running"`) {
+		t.Fatalf("manifestless stop=%s error=%v", stopRaw, isErr)
 	}
 	downRaw, isErr := session.callStructured(t, "down", explicit, nil)
 	if isErr {
@@ -583,7 +586,7 @@ func TestMCPAlternateManifest(t *testing.T) {
 	for _, process := range listedProcesses {
 		name, _ := process["name"].(string)
 		source, _ := process["source"].(string)
-		if name == "api" && source != "manifest" {
+		if name == "api" && source != "manifest:hum.yaml" {
 			t.Fatalf("retained api source=%q, want manifest: %s", source, listed)
 		}
 		if name == "worker" && source != "manifest:hum.dev.yaml" {

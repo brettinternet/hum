@@ -1019,11 +1019,8 @@ func TestAttachedRunOneIncarnation(t *testing.T) {
 			{name: "declared", want: "declared-output\n", setup: func(root string) error {
 				return os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  declared:\n    argv: [/bin/echo, declared-output]\n"), 0o600)
 			}},
-			{name: "dev", want: "discovered-output\n", setup: func(root string) error {
-				if err := os.Mkdir(filepath.Join(root, "bin"), 0o700); err != nil {
-					return err
-				}
-				return os.WriteFile(filepath.Join(root, "bin", "dev"), []byte("#!/bin/sh\nprintf 'discovered-output\\n'\n"), 0o700)
+			{name: "dev", want: "declared-output\n", setup: func(root string) error {
+				return os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  dev:\n    argv: [/bin/echo, declared-output]\n"), 0o600)
 			}},
 		} {
 			t.Run(testCase.name, func(t *testing.T) {

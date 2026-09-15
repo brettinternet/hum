@@ -151,7 +151,7 @@ func TestDoctorRejectedReadinessMakesNoConnections(t *testing.T) {
 func TestDoctorHumanColorsStatusLabels(t *testing.T) {
 	result := newDoctorResult([]doctorCheck{
 		{Name: "runtime.path", Status: doctorPass, Message: "path /private/runtime is usable"},
-		{Name: "project.discovery", Status: doctorWarn, Message: "warning text"},
+		{Name: "project.manifest", Status: doctorWarn, Message: "warning text"},
 		{Name: "process.executable", Status: doctorFail, Message: "missing /private/bin"},
 		{Name: "daemon", Status: doctorInfo, Message: "socket absent"},
 	})
@@ -170,7 +170,7 @@ func TestDoctorHumanColorsStatusLabels(t *testing.T) {
 			t.Errorf("colored doctor output missing %q: %q", want, colored.String())
 		}
 	}
-	for _, value := range []string{"runtime.path", "/private/runtime", "project.discovery", "warning text", "/private/bin", "socket absent", "Summary:"} {
+	for _, value := range []string{"runtime.path", "/private/runtime", "project.manifest", "warning text", "/private/bin", "socket absent", "Summary:"} {
 		if strings.Contains(colored.String(), string(ansiGreen)+value+ansiReset) ||
 			strings.Contains(colored.String(), string(ansiYellow)+value+ansiReset) ||
 			strings.Contains(colored.String(), string(ansiRed)+value+ansiReset) ||
@@ -200,7 +200,7 @@ func TestDoctorConfigurationAndRuntimeContract(t *testing.T) {
 		if err != nil || stderr != "" || !strings.HasPrefix(stdout, "PASS platform") || !strings.HasSuffix(stdout, " info\n") {
 			t.Fatalf("default human doctor: err=%v result=%+v stdout=%q stderr=%q", err, result, stdout, stderr)
 		}
-		for _, name := range []string{"platform", "config.runtime_dir", "config.stop_grace", "config.output_bytes", "config.completed_records", "runtime.path", "project.discovery", "environment.composition", "process.executable", "daemon"} {
+		for _, name := range []string{"platform", "config.runtime_dir", "config.stop_grace", "config.output_bytes", "config.completed_records", "runtime.path", "project.manifest", "environment.composition", "process.executable", "daemon"} {
 			if !strings.Contains(stdout, name) {
 				t.Errorf("human output missing ordered check %q: %q", name, stdout)
 			}
@@ -239,7 +239,7 @@ func TestDoctorConfigurationAndRuntimeContract(t *testing.T) {
 		}
 		assertDoctorCheck(t, result, "runtime.path", doctorInfo)
 		assertDoctorCheck(t, result, "daemon", doctorInfo)
-		wantOrder := []string{"platform", "config.runtime_dir", "config.stop_grace", "config.output_bytes", "config.completed_records", "runtime.path", "project.discovery", "environment.composition", "process.executable", "daemon"}
+		wantOrder := []string{"platform", "config.runtime_dir", "config.stop_grace", "config.output_bytes", "config.completed_records", "runtime.path", "project.manifest", "environment.composition", "process.executable", "daemon"}
 		if len(result.Checks) != len(wantOrder) {
 			t.Fatalf("check count = %d, want %d: %+v", len(result.Checks), len(wantOrder), result.Checks)
 		}
@@ -394,7 +394,7 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 	if fifoManifestErr == nil || fifoManifest.OK {
 		t.Fatalf("FIFO manifest passed or blocked unexpectedly: err=%v result=%+v", fifoManifestErr, fifoManifest)
 	}
-	assertDoctorCheck(t, fifoManifest, "project.discovery", doctorFail)
+	assertDoctorCheck(t, fifoManifest, "project.manifest", doctorFail)
 
 	emptyManifestRoot := t.TempDir()
 	writeDoctorTestFile(t, filepath.Join(emptyManifestRoot, "hum.yaml"), "version: 1\nprocesses: {}\n")
@@ -402,7 +402,7 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 	if emptyManifestErr != nil || !emptyManifest.OK {
 		t.Fatalf("valid empty manifest failed: err=%v result=%+v", emptyManifestErr, emptyManifest)
 	}
-	assertDoctorCheck(t, emptyManifest, "project.discovery", doctorPass)
+	assertDoctorCheck(t, emptyManifest, "project.manifest", doctorPass)
 	assertDoctorCheck(t, emptyManifest, "environment.composition", doctorPass)
 
 	conventionalRoot := t.TempDir()
@@ -414,10 +414,10 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 	writeDoctorTestFile(t, filepath.Join(conventionalRoot, "package.json"), `{"scripts":{"dev":"do-not-run"}}`)
 	t.Setenv("PATH", conventionalBin)
 	conventional, _, _, conventionalErr := runDoctorTest(t, context.Background(), conventionalRoot, "--json")
-	if conventionalErr != nil || !conventional.OK {
-		t.Fatalf("read-only conventional discovery: err=%v result=%+v", conventionalErr, conventional)
+	if conventionalErr == nil || conventional.OK {
+		t.Fatalf("manifestless conventional source passed: err=%v result=%+v", conventionalErr, conventional)
 	}
-	assertDoctorCheck(t, conventional, "project.discovery", doctorPass)
+	assertDoctorCheck(t, conventional, "project.manifest", doctorFail)
 
 	emptyRoot := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "executed")
@@ -438,13 +438,13 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 	if privateJustErr == nil || privateJust.OK {
 		t.Fatalf("private just recipe was discovered: err=%v result=%+v", privateJustErr, privateJust)
 	}
-	assertDoctorCheck(t, privateJust, "project.discovery", doctorFail)
+	assertDoctorCheck(t, privateJust, "project.manifest", doctorFail)
 
 	publicJustRoot := t.TempDir()
 	writeDoctorTestFile(t, filepath.Join(publicJustRoot, "justfile"), "dev port='3000':\n  echo public\n")
 	publicJust, _, _, publicJustErr := runDoctorTest(t, context.Background(), publicJustRoot, "--json")
-	if publicJustErr != nil || !publicJust.OK {
-		t.Fatalf("parameterized public Just recipe was not discovered: err=%v result=%+v", publicJustErr, publicJust)
+	if publicJustErr == nil || publicJust.OK {
+		t.Fatalf("manifestless Justfile passed: err=%v result=%+v", publicJustErr, publicJust)
 	}
 
 	priorityTaskRoot := t.TempDir()
@@ -453,8 +453,8 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	priorityTask, _, _, priorityTaskErr := runDoctorTest(t, context.Background(), priorityTaskRoot, "--json")
-	if priorityTaskErr != nil || !priorityTask.OK {
-		t.Fatalf("ignored lower-priority Taskfile affected discovery: err=%v result=%+v", priorityTaskErr, priorityTask)
+	if priorityTaskErr == nil || priorityTask.OK {
+		t.Fatalf("manifestless Taskfile passed: err=%v result=%+v", priorityTaskErr, priorityTask)
 	}
 
 	for name, declaration := range map[string]string{
@@ -465,8 +465,8 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 			root := t.TempDir()
 			writeDoctorTestFile(t, filepath.Join(root, "mise.toml"), declaration+"\n")
 			result, _, _, runErr := runDoctorTest(t, context.Background(), root, "--json")
-			if runErr != nil || !result.OK {
-				t.Fatalf("Mise %s declaration was not discovered: err=%v result=%+v", name, runErr, result)
+			if runErr == nil || result.OK {
+				t.Fatalf("manifestless Mise declaration passed: err=%v result=%+v", runErr, result)
 			}
 		})
 	}
@@ -484,7 +484,7 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 		if priorityJustErr == nil || priorityJust.OK {
 			t.Fatalf("lower-priority Justfile was discovered: err=%v result=%+v", priorityJustErr, priorityJust)
 		}
-		assertDoctorCheck(t, priorityJust, "project.discovery", doctorFail)
+		assertDoctorCheck(t, priorityJust, "project.manifest", doctorFail)
 	}
 
 	nonRegularRoot := t.TempDir()
@@ -495,7 +495,7 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 	if nonRegularErr == nil || nonRegular.OK {
 		t.Fatalf("non-regular Just declaration passed: err=%v result=%+v", nonRegularErr, nonRegular)
 	}
-	assertDoctorCheck(t, nonRegular, "project.discovery", doctorFail)
+	assertDoctorCheck(t, nonRegular, "project.manifest", doctorFail)
 
 	largeDeclarationRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(largeDeclarationRoot, "justfile"), bytes.Repeat([]byte{'x'}, (1<<20)+1), 0o600); err != nil {
@@ -505,7 +505,7 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 	if largeDeclarationErr == nil || largeDeclaration.OK {
 		t.Fatalf("oversized conventional declaration passed: err=%v result=%+v", largeDeclarationErr, largeDeclaration)
 	}
-	assertDoctorCheck(t, largeDeclaration, "project.discovery", doctorFail)
+	assertDoctorCheck(t, largeDeclaration, "project.manifest", doctorFail)
 
 	writeDoctorTestFile(t, filepath.Join(projectRoot, "hum.yaml"), "version: 1\nprocesses:\n  one:\n    argv: [missing-one]\n  two:\n    argv: [missing-two]\n    ready:\n      exec: [missing-ready]\n")
 	failed, _, _, err := runDoctorTest(t, context.Background(), projectRoot, "--json")
@@ -521,9 +521,9 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 		check      string
 		privateRaw string
 	}{
-		{name: "dependency", manifest: "version: 1\nprocesses:\n  app:\n    argv: [/bin/sh]\n    after: [missing]\n", check: "project.discovery"},
-		{name: "cwd", manifest: "version: 1\nprocesses:\n  app:\n    argv: [/bin/sh]\n    cwd: missing\n", check: "project.discovery"},
-		{name: "readiness", manifest: "version: 1\nprocesses:\n  app:\n    argv: [/bin/sh]\n    ready:\n      match: ready\n      exec: [/bin/sh]\n", check: "project.discovery"},
+		{name: "dependency", manifest: "version: 1\nprocesses:\n  app:\n    argv: [/bin/sh]\n    after: [missing]\n", check: "project.manifest"},
+		{name: "cwd", manifest: "version: 1\nprocesses:\n  app:\n    argv: [/bin/sh]\n    cwd: missing\n", check: "project.manifest"},
+		{name: "readiness", manifest: "version: 1\nprocesses:\n  app:\n    argv: [/bin/sh]\n    ready:\n      match: ready\n      exec: [/bin/sh]\n", check: "project.manifest"},
 		{name: "missing environment", manifest: "version: 1\nenvironment:\n  files: [missing.env]\nprocesses:\n  app:\n    argv: [/bin/sh]\n", check: "environment.composition"},
 		{name: "malformed private environment", manifest: "version: 1\nenvironment:\n  files: [.env]\nprocesses:\n  app:\n    argv: [/bin/sh]\n", envFile: "TOKEN=private-malformed-value\nBROKEN\n", check: "environment.composition", privateRaw: "private-malformed-value"},
 	}
@@ -551,12 +551,43 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 	if cancelErr == nil || canceled.OK {
 		t.Fatalf("canceled doctor: err=%v result=%+v", cancelErr, canceled)
 	}
-	assertDoctorCheck(t, canceled, "project.discovery", doctorFail)
+	assertDoctorCheck(t, canceled, "project.manifest", doctorFail)
 
 	oversized := strings.Repeat("x", 9<<20)
 	if doctorEnvironmentsFitProtocol(manifestState{root: projectRoot, defs: []project.Definition{{Name: "large", Source: "manifest", Cwd: projectRoot, Argv: []string{"/bin/sh", oversized}}}, baseline: os.Environ()}) {
 		t.Fatal("oversized process request fit protocol")
 	}
+}
+
+func TestDoctorManifestMissing(t *testing.T) {
+	root := t.TempDir()
+	result, _, _, err := runDoctorTest(t, context.Background(), root, "--json")
+	if err == nil || result.OK {
+		t.Fatalf("doctor missing manifest: err=%v result=%+v", err, result)
+	}
+	assertDoctorCheck(t, result, "project.manifest", doctorFail)
+}
+
+func TestDoctorManifestPresent(t *testing.T) {
+	root := t.TempDir()
+	writeDoctorTestFile(t, filepath.Join(root, "hum.yaml"), "version: 1\nprocesses: {}\n")
+	result, _, _, err := runDoctorTest(t, context.Background(), root, "--json")
+	if err != nil || !result.OK {
+		t.Fatalf("doctor present manifest: err=%v result=%+v", err, result)
+	}
+	assertDoctorCheck(t, result, "project.manifest", doctorPass)
+}
+
+func TestDoctorManifestNonRegularDoesNotBlock(t *testing.T) {
+	root := t.TempDir()
+	if err := unix.Mkfifo(filepath.Join(root, "hum.yaml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, _, _, err := runDoctorTest(t, context.Background(), root, "--json")
+	if err == nil || result.OK {
+		t.Fatalf("doctor FIFO manifest: err=%v result=%+v", err, result)
+	}
+	assertDoctorCheck(t, result, "project.manifest", doctorFail)
 }
 
 func runDoctorTest(t *testing.T, ctx context.Context, projectRoot string, extra ...string) (doctorResult, string, string, error) {
