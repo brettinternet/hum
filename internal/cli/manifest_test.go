@@ -34,6 +34,74 @@ func writeManifestCLITestFile(t *testing.T, root, contents string) {
 	}
 }
 
+func TestPrivateManifest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  shared:\n    argv: [shared]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".hum.yaml"), []byte("version: 1\nprocesses:\n  private:\n    argv: [private]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := loadManifest(context.Background(), root)
+	if err != nil || len(manifest.defs) != 1 || manifest.defs[0].Name != "private" || manifest.defs[0].Source != "manifest:.hum.yaml" || manifestDisplayName(manifest) != ".hum.yaml" {
+		t.Fatalf("manifest=%#v err=%v", manifest, err)
+	}
+	if manifest.shadowedManifest != "hum.yaml" {
+		t.Fatalf("shadowed=%q, want hum.yaml", manifest.shadowedManifest)
+	}
+	shared, err := loadManifestSelection(context.Background(), projectSelection{manifest: project.ManifestSelection{Root: root, Path: filepath.Join(root, "hum.yaml"), Relative: "hum.yaml", Source: "manifest:hum.yaml"}, hasManifest: true})
+	if err != nil || len(shared.defs) != 1 || shared.defs[0].Name != "shared" {
+		t.Fatalf("explicit shared=%#v err=%v", shared, err)
+	}
+}
+
+func TestPrivateManifestCLI(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	_, runtimeDir := stopShutdownTestServer(t, 100*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, "version: 1\nprocesses:\n  shared:\n    argv: [shared]\n")
+	privatePath := filepath.Join(root, ".hum.yaml")
+	if err := os.WriteFile(privatePath, []byte("version: 1\nprocesses:\n  private:\n    argv: [private]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := stopShutdownRun(t, "list", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("list JSON: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	var listed listJSON
+	if decodeErr := json.Unmarshal([]byte(stdout), &listed); decodeErr != nil {
+		t.Fatalf("decode list JSON: %v stdout=%q", decodeErr, stdout)
+	}
+	if len(listed.Processes) != 1 || listed.Processes[0].Name != "private" || listed.Processes[0].Source != "manifest:.hum.yaml" {
+		t.Fatalf("private list=%#v", listed.Processes)
+	}
+	stdout, stderr, err = stopShutdownRun(t, "list", "-F", "hum.yaml", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("explicit shared list: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	listed = listJSON{}
+	if decodeErr := json.Unmarshal([]byte(stdout), &listed); decodeErr != nil {
+		t.Fatalf("decode explicit list JSON: %v stdout=%q", decodeErr, stdout)
+	}
+	if len(listed.Processes) != 1 || listed.Processes[0].Name != "shared" || listed.Processes[0].Source != "manifest:hum.yaml" {
+		t.Fatalf("explicit shared list=%#v", listed.Processes)
+	}
+	if err := os.WriteFile(privatePath, []byte("version: 1\nprocesses:\n  broken: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err = stopShutdownRun(t, "list", "--json")
+	if err == nil || !strings.Contains(stdout, `"code":"manifest_invalid"`) || !strings.Contains(stdout, ".hum.yaml") {
+		t.Fatalf("invalid private list: err=%v stdout=%q", err, stdout)
+	}
+	if err := os.WriteFile(privatePath, []byte("version: 1\nprocesses:\n  private:\n    argv: [private]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := (mcpResolver{}).ResolveManifest(context.Background(), root, "")
+	if err != nil || len(selected.Definitions) != 1 || selected.Definitions[0].Name != "private" || selected.Definitions[0].Source != "manifest:.hum.yaml" {
+		t.Fatalf("MCP default=%#v err=%v", selected, err)
+	}
+}
+
 func TestManifestMissingExplicitFileSelection(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {

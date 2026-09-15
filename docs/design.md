@@ -346,11 +346,14 @@ Human `hum up` has an attached interactive mode and bounded startup progress.
 
 `init` reads the project and conservative source candidates without launching or starting the daemon.
 
-- It exclusively creates `hum.yaml`: one discovered candidate produces a definition; none or
+- It creates `hum.yaml` when neither default exists; when `.hum.yaml` exists it is the selected
+  manifest, and plain init reports it without changing either default. `--force` atomically replaces
+  that regular `.hum.yaml` (or `hum.yaml` when it is the selected default).
+- One discovered candidate produces a definition; none or
   several produce a commented, valid template.
 - `--force` resolves and renders the complete replacement before creating a mode-0600 temporary
-  file in the project directory, syncing and closing it before atomically renaming it over an
-  existing regular `hum.yaml`; symlinks and other non-regular targets are refused.
+  file in the project directory, syncing and closing it before atomically renaming it over the
+  selected regular manifest; symlinks and other non-regular targets are refused.
 - Without `--force`, existing paths and their refusal remain unchanged.
 - Discovery, rendering, write, sync, close, and rename errors exit 1 without changing the
   original manifest.
@@ -519,15 +522,29 @@ process is active unless `--stop-processes` is given.
 
 ### Manifest
 
-The nearest Git project root contains the default authoritative `hum.yaml`; complete variants conventionally use names such as `hum.dev.yaml` and `hum.test.yaml`.
+The nearest Git project root contains the default authoritative `.hum.yaml` when present, otherwise
+`hum.yaml`; complete variants conventionally use names such as `hum.dev.yaml` and `hum.test.yaml`.
+Selection precedence is `--file PATH` > `.hum.yaml` > `hum.yaml`. Every selected file is complete:
+Hum never merges declarations. A malformed, unreadable, unsafe, or non-regular `.hum.yaml` fails
+closed rather than falling back to `hum.yaml`; repositories may keep it in repository or global Git
+ignore rules, but ignored configuration is not shared with collaborators or CI.
 
 - A valid empty manifest resolves to no definitions; an invalid manifest is an error.
 - `hum up` on an empty manifest does not create a daemon when none exists: it may inspect an
   existing daemon for removed manifest-sourced recovery sessions.
-- With no such records, human output is exactly `No processes are declared in hum.yaml.` and
-  `--json` emits no NDJSON records.
+- With no such records, human output names the effective manifest (for example,
+  `No processes are declared in .hum.yaml.`), and `--json` emits no NDJSON records.
 - Runtime resolution never performs conventional discovery.
-- Without `--file`, `hum.yaml` is the only default declaration source. If it is absent, definition-requiring commands return `manifest_missing` naming the project root and suggesting `hum init` or `hum run NAME -- COMMAND`. With `--file`, Hum loads exactly that file: no fallback, discovery, overlays, inheritance, or merging. The selected file is reported as `manifest:<project-root-relative-path>` and the default source is `manifest:hum.yaml`.
+- Without `--file`, `.hum.yaml` is selected when present, otherwise `hum.yaml`; if neither exists,
+  definition-requiring commands return `manifest_missing` naming the project root and suggesting
+  `hum init` or `hum run NAME -- COMMAND`. With `--file`, Hum loads exactly that file: no fallback,
+  discovery, overlays, inheritance, or merging. Runtime output reports the selected file as
+  `manifest:<project-root-relative-path>`; the private default is `manifest:.hum.yaml`, while the
+  shared default retains its existing `manifest:hum.yaml` runtime identity and `manifest` loader
+  identity.
+- `hum doctor` reports the active filename in `project.manifest` details and adds
+  `shadowed_manifest: "hum.yaml"` when `.hum.yaml` shadows a shared default; shadowing remains a
+  passing discovery result.
 - All manifests in one Git project share the `(project root, process name)` runtime namespace. The project root, not the manifest directory, is the default child cwd and base for manifest `cwd` values.
 - Runtime-only operations remain project-wide; a file selector validates and identifies the project but does not parse the manifest or restrict retained records. `list --all` remains a cross-project view.
 
@@ -670,7 +687,7 @@ suffix) and rejects other or non-string values.
 Init detection does not scan nested packages or infer language/framework commands beyond the
 listed read-only sources. It never tries commands to see what succeeds.
 
-Strict definition commands (`up`, `start`, and argv-free `run`) resolve `hum.yaml` before daemon startup.
+Strict definition commands (`up`, `start`, and argv-free `run`) resolve the effective `.hum.yaml` or `hum.yaml` before daemon startup.
 
 - Ad hoc `run NAME -- COMMAND` remains independent of manifest resolution.
 - Runtime-only commands may access existing records without a manifest.

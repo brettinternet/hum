@@ -32,7 +32,7 @@ func WriteManPage(writer io.Writer, root *urfavecli.Command, date string) error 
 	writeManSection(&page, "SYNOPSIS")
 	writeManLiteral(&page, commandUsage(root))
 	writeManSection(&page, "DESCRIPTION")
-	writeManParagraphs(&page, "Supervise local development processes. Use hum doctor for a read-only preflight, hum up to start processes in hum.yaml, and hum run for ad-hoc work. Inspect processes with hum status and hum logs. Select another project with --project or an exact complete variant with --file, conventionally hum.dev.yaml. Use --global for machine-wide ad-hoc processes.")
+	writeManParagraphs(&page, "Supervise local development processes. Use hum doctor for a read-only preflight, hum up to start processes from the effective manifest, and hum run for ad-hoc work. Inspect processes with hum status and hum logs. Select another project with --project or an exact complete variant with --file, conventionally hum.dev.yaml. Use --global for machine-wide ad-hoc processes.")
 	writeManQuickStart(&page)
 	writeManConfiguration(&page)
 
@@ -63,8 +63,8 @@ func WriteManPage(writer io.Writer, root *urfavecli.Command, date string) error 
 
 	writeManSection(&page, "FILES")
 	fmt.Fprintln(&page, ".TP")
-	fmt.Fprintln(&page, ".B hum.yaml")
-	writeManText(&page, "Optional project manifest. Hum searches from the selected directory to the nearest Git root. Use --file PATH or -F PATH to select one complete manifest inside the project; without it, hum.yaml is the only default declaration source; definition-requiring commands return manifest_missing.")
+	fmt.Fprintln(&page, ".B .hum.yaml")
+	writeManText(&page, "Optional private project manifest. Hum searches from the selected directory to the nearest Git root. Selection precedence is --file PATH, then .hum.yaml, then hum.yaml. Each selection is one complete manifest; Hum never merges declarations and an invalid .hum.yaml fails closed rather than falling back. The private file suits repository or global Git ignore rules, but ignored configuration is not shared with collaborators or CI.")
 	writeManSection(&page, "ENVIRONMENT")
 	writeManDefinition(&page, "HUM_RUNTIME_DIR", "Override the daemon runtime directory.")
 	writeManDefinition(&page, "XDG_RUNTIME_DIR", "Base runtime directory when HUM_RUNTIME_DIR is unset.")
@@ -173,9 +173,9 @@ func manCommandDescription(command *urfavecli.Command) string {
 	case "run":
 		return "Run a named process and start the daemon if needed. A declared process needs only its name. For an ad-hoc process, put -- before its command. By default Hum shows its output and Ctrl+C stops it; --detach leaves it running in the background."
 	case "start":
-		return "Start named processes from hum.yaml. Already-running processes are left alone. Unlike hum up, this command does not start dependencies. It waits for configured readiness checks unless --no-wait is used. Readiness confirms startup only; it does not monitor later health.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 exit before ready."
+		return "Start named processes from the effective project manifest. Already-running processes are left alone. Unlike hum up, this command does not start dependencies. It waits for configured readiness checks unless --no-wait is used. Readiness confirms startup only; it does not monitor later health.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 exit before ready."
 	case "up":
-		return "Start every process in hum.yaml. Independent processes start together; dependent processes wait for their prerequisites to become ready. By default Hum follows process output. Use --detach to return after readiness or --no-wait to return after spawning.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 early exit or failed recovery; 130 interrupted startup (processes launched by this invocation are stopped)."
+		return "Start every process from the effective project manifest. Independent processes start together; dependent processes wait for their prerequisites to become ready. By default Hum follows process output. Use --detach to return after readiness or --no-wait to return after spawning.\n\nExit codes: 0 success; 1 request error or changed definition; 2 readiness timeout; 3 early exit or failed recovery; 130 interrupted startup (processes launched by this invocation are stopped)."
 	case "logs":
 		return "Read retained output for one or more processes. Filters and limits apply separately to each process. Use --follow for new output; Ctrl+C stops following without stopping the process."
 	case "wait":
@@ -232,7 +232,7 @@ func writeManQuickStart(page *bytes.Buffer) {
 
 func writeManConfiguration(page *bytes.Buffer) {
 	writeManSection(page, "CONFIGURATION")
-	writeManText(page, "hum init creates hum.yaml. A minimal manifest is:")
+	writeManText(page, "hum init creates .hum.yaml when present or hum.yaml otherwise. A minimal manifest is:")
 	writeManLiteral(page, "version: 1\nprocesses:\n  api:\n    argv: [bun, run, api]")
 	fmt.Fprintln(page, ".PP")
 	writeManText(page, "A process can wait for another process to become ready and restart after failure:")

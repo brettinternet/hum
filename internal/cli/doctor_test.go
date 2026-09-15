@@ -148,6 +148,37 @@ func TestDoctorRejectedReadinessMakesNoConnections(t *testing.T) {
 	}
 }
 
+func TestDoctorPrivateManifest(t *testing.T) {
+	root := t.TempDir()
+	writeDoctorTestFile(t, filepath.Join(root, "hum.yaml"), "version: 1\nprocesses: {}\n")
+	writeDoctorTestFile(t, filepath.Join(root, ".hum.yaml"), "version: 1\nprocesses: {}\n")
+	result, _, _, err := runDoctorTest(t, context.Background(), root, "--json")
+	if err != nil || !result.OK {
+		t.Fatalf("doctor private: err=%v result=%+v", err, result)
+	}
+	var projectCheck doctorCheck
+	for _, check := range result.Checks {
+		if check.Name == "project.manifest" {
+			projectCheck = check
+			break
+		}
+	}
+	if projectCheck.Status != doctorPass || projectCheck.Details["manifest"] != ".hum.yaml" || projectCheck.Details["shadowed_manifest"] != "hum.yaml" {
+		t.Fatalf("project check=%#v", projectCheck)
+	}
+	only := t.TempDir()
+	writeDoctorTestFile(t, filepath.Join(only, ".hum.yaml"), "version: 1\nprocesses: {}\n")
+	result, _, _, err = runDoctorTest(t, context.Background(), only, "--json")
+	if err != nil || result.OK == false {
+		t.Fatalf("doctor private alone: err=%v result=%+v", err, result)
+	}
+	for _, check := range result.Checks {
+		if check.Name == "project.manifest" && check.Details["shadowed_manifest"] != nil {
+			t.Fatalf("unexpected shadowed detail=%#v", check)
+		}
+	}
+}
+
 func TestDoctorHumanColorsStatusLabels(t *testing.T) {
 	result := newDoctorResult([]doctorCheck{
 		{Name: "runtime.path", Status: doctorPass, Message: "path /private/runtime is usable"},

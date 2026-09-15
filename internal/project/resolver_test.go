@@ -843,6 +843,141 @@ func TestInitDiscoveryTemplates(t *testing.T) {
 	})
 }
 
+func TestPrivateManifest(t *testing.T) {
+	manifest := func(name, command string) string {
+		return fmt.Sprintf("version: 1\nprocesses:\n  %s:\n    argv: [%s]\n", name, command)
+	}
+	valid := func(t *testing.T, root string, wantName, wantSource string) {
+		t.Helper()
+		for _, resolve := range []struct {
+			name string
+			load func() ([]Definition, error)
+		}{
+			{"ResolveDefinitionsContext", func() ([]Definition, error) { return ResolveDefinitionsContext(context.Background(), root) }},
+			{"ResolveDefinitionsReadOnly", func() ([]Definition, error) { return ResolveDefinitionsReadOnly(context.Background(), root) }},
+			{"LoadDefinitions", func() ([]Definition, error) { return LoadDefinitions(root) }},
+		} {
+			t.Run(resolve.name, func(t *testing.T) {
+				defs, err := resolve.load()
+				expectedSource := wantSource
+				if wantSource == "manifest" && resolve.name != "LoadDefinitions" {
+					expectedSource = "manifest:hum.yaml"
+				}
+				if err != nil || len(defs) != 1 || defs[0].Name != wantName || defs[0].Source != expectedSource {
+					t.Fatalf("definitions=%#v err=%v, want %s/%s", defs, err, wantName, expectedSource)
+				}
+			})
+		}
+	}
+	invalid := func(t *testing.T, root string) {
+		t.Helper()
+		for _, resolve := range []struct {
+			name string
+			load func() ([]Definition, error)
+		}{
+			{"ResolveDefinitionsContext", func() ([]Definition, error) { return ResolveDefinitionsContext(context.Background(), root) }},
+			{"ResolveDefinitionsReadOnly", func() ([]Definition, error) { return ResolveDefinitionsReadOnly(context.Background(), root) }},
+			{"LoadDefinitions", func() ([]Definition, error) { return LoadDefinitions(root) }},
+		} {
+			t.Run(resolve.name, func(t *testing.T) {
+				_, err := resolve.load()
+				var configuration *ConfigurationError
+				if err == nil || !errors.As(err, &configuration) || configuration.Source != ".hum.yaml" || strings.Contains(err.Error(), "fallback") {
+					t.Fatalf("error=%v, want private ConfigurationError", err)
+				}
+			})
+		}
+	}
+	t.Run("PrivateWins", func(t *testing.T) {
+		root := t.TempDir()
+		writeDiscoveryFile(t, root, "hum.yaml", manifest("shared", "shared"), 0o600)
+		writeDiscoveryFile(t, root, ".hum.yaml", manifest("private", "private"), 0o600)
+		valid(t, root, "private", "manifest:.hum.yaml")
+	})
+	t.Run("PrivateAlone", func(t *testing.T) {
+		root := t.TempDir()
+		writeDiscoveryFile(t, root, ".hum.yaml", manifest("private", "private"), 0o600)
+		valid(t, root, "private", "manifest:.hum.yaml")
+	})
+	t.Run("PrivateSymlinkRootKeepsLexicalPaths", func(t *testing.T) {
+		root := t.TempDir()
+		writeDiscoveryFile(t, root, ".hum.yaml", "version: 1\nenvironment:\n  files: [.env]\nprocesses:\n  private:\n    argv: [private]\n", 0o600)
+		writeDiscoveryFile(t, root, ".env", "TOKEN=value\n", 0o600)
+		alias := filepath.Join(t.TempDir(), "alias")
+		if err := os.Symlink(root, alias); err != nil {
+			t.Fatal(err)
+		}
+		definitions, err := ResolveDefinitionsContext(context.Background(), alias)
+		if err != nil || len(definitions) != 1 || definitions[0].Environment == nil {
+			t.Fatalf("definitions=%#v err=%v", definitions, err)
+		}
+		if definitions[0].Environment.Root != alias || definitions[0].Environment.BaseDir != alias {
+			t.Fatalf("environment=%#v, want lexical alias %q", definitions[0].Environment, alias)
+		}
+	})
+	t.Run("SharedAlone", func(t *testing.T) {
+		root := t.TempDir()
+		writeDiscoveryFile(t, root, "hum.yaml", manifest("shared", "shared"), 0o600)
+		valid(t, root, "shared", "manifest")
+	})
+	t.Run("NoMerge", func(t *testing.T) {
+		root := t.TempDir()
+		writeDiscoveryFile(t, root, "hum.yaml", manifest("shared", "shared"), 0o600)
+		writeDiscoveryFile(t, root, ".hum.yaml", manifest("private", "private"), 0o600)
+		defs, err := ResolveDefinitionsContext(context.Background(), root)
+		if err != nil || len(defs) != 1 || defs[0].Name != "private" {
+			t.Fatalf("definitions=%#v err=%v, want private only", defs, err)
+		}
+	})
+	t.Run("InvalidPrivateNoFallback", func(t *testing.T) {
+		root := t.TempDir()
+		writeDiscoveryFile(t, root, "hum.yaml", manifest("shared", "shared"), 0o600)
+		writeDiscoveryFile(t, root, ".hum.yaml", "not: a manifest\n", 0o600)
+		invalid(t, root)
+	})
+	t.Run("UnreadablePrivateNoFallback", func(t *testing.T) {
+		root := t.TempDir()
+		writeDiscoveryFile(t, root, "hum.yaml", manifest("shared", "shared"), 0o600)
+		path := writeDiscoveryFile(t, root, ".hum.yaml", manifest("private", "private"), 0)
+		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+		invalid(t, root)
+	})
+	t.Run("SymlinkPrivateNoFallback", func(t *testing.T) {
+		root := t.TempDir()
+		writeDiscoveryFile(t, root, "hum.yaml", manifest("shared", "shared"), 0o600)
+		outside := filepath.Join(t.TempDir(), "outside.yaml")
+		if err := os.WriteFile(outside, []byte(manifest("outside", "outside")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(root, ".hum.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		invalid(t, root)
+	})
+	t.Run("DirectoryPrivateNoFallback", func(t *testing.T) {
+		root := t.TempDir()
+		writeDiscoveryFile(t, root, "hum.yaml", manifest("shared", "shared"), 0o600)
+		if err := os.Mkdir(filepath.Join(root, ".hum.yaml"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		invalid(t, root)
+	})
+	t.Run("ExplicitFileWins", func(t *testing.T) {
+		root := t.TempDir()
+		writeDiscoveryFile(t, root, "hum.yaml", manifest("shared", "shared"), 0o600)
+		writeDiscoveryFile(t, root, ".hum.yaml", manifest("private", "private"), 0o600)
+		writeDiscoveryFile(t, root, "alternate.yaml", manifest("alternate", "alternate"), 0o600)
+		selection, err := ResolveManifestPath(root, root, "alternate.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defs, err := ResolveExplicitDefinitions(context.Background(), selection)
+		if err != nil || len(defs) != 1 || defs[0].Name != "alternate" || defs[0].Source != "manifest:alternate.yaml" {
+			t.Fatalf("definitions=%#v err=%v", defs, err)
+		}
+	})
+}
+
 func TestResolveDefinitionsManifestOnlyDoesNotDiscover(t *testing.T) {
 	root := t.TempDir()
 	writeDiscoveryFile(t, root, "package.json", `{"scripts":{"dev":"sleep 30"}}`, 0o600)

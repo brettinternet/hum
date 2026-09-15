@@ -281,6 +281,82 @@ func assertInitTemplate(t *testing.T, root string, expected []string) {
 	}
 }
 
+func TestInitPrivateManifest(t *testing.T) {
+	t.Run("creates shared default when neither exists", func(t *testing.T) {
+		root := t.TempDir()
+		installDiscoveryStubs(t, nil)
+		result, err := InitManifest(root)
+		if err != nil || result.Path != filepath.Join(root, "hum.yaml") {
+			t.Fatalf("result=%#v err=%v", result, err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "hum.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, ".hum.yaml")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("private default exists: %v", err)
+		}
+	})
+	t.Run("plain init preserves private and shared", func(t *testing.T) {
+		root := t.TempDir()
+		privatePath := filepath.Join(root, ".hum.yaml")
+		sharedPath := filepath.Join(root, "hum.yaml")
+		private := []byte("version: 1\nprocesses:\n  private:\n    argv: [private]\n")
+		shared := []byte("version: 1\nprocesses:\n  shared:\n    argv: [shared]\n")
+		if err := os.WriteFile(privatePath, private, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sharedPath, shared, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		result, err := InitManifest(root)
+		var exists *ManifestExistsError
+		if err == nil || !errors.As(err, &exists) || result.Path != privatePath || result.Outcome != InitOutcomeExists {
+			t.Fatalf("result=%#v err=%v", result, err)
+		}
+		gotPrivate, _ := os.ReadFile(privatePath)
+		gotShared, _ := os.ReadFile(sharedPath)
+		if !reflect.DeepEqual(gotPrivate, private) || !reflect.DeepEqual(gotShared, shared) {
+			t.Fatalf("defaults changed: private=%q shared=%q", gotPrivate, gotShared)
+		}
+	})
+	t.Run("force replaces only private", func(t *testing.T) {
+		root := t.TempDir()
+		privatePath := filepath.Join(root, ".hum.yaml")
+		sharedPath := filepath.Join(root, "hum.yaml")
+		private := []byte("version: 1\nprocesses:\n  private:\n    argv: [private]\n")
+		shared := []byte("version: 1\nprocesses:\n  shared:\n    argv: [shared]\n")
+		if err := os.WriteFile(privatePath, private, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sharedPath, shared, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		result, err := InitManifest(root, true)
+		if err != nil || result.Path != privatePath || result.Outcome != InitOutcomeReplaced {
+			t.Fatalf("result=%#v err=%v", result, err)
+		}
+		gotPrivate, _ := os.ReadFile(privatePath)
+		gotShared, _ := os.ReadFile(sharedPath)
+		if reflect.DeepEqual(gotPrivate, private) || !reflect.DeepEqual(gotShared, shared) {
+			t.Fatalf("replacement wrong: private=%q shared=%q", gotPrivate, gotShared)
+		}
+	})
+	t.Run("force refuses private symlink", func(t *testing.T) {
+		root := t.TempDir()
+		target := filepath.Join(root, "target")
+		if err := os.WriteFile(target, []byte("unchanged\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		privatePath := filepath.Join(root, ".hum.yaml")
+		if err := os.Symlink(target, privatePath); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := InitManifest(root, true); err == nil || !strings.Contains(err.Error(), privatePath) {
+			t.Fatalf("error=%v, want private symlink refusal", err)
+		}
+	})
+}
+
 func TestInitExistingManifest(t *testing.T) {
 	tests := []struct {
 		name string

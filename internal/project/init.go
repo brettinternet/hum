@@ -28,8 +28,8 @@ type InitResult struct {
 	Candidates []Definition
 }
 
-// ErrManifestExists reports that the project already has a hum.yaml manifest.
-var ErrManifestExists = errors.New("hum.yaml already exists")
+// ErrManifestExists reports that the project already has a default manifest.
+var ErrManifestExists = errors.New("manifest already exists")
 
 // initWrite, initSync, initClose, initLink, and initRename keep
 // post-create failure and publication tests deterministic.
@@ -60,17 +60,23 @@ func (e *ManifestExistsError) Error() string {
 
 func (e *ManifestExistsError) Unwrap() error { return ErrManifestExists }
 
-// InitManifest resolves the nearest project root and creates hum.yaml from
-// conservative read-only source detection. Existing manifests are never read
-// or changed unless force is true, and no project command is launched.
-// The optional force argument preserves the original no-force call shape for
-// project callers while allowing hum init --force to publish replacements.
+// InitManifest resolves the nearest project root and creates the default
+// manifest from conservative read-only source detection. Existing manifests
+// are never read or changed unless force is true, and no project command is
+// launched. The optional force argument preserves the original no-force call
+// shape for project callers while allowing hum init --force to publish replacements.
 func InitManifest(start string, force ...bool) (InitResult, error) {
 	root, err := DiscoverProjectRootLexical(start)
 	if err != nil {
 		return InitResult{}, fmt.Errorf("hum init: discover project root: %w", err)
 	}
 	path := filepath.Join(root, "hum.yaml")
+	privatePath := filepath.Join(root, ".hum.yaml")
+	if _, privateErr := os.Lstat(privatePath); privateErr == nil {
+		path = privatePath
+	} else if !errors.Is(privateErr, os.ErrNotExist) {
+		return InitResult{}, fmt.Errorf("hum init: inspect %s: %w", privatePath, privateErr)
+	}
 	forceReplace := len(force) != 0 && force[0]
 
 	existing, err := initForceDestination(path, forceReplace)

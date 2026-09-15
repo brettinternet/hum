@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -22,14 +23,15 @@ import (
 )
 
 type manifestState struct {
-	root         string
-	missing      bool
-	defs         []project.Definition
-	byName       map[string]project.Definition
-	environments map[string][]string
-	baseline     []string
-	selector     string
-	display      string
+	root             string
+	missing          bool
+	defs             []project.Definition
+	byName           map[string]project.Definition
+	environments     map[string][]string
+	baseline         []string
+	selector         string
+	display          string
+	shadowedManifest string
 }
 
 func newManifestState(root string, defs []project.Definition) manifestState {
@@ -52,11 +54,24 @@ func loadManifest(ctx context.Context, cwd string) (manifestState, error) {
 	if err != nil {
 		return manifestState{}, err
 	}
+	selection, present, err := project.DefaultManifestSelection(filesystemRoot)
+	if err != nil {
+		return manifestState{}, err
+	}
 	defs, err := project.ResolveDefinitionsContext(ctx, filesystemRoot)
 	if err != nil {
 		return manifestState{}, err
 	}
-	return newManifestState(root, defs), nil
+	state := newManifestState(root, defs)
+	if present {
+		state.display = selection.Relative
+		if selection.Relative == ".hum.yaml" {
+			if _, sharedErr := os.Lstat(filepath.Join(filesystemRoot, "hum.yaml")); sharedErr == nil {
+				state.shadowedManifest = "hum.yaml"
+			}
+		}
+	}
+	return state, nil
 }
 
 func loadManifestSelection(ctx context.Context, selection projectSelection) (manifestState, error) {

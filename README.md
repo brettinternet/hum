@@ -125,10 +125,13 @@ Hum deliberately does not provide:
 
 ## Start processes
 
-Hum has two declaration paths: commit an explicit `hum.yaml` (or select one with `--file`),
-or use `hum run NAME -- COMMAND` for one-off ad-hoc work. Commands that resolve definitions do not
-infer processes from other project files; without a manifest, `hum up` and named `start`/`restart`
-return `manifest_missing` with guidance to run `hum init` or `hum run NAME -- COMMAND`.
+Hum has two declaration paths: use the complete default manifest (`.hum.yaml` when present, otherwise
+`hum.yaml`) or select one with `--file`, or use `hum run NAME -- COMMAND` for one-off ad-hoc work.
+Precedence is `--file PATH` > `.hum.yaml` > `hum.yaml`; Hum never merges manifests. An invalid,
+unreadable, unsafe, or non-regular `.hum.yaml` is authoritative and fails closed rather than falling
+back to `hum.yaml`. The private file suits repository or global Git ignore rules, but ignored
+configuration is not shared with collaborators or CI. Without a manifest, definition-requiring
+commands return `manifest_missing` with guidance to run `hum init` or `hum run NAME -- COMMAND`.
 
 For multiple processes, add `hum.yaml`:
 
@@ -295,7 +298,7 @@ hum restart -F hum.test.yaml api
 - A relative selector starts from the invocation directory.
 - Ad-hoc runs use the selected directory; manifest `cwd` stays project-relative.
 - `--file` must name a regular file inside the project.
-- Without `--file`, Hum uses `hum.yaml`; it is the only default declaration source.
+- Without `--file`, Hum uses `.hum.yaml` when present, otherwise `hum.yaml`; each is a complete declaration source.
 - All manifests share one project namespace. The same process name cannot run twice through separate files.
 - Runtime-only commands use `--file` only to identify the project.
 - `--file` is unavailable on `version`, `serve`, `shutdown`, `mcp`, and `skill`.
@@ -306,7 +309,8 @@ starts the daemon, executes a process or readiness probe, repairs files, or reta
 daemon is informational. Human output ends with PASS/WARN/FAIL/INFO counts. `--json` emits one
 schema-versioned object, and the command exits 1 only when a check fails or usage is invalid.
 
-`hum init` creates only `hum.yaml`; Hum does not merge manifests or support overlays. `-d` means
+`hum init` creates `hum.yaml` when neither default exists, otherwise it preserves or replaces the
+selected `.hum.yaml`/`hum.yaml` manifest; Hum does not merge manifests or support overlays. `-d` means
 `--detach` for `daemon`, `run`, and `up`.
 
 ## Sessions

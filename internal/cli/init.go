@@ -56,7 +56,7 @@ func initCommand(ctx context.Context, cmd *urfavecli.Command, writer io.Writer) 
 		}
 		result.Outcome = project.InitOutcomeExists
 		if !cmd.Bool("json") {
-			return newUserFacingError(fmt.Sprintf("hum.yaml already exists at %s; edit it, or remove it before running %s again", result.Path, projectCommand(selection.selector, "init")))
+			return newUserFacingError(fmt.Sprintf("manifest already exists at %s; edit it, or remove it before running %s again", result.Path, projectCommand(selection.selector, "init")))
 		}
 		if err := renderInitResult(writer, result, cmd.Bool("json"), selection.selector); err != nil {
 			return err

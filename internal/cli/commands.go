@@ -78,12 +78,12 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 		},
 		{
 			Name:        "init",
-			Usage:       "initialize hum.yaml",
+			Usage:       "initialize the project manifest",
 			UsageText:   "hum init [--force] [--json]",
 			ArgsUsage:   "",
-			Description: "Create hum.yaml from strict project discovery without starting a daemon. A single candidate is generated; otherwise a commented template is written. Existing manifests require --force.\n\nExamples:\n  hum init",
+			Description: "Create hum.yaml from strict project discovery without starting a daemon, or replace an existing .hum.yaml. A single candidate is generated; otherwise a commented template is written. Existing manifests require --force.\n\nExamples:\n  hum init",
 			Flags: []urfavecli.Flag{
-				&urfavecli.BoolFlag{Name: "force", DefaultText: "false", Usage: "atomically replace an existing regular hum.yaml"},
+				&urfavecli.BoolFlag{Name: "force", DefaultText: "false", Usage: "atomically replace an existing regular project manifest"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write stable JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,
@@ -127,7 +127,7 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			UsageText:     "hum start NAME... [--no-wait] [--timeout DURATION] [--json]",
 			ArgsUsage:     "NAME...",
 			ShellComplete: completeProcessNames,
-			Description:   "Idempotently ensure named sessions are running from hum.yaml; without it, unresolved names return manifest_missing. start never pulls in prerequisites and waits for readiness unless --no-wait; ready.exec uses exact argv with no shell, probes are immediate-first and serial, retain bounded diagnostics, and gate startup—not liveness; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.\n\nExamples:\n  hum start api",
+			Description:   "Idempotently ensure named sessions are running from .hum.yaml when present, otherwise hum.yaml; without it, unresolved names return manifest_missing. start never pulls in prerequisites and waits for readiness unless --no-wait; ready.exec uses exact argv with no shell, probes are immediate-first and serial, retain bounded diagnostics, and gate startup—not liveness; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit before ready.\n\nExamples:\n  hum start api",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn; default waits for readiness"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, Usage: "readiness limit; omit for the manifest timeout"},

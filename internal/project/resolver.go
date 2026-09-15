@@ -60,7 +60,7 @@ func (e *NoCandidateError) Error() string {
 	if len(conventions) == 0 {
 		conventions = supportedDiscoveryConventions
 	}
-	return fmt.Sprintf("%s in %s: hum.yaml is absent; run hum init to create one; supported conventions: %s", ErrNoCandidate, e.Root, strings.Join(conventions, ", "))
+	return fmt.Sprintf("%s in %s: .hum.yaml and hum.yaml are absent; run hum init to create a manifest; supported conventions: %s", ErrNoCandidate, e.Root, strings.Join(conventions, ", "))
 }
 
 func (e *NoCandidateError) Unwrap() error { return ErrNoCandidate }
@@ -255,6 +255,33 @@ func ResolveManifestPath(invocationDir, projectRoot, filename string) (ManifestS
 	return ManifestSelection{Root: resolvedRoot, Path: resolved, Relative: relative, Source: "manifest:" + relative}, nil
 }
 
+// DefaultManifestSelection returns the effective default manifest. A private
+// .hum.yaml is authoritative when present; hum.yaml is selected only when the
+// private file is absent. The returned selection is validated using the same
+// containment and regular-file checks as explicit --file selection.
+func DefaultManifestSelection(root string) (ManifestSelection, bool, error) {
+	root, err := absoluteClean(root)
+	if err != nil {
+		return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
+	}
+	privatePath := filepath.Join(root, ".hum.yaml")
+	if _, err := os.Lstat(privatePath); err == nil {
+		if _, err := ResolveManifestPath(root, root, ".hum.yaml"); err != nil {
+			return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
+		}
+		return ManifestSelection{Root: root, Path: privatePath, Relative: ".hum.yaml", Source: "manifest:.hum.yaml"}, true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: fmt.Errorf("%s: inspect: %w", privatePath, err)}
+	}
+	sharedPath := filepath.Join(root, "hum.yaml")
+	if _, err := os.Lstat(sharedPath); errors.Is(err, os.ErrNotExist) {
+		return ManifestSelection{}, false, nil
+	} else if err != nil {
+		return ManifestSelection{}, true, err
+	}
+	return ManifestSelection{Root: root, Path: sharedPath, Relative: "hum.yaml", Source: "manifest"}, true, nil
+}
+
 // ResolveExplicitDefinitions loads exactly the selected file and never invokes
 // conventional discovery.
 func ResolveExplicitDefinitions(ctx context.Context, selection ManifestSelection) ([]Definition, error) {
@@ -262,37 +289,44 @@ func ResolveExplicitDefinitions(ctx context.Context, selection ManifestSelection
 	return LoadDefinitionsFile(selection.Root, selection.Path, selection.Relative, selection.Source)
 }
 
-// ResolveDefinitions returns only explicit hum.yaml definitions.
+// ResolveDefinitions returns the effective default manifest definitions.
 func ResolveDefinitions(root string) ([]Definition, error) {
 	return ResolveDefinitionsContext(context.Background(), root)
 }
 
-// ResolveDefinitionsContext resolves only hum.yaml. An absent default manifest
-// is actionable instead of triggering conventional runtime discovery.
+// ResolveDefinitionsContext resolves the effective default manifest. An absent
+// default manifest is actionable instead of triggering conventional discovery.
 func ResolveDefinitionsContext(ctx context.Context, root string) ([]Definition, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	root, err := absoluteClean(root)
 	if err != nil {
-		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: err}
+		return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	manifestPath := filepath.Join(root, "hum.yaml")
-	contents, readErr := readDiscoveryDeclaration(manifestPath)
-	if readErr == nil {
-		definitions, parseErr := parseDefinitions(root, contents, filepath.Dir(manifestPath), manifestPath, "manifest")
-		if parseErr != nil {
-			return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: parseErr}
-		}
-		return runtimeManifestDefinitions(definitions), nil
+	selection, present, err := DefaultManifestSelection(root)
+	if err != nil {
+		return nil, err
 	}
-	if !errors.Is(readErr, os.ErrNotExist) {
-		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: fmt.Errorf("%s: open: %w", manifestPath, readErr)}
+	if !present {
+		return nil, &ManifestMissingError{Root: root}
 	}
-	return nil, &ManifestMissingError{Root: root}
+	contents, readErr := readDiscoveryDeclaration(selection.Path)
+	if readErr != nil {
+		return nil, &ConfigurationError{Source: selection.Relative, Path: root, Err: fmt.Errorf("%s: open: %w", selection.Path, readErr)}
+	}
+	display := selection.Path
+	if selection.Relative == ".hum.yaml" {
+		display = selection.Relative
+	}
+	definitions, parseErr := parseDefinitions(root, contents, filepath.Dir(selection.Path), display, selection.Source)
+	if parseErr != nil {
+		return nil, &ConfigurationError{Source: selection.Relative, Path: root, Err: parseErr}
+	}
+	return runtimeManifestDefinitions(definitions), nil
 }
 
 func runtimeManifestDefinitions(definitions []Definition) []Definition {
@@ -314,28 +348,41 @@ func ResolveExplicitDefinitionsReadOnly(selection ManifestSelection) ([]Definiti
 	return parseDefinitions(selection.Root, contents, filepath.Dir(selection.Path), selection.Relative, selection.Source)
 }
 
-// ResolveDefinitionsReadOnly resolves hum.yaml and conservative conventional
-// init candidates without running project-owned commands. It is intended for
-// observational diagnostics and initialization.
+// ResolveDefinitionsReadOnly resolves the effective default manifest and
+// conservative conventional init candidates without running project-owned
+// commands. It is intended for observational diagnostics and initialization.
 func ResolveDefinitionsReadOnly(ctx context.Context, root string) ([]Definition, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	root, err := absoluteClean(root)
 	if err != nil {
-		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: err}
+		return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
 	}
-	manifestPath := filepath.Join(root, "hum.yaml")
-	contents, err := readDiscoveryDeclaration(manifestPath)
-	if err == nil {
-		definitions, parseErr := parseDefinitions(root, contents, filepath.Dir(manifestPath), manifestPath, "manifest")
+	selection, present, err := DefaultManifestSelection(root)
+	if err != nil {
+		return nil, err
+	}
+	if present {
+		contents, readErr := readDiscoveryDeclaration(selection.Path)
+		if readErr != nil {
+			if selection.Relative == ".hum.yaml" {
+				return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: fmt.Errorf("%s: open: %w", selection.Path, readErr)}
+			}
+			return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: fmt.Errorf("%s: open: %w", selection.Path, readErr)}
+		}
+		display := selection.Path
+		if selection.Relative == ".hum.yaml" {
+			display = selection.Relative
+		}
+		definitions, parseErr := parseDefinitions(root, contents, filepath.Dir(selection.Path), display, selection.Source)
 		if parseErr != nil {
+			if selection.Relative == ".hum.yaml" {
+				return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: parseErr}
+			}
 			return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: parseErr}
 		}
 		return runtimeManifestDefinitions(definitions), nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return nil, &ConfigurationError{Source: "hum.yaml", Path: root, Err: fmt.Errorf("%s: open: %w", manifestPath, err)}
 	}
 	return resolveReadOnlyCandidates(ctx, root)
 }

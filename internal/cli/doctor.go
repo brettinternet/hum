@@ -91,7 +91,11 @@ func doctorCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 			add("project.manifest", doctorFail, (&project.ManifestMissingError{Root: selection.root}).Error(), map[string]any{"project_root": selection.root})
 		} else {
 			manifest.selector = selection.selector
-			add("project.manifest", doctorPass, fmt.Sprintf("resolved %d process definition(s)", len(manifest.defs)), map[string]any{"project_root": manifest.root, "manifest": manifestDisplayName(manifest)})
+			details := map[string]any{"project_root": manifest.root, "manifest": manifestDisplayName(manifest)}
+			if manifest.shadowedManifest != "" {
+				details["shadowed_manifest"] = manifest.shadowedManifest
+			}
+			add("project.manifest", doctorPass, fmt.Sprintf("resolved %d process definition(s)", len(manifest.defs)), details)
 			if err := prepareManifestEnvironments(&manifest, nil, os.Environ(), true); err != nil {
 				add("environment.composition", doctorFail, err.Error(), nil)
 			} else if !doctorEnvironmentsFitProtocol(manifest) {
@@ -130,6 +134,10 @@ func loadDoctorManifest(ctx context.Context, selection projectSelection) (manife
 		manifest.display = selection.manifest.Relative
 		return manifest, true, nil
 	}
+	defaultSelection, present, selectionErr := project.DefaultManifestSelection(selection.root)
+	if selectionErr != nil {
+		return manifestState{}, false, selectionErr
+	}
 	definitions, err := project.ResolveDefinitionsContext(ctx, selection.root)
 	if err != nil {
 		if errors.Is(err, project.ErrManifestMissing) {
@@ -137,7 +145,14 @@ func loadDoctorManifest(ctx context.Context, selection projectSelection) (manife
 		}
 		return manifestState{}, false, err
 	}
-	return newManifestState(selection.root, definitions), true, nil
+	manifest := newManifestState(selection.root, definitions)
+	manifest.display = defaultSelection.Relative
+	if present && defaultSelection.Relative == ".hum.yaml" {
+		if _, sharedErr := os.Lstat(filepath.Join(selection.root, "hum.yaml")); sharedErr == nil {
+			manifest.shadowedManifest = "hum.yaml"
+		}
+	}
+	return manifest, true, nil
 }
 
 func diagnoseDoctorConfig(version, buildTime string, input config.Input, add func(string, string, string, map[string]any)) config.Config {

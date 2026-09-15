@@ -94,8 +94,8 @@ type ReadyDefinition struct {
 	Timeout  time.Duration
 }
 
-// LoadDefinitions reads the one supported project manifest, hum.yaml, below
-// root. A missing hum.yaml is equivalent to an empty manifest.
+// LoadDefinitions reads the effective project manifest below root. A missing
+// default manifest is equivalent to an empty manifest.
 func LoadDefinitions(root string) ([]Definition, error) {
 	root, err := absoluteClean(root)
 	if err != nil {
@@ -123,18 +123,24 @@ func LoadDefinitionsFile(root, filename, display, source string) ([]Definition, 
 	return definitions, err
 }
 
-// loadDefinitions parses hum.yaml and reports whether the manifest was
-// present. The presence bit is kept private so LoadDefinitions can retain its
-// historical missing-manifest behavior while ResolveDefinitions can make a
-// present manifest authoritative.
+// loadDefinitions parses the effective default manifest and reports whether
+// one was present. The private filename is authoritative when it exists.
 func loadDefinitions(root string) ([]Definition, bool, error) {
-	filename := filepath.Join(root, "hum.yaml")
-	if _, err := os.Lstat(filename); errors.Is(err, os.ErrNotExist) {
-		return []Definition{}, false, nil
-	} else if err != nil {
-		return nil, true, fmt.Errorf("%s: open: %w", filename, err)
+	selection, present, err := DefaultManifestSelection(root)
+	if err != nil {
+		return nil, present, err
 	}
-	definitions, err := loadDefinitionsFile(root, filename, filename, "manifest")
+	if !present {
+		return []Definition{}, false, nil
+	}
+	display := selection.Path
+	if selection.Relative == ".hum.yaml" {
+		display = selection.Relative
+	}
+	definitions, err := loadDefinitionsFile(root, selection.Path, display, selection.Source)
+	if err != nil && selection.Relative == ".hum.yaml" {
+		return nil, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
+	}
 	return definitions, true, err
 }
 

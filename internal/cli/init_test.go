@@ -15,6 +15,89 @@ import (
 	"hum/internal/project"
 )
 
+func TestInitPrivateManifest(t *testing.T) {
+	t.Run("plain and JSON refusal preserve both defaults", func(t *testing.T) {
+		root := stopShutdownTestProject(t)
+		initTestRuntime(t)
+		privatePath := filepath.Join(root, ".hum.yaml")
+		sharedPath := filepath.Join(root, "hum.yaml")
+		private := []byte("version: 1\nprocesses:\n  private:\n    argv: [private]\n")
+		shared := []byte("version: 1\nprocesses:\n  shared:\n    argv: [shared]\n")
+		if err := os.WriteFile(privatePath, private, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sharedPath, shared, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, err := stopShutdownRun(t, "init")
+		if err == nil || initCLIExitCode(err) != 1 || !strings.Contains(err.Error(), privatePath) || stdout != "" || stderr != "" {
+			t.Fatalf("plain init: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+		}
+		stdout, stderr, err = stopShutdownRun(t, "init", "--json")
+		if err == nil || initCLIExitCode(err) != 1 || stderr != "" {
+			t.Fatalf("JSON init: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+		}
+		var result initJSON
+		if decodeErr := json.Unmarshal([]byte(stdout), &result); decodeErr != nil {
+			t.Fatalf("decode JSON: %v stdout=%q", decodeErr, stdout)
+		}
+		if result.Path != privatePath || result.Outcome != project.InitOutcomeExists {
+			t.Fatalf("result=%#v, want private exists", result)
+		}
+		gotPrivate, _ := os.ReadFile(privatePath)
+		gotShared, _ := os.ReadFile(sharedPath)
+		if !reflect.DeepEqual(gotPrivate, private) || !reflect.DeepEqual(gotShared, shared) {
+			t.Fatalf("defaults changed: private=%q shared=%q", gotPrivate, gotShared)
+		}
+	})
+	t.Run("force replaces only private", func(t *testing.T) {
+		root := stopShutdownTestProject(t)
+		initTestRuntime(t)
+		privatePath := filepath.Join(root, ".hum.yaml")
+		sharedPath := filepath.Join(root, "hum.yaml")
+		private := []byte("version: 1\nprocesses:\n  private:\n    argv: [private]\n")
+		shared := []byte("version: 1\nprocesses:\n  shared:\n    argv: [shared]\n")
+		if err := os.WriteFile(privatePath, private, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sharedPath, shared, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, err := stopShutdownRun(t, "init", "--force", "--json")
+		if err != nil || stderr != "" {
+			t.Fatalf("force init: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+		}
+		var result initJSON
+		if decodeErr := json.Unmarshal([]byte(stdout), &result); decodeErr != nil {
+			t.Fatalf("decode force JSON: %v stdout=%q", decodeErr, stdout)
+		}
+		if result.Path != privatePath || result.Outcome != project.InitOutcomeReplaced {
+			t.Fatalf("result=%#v, want private replaced", result)
+		}
+		gotPrivate, _ := os.ReadFile(privatePath)
+		gotShared, _ := os.ReadFile(sharedPath)
+		if reflect.DeepEqual(gotPrivate, private) || !reflect.DeepEqual(gotShared, shared) {
+			t.Fatalf("replacement wrong: private=%q shared=%q", gotPrivate, gotShared)
+		}
+	})
+	t.Run("force refuses private symlink", func(t *testing.T) {
+		root := stopShutdownTestProject(t)
+		initTestRuntime(t)
+		privatePath := filepath.Join(root, ".hum.yaml")
+		targetPath := filepath.Join(root, "target")
+		if err := os.WriteFile(targetPath, []byte("unchanged\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(targetPath, privatePath); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, err := stopShutdownRun(t, "init", "--force")
+		if err == nil || !strings.Contains(err.Error(), "symlink") || !strings.Contains(err.Error(), privatePath) || stdout != "" || stderr != "" {
+			t.Fatalf("symlink refusal: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+		}
+	})
+}
+
 func TestInitGeneratedHuman(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	runtimeDir := initTestRuntime(t)
@@ -188,7 +271,7 @@ func TestInitNoOverwriteHuman(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("existing-manifest human stdout = %q, want empty", stdout)
 	}
-	wantMessage := fmt.Sprintf("hum.yaml already exists at %s; edit it, or remove it before running hum init again", path)
+	wantMessage := fmt.Sprintf("manifest already exists at %s; edit it, or remove it before running hum init again", path)
 	if err.Error() != wantMessage {
 		t.Fatalf("existing-manifest human error = %q, want %q", err.Error(), wantMessage)
 	}
@@ -272,7 +355,7 @@ func TestInitForce(t *testing.T) {
 		if stdout != "" || stderr != "" {
 			t.Fatalf("no-force output: stdout=%q stderr=%q, want empty", stdout, stderr)
 		}
-		wantMessage := fmt.Sprintf("hum.yaml already exists at %s; edit it, or remove it before running hum init again", path)
+		wantMessage := fmt.Sprintf("manifest already exists at %s; edit it, or remove it before running hum init again", path)
 		if err.Error() != wantMessage {
 			t.Fatalf("no-force error = %q, want %q", err.Error(), wantMessage)
 		}
