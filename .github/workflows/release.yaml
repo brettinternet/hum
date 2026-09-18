@@ -73,7 +73,7 @@ jobs:
             archive="hum-${version}-${asset_os}-${asset_arch}.tar.gz"
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" mise exec go -- \
               go build -trimpath \
-                -ldflags "-s -w -X main.buildVersion=${version} -X main.buildTime=${build_time}" \
+                -ldflags "-s -w -X main.buildVersion=${version} -X main.buildCommit=${GITHUB_SHA} -X main.buildTime=${build_time}" \
                 -o dist/hum ./cmd/hum
             tar -C dist -czf "dist/$archive" hum hum.1
           done

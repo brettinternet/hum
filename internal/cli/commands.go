@@ -27,7 +27,7 @@ import (
 	urfavecli "github.com/urfave/cli/v3"
 )
 
-func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*urfavecli.Command {
+func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writer) []*urfavecli.Command {
 	runStopOnNthArg := 1
 	signalStopOnNthArg := 1
 	mcpCommand := mcpCLICommand(version, buildTime, writer)
@@ -39,13 +39,13 @@ func newCLICommands(version, buildTime string, writer, errWriter io.Writer) []*u
 			Usage:       "print version metadata",
 			UsageText:   "hum version [--json]",
 			ArgsUsage:   "",
-			Description: "Print the Hum version and build time without resolving a project or contacting the daemon. Use --json to discover the supported CLI machine-output schema version.\n\nExamples:\n  hum version\n  hum version --json",
+			Description: "Print the Hum version, source commit, and build time without resolving a project or contacting the daemon. Use --json to discover the supported CLI machine-output schema version.\n\nExamples:\n  hum version\n  hum version --json",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write stable JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
-				return versionCommand(ctx, cmd, version, buildTime, writer)
+				return versionCommand(ctx, cmd, version, commit, buildTime, writer)
 			},
 		},
 		{
@@ -402,7 +402,7 @@ type versionJSON struct {
 	BuildTime string `json:"build_time"`
 }
 
-func versionCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
+func versionCommand(ctx context.Context, cmd *urfavecli.Command, version, commit, buildTime string, writer io.Writer) error {
 	if err := rejectProjectOverride(cmd, "version"); err != nil {
 		return err
 	}
@@ -415,8 +415,25 @@ func versionCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 	if cmd.Bool("json") {
 		return encodeJSON(writer, versionJSON{Version: version, BuildTime: buildTime})
 	}
-	_, err := fmt.Fprintf(writer, "hum version %s (built %s)\n", version, buildTime)
+	_, err := fmt.Fprintf(writer, "hum %s\n", formatVersion(version, commit, buildTime))
 	return err
+}
+
+func formatVersion(version, commit, buildTime string) string {
+	details := make([]string, 0, 2)
+	if commit != "" && commit != "unknown" {
+		if len(commit) > 7 {
+			commit = commit[:7]
+		}
+		details = append(details, commit)
+	}
+	if buildTime != "" {
+		details = append(details, "built "+buildTime)
+	}
+	if len(details) == 0 {
+		return version
+	}
+	return version + " (" + strings.Join(details, ", ") + ")"
 }
 
 func serveCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, errWriter io.Writer) error {

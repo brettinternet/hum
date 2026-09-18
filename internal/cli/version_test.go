@@ -14,19 +14,23 @@ import (
 func TestVersionCommand(t *testing.T) {
 	const (
 		version   = "build-42"
+		commit    = "714a19f123456789"
 		buildTime = "2026-09-02T12:00:00Z"
 	)
 
 	t.Run("human output matches version flag", func(t *testing.T) {
 		var flagOutput, commandOutput, errorOutput bytes.Buffer
-		if err := NewRootCommand(version, buildTime, &flagOutput, &errorOutput).Run(context.Background(), []string{"hum", "--version"}); err != nil {
+		if err := NewRootCommandWithCommit(version, commit, buildTime, &flagOutput, &errorOutput).Run(context.Background(), []string{"hum", "--version"}); err != nil {
 			t.Fatalf("--version: %v", err)
 		}
-		if err := NewRootCommand(version, buildTime, &commandOutput, &errorOutput).Run(context.Background(), []string{"hum", "version"}); err != nil {
+		if err := NewRootCommandWithCommit(version, commit, buildTime, &commandOutput, &errorOutput).Run(context.Background(), []string{"hum", "version"}); err != nil {
 			t.Fatalf("version: %v", err)
 		}
 		if commandOutput.String() != flagOutput.String() {
 			t.Fatalf("version output = %q, want --version output %q", commandOutput.String(), flagOutput.String())
+		}
+		if want := "hum build-42 (714a19f, built 2026-09-02T12:00:00Z)\n"; commandOutput.String() != want {
+			t.Fatalf("version output = %q, want %q", commandOutput.String(), want)
 		}
 		if errorOutput.Len() != 0 {
 			t.Fatalf("version stderr = %q", errorOutput.String())
@@ -35,7 +39,7 @@ func TestVersionCommand(t *testing.T) {
 
 	t.Run("json capability", func(t *testing.T) {
 		var output, errorOutput bytes.Buffer
-		if err := NewRootCommand(version, buildTime, &output, &errorOutput).Run(context.Background(), []string{"hum", "version", "--json"}); err != nil {
+		if err := NewRootCommandWithCommit(version, commit, buildTime, &output, &errorOutput).Run(context.Background(), []string{"hum", "version", "--json"}); err != nil {
 			t.Fatalf("version --json: %v", err)
 		}
 		var got map[string]any

@@ -15,6 +15,7 @@ import (
 
 var (
 	buildVersion = "dev"
+	buildCommit  = "unknown"
 	buildTime    = "unknown"
 
 	outputWriter io.Writer = os.Stdout
@@ -42,7 +43,7 @@ func exitCode(err error) int {
 }
 
 func run(ctx context.Context, args []string) error {
-	root := appcli.NewRootCommand(buildVersion, buildTime, outputWriter, errorWriter)
+	root := appcli.NewRootCommandWithCommit(buildVersion, buildCommit, buildTime, outputWriter, errorWriter)
 	appcli.SetInvocationArgs(root, args)
 	return root.Run(ctx, args)
 }

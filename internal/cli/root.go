@@ -395,7 +395,15 @@ GLOBAL OPTIONS:{{range $e := .VisiblePersistentFlags}}{{if and (ne (index $e.Nam
 // NewRootCommand builds the hum command with the supplied build metadata
 // and output writers.
 func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urfavecli.Command {
+	return NewRootCommandWithCommit(version, "unknown", buildTime, writer, errWriter)
+}
+
+// NewRootCommandWithCommit builds the hum command with source revision metadata.
+func NewRootCommandWithCommit(version, commit, buildTime string, writer, errWriter io.Writer) *urfavecli.Command {
 	configureFrameworkFlagsOnce.Do(func() {
+		urfavecli.VersionPrinter = func(cmd *urfavecli.Command) {
+			_, _ = fmt.Fprintf(cmd.Writer, "%s %s\n", cmd.Name, cmd.Version)
+		}
 		for _, flag := range []urfavecli.Flag{urfavecli.HelpFlag, urfavecli.VersionFlag} {
 			if boolFlag, ok := flag.(*urfavecli.BoolFlag); ok {
 				boolFlag.DefaultText = "false"
@@ -412,7 +420,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 		Description: "Supervise local development processes from --file PATH, then .hum.yaml, then hum.yaml; files never merge, and invalid .hum.yaml fails closed. Use hum up, hum run, hum logs, --project, or machine-wide --global; see docs/design.md.\n\n" +
 			"Examples:\n" +
 			"  hum up",
-		Version:                         version + " (built " + buildTime + ")",
+		Version:                         formatVersion(version, commit, buildTime),
 		ShellComplete:                   completeProcessNames,
 		EnableShellCompletion:           true,
 		ConfigureShellCompletionCommand: configureCompletionCommand,
@@ -429,7 +437,7 @@ func NewRootCommand(version, buildTime string, writer, errWriter io.Writer) *urf
 			&urfavecli.StringFlag{Name: "output-bytes", Usage: "retained bytes per process, at least " + strconv.FormatInt(config.MinOutputBytes, 10) + " [$HUM_OUTPUT_BYTES]", DefaultText: strconv.FormatInt(config.DefaultOutputBytes, 10)},
 			&urfavecli.StringFlag{Name: "completed-records", Usage: "records [$HUM_COMPLETED_RECORDS]", DefaultText: strconv.Itoa(config.DefaultCompletedRecords)},
 		},
-		Commands:     newCLICommands(version, buildTime, outputTracker, errWriter),
+		Commands:     newCLICommands(version, commit, buildTime, outputTracker, errWriter),
 		OnUsageError: onUsageError,
 		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
 			if err := ctx.Err(); err != nil {

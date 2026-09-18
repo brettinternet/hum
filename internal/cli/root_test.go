@@ -36,11 +36,8 @@ func TestRootCommandVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run with --version: %v", err)
 	}
-	if got := output.String(); !strings.Contains(got, "build-42") {
-		t.Fatalf("version output missing version: %q", got)
-	}
-	if got := output.String(); !strings.Contains(got, "2026-09-02T12:00:00Z") {
-		t.Fatalf("version output missing build time: %q", got)
+	if got, want := output.String(), "hum build-42 (built 2026-09-02T12:00:00Z)\n"; got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
 	}
 	if errorOutput.Len() != 0 {
 		t.Fatalf("unexpected stderr: %q", errorOutput.String())

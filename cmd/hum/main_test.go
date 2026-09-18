@@ -42,10 +42,10 @@ func TestRunNoArgsShowsHelp(t *testing.T) {
 }
 
 func TestRunVersion(t *testing.T) {
-	previousVersion, previousBuildTime := buildVersion, buildTime
-	buildVersion, buildTime = "build-42", "2026-09-02T12:00:00Z"
+	previousVersion, previousCommit, previousBuildTime := buildVersion, buildCommit, buildTime
+	buildVersion, buildCommit, buildTime = "build-42", "714a19f123456789", "2026-09-02T12:00:00Z"
 	t.Cleanup(func() {
-		buildVersion, buildTime = previousVersion, previousBuildTime
+		buildVersion, buildCommit, buildTime = previousVersion, previousCommit, previousBuildTime
 	})
 
 	output, errorOutput := captureWriters(t)
@@ -56,6 +56,9 @@ func TestRunVersion(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "build-42") {
 		t.Fatalf("version output missing version: %q", output.String())
+	}
+	if !strings.Contains(output.String(), "714a19f") {
+		t.Fatalf("version output missing commit: %q", output.String())
 	}
 	if !strings.Contains(output.String(), "2026-09-02T12:00:00Z") {
 		t.Fatalf("version output missing build time: %q", output.String())

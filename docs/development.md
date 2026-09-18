@@ -52,7 +52,7 @@ The current executable supports:
 ./bin/hum --version
 ```
 
-`--help` displays the current command usage. The default development build reports `hum version dev (built unknown)`; release builds inject version and build-time metadata through Go linker flags.
+`--help` displays the current command usage. The default development build reports `hum dev (built unknown)`; release builds inject version, commit, and build-time metadata through Go linker flags.
 
 ## Release
 
@@ -65,7 +65,7 @@ For a release or locally labelled build:
 ```sh
 mkdir -p bin
 mise exec go -- go build \
-  -ldflags "-X main.buildVersion=1.2.3 -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -ldflags "-X main.buildVersion=1.2.3 -X main.buildCommit=$(git rev-parse HEAD) -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -o bin/hum ./cmd/hum
 ```
 
