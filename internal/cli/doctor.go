@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"hum/internal/config"
@@ -194,6 +195,9 @@ func diagnoseRuntimePath(path string) (string, string) {
 	if err == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return doctorFail, "runtime path exists but is not a private directory"
+		}
+		if stat, ok := info.Sys().(*syscall.Stat_t); !ok || int(stat.Uid) != os.Geteuid() {
+			return doctorFail, "runtime directory is owned by another user"
 		}
 		if info.Mode().Perm()&0o022 != 0 {
 			return doctorFail, "runtime directory permits group or other writes"

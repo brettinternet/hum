@@ -338,6 +338,25 @@ func TestDoctorConfigurationAndRuntimeContract(t *testing.T) {
 		assertDoctorCheck(t, result, "runtime.path", doctorFail)
 	})
 
+	t.Run("foreign runtime owner fails", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root owns the fixture directory")
+		}
+		// The filesystem root is owned by root and not group or other writable,
+		// like a runtime directory another user pre-created under /tmp.
+		t.Setenv("HUM_RUNTIME_DIR", string(filepath.Separator))
+		result, _, _, err := runDoctorTest(t, context.Background(), projectRoot, "--json")
+		if err == nil || result.OK {
+			t.Fatalf("foreign runtime owner passed: err=%v result=%+v", err, result)
+		}
+		for _, check := range result.Checks {
+			if check.Name == "runtime.path" && check.Status == doctorFail && check.Message == "runtime directory is owned by another user" {
+				return
+			}
+		}
+		t.Fatalf("foreign runtime owner check missing: %+v", result.Checks)
+	})
+
 	t.Run("runtime symlink fails", func(t *testing.T) {
 		parent := t.TempDir()
 		target := filepath.Join(parent, "target")

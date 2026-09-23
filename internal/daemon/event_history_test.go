@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -124,6 +125,25 @@ func TestEventHistoryMalformedPayloadAndCursorUnavailable(t *testing.T) {
 	unavailable := NewEventHistory(dir, protocol.ScopeProject, "/project")
 	if _, err := unavailable.Read(nil, time.Time{}, nil, false, nil, 50, nil, 0); !errors.Is(err, ErrHistoryUnavailable) {
 		t.Fatalf("cursor error=%v", err)
+	}
+}
+
+// TestEventHistoryRefusesForeignRuntimeDirectory covers the daemonless CLI and
+// MCP read path: events planted by another user who owns the runtime directory
+// must not be reported.
+func TestEventHistoryRefusesForeignRuntimeDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := NewEventHistory(dir, protocol.ScopeGlobal, "").Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch"}); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := NewEventHistory(filepath.Join(dir, "missing"), protocol.ScopeGlobal, "").Read(nil, time.Time{}, nil, false, nil, 50, nil, 0)
+	if err != nil || len(missing.Events) != 0 {
+		t.Fatalf("missing runtime directory page=%#v err=%v, want empty", missing, err)
+	}
+	simulateForeignRuntimeUser(t)
+	page, err := NewEventHistory(dir, protocol.ScopeGlobal, "").Read(nil, time.Time{}, nil, false, nil, 50, nil, 0)
+	if !errors.Is(err, ErrHistoryUnavailable) || !strings.Contains(err.Error(), "not owned by the current user") || len(page.Events) != 0 {
+		t.Fatalf("foreign history page=%#v err=%v, want ownership refusal", page, err)
 	}
 }
 

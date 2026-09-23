@@ -821,7 +821,12 @@ and do not reread the manifest.
 
 One daemon serves each runtime directory at `hum.sock`. Directories created by hum use mode
 0700. A pre-existing operator-managed directory keeps its mode; hum accepts read/execute access
-for group or other users but refuses a directory they can write.
+for group or other users but refuses a directory they can write or another user owns, before
+opening or reading any artifact in it. Anyone can pre-create the `/tmp/hum-UID` fallback, so it
+fails closed rather than being trusted. Both ends of every daemon connection also verify the
+peer's credentials (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS): a client refuses a
+daemon running as another user before sending environment or input, and the daemon closes a
+connection from another user before reading a request.
 
 - `serve --daemon`, `run`, `start`, `up`, CLI `logs --follow`, and CLI `wait` use a startup lock
   and readiness handshake.

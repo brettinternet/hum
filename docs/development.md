@@ -42,8 +42,9 @@ task cli:build
 The build writes `bin/hum`. Runtime configuration is resolved by the CLI before the daemon is
 started. In particular, `HUM_STOP_GRACE=0s` is an explicit immediate-escalation setting rather
 than a request for the ten-second default. Hum-created runtime directories are mode 0700;
-pre-existing directories retain their operator-managed mode and are rejected only when writable
-by group or other users.
+pre-existing directories retain their operator-managed mode and are rejected when writable
+by group or other users or owned by another user. Daemon clients and the daemon refuse a
+socket peer running as another user.
 
 The current executable supports:
 

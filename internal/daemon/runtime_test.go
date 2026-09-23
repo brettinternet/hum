@@ -73,6 +73,59 @@ func TestPrepareRuntimePreservesExistingMode(t *testing.T) {
 	})
 }
 
+// TestForeignRuntimeDirectoryIsNeverTrusted models another local user who
+// pre-created the runtime directory, as anyone can under a shared /tmp. Its
+// planted state must not make the daemon signal this user's processes, its
+// planted lock symlink must not be followed, and the client must not read it.
+func TestForeignRuntimeDirectoryIsNeverTrusted(t *testing.T) {
+	cmd, done := startRuntimeTestGroup(t, false)
+	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
+	writePriorRuntimeState(t, runtimeDir, RuntimeGroup{
+		ProjectRoot: t.TempDir(), Name: "victim", LeaderPID: cmd.Process.Pid,
+		PGID: cmd.Process.Pid, StartIdentity: mustProcessIdentity(t, cmd.Process.Pid),
+	})
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, NewRuntimePaths(runtimeDir).Lock); err != nil {
+		t.Fatal(err)
+	}
+	simulateForeignRuntimeUser(t)
+
+	const refusal = "runtime directory is not owned by the current user"
+	if server, err := NewServer(Config{RuntimeDir: runtimeDir, StopGrace: 20 * time.Millisecond}); err == nil || !strings.Contains(err.Error(), refusal) {
+		if server != nil {
+			_ = server.Close()
+		}
+		t.Fatalf("NewServer() error = %v, want %q", err, refusal)
+	}
+	if _, err := StartupBudget(NewRuntimePaths(runtimeDir), time.Second, time.Second); err == nil || !strings.Contains(err.Error(), refusal) {
+		t.Fatalf("StartupBudget() error = %v, want %q", err, refusal)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("lock symlink target mode = %04o, want unchanged 0644", got)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("process recorded in a foreign runtime directory was signaled: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// simulateForeignRuntimeUser makes every file and peer owned by this test
+// process appear to belong to another local user.
+func simulateForeignRuntimeUser(t *testing.T) {
+	t.Helper()
+	uid := os.Geteuid() + 1
+	runtimeUserOverride.Store(&uid)
+	t.Cleanup(func() { runtimeUserOverride.Store(nil) })
+}
+
 func TestRuntimeStateFile(t *testing.T) {
 	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
 	server := testServer(t, Config{RuntimeDir: runtimeDir, StopGrace: 50 * time.Millisecond})

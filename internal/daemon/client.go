@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -115,7 +116,8 @@ type InputResult struct {
 	LaunchCursor protocol.Cursor
 }
 
-// Dial connects to a socket, performs the mandatory hello, and returns the
+// Dial connects to a socket, verifies that the daemon runs as the current user
+// before sending anything, performs the mandatory hello, and returns the
 // connection even for VersionMismatchError so an idle older daemon can still
 // receive the frozen shutdown request.
 func Dial(ctx context.Context, socket string) (*Client, error) {
@@ -129,6 +131,10 @@ func Dial(ctx context.Context, socket string) (*Client, error) {
 	conn, err := dialer.DialContext(ctx, "unix", socket)
 	if err != nil {
 		return nil, err
+	}
+	if err := verifyPeer(conn); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("refusing daemon socket %s: %w", socket, err)
 	}
 	client := newClient(conn, socket)
 	if err := client.hello(ctx); err != nil {
@@ -156,11 +162,15 @@ func DialDefault(ctx context.Context) (*Client, error) {
 // accept connections. Startup reclaims recorded groups sequentially and may
 // wait once after TERM and once after KILL for each group; dialSlack covers the
 // remaining setup and readiness handshake. Missing state has no recovery work.
+// State in a runtime directory another user controls is never read.
 func StartupBudget(paths RuntimePaths, stopGrace, dialSlack time.Duration) (time.Duration, error) {
 	if stopGrace < 0 || dialSlack < 0 {
 		return 0, errors.New("daemon startup budget durations must not be negative")
 	}
 	paths = paths.normalized()
+	if err := checkPrivateDir(paths.Dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return 0, err
+	}
 	state, exists, err := readRuntimeState(paths.State)
 	if err != nil {
 		return 0, err

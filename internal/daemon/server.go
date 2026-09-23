@@ -512,6 +512,10 @@ func (s *Server) listProcessesScoped(cwd, scope string, all, includeCompleted bo
 
 func (s *Server) serveConn(conn net.Conn) {
 	defer conn.Close()
+	if err := verifyPeer(conn); err != nil {
+		s.Logf("hum serve: rejected connection: %v\n", err)
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	decoder := protocol.NewDecoder(conn, defaultWireMaxLine)

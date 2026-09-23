@@ -4,15 +4,59 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"hum/internal/protocol"
 )
+
+// TestDaemonConnectionsRequireTheCurrentUser covers a socket reachable by
+// another local user: the client must refuse such a daemon before sending its
+// environment, and the daemon must refuse such a client before any request.
+func TestDaemonConnectionsRequireTheCurrentUser(t *testing.T) {
+	server := testServer(t, Config{})
+	socket := server.Paths().Socket
+	client, err := Dial(context.Background(), socket)
+	if err != nil {
+		t.Fatalf("same-user Dial() error = %v", err)
+	}
+	_ = client.Close()
+	simulateForeignRuntimeUser(t)
+
+	t.Run("client refuses daemon", func(t *testing.T) {
+		client, err := Dial(context.Background(), socket)
+		if err == nil || !strings.Contains(err.Error(), "is not the current user") {
+			if client != nil {
+				_ = client.Close()
+			}
+			t.Fatalf("Dial() error = %v, want peer refusal", err)
+		}
+	})
+
+	t.Run("daemon refuses client", func(t *testing.T) {
+		conn, err := net.Dial("unix", socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		// The daemon may already have closed the connection, so only the
+		// absence of a response is asserted.
+		_ = protocol.NewEncoder(conn).EncodeRequest(protocol.NewHello())
+		if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		n, err := conn.Read(make([]byte, 1))
+		if n != 0 || !(errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)) {
+			t.Fatalf("rejected client read = %d, %v; want closed connection without a response", n, err)
+		}
+	})
+}
 
 func TestStartupBudgetIncludesEveryRecordedGroup(t *testing.T) {
 	runtimeDir := filepath.Join(t.TempDir(), "runtime")

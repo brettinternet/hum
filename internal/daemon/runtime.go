@@ -395,13 +395,23 @@ func ensurePrivateDir(dir string) error {
 	} else if !errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("create runtime directory: %w", err)
 	}
+	return checkPrivateDir(dir)
+}
 
+// checkPrivateDir verifies an existing runtime directory before any artifact in
+// it is opened or trusted. Another user who owns or can write the directory
+// could plant the socket, lock, or state, so both are refused; group and other
+// read/execute access remains the operator's choice.
+func checkPrivateDir(dir string) error {
 	info, err := os.Lstat(dir)
 	if err != nil {
 		return fmt.Errorf("inspect runtime directory: %w", err)
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("runtime path is not a directory: %s", dir)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || int(stat.Uid) != runtimeUser() {
+		return fmt.Errorf("runtime directory is not owned by the current user: %s", dir)
 	}
 	if info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("runtime directory mode %04o permits group or other writes: %s", info.Mode().Perm(), dir)

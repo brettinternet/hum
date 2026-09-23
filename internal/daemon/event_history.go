@@ -68,8 +68,8 @@ func historyLock(path string) *sync.Mutex {
 }
 
 // NewEventHistory opens (but does not create) a history for scope and root.
-// Global histories use an empty root. Runtime directory permissions are owned
-// by the daemon runtime setup.
+// Global histories use an empty root. The CLI and MCP read history without a
+// daemon, so loading verifies the runtime directory as daemon startup does.
 func NewEventHistory(runtimeDir, scope, root string) *EventHistory {
 	key := scope + "\x00" + root
 	digest := sha256.Sum256([]byte(key))
@@ -119,6 +119,12 @@ func (h *EventHistory) loadLocked() error {
 		return h.unavailable
 	}
 	h.loaded = true
+	if err := checkPrivateDir(h.dir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		h.unavailable = fmt.Errorf("%w: %w", ErrHistoryUnavailable, err)
+		return h.unavailable
+	}
 	data, err := os.ReadFile(h.cursorPath)
 	cursorMissing := os.IsNotExist(err)
 	if err == nil {
