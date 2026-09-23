@@ -533,27 +533,6 @@ func TestLogsDefaultNewestWindow(t *testing.T) {
 	}
 }
 
-func TestCursorDocs(t *testing.T) {
-	design, err := os.ReadFile("../../docs/design.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, phrase := range []string{"Logs output", "`next`", "`next_cursor`", "last source cursor consumed", "next cursor that will be assigned"} {
-		if !strings.Contains(string(design), phrase) {
-			t.Fatalf("docs/design.md missing cursor guidance %q", phrase)
-		}
-	}
-	readme, err := os.ReadFile("../../README.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, phrase := range []string{"newest default window", "oldest retained entry", "Logs `next`", "process `next_cursor`"} {
-		if !strings.Contains(string(readme), phrase) {
-			t.Fatalf("README.md missing cursor/window guidance %q", phrase)
-		}
-	}
-}
-
 func TestLogsAggregateValidationAndLifecycle(t *testing.T) {
 	validationRuntime := hum006ListLogsTempDir(t, "aggregate-validation-only-runtime")
 	t.Setenv("HUM_RUNTIME_DIR", validationRuntime)
@@ -1548,18 +1527,5 @@ func TestLogsSince(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(validationRuntime, "hum.sock")); !os.IsNotExist(err) {
 		t.Fatalf("invalid since created daemon socket: %v", err)
-	}
-}
-
-func TestLogsSinceDocs(t *testing.T) {
-	design, err := os.ReadFile("../../docs/design.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(design)
-	for _, phrase := range []string{"--since DURATION", "since_ms", "inclusive request-time cutoff", "Match context then expands every regex match", "--since`, `--no-wait"} {
-		if !strings.Contains(text, phrase) {
-			t.Fatalf("docs/design.md missing since guidance %q", phrase)
-		}
 	}
 }

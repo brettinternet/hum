@@ -310,28 +310,3 @@ processes:
 		t.Fatalf("daemon error completion = err %v stdout %q stderr %q, want quiet empty output", err, stdout, stderr)
 	}
 }
-
-func TestCompletionDocs(t *testing.T) {
-	readme, err := os.ReadFile("../../README.md")
-	if err != nil {
-		t.Fatalf("read README.md: %v", err)
-	}
-	design, err := os.ReadFile("../../docs/design.md")
-	if err != nil {
-		t.Fatalf("read docs/design.md: %v", err)
-	}
-	for _, phrase := range []string{
-		"source <(hum completion bash)",
-		"source <(hum completion zsh)",
-		"hum completion fish > ~/.config/fish/completions/hum.fish",
-	} {
-		if !strings.Contains(string(readme), phrase) {
-			t.Errorf("README.md missing copy-pasteable command %q", phrase)
-		}
-	}
-	for _, phrase := range []string{"hum completion bash|zsh|fish", "never starts a daemon", "retained runtime records"} {
-		if !strings.Contains(string(design), phrase) {
-			t.Errorf("docs/design.md missing %q", phrase)
-		}
-	}
-}

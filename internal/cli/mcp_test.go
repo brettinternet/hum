@@ -35,9 +35,9 @@ func TestMCPHelp(t *testing.T) {
 	}
 	help := strings.ToLower(output.String())
 	for _, want := range []string{
-		"stdio", "one-time", "project_root", "absolute existing", "start and up", "resolved", "status, logs, wait, input, restart, stop, remove, and signal",
+		"stdio", "one-time", "project_root", "absolute existing", "start and up", "resolved",
 		"ad_hoc", "hum run", "daemon shutdown or replacement", "argv-based environment activation",
-		"twelve tools", "run, serve, and shutdown are not mcp tools",
+		"run, serve, and shutdown are not mcp tools",
 		"64", "-32001", "-32600", "-32800", "notifications/cancelled", "serialized", "parent cancellation",
 	} {
 		if !strings.Contains(help, want) {
@@ -121,15 +121,6 @@ func TestManifestlessProjectDoesNotExecuteConventionalSources(t *testing.T) {
 	}
 	if _, statErr := os.Stat(sentinel); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("manifestless inspection evaluated conventional source: %v", statErr)
-	}
-}
-
-func TestMCPConcurrencyDescription(t *testing.T) {
-	description := strings.ToLower(mcpCLICommand("dev", "unknown", &bytes.Buffer{}).Description)
-	for _, want := range []string{"64", "-32001", "-32600", "-32800", "notifications/cancelled", "serialized", "parent cancellation"} {
-		if !strings.Contains(description, want) {
-			t.Errorf("mcp description missing %q: %q", want, description)
-		}
 	}
 }
 

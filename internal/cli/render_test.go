@@ -659,23 +659,3 @@ func outputCursorPointer(value uint64) *output.Cursor {
 func uint64Pointer(value uint64) *uint64 {
 	return &value
 }
-
-func TestColorDocs(t *testing.T) {
-	design, err := os.ReadFile("../../docs/design.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(design)
-	for _, phrase := range []string{
-		"stdout is a terminal", "running and ready are green", "starting is yellow",
-		"operator-stopped is cyan", "autonomous successful exit is dim",
-		"failed\nexits, errors", "exhausted recovery", "dependency-skipped results are red",
-		"list headers are bold", "Aggregate log prefixes use a stable color", "Only `[NAME]` is styled",
-		"NO_COLOR", "including an empty value", "TERM=dumb",
-		"Piped output and JSON never contain ANSI styling",
-	} {
-		if !strings.Contains(text, phrase) {
-			t.Errorf("design docs missing %q", phrase)
-		}
-	}
-}

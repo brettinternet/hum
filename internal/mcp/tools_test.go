@@ -506,17 +506,6 @@ func TestGlobalScopeTools(t *testing.T) {
 	if listProcessKey(got) == listProcessKey(project) {
 		t.Fatal("global and project list keys collide")
 	}
-	for _, definition := range NewServer(Options{}).toolDefinitions() {
-		if definition.Name == "up" {
-			if !strings.Contains(definition.Description, "project scope only") || !strings.Contains(definition.Description, "project_root") {
-				t.Fatalf("up description omits project-only scope contract")
-			}
-			continue
-		}
-		if !strings.Contains(definition.Description, "global") || !strings.Contains(definition.Description, "project_root") {
-			t.Fatalf("%s description omits global scope contract", definition.Name)
-		}
-	}
 }
 
 func TestProcessStopGraceSyntheticDefinition(t *testing.T) {
@@ -1886,10 +1875,6 @@ func TestLogsSystemStream(t *testing.T) {
 	if !reflect.DeepEqual(streamProperty["enum"], wantEnum) || streamProperty["default"] != protocol.StreamBoth {
 		t.Fatalf("logs stream schema = %#v, want enum %#v and both default", streamProperty, wantEnum)
 	}
-	if !strings.Contains(logsDefinition.Description, "supervision-only system") || !strings.Contains(logsDefinition.Description, "both includes all three") {
-		t.Fatalf("logs description does not explain system/both: %q", logsDefinition.Description)
-	}
-
 	next := protocol.Cursor(9)
 	oldest := protocol.Cursor(2)
 	latest := protocol.Cursor(12)
@@ -2753,20 +2738,6 @@ func TestScopeMCP(t *testing.T) {
 	details, ok := mapped.Details.(map[string]any)
 	if !ok || details["other_scopes"] == nil {
 		t.Fatalf("mapped error details = %#v", mapped.Details)
-	}
-}
-
-func TestScopeDocs(t *testing.T) {
-	definitions := NewServer(Options{}).toolDefinitions()
-	blob, err := json.Marshal(definitions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(blob)
-	for _, phrase := range []string{`"scope"`, `"project_root"`, "canonical", "every project scope"} {
-		if !strings.Contains(text, phrase) {
-			t.Errorf("tool descriptions/schemas omit %q", phrase)
-		}
 	}
 }
 

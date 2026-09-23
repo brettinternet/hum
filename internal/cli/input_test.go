@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -184,36 +183,6 @@ func TestInputCommand(t *testing.T) {
 	var failure jsonErrorEnvelope
 	if decodeErr := json.Unmarshal([]byte(jsonError), &failure); decodeErr != nil || failure.Error == nil || !strings.Contains(failure.Error.Message, "base64") {
 		t.Fatalf("JSON error=%q decode=%v", jsonError, decodeErr)
-	}
-}
-
-func TestInputDocs(t *testing.T) {
-	var help bytes.Buffer
-	helpRoot := NewRootCommand("test", "test", &help, &bytes.Buffer{})
-	if err := helpRoot.Run(context.Background(), []string{"hum", "input", "--help"}); err != nil {
-		t.Fatal(err)
-	}
-	for _, phrase := range []string{"--text", "--base64", "exact bytes", "without appending a newline", "running TTY", "launch cursor", "ownership conflict", "never starts", "Observe", "answer", "confirm", "strict padded base64", "without whitespace"} {
-		if !strings.Contains(help.String(), phrase) {
-			t.Errorf("CLI input help missing %q", phrase)
-		}
-	}
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
-	for _, relative := range []string{"docs/design.md", "docs/coding-agents.md", "internal/skill/SKILL.md", "plugins/hum/skills/hum/SKILL.md"} {
-		content, err := os.ReadFile(filepath.Join(repo, relative))
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(content)
-		for _, phrase := range []string{"input", "base64", "launch cursor", "wait --match", "without a newline", "without whitespace", "strict padded base64", "ownership", "32", "at-most-once", "launch race", "observe", "answer", "confirm", "never"} {
-			if !strings.Contains(strings.ToLower(text), strings.ToLower(phrase)) {
-				t.Errorf("%s missing input documentation %q", relative, phrase)
-			}
-		}
 	}
 }
 

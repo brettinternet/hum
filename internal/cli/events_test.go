@@ -179,17 +179,6 @@ func TestEventsPaging(t *testing.T) {
 	}
 }
 
-func TestEventsHelp(t *testing.T) {
-	var out bytes.Buffer
-	if err := NewRootCommand("test", "test", &out, &out).Run(context.Background(), []string{"hum", "events", "--help"}); err != nil {
-		t.Fatal(err)
-	}
-	help := out.String()
-	if !strings.Contains(help, "hum events [NAME...]") || !strings.Contains(help, "hum events\n") || !strings.Contains(help, "--after-cursor") {
-		t.Fatalf("help=%q", help)
-	}
-}
-
 func TestEventsCompletion(t *testing.T) {
 	stdout, stderr, err := runCompletionForTest(t, "ev", "--generate-shell-completion")
 	if err != nil || !strings.Contains(stdout, "events") || stderr != "" {

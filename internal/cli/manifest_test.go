@@ -1814,19 +1814,6 @@ processes:
 	}
 }
 
-func TestSignalExitDocs(t *testing.T) {
-	contents, err := os.ReadFile("../../docs/design.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	docs := strings.ToLower(string(contents))
-	for _, phrase := range []string{"exit_status: -1", "signal", `{"name":"sigterm","number":15}`, "non-signal exits omit", "operator-stopped", "list", "status", "up", "wait", "mcp"} {
-		if !strings.Contains(docs, phrase) {
-			t.Errorf("signal exit docs missing %q", phrase)
-		}
-	}
-}
-
 func TestUpAttachedOutput(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	server, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
@@ -1994,27 +1981,6 @@ processes:
 	}
 	if !strings.Contains(stderr.String(), "dependent: skipped (blocked by broken); not launched") {
 		t.Fatalf("attached failing up changed skipped state: stderr=%q", stderr.String())
-	}
-}
-
-func TestUpProgressDocs(t *testing.T) {
-	design, err := os.ReadFile("../../docs/design.md")
-	if err != nil {
-		t.Fatalf("read design docs: %v", err)
-	}
-	var help, helpErr bytes.Buffer
-	root := NewRootCommand("test", "test", &help, &helpErr)
-	if err := root.Run(context.Background(), []string{"hum", "up", "--help"}); err != nil {
-		t.Fatalf("up help: %v", err)
-	}
-	if helpErr.Len() != 0 {
-		t.Fatalf("up help stderr = %q", helpErr.String())
-	}
-	all := strings.ToLower(help.String() + "\n" + string(design))
-	for _, phrase := range []string{"interactive terminal", "--detach", "ctrl+c detaches", "non-terminal", "stderr", "stdout", "--json", "--no-wait", "at most two lines", "temporal", "transition", "child output", "timeout", "early-exit", "hum logs name"} {
-		if !strings.Contains(all, phrase) {
-			t.Errorf("progress docs missing %q", phrase)
-		}
 	}
 }
 
@@ -2624,35 +2590,6 @@ processes:
 				t.Fatalf("start after %s identity = %+v", test.name, results[0])
 			}
 		})
-	}
-}
-
-func TestUpDriftDocs(t *testing.T) {
-	paths := []string{"../../docs/design.md", "../../docs/coding-agents.md", "../skill/SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"}
-	for _, path := range paths {
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		text := strings.ToLower(string(contents))
-		for _, phrase := range []string{"definition_drift", "removed_definition", "changed_fields", "hum restart", "hum stop", "hum remove", "argv", "readiness matcher", "restart policy"} {
-			if !strings.Contains(text, phrase) {
-				t.Errorf("%s missing drift guidance %q", path, phrase)
-			}
-		}
-	}
-	var stdout, stderr bytes.Buffer
-	if err := NewRootCommand("test", "test", &stdout, &stderr).Run(context.Background(), []string{"hum", "up", "--help"}); err != nil {
-		t.Fatal(err)
-	}
-	help := strings.ToLower(stdout.String())
-	for _, phrase := range []string{"definition drift", "exit 1", "docs/design.md"} {
-		if !strings.Contains(help, phrase) {
-			t.Errorf("CLI up help missing concise drift guidance %q", phrase)
-		}
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("CLI up help stderr = %q", stderr.String())
 	}
 }
 

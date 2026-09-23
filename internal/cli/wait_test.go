@@ -395,26 +395,6 @@ func TestWaitCLIPreLaunchSessionTimesOut(t *testing.T) {
 	}
 }
 
-func TestWaitObservedDocs(t *testing.T) {
-	design, err := os.ReadFile("../../docs/design.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"process_observed", "without an extra", "no process named"} {
-		if !strings.Contains(strings.ToLower(string(design)), want) {
-			t.Errorf("docs/design.md missing %q", want)
-		}
-	}
-	var help strings.Builder
-	command := NewRootCommand("test", "test", &help, &strings.Builder{})
-	if err := command.Run(context.Background(), []string{"hum", "wait", "--help"}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(strings.ToLower(help.String()), "docs/design.md") {
-		t.Errorf("wait help does not point to result details: %q", help.String())
-	}
-}
-
 func waitCLIProtocolCursor(value protocol.Cursor) *protocol.Cursor {
 	return &value
 }

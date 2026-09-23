@@ -76,6 +76,9 @@ hum skill
 hum completion bash|zsh|fish
 ```
 
+`hum status`, `hum wait`, `hum input`, and `hum signal` cover snapshots, bounded observation,
+one-shot TTY input, and supported signals.
+
 `list` also accepts the conventional command alias `ls`. Long command names remain canonical in documentation, scripts, output, and errors.
 
 Short option aliases are command-local except the global help and version aliases. Project-scoped commands also accept the persistent `-C DIR` alias for `--project DIR` and `-F PATH` for `--file PATH`; both selectors may appear before or after the subcommand, and `run` accepts them after the process name before `--`. `signal` accepts them before its positional names.

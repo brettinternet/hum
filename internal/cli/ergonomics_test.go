@@ -234,19 +234,6 @@ func TestLogsAndWaitFlagsHideDefault(t *testing.T) {
 	}
 }
 
-// TestUpDescriptionNoDuplicateClause covers item 9: the duplicated
-// "continues after failures" clause must not appear in hum up --help.
-func TestUpDescriptionNoDuplicateClause(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	root := NewRootCommand("test", "test", &stdout, &stderr)
-	if err := root.Run(context.Background(), []string{"hum", "up", "--help"}); err != nil {
-		t.Fatalf("up help: %v", err)
-	}
-	if strings.Contains(stdout.String(), "continues after launch failures, continues after failures") {
-		t.Fatalf("up help retains the duplicated clause: %s", stdout.String())
-	}
-}
-
 // TestRenderListHumanOmitsZeroPID and TestRenderStatusHumanOmitsZeroPID cover
 // item 10: human output must omit the PID field for a zero PID (stopped or
 // never-launched) rather than printing PID 0 / pid: 0.

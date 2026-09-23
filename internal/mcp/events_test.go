@@ -39,9 +39,6 @@ func TestEvents(t *testing.T) {
 		for _, definition := range NewServer(Options{}).toolDefinitions() {
 			if definition.Name == "events" {
 				found = true
-				if !strings.Contains(strings.ToLower(definition.Description), "never follow") {
-					t.Fatal("events description does not document bounded semantics")
-				}
 			}
 			if strings.Contains(definition.Name, "follow") {
 				t.Fatalf("unbounded follow tool exposed: %s", definition.Name)

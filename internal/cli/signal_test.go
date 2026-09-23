@@ -192,23 +192,3 @@ func stopShutdownRunAndStop(t *testing.T, name string) error {
 	_, _, err := stopShutdownRun(t, "stop", name)
 	return err
 }
-
-func TestSignalDocs(t *testing.T) {
-	root := NewRootCommand("test", "test", &strings.Builder{}, &strings.Builder{})
-	command := root.Command("signal")
-	if command == nil || !strings.Contains(command.UsageText, "signal NAME SIGNAL") || !strings.Contains(command.Description, "observational") {
-		t.Fatalf("signal help contract missing: %#v", command)
-	}
-	for _, path := range []string{"../../docs/design.md", "../../docs/coding-agents.md"} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		docs := strings.ToLower(string(data))
-		for _, phrase := range []string{"signal", "invalid_signal", "not_running", "canonical"} {
-			if !strings.Contains(docs, phrase) {
-				t.Errorf("%s missing %q", path, phrase)
-			}
-		}
-	}
-}

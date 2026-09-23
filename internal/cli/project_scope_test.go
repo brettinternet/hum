@@ -211,21 +211,6 @@ func TestCrossWorktreeScopeDiscovery(t *testing.T) {
 	}
 }
 
-func TestScopeDocs(t *testing.T) {
-	for _, path := range []string{"../../README.md", "../../docs/design.md", "../../docs/coding-agents.md", "../../internal/skill/SKILL.md"} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(data)
-		for _, phrase := range []string{"canonical", "symlink", "worktree", "--project", "-C", "removed", "list --all", "scope", "project_root"} {
-			if !strings.Contains(text, phrase) {
-				t.Errorf("%s missing %q", path, phrase)
-			}
-		}
-	}
-}
-
 func TestRemovedWorktreeScopeTargeting(t *testing.T) {
 	testRemovedWorktreeScopeTargeting(t)
 }

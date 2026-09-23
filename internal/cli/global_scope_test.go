@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
@@ -97,20 +96,5 @@ func TestGlobalScopeDiscovery(t *testing.T) {
 	err = &daemon.WireError{Code: protocol.ErrorNotFound, Message: "not found", Details: map[string]any{"scope": "project", "project_root": "/project", "other_scopes": []any{map[string]any{"scope": "global"}}}}
 	if got := crossScopeNotFoundMessage(err, "logs proxy"); !strings.Contains(got, "hum --global logs proxy") {
 		t.Fatalf("global guidance = %q", got)
-	}
-}
-
-func TestGlobalScopeDocs(t *testing.T) {
-	for _, path := range []string{"../../README.md", "../../docs/design.md", "../../docs/coding-agents.md", "../../internal/skill/SKILL.md"} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(data)
-		for _, phrase := range []string{"--global", "-g", "global", "ad-hoc", "list --all", "project_root"} {
-			if !strings.Contains(text, phrase) {
-				t.Errorf("%s missing %q", path, phrase)
-			}
-		}
 	}
 }

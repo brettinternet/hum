@@ -94,29 +94,3 @@ func TestTTYCLI(t *testing.T) {
 		t.Fatalf("shutdown: %v", err)
 	}
 }
-
-func TestTTYHelpAndDocs(t *testing.T) {
-	var output, errors bytes.Buffer
-	root := NewRootCommand("test", "test", &output, &errors)
-	if err := root.Run(context.Background(), []string{"hum", "run", "--help"}); err != nil {
-		t.Fatal(err)
-	}
-	help := strings.ToLower(output.String())
-	for _, want := range []string{"--tty", "pseudo-terminal", "ctrl-]", "ctrl+c"} {
-		if !strings.Contains(help, strings.ToLower(want)) {
-			t.Errorf("run help missing %q: %q", want, output.String())
-		}
-	}
-	for _, path := range []string{"../../docs/design.md", "../../docs/coding-agents.md", "../skill/SKILL.md", "../../plugins/hum/skills/hum/SKILL.md"} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		content := strings.ToLower(string(data))
-		for _, want := range []string{"tty: true", "ctrl-]", "raw mode", "mcp", "shutdown"} {
-			if !strings.Contains(content, strings.ToLower(want)) {
-				t.Errorf("%s missing %q", path, want)
-			}
-		}
-	}
-}

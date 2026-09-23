@@ -144,7 +144,7 @@ Each tool rejects fields outside its advertised closed input schema before proje
 - If an `on-failure` prerequisite is recovering, rerun `up` after it is ready rather than
   expecting the same invocation to follow its successor.
 - The server exposes `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `input`,
-  `restart`, `stop`, `remove`, and `signal`.
+  `restart`, `stop`, `remove`, `signal`, and `events`.
 - Its bounded `input` tool accepts exact non-empty text or strict padded base64 without
   whitespace for an already-running TTY incarnation; text sends exact bytes without a newline
   and returns its launch cursor; it never starts, waits, queues, retries, retains, or echoes

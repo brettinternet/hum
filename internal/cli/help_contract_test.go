@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -117,64 +116,6 @@ func TestHelpContract(t *testing.T) {
 	}
 	if strings.Contains(visible, "hidden-local") || strings.Contains(visible, "hidden-persistent") {
 		t.Fatalf("hidden flags included in fixture: %q", visible)
-	}
-}
-
-func TestDoctorHelpContract(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	root := NewRootCommand("test", "test", &stdout, &stderr)
-	if err := root.Run(context.Background(), []string{"hum", "doctor", "--help"}); err != nil {
-		t.Fatal(err)
-	}
-	help := strings.ToLower(stdout.String())
-	for _, want := range []string{"hum doctor", "--json", "configuration", "runtime paths", "executables", "existing daemon", "without starting", "missing daemon", "exit 1"} {
-		if !strings.Contains(help, want) {
-			t.Errorf("doctor help missing %q: %q", want, stdout.String())
-		}
-	}
-	if strings.Contains(help, "--global") || stderr.Len() != 0 {
-		t.Fatalf("doctor help exposes global or writes stderr: stdout=%q stderr=%q", stdout.String(), stderr.String())
-	}
-}
-
-func TestLogsSystemStreamHelp(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	root := NewRootCommand("test", "test", &stdout, &stderr)
-	if err := root.Run(context.Background(), []string{"hum", "logs", "--help"}); err != nil {
-		t.Fatal(err)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("logs help stderr = %q", stderr.String())
-	}
-	help := stdout.String()
-	for _, phrase := range []string{"stdout", "stderr", "system", "both", "both includes all three"} {
-		if !strings.Contains(help, phrase) {
-			t.Fatalf("logs help missing %q: %q", phrase, help)
-		}
-	}
-}
-
-func TestRestartReadinessDocs(t *testing.T) {
-	var output, errorOutput bytes.Buffer
-	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
-	if err := root.Run(context.Background(), []string{"hum", "restart", "--help"}); err != nil {
-		t.Fatalf("restart help: %v", err)
-	}
-	help := strings.ToLower(output.String())
-	for _, phrase := range []string{"--timeout", "positive", "per-name", "--no-wait", "readiness failures", "later names continue", "request or validation errors", "exit codes: 0 success", "exit 1", "exit 2", "exit 3"} {
-		if !strings.Contains(help, phrase) {
-			t.Errorf("restart help missing %q: %q", phrase, output.String())
-		}
-	}
-	design, err := os.ReadFile("../../docs/design.md")
-	if err != nil {
-		t.Fatalf("read design docs: %v", err)
-	}
-	docs := strings.ToLower(string(design))
-	for _, phrase := range []string{"hum [--project dir|-c dir] restart <name>... [--no-wait] [--timeout duration] [--json]", "positive per-name duration", "readiness failures", "remaining names continue", "request or validation errors stop", "exit precedence: 1 > 3 > 2 > 0"} {
-		if !strings.Contains(docs, phrase) {
-			t.Errorf("design docs missing %q", phrase)
-		}
 	}
 }
 

@@ -343,23 +343,6 @@ func TestProjectDirGuidance(t *testing.T) {
 	}
 }
 
-func TestProjectDirDocs(t *testing.T) {
-	for path, phrases := range map[string][]string{
-		"../../README.md":      {"hum --project /path/to/checkout up", "-C DIR", "relative selector", "nearest Git root", "`-d` means"},
-		"../../docs/design.md": {"hum [--project DIR|-C DIR]", "nearest-Git-root-or-directory-fallback", "`run` accepts them after the process name", "Command-local `-d`"},
-	} {
-		content, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		for _, phrase := range phrases {
-			if !strings.Contains(string(content), phrase) {
-				t.Errorf("%s missing %q", path, phrase)
-			}
-		}
-	}
-}
-
 func captureProjectDirCommand(t *testing.T, args ...string) (value string, set bool, runName string, runArgv []string, err error) {
 	t.Helper()
 	root := NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{})

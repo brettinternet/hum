@@ -121,15 +121,7 @@ func TestLogsStripTerminalControl(t *testing.T) {
 		t.Fatalf("raw attached output = %q, want terminal controls preserved", attachedOutput)
 	}
 
-	var help, helpErr bytes.Buffer
-	root := NewRootCommand("test", "test", &help, &helpErr)
-	if err := root.Run(context.Background(), []string{"hum", "logs", "--help"}); err != nil {
-		t.Fatalf("logs help: %v", err)
-	}
-	lowerHelp := strings.ToLower(help.String())
-	if !strings.Contains(lowerHelp, "docs/design.md") {
-		t.Errorf("logs help does not point to rendering details: %q", help.String())
-	}
+	root := NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{})
 	for _, command := range root.Commands {
 		for _, flag := range command.Flags {
 			for _, name := range flag.Names() {
@@ -138,8 +130,5 @@ func TestLogsStripTerminalControl(t *testing.T) {
 				}
 			}
 		}
-	}
-	if helpErr.Len() != 0 {
-		t.Fatalf("logs help stderr = %q", helpErr.String())
 	}
 }

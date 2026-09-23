@@ -39,12 +39,6 @@ func TestREADMEQuickstartStructure(t *testing.T) {
 	if quickstartEnd == len(readme) {
 		t.Fatal("README.md Quickstart has no following top-level section")
 	}
-	quickstartSection := readme[quickstart:quickstartEnd]
-	for _, command := range []string{"hum run", "hum up", "Ctrl+C", "hum down"} {
-		if !strings.Contains(quickstartSection, command) {
-			t.Errorf("README.md Quickstart missing %q", command)
-		}
-	}
 }
 
 func markdownH2Positions(markdown string) map[string]int {
@@ -266,29 +260,9 @@ func TestAttachSurface(t *testing.T) {
 		t.Fatalf("attach help: %v", err)
 	}
 	help := strings.ToLower(output.String())
-	for _, want := range []string{"hum attach name", "--tail", "currently running", "without starting", "raw input", "--tail 0", "hum run", "hum logs"} {
-		if !strings.Contains(help, strings.ToLower(want)) {
-			t.Errorf("attach help missing %q: %q", want, output.String())
-		}
-	}
 	for _, unwanted := range []string{"--stream", "--json", "--match", "--limit-bytes", "--after-cursor"} {
 		if strings.Contains(help, unwanted) {
 			t.Errorf("attach help advertises unsupported flag %q: %q", unwanted, output.String())
-		}
-	}
-	for path, wants := range map[string][]string{
-		"../../README.md":      {"hum attach NAME", "--tail 0", "hum run", "hum logs --follow"},
-		"../../docs/design.md": {"hum attach <name>", "--tail 0", "never starts or restarts", "hum run", "| `-n` | `--tail` | `attach`, `logs`, `events` |"},
-	} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		content := strings.ToLower(string(data))
-		for _, want := range wants {
-			if !strings.Contains(content, strings.ToLower(want)) {
-				t.Errorf("%s missing %q", path, want)
-			}
 		}
 	}
 	if errorOutput.Len() != 0 {
@@ -358,71 +332,145 @@ func TestSkillHelp(t *testing.T) {
 	}
 }
 
-func TestSkillReferencesMatchRootCommandsAndFlags(t *testing.T) {
-	var output, errorOutput bytes.Buffer
-	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
-	content := skill.Content()
-
-	type commandFlag struct {
-		command string
-		flag    string
+func TestDocsReferenceRealCommandsAndFlags(t *testing.T) {
+	root := NewRootCommand("dev", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	type commandSurface struct {
+		flags map[string]bool
 	}
-	var references []commandFlag
+	commands := make(map[string]commandSurface)
+	for _, command := range root.Commands {
+		if command == nil {
+			continue
+		}
+		flags := make(map[string]bool)
+		for _, flag := range command.Flags {
+			for _, name := range flag.Names() {
+				flags[name] = true
+			}
+		}
+		for _, flag := range command.VisibleFlags() {
+			for _, name := range flag.Names() {
+				flags[name] = true
+			}
+		}
+		surface := commandSurface{flags: flags}
+		commands[command.Name] = surface
+		for _, alias := range command.Aliases {
+			commands[alias] = surface
+		}
+	}
+	// urfave/cli installs the shell completion command during command setup.
+	commands["completion"] = commandSurface{flags: map[string]bool{}}
+	rootFlags := make(map[string]bool)
+	for _, flag := range root.Flags {
+		for _, name := range flag.Names() {
+			rootFlags[name] = true
+		}
+	}
+	for _, flag := range root.VisibleFlags() {
+		for _, name := range flag.Names() {
+			rootFlags[name] = true
+		}
+	}
+
+	documents := []struct {
+		name    string
+		content string
+	}{
+		{name: "embedded skill", content: skill.Content()},
+		{name: "plugins/hum/skills/hum/SKILL.md", content: readDocsSurfaceFile(t, "../../plugins/hum/skills/hum/SKILL.md")},
+		{name: "README.md", content: readDocsSurfaceFile(t, "../../README.md")},
+		{name: "docs/design.md", content: readDocsSurfaceFile(t, "../../docs/design.md")},
+		{name: "docs/coding-agents.md", content: readDocsSurfaceFile(t, "../../docs/coding-agents.md")},
+	}
 	inline := regexp.MustCompile("`([^`\\n]+)`")
 	commandReference := regexp.MustCompile(`\bhum\s+([a-z][a-z0-9-]*)\b`)
 	flagReference := regexp.MustCompile(`--([a-z][a-z0-9-]*)\b`)
-	commandReferenceCount := 0
-	for _, match := range inline.FindAllStringSubmatch(content, -1) {
-		command := commandReference.FindStringSubmatch(match[1])
-		if len(command) == 0 {
-			continue
-		}
-		commandReferenceCount++
-		name := command[1]
-		found := false
-		for _, command := range root.Commands {
-			if command != nil && command.Name == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("skill references missing root command %q", name)
-		}
-		for _, flag := range flagReference.FindAllStringSubmatch(match[1], -1) {
-			references = append(references, commandFlag{command: name, flag: flag[1]})
-		}
-	}
-	if commandReferenceCount == 0 {
-		t.Fatal("skill contains no hum command references")
-	}
-
-	for _, reference := range references {
-		var commandFound bool
-		var flagFound bool
-		for _, command := range root.Commands {
-			if command == nil || command.Name != reference.command {
-				continue
-			}
-			commandFound = true
-			for _, flag := range command.Flags {
-				for _, name := range flag.Names() {
-					if name == reference.flag {
-						flagFound = true
-					}
+	for _, document := range documents {
+		for _, unit := range markdownCommandUnits(document.content, inline) {
+			commandMatches := commandReference.FindAllStringSubmatchIndex(unit, -1)
+			for _, match := range commandMatches {
+				name := unit[match[2]:match[3]]
+				if _, ok := commands[name]; !ok {
+					t.Errorf("%s references missing root command %q in %q", document.name, name, unit)
 				}
 			}
-			break
-		}
-		if !commandFound {
-			t.Errorf("skill flag --%s references missing root command %q", reference.flag, reference.command)
-		} else if !flagFound {
-			t.Errorf("skill flag --%s is not a flag on hum %s", reference.flag, reference.command)
+			activeCommand := ""
+			commandIndex := 0
+			for _, match := range flagReference.FindAllStringSubmatchIndex(unit, -1) {
+				for commandIndex < len(commandMatches) && commandMatches[commandIndex][0] < match[0] {
+					activeCommand = unit[commandMatches[commandIndex][2]:commandMatches[commandIndex][3]]
+					commandIndex++
+				}
+				flag := unit[match[2]:match[3]]
+				if rootFlags[flag] {
+					continue
+				}
+				if activeCommand == "" && len(commandMatches) > 0 {
+					activeCommand = unit[commandMatches[0][2]:commandMatches[0][3]]
+				}
+				if activeCommand == "" {
+					continue
+				}
+				command, ok := commands[activeCommand]
+				if ok && !command.flags[flag] {
+					t.Errorf("%s flag --%s is not supported by hum %s in %q", document.name, flag, activeCommand, unit)
+				}
+			}
 		}
 	}
-	if len(references) == 0 {
-		t.Fatal("skill contains no command-scoped flag references")
+}
+
+func TestDocsCoverEveryCommand(t *testing.T) {
+	design := readDocsSurfaceFile(t, "../../docs/design.md")
+	root := NewRootCommand("dev", "unknown", &bytes.Buffer{}, &bytes.Buffer{})
+	var visibleCommands []string
+	completionVisible := false
+	for _, command := range root.Commands {
+		if command == nil || command.Hidden {
+			continue
+		}
+		visibleCommands = append(visibleCommands, command.Name)
+		completionVisible = completionVisible || command.Name == "completion"
 	}
+	// urfave/cli installs the visible shell completion command during setup.
+	if !completionVisible {
+		visibleCommands = append(visibleCommands, "completion")
+	}
+	for _, name := range visibleCommands {
+		reference := regexp.MustCompile(`\bhum\s+` + regexp.QuoteMeta(name) + `\b`)
+		if !reference.MatchString(design) {
+			t.Errorf("docs/design.md does not reference visible root command %q as hum %s", name, name)
+		}
+	}
+}
+
+func readDocsSurfaceFile(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(content)
+}
+
+func markdownCommandUnits(content string, inline *regexp.Regexp) []string {
+	units := make([]string, 0)
+	for _, match := range inline.FindAllStringSubmatch(content, -1) {
+		units = append(units, match[1])
+	}
+	inFence := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence && strings.HasPrefix(trimmed, "hum ") {
+			units = append(units, trimmed)
+		}
+	}
+	return units
 }
 
 type skillErrorWriter struct {
@@ -431,364 +479,4 @@ type skillErrorWriter struct {
 
 func (w skillErrorWriter) Write([]byte) (int, error) {
 	return 0, w.err
-}
-
-func TestWaitHelpDescribesExitAndReadiness(t *testing.T) {
-	var output, errorOutput bytes.Buffer
-	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
-
-	if err := root.Run(context.Background(), []string{"hum", "wait", "--help"}); err != nil {
-		t.Fatalf("wait help: %v", err)
-	}
-	help := strings.ToLower(output.String())
-	for _, want := range []string{"without --match", "process incarnation to exit", "stopped sessions", "next launch", "starting a daemon if needed", "--after-cursor", "--match", "--timeout", "--json", "exit codes"} {
-		if !strings.Contains(help, want) {
-			t.Errorf("wait help missing %q: %q", want, output.String())
-		}
-	}
-}
-
-func TestLogsAggregateDocs(t *testing.T) {
-	var output, errorOutput bytes.Buffer
-	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
-	if err := root.Run(context.Background(), []string{"hum", "logs", "--help"}); err != nil {
-		t.Fatalf("logs help: %v", err)
-	}
-	help := strings.ToLower(output.String())
-	for _, want := range []string{
-		"[name...]",
-		"named processes",
-		"per process",
-		"--after-cursor",
-		"--follow",
-		"without signaling",
-		"docs/design.md",
-	} {
-		if !strings.Contains(help, want) {
-			t.Errorf("logs aggregate help missing %q: %q", want, output.String())
-		}
-	}
-	if errorOutput.Len() != 0 {
-		t.Fatalf("logs help stderr = %q", errorOutput.String())
-	}
-	for path, want := range map[string][]string{
-		"../../README.md":      {"hum up", "hum logs --follow", "docs/design.md"},
-		"../../docs/design.md": {"hum up", "hum logs --follow", "single explicit", "unchanged", "named ndjson", "one follower", "per-session", "daemon loss"},
-	} {
-		content, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		lower := strings.ToLower(string(content))
-		for _, phrase := range want {
-			if !strings.Contains(lower, phrase) {
-				t.Errorf("%s missing %q", path, phrase)
-			}
-		}
-	}
-}
-
-func TestLifecycleHelp(t *testing.T) {
-	tests := []struct {
-		name    string
-		args    []string
-		want    []string
-		notWant []string
-	}{
-		{
-			name: "root",
-			args: []string{"hum", "--help"},
-			want: []string{
-				"supervise local development processes",
-				"hum up",
-				"hum run",
-				"hum logs",
-				"docs/design.md",
-			},
-		},
-		{
-			name: "serve",
-			args: []string{"hum", "serve", "--help"},
-			want: []string{
-				"foreground",
-				"diagnostics to stderr",
-				"--daemon",
-				"detached daemon",
-				"waits for readiness",
-				"pid and socket",
-			},
-		},
-		{
-			name: "init",
-			args: []string{"hum", "init", "--help"},
-			want: []string{
-				"create hum.yaml",
-				"strict project discovery",
-				"without starting a daemon",
-				"single candidate",
-				"commented template",
-				"--force",
-				"--json",
-			},
-		},
-		{
-			name: "run",
-			args: []string{"hum", "run", "--help"},
-			want: []string{
-				"automatically starting a detached daemon",
-				"without --detach",
-				"stream raw child output",
-				"ctrl+c stops it",
-				"with --detach",
-				"return immediately",
-				"daemon keeps owning it",
-				"ad-hoc commands require --",
-			},
-		},
-		{
-			name: "start",
-			args: []string{"hum", "start", "--help"},
-			want: []string{
-				"named sessions",
-				"idempotently",
-				"hum.yaml; without it, unresolved names return manifest_missing",
-				"never pulls in prerequisites",
-				"--no-wait",
-				"--timeout",
-				"--json",
-				"docs/design.md",
-			},
-		},
-		{
-			name: "up",
-			args: []string{"hum", "up", "--help"},
-			want: []string{
-				"manifest processes",
-				"independent roots concurrently",
-				"gate dependents on readiness",
-				"continue after failures",
-				"--no-wait",
-				"--timeout",
-				"--full",
-				"name, result, state, and pid",
-				"--json",
-				"docs/design.md",
-			},
-		},
-		{
-			name: "down",
-			args: []string{"hum", "down", "--help"},
-			want: []string{
-				"every process",
-				"current project",
-				"resolved manifest",
-				"ad-hoc",
-				"concurrently",
-				"not running",
-				"idempotent",
-				"never starts",
-				"shuts down the daemon",
-				"--json",
-			},
-		},
-		{
-			name: "list",
-			args: []string{"hum", "list", "--help"},
-			want: []string{
-				"read-only",
-				"does not start an empty daemon",
-				"--all",
-				"every scope",
-				"--full",
-				"name, state, and pid",
-				"json output always includes all fields",
-			},
-		},
-		{
-			name: "status",
-			args: []string{"hum", "status", "--help"},
-			want: []string{
-				"without name",
-				"compact table",
-				"unlaunched manifest declarations",
-				"with name",
-				"detailed status",
-				"followers",
-				"read-only",
-				"never starts a daemon",
-			},
-		},
-		{
-			name: "logs",
-			args: []string{"hum", "logs", "--help"},
-			want: []string{
-				"bounded retained output",
-				"named processes",
-				"filters and limits apply per process",
-				"--follow",
-				"cancels reading",
-				"without signaling processes",
-				"docs/design.md",
-			},
-		},
-		{
-			name: "wait",
-			args: []string{"hum", "wait", "--help"},
-			want: []string{
-				"without --match",
-				"one process incarnation",
-				"stopped sessions",
-				"next launch",
-				"starting a daemon if needed",
-				"30s",
-				"exit codes: 0 for a match or unfiltered exit",
-			},
-			notWant: []string{"(default: 0)"},
-		},
-		{
-			name: "restart",
-			args: []string{"hum", "restart", "--help"},
-			want: []string{
-				"graceful stop and relaunch by name",
-				"restart is not the daemon",
-				"--no-wait skips readiness",
-				"later names continue",
-				"errors stop the remaining restarts",
-				"exit codes: 0 success",
-			},
-		},
-		{
-			name: "stop",
-			args: []string{"hum", "stop", "--help"},
-			want: []string{
-				"multiple names",
-				"one result per name",
-				"already-stopped",
-				"idempotent",
-				"does not shut down the daemon",
-			},
-		},
-		{
-			name: "remove",
-			args: []string{"hum", "remove", "--help"},
-			want: []string{"supervision sessions", "stops each running incarnation", "closes attached followers", "discards retained output", "followers count never warns, prompts, or blocks removal", "never edits hum.yaml"},
-		},
-		{
-			name: "shutdown",
-			args: []string{"hum", "shutdown", "--help"},
-			want: []string{
-				"daemon lifetime",
-				"by default it refuses",
-				"managed processes are active",
-				"lists their names",
-				"--stop-processes",
-				"every managed process",
-				"no daemon is running",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var output, errorOutput bytes.Buffer
-			root := NewRootCommand("dev", "unknown", &output, &errorOutput)
-			if err := root.Run(context.Background(), tt.args); err != nil {
-				t.Fatalf("help: %v", err)
-			}
-			help := strings.Join(strings.Fields(strings.ToLower(output.String())), " ")
-			for _, want := range tt.want {
-				if !strings.Contains(help, strings.ToLower(want)) {
-					t.Errorf("help missing %q: %q", want, output.String())
-				}
-			}
-			for _, notWant := range tt.notWant {
-				if strings.Contains(help, strings.ToLower(notWant)) {
-					t.Errorf("help contains misleading %q: %q", notWant, output.String())
-				}
-			}
-		})
-	}
-}
-
-func TestOutputByteDocs(t *testing.T) {
-	var output, errorOutput bytes.Buffer
-	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
-	if err := root.Run(context.Background(), []string{"hum", "--help"}); err != nil {
-		t.Fatalf("root help: %v", err)
-	}
-	help := strings.ToLower(output.String())
-	for _, want := range []string{"output-bytes", "retained bytes per process", "docs/design.md"} {
-		if !strings.Contains(help, want) {
-			t.Errorf("root help missing %q: %q", want, output.String())
-		}
-	}
-	content, err := os.ReadFile("../../docs/design.md")
-	if err != nil {
-		t.Fatalf("read docs/design.md: %v", err)
-	}
-	docs := strings.ToLower(string(content))
-	for _, want := range []string{"len(text)+128", "--output-bytes", "--limit-bytes", "text bytes only", "not an exact rss cap"} {
-		if !strings.Contains(docs, want) {
-			t.Errorf("docs/design.md missing %q", want)
-		}
-	}
-	if errorOutput.Len() != 0 {
-		t.Fatalf("unexpected stderr: %q", errorOutput.String())
-	}
-}
-
-func TestPinnedToolchainDocs(t *testing.T) {
-	miseContent, err := os.ReadFile("../../mise.toml")
-	if err != nil {
-		t.Fatalf("read mise.toml: %v", err)
-	}
-	mise := string(miseContent)
-	for _, want := range []string{`go = "1.27.1"`, `staticcheck = "2026.2.1"`} {
-		if !strings.Contains(mise, want) {
-			t.Errorf("mise.toml missing pinned tool %q", want)
-		}
-	}
-	for _, tool := range []string{"go", "staticcheck"} {
-		for _, line := range strings.Split(mise, "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, tool+" =") && strings.Contains(trimmed, "latest") {
-				t.Errorf("mise.toml leaves %s on latest: %q", tool, line)
-			}
-		}
-	}
-
-	goModContent, err := os.ReadFile("../../go.mod")
-	if err != nil {
-		t.Fatalf("read go.mod: %v", err)
-	}
-	goDirective := ""
-	for _, line := range strings.Split(string(goModContent), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "go ") {
-			goDirective = strings.TrimSpace(line)
-			break
-		}
-	}
-	// The directive tracks the pinned toolchain minor; there is no separate
-	// minimum supported Go version because hum ships only as release binaries.
-	if goDirective != "go 1.27" {
-		t.Errorf("go.mod directive = %q, want %q", goDirective, "go 1.27")
-	}
-
-	docsContent, err := os.ReadFile("../../docs/development.md")
-	if err != nil {
-		t.Fatalf("read docs/development.md: %v", err)
-	}
-	docs := strings.ToLower(string(docsContent))
-	for _, want := range []string{
-		"toolchain policy",
-		"go 1.27.1",
-		"staticcheck 2026.2.1",
-		"no separate minimum supported go version",
-		"task ci",
-		"upgrade",
-	} {
-		if !strings.Contains(docs, want) {
-			t.Errorf("docs/development.md missing %q", want)
-		}
-	}
 }

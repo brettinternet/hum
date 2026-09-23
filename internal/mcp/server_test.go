@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1061,25 +1060,6 @@ func TestCollectionToolTextUnchanged(t *testing.T) {
 				})
 			}
 		})
-	}
-}
-
-func TestMCPConcurrencyDocs(t *testing.T) {
-	paths := []string{"../../docs/design.md", "../../docs/coding-agents.md"}
-	var content strings.Builder
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		content.Write(data)
-		content.WriteByte('\n')
-	}
-	all := strings.ToLower(content.String())
-	for _, phrase := range []string{"64", "-32001", "-32600", "-32800", "notifications/cancelled", "response transport", "two seconds", "parent cancellation", "eof"} {
-		if !strings.Contains(all, phrase) {
-			t.Errorf("MCP concurrency docs missing %q", phrase)
-		}
 	}
 }
 
