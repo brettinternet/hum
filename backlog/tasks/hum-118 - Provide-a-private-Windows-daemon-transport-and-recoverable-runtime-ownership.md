@@ -4,7 +4,7 @@ title: Provide a private Windows daemon transport and recoverable runtime owners
 status: To Do
 assignee: []
 created_date: '2026-09-23 20:49'
-updated_date: '2026-09-23 21:18'
+updated_date: '2026-09-23 22:24'
 labels:
   - daemon
   - security
@@ -16,6 +16,7 @@ modified_files:
   - internal/daemon/runtime.go
   - internal/daemon/client.go
   - internal/daemon/server.go
+  - internal/daemon/peer.go
   - internal/daemon/*windows*.go
   - internal/daemon/*unix*.go
   - internal/daemon/*_test.go
@@ -28,19 +29,19 @@ modified_files:
   - go.sum
 priority: high
 type: feature
-ordinal: 2000
+ordinal: 10000
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: one native Windows daemon owns the runtime and serves the existing bounded JSON wire protocol to the same user only. Today internal/daemon/runtime.go binds a Unix socket and relies on flock, Unix permissions, and PID/PGID plus start identity for stale recovery. internal/daemon/client.go and server.go dial Unix sockets. internal/config/config.go:126 and internal/daemon/runtime.go:137 default the runtime directory to temp plus os.Getuid(), which returns -1 on Windows.
+Outcome: one native Windows daemon owns the runtime and serves the existing bounded JSON wire protocol to the same user only. Today internal/daemon/runtime.go binds a Unix socket and relies on flock, Unix permissions, and PID/PGID plus start identity for stale recovery. checkPrivateDir (runtime.go:405) refuses a runtime directory another user owns through syscall.Stat_t, and verifyPeer (internal/daemon/peer.go, with peerUID in peer_darwin.go and peer_linux.go) refuses a socket peer running as another user at both ends of every connection. internal/daemon/client.go and server.go dial Unix sockets. internal/config/config.go:126 and internal/daemon/runtime.go:137 default the runtime directory to temp plus os.Getuid(), which returns -1 on Windows.
 
-Scope: private Windows IPC (a named pipe with an explicit current-user-only ACL, or an equally secure equivalent), cross-process startup exclusion, a Windows runtime directory, ACLs, and stale-owner recovery. Keep the existing wire protocol, the single-owner invariant, the refusal to displace an unverifiable live owner, and startup reconciliation of recorded children. Coordinate persisted group identity and crash cleanup with HUM-117. A Windows Job Object normally closes when the daemon dies, so distinguish children that are already dead from children whose ownership is uncertain, and never terminate an unverified reused PID. Keep Unix paths and permissions unchanged. Validate same-user isolation and test concurrent startup.
+Scope: private Windows IPC (a named pipe with an explicit current-user-only ACL, or an equally secure equivalent), cross-process startup exclusion, a Windows runtime directory, ACLs, and stale-owner recovery. Keep the existing wire protocol, the single-owner invariant, the refusal to displace an unverifiable live owner, and startup reconciliation of recorded children. Coordinate persisted group identity and crash cleanup with HUM-117. A Windows Job Object normally closes when the daemon dies, so distinguish children that are already dead from children whose ownership is uncertain, and never terminate an unverified reused PID. Keep Unix paths and permissions unchanged. Give Windows the same owner and peer checks, so neither end trusts a runtime directory or endpoint that another user owns or serves, including a pipe name another user created first. Validate same-user isolation and test concurrent startup.
 
 Non-goals: a network-facing TCP endpoint, CLI autostart, ConPTY, and release packaging.
 
-Read internal/daemon/runtime.go:137, :345-412, :530-688, and :745-760, internal/daemon/client.go:121-151, the listen path in internal/daemon/server.go, and internal/config/config.go:119-127. Do not remove existing Unix tests to get a green Windows gate.
+Read internal/daemon/runtime.go:137, :345-422, :540-698, and :755-770, internal/daemon/client.go:123-157, internal/daemon/peer.go, the listen path in internal/daemon/server.go, and internal/config/config.go:119-127. Do not remove existing Unix tests to get a green Windows gate.
 
 Windows verification: after the owner approves, push HEAD to `windows/<task-id>` and run `task windows:watch` (HUM-122). Windows-only tests live in `*_windows_test.go` files so the Windows CI job runs them. Add every package this task ports to WINDOWS_PACKAGES in .taskfiles/windows.yaml.
 <!-- SECTION:DESCRIPTION:END -->

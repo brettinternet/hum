@@ -19,7 +19,7 @@ modified_files:
   - .github/workflows/ci.yaml
 priority: high
 type: feature
-ordinal: 500
+ordinal: 8000
 ---
 
 ## Description

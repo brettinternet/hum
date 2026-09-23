@@ -16,7 +16,7 @@ modified_files:
   - internal/mcp/*_test.go
 priority: high
 type: bug
-ordinal: 12000
+ordinal: 1000
 ---
 
 ## Description

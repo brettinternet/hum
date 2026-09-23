@@ -17,7 +17,7 @@ modified_files:
   - internal/mcp/tools_test.go
 priority: medium
 type: task
-ordinal: 14000
+ordinal: 4000
 ---
 
 ## Description

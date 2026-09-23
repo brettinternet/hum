@@ -23,7 +23,7 @@ modified_files:
   - integration/mcp_test.go
 priority: medium
 type: enhancement
-ordinal: 9000
+ordinal: 15000
 ---
 
 ## Description

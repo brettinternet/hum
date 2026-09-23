@@ -4,7 +4,7 @@ title: Stop dependents before prerequisites in down through one shared implement
 status: To Do
 assignee: []
 created_date: '2026-09-23 21:21'
-updated_date: '2026-09-23 21:54'
+updated_date: '2026-09-23 22:24'
 labels:
   - cli
   - mcp
@@ -24,7 +24,7 @@ modified_files:
   - docs/coding-agents.md
 priority: medium
 type: enhancement
-ordinal: 8000
+ordinal: 14000
 ---
 
 ## Description
@@ -43,9 +43,9 @@ Non-goals: ordering for `stop NAME...`, `shutdown --stop-processes`, or `remove 
 Implementation context (commit 465b774):
 - CLI: downCommand internal/cli/commands.go:2380-2509 lists records and merges manifest declarations (mergeManifestProcesses). It then starts one goroutine per active name, each on its own daemon connection (daemonClient inside the worker), and a start barrier releases all stops together. Results are stopResult{Name, Status, Message} with the statuses stopped, not_running, and error. A name is stopped when app.IsActiveState or processNeedsRestartControl is true. `hum --global down` loads no manifest (:2416-2421), so its graph is empty and all stops form one wave.
 - MCP: Server.down internal/mcp/tools.go:1686-1724 uses one client and stops names sequentially in lexical order. Results are stopResult{Name, State, Error}. Its predicate also stops records in State "starting". Keep each adapter's current predicate and result type; this task changes stop order only.
-- Concurrency: daemon.Client serializes requests on one connection (internal/daemon/client.go:28 `mu`), and a stop request blocks until the process exits. Stops within one wave therefore need one connection each, as the CLI already does. MCP obtains connections from s.opts.ClientFactory (tools.go:651).
+- Concurrency: daemon.Client serializes requests on one connection (internal/daemon/client.go:29 `mu`), and a stop request blocks until the process exits. Stops within one wave therefore need one connection each, as the CLI already does. MCP obtains connections from s.opts.ClientFactory (tools.go:651).
 - Shared code: put the wave computation and a runner that stops each wave concurrently through an injected `stop(ctx, name) error` in internal/orchestrate. The graph covers declared definitions only; ad-hoc and undeclared records have no edges. A prerequisite waits only for its active dependents, so a prerequisite whose dependents are all inactive stops in the first wave.
-- Docs and help to update: docs/design.md:392 ("`down` remains concurrent rather than reverse ordered."), the down help at commands.go:160-172 ("concurrently"), and the MCP down description at tools.go:486.
+- Docs and help to update: docs/design.md:393 ("`down` remains concurrent rather than reverse ordered."), the down help at commands.go:160-172 ("concurrently"), and the MCP down description at tools.go:486.
 
 Existing tests that must keep passing: TestDownStopsProcessesConcurrentlyWithIndependentConnections (internal/cli/down_test.go:286); it has no `after`, so it still runs as one concurrent wave. Also the other tests in internal/cli/down_test.go, TestDown (internal/mcp/tools_test.go:1702), and TestDownWorkflow (integration/down_test.go:52). The helpers newDownTestChild (down_test.go:351, which has delay and stopErr knobs), downTestSupervisor (:385), downTestServer (:406), and downStartProcess (:436) can drive CLI ordering tests. For AC3, order lifecycle `exit` events by cursor, not by timestamp.
 <!-- SECTION:DESCRIPTION:END -->

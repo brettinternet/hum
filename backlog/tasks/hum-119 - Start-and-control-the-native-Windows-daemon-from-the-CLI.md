@@ -4,7 +4,7 @@ title: Start and control the native Windows daemon from the CLI
 status: To Do
 assignee: []
 created_date: '2026-09-23 20:49'
-updated_date: '2026-09-23 21:18'
+updated_date: '2026-09-23 22:24'
 labels:
   - cli
   - daemon
@@ -13,6 +13,7 @@ milestone: m-5
 dependencies:
   - HUM-117
   - HUM-118
+  - HUM-128
 modified_files:
   - internal/cli/daemon_start.go
   - internal/cli/tty.go
@@ -37,19 +38,19 @@ modified_files:
   - .taskfiles/windows.yaml
 priority: high
 type: feature
-ordinal: 3000
+ordinal: 11000
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: on Windows, hum serve/run/up/status/logs/wait/stop/down/shutdown work for non-TTY exact-argv children with the same wire and bounded-output semantics as on Unix. Today internal/cli/daemon_start.go uses Setsid and negative-PID signals to spawn and cancel a detached daemon; cmd/hum/main.go and internal/cli/commands.go (:832-905, :1504, :3655-3712) rely on SIGHUP/SIGTERM; internal/cli/tty.go uses SIGWINCH; internal/cli/doctor.go:230 checks runtime ancestors with unix.Access. cmd/hum-man and internal/mcp import internal/cli and the daemon, so they only build for Windows once this lands. The integration fixture internal/testutil/cmd/hum-fixture compiles for Windows, but its signal-driven behaviors (SIGTERM/SIGHUP handlers) need Windows equivalents or Windows-specific replacements for tests that depend on them.
+Outcome: on Windows, hum serve/run/up/status/logs/wait/stop/down/shutdown work for non-TTY exact-argv children with the same wire and bounded-output semantics as on Unix. Today internal/cli/daemon_start.go uses Setsid and negative-PID signals to spawn and cancel a detached daemon; cmd/hum/main.go and internal/cli/commands.go (:832-905, :1504, :3655-3712) rely on SIGHUP/SIGTERM; internal/cli/tty.go uses SIGWINCH; internal/cli/doctor.go:199 checks the runtime directory owner with syscall.Stat_t and :234 checks runtime ancestors with unix.Access. cmd/hum-man and internal/mcp import internal/cli and the daemon, so they only build for Windows once this lands. The integration fixture internal/testutil/cmd/hum-fixture compiles for Windows, but its signal-driven behaviors (SIGTERM/SIGHUP handlers) need Windows equivalents or Windows-specific replacements for tests that depend on them.
 
-Scope: platform-specific daemon startup, cancellation, and shutdown; foreground Ctrl+C behavior; stable errors for Unix-signal and TTY requests that Windows does not support; a portable doctor check; and portable Windows executable, environment, and manifest handling. Keep the CLI/MCP error contract explicit and deterministic, and do not silently translate SIGHUP/SIGTERM into forced termination. Keep Unix behavior unchanged. Add real Windows CLI tests that use the built fixture binary, not only mocked daemon clients. Put Unix-only fixtures in platform-specific test files or behind build tags, and replace their coverage on Windows rather than skipping it.
+Scope: platform-specific daemon startup, cancellation, and shutdown; foreground Ctrl+C behavior; stable errors for Unix-signal and TTY requests that Windows does not support; a portable doctor check; and portable Windows executable, environment, and manifest handling. Keep the CLI/MCP error contract explicit and deterministic, and do not silently translate SIGHUP/SIGTERM into forced termination. Keep Unix behavior unchanged. Windows cancellation must also bound daemon requests the way HUM-128 does for SIGTERM and SIGHUP. Add real Windows CLI tests that use the built fixture binary, not only mocked daemon clients. Put Unix-only fixtures in platform-specific test files or behind build tags, and replace their coverage on Windows rather than skipping it.
 
 Non-goals: ConPTY, a public TCP endpoint, and an installer.
 
-Start at internal/cli/daemon_start.go:51-99 and :246-273, cmd/hum/main.go:26, internal/cli/commands.go:832-905, internal/cli/tty.go:124-143, internal/cli/doctor.go:230, internal/testutil/harness.go, internal/testutil/cmd/hum-fixture/main.go, and integration/main_test.go.
+Start at internal/cli/daemon_start.go:51-99 and :246-273, cmd/hum/main.go:26, internal/cli/commands.go:832-905, internal/cli/tty.go:124-143, internal/cli/doctor.go:199 and :234, internal/testutil/harness.go, internal/testutil/cmd/hum-fixture/main.go, and integration/main_test.go.
 
 Windows verification: after the owner approves, push HEAD to `windows/<task-id>` and run `task windows:watch` (HUM-122). Windows-only tests live in `*_windows_test.go` files so the Windows CI job runs them. Add every package this task ports to WINDOWS_PACKAGES in .taskfiles/windows.yaml.
 <!-- SECTION:DESCRIPTION:END -->

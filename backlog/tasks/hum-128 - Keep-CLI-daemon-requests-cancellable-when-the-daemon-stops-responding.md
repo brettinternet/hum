@@ -16,7 +16,7 @@ modified_files:
   - docs/design.md
 priority: medium
 type: bug
-ordinal: 11000
+ordinal: 2000
 ---
 
 ## Description

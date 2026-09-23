@@ -24,7 +24,7 @@ modified_files:
   - plugins/hum/skills/hum/SKILL.md
 priority: medium
 type: task
-ordinal: 13000
+ordinal: 3000
 ---
 
 ## Description

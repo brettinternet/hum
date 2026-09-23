@@ -35,7 +35,7 @@ modified_files:
   - go.sum
 priority: high
 type: feature
-ordinal: 1000
+ordinal: 9000
 ---
 
 ## Description

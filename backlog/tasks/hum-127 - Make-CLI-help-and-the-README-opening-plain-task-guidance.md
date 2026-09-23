@@ -4,7 +4,7 @@ title: Make CLI help and the README opening plain task guidance
 status: To Do
 assignee: []
 created_date: '2026-09-23 21:22'
-updated_date: '2026-09-23 21:54'
+updated_date: '2026-09-23 22:24'
 labels:
   - cli
   - docs
@@ -21,7 +21,7 @@ modified_files:
   - docs/design.md
 priority: medium
 type: docs
-ordinal: 10000
+ordinal: 16000
 ---
 
 ## Description
@@ -40,7 +40,7 @@ Non-goals: flag names, aliases, or behavior; JSON output; MCP tool descriptions 
 
 Implementation context (commit 465b774):
 - Command blocks in internal/cli/commands.go: version :38, serve :52, doctor :66, init :80, skill :96, run :107, start :125, up :142, down :160, list :174, events :191, status :214, attach :229, logs :244, wait :267, input :285, restart :302, signal :319, stop :335, remove :350, shutdown :366. Root help is at internal/cli/root.go:417.
-- `hum mcp`: internal/cli/mcp.go:26 defines a description that already says thirteen tools, but commands.go:35 overwrites it with a second string that says twelve. Keep one short description. docs/design.md:895 also says twelve.
+- `hum mcp`: internal/cli/mcp.go:26 defines a description that already says thirteen tools, but commands.go:35 overwrites it with a second string that says twelve. Keep one short description. docs/design.md:901 also says twelve.
 - Contract tests: TestHelpContract (internal/cli/help_contract_test.go:15), whose sentence and example counting helpers are in the same file; TestHelpExitCodes (:181), which requires the exact `Exit codes:` sentence for start, up, wait, and restart; TestHelpWordBudgets (internal/cli/surface_test.go:147). Fold the word budgets into the new 240-character rule rather than keeping two budgets.
 - The man page (task cli:man, .taskfiles/cli.yaml:33, using cmd/hum-man) renders from the same command tree into dist/hum.1, which is not committed.
 - HUM-130 adds TestDocsCoverEveryTool, which fails if `hum mcp --help` omits a tool.

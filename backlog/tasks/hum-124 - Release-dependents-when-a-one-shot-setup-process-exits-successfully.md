@@ -4,7 +4,7 @@ title: Release dependents when a one-shot setup process exits successfully
 status: To Do
 assignee: []
 created_date: '2026-09-23 21:21'
-updated_date: '2026-09-23 21:54'
+updated_date: '2026-09-23 22:25'
 labels:
   - config
   - process
@@ -38,7 +38,7 @@ modified_files:
   - plugins/hum/skills/hum/SKILL.md
 priority: high
 type: feature
-ordinal: 7000
+ordinal: 6000
 ---
 
 ## Description
@@ -57,7 +57,7 @@ Scope:
 Non-goals: a separate `oneshot` or `kind` field; caching completion across daemon replacement; rerun on file change or schedule; liveness; changing `start` to pull prerequisites; accepting exit codes other than 0.
 
 Implementation context (commit 465b774):
-- Manifest: parseReady internal/project/manifest.go:535 accepts exactly one of match, exec, http, and tcp, and applies the interval rules. The `after` graph checks live in validateAfterGraph (:270), including "dependency %q must declare ready" at :294. The parsed value is ReadyDefinition (:79). hum.schema.json defines `ready` under $defs.process (:57). TestManifestSchemaContract (internal/project/manifest_schema_test.go:23) keeps the schema and parser in sync.
+- Manifest: parseReady internal/project/manifest.go:530 accepts exactly one of match, exec, http, and tcp, and applies the interval rules. The `after` graph checks live in validateAfterGraph (:265), including "dependency %q must declare ready" at :289. The parsed value is ReadyDefinition (:79). hum.schema.json defines `ready` under $defs.process (:57). TestManifestSchemaContract (internal/project/manifest_schema_test.go:23) keeps the schema and parser in sync.
 - Readiness config types, one per layer: project.ReadyDefinition; app.ReadinessConfig (internal/app/app.go:156, whose Method is inferred in validateReadinessConfig :60); protocol.ReadinessConfig and protocol.Readiness (internal/protocol/protocol.go:1117); orchestrate.ReadinessConfig (internal/orchestrate/orchestrate.go:58). The readiness state constants are duplicated in orchestrate.go:26-28, protocol.go:1130-1132, and app.go:180-182; keep them identical.
 - Supervisor exit path: Supervisor.reconcile (app.go:2528). `unexpected` (:2555) already excludes exit status 0, so shouldRelaunch (:2566) never relaunches a successful exit. The startup_failure lifecycle event at :2574 fires when readiness is not ready at exit. For exit readiness, status 0 must set readiness to ready, and emit "ready", before that check. A nonzero exit still emits startup_failure.
 - Orchestrate: WaitForReadiness (:579) classifies exited_before_ready (:606, :642, :651, :671, :715, :718). ResultSatisfiesGate (:840) checks outcome and readiness state, not whether the process is running. OrchestrateUp waits for readiness only when the started process is running (:1091). A one-shot that has already exited when the start result is observed must still be classified by its exit status, so handle that path explicitly. Ensure (:855) chooses between already_running and start. The convergence rule ("rerun only when a direct dependent must launch") needs a pass in OrchestrateUp that knows which dependents will launch before it decides the one-shot's action. Drift fields come from DefinitionChangedFields (:390, method list at :424); extend TestReadinessDriftAllMethodPairs (orchestrate_test.go:133).

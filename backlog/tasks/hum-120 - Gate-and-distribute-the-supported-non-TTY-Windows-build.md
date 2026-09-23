@@ -4,7 +4,7 @@ title: Gate and distribute the supported non-TTY Windows build
 status: To Do
 assignee: []
 created_date: '2026-09-23 20:50'
-updated_date: '2026-09-23 21:54'
+updated_date: '2026-09-23 22:24'
 labels:
   - tooling
   - integration
@@ -30,7 +30,7 @@ modified_files:
   - scripts/install_test.sh
 priority: high
 type: feature
-ordinal: 4000
+ordinal: 12000
 ---
 
 ## Description
@@ -42,7 +42,7 @@ Release: today .github/workflows/release.yaml builds only linux/darwin `hum-<ver
 
 Docs: document verified PowerShell/manual install steps, PATH and executable conventions, named-pipe/runtime security, stop and signal semantics, and the deliberate absence of --tty/attach/ConPTY. Describe the Windows verification lane in docs/development.md. Today README.md (the last row of the "Hum and pitchfork" table) and docs/design.md (the paragraph after the non-goals list) say native Windows support is planned. Replace both with the verified support statement only after native Windows acceptance passes.
 
-Inspect .github/workflows/release.yaml:58-95, .taskfiles/windows.yaml, .taskfiles/cli.yaml, Taskfile.dist.yaml, integration/main_test.go, internal/testutil/harness.go, the "Hum and pitchfork" section of README.md, and the non-goals section of docs/design.md.
+Inspect .github/workflows/release.yaml:64-101, .taskfiles/windows.yaml, .taskfiles/cli.yaml, Taskfile.dist.yaml, integration/main_test.go, internal/testutil/harness.go, the "Hum and pitchfork" section of README.md, and the non-goals section of docs/design.md.
 
 Non-goals: a Windows GUI installer, winget or Homebrew, ConPTY, and claims about unsupported Unix features.
 

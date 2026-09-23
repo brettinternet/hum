@@ -4,7 +4,7 @@ title: Fold the cmd/hum built-binary test into the integration suite
 status: To Do
 assignee: []
 created_date: '2026-09-23 21:53'
-updated_date: '2026-09-23 21:53'
+updated_date: '2026-09-23 22:24'
 labels:
   - tooling
   - integration
@@ -17,13 +17,13 @@ modified_files:
   - docs/development.md
 priority: low
 type: task
-ordinal: 15000
+ordinal: 7000
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: hum has one built-binary test suite, integration/, instead of two. cmd/hum/integration_test.go is 1,178 lines holding one sequential test, TestBuiltBinaryIntegration (:176). It has its own binary build, JSON structs (integrationProcess and related types at :26-68), and process and follower helpers (:589-837). These duplicate the TestMain build in integration/main_test.go:16-49 and that suite's helpers, so every CLI output change must be fixed in both places. The test runs in 1.5s, so this is a maintenance fix, not a speed fix. `task smoke` (Taskfile.dist.yaml:88-96) runs only this test. CI (.github/workflows/ci.yaml:51 and :121) runs `task security check test smoke`, so the test runs twice: once in `go test ./...` and once in smoke.
+Outcome: hum has one built-binary test suite, integration/, instead of two. cmd/hum/integration_test.go is 1,178 lines holding one sequential test, TestBuiltBinaryIntegration (:176). It has its own binary build, JSON structs (integrationProcess and related types at :26-68), and process and follower helpers (:589-837). These duplicate the TestMain build in integration/main_test.go:16-49 and that suite's helpers, so every CLI output change must be fixed in both places. The test runs in 1.5s, so this is a maintenance fix, not a speed fix. `task smoke` (Taskfile.dist.yaml:88-96) runs only this test. CI (.github/workflows/ci.yaml:55 and :127) runs `task security check test smoke`, so the test runs twice: once in `go test ./...` and once in smoke.
 
 Owner exception (2026-09-23): this task may delete cmd/hum/integration_test.go after the named integration test asserts each phase below. It may not remove anything else. Its Definition of Done replaces the default no-deletion rule with a scoped one.
 
@@ -39,7 +39,7 @@ Phase map from cmd/hum/integration_test.go to the integration/ test that owns ea
 
 Keep cmd/hum/machine_output_v1_test.go (TestBuiltCLIMachineOutputV1, which holds the only JSON v1 contract checks) and cmd/hum/main_test.go. integration/ helpers are defined per file, for example runitProcessRecord (run_reconnect_test.go:51) and logsitProcess (logs_test.go:58). Reuse the owner file's helpers; do not port cmd/hum's.
 
-Smoke: change the smoke target to run `go test ./integration -run '^(TestAutomaticStartup|TestDetachedServe|TestForegroundServe|TestAttachedRunForegroundLifecycle|TestDetachedRun|TestNDJSONFollow|TestStopTree|TestShutdown)$' -count=1` and `go test ./cmd/hum -run '^TestBuiltCLIMachineOutputV1$' -count=1`, keeping the existing cli:build and cli:man deps and the dist/hum.1 check. If the smoke wording changes, update docs/development.md:93. This task edits Taskfile.dist.yaml, so it carries the tooling label.
+Smoke: change the smoke target to run `go test ./integration -run '^(TestAutomaticStartup|TestDetachedServe|TestForegroundServe|TestAttachedRunForegroundLifecycle|TestDetachedRun|TestNDJSONFollow|TestStopTree|TestShutdown)$' -count=1` and `go test ./cmd/hum -run '^TestBuiltCLIMachineOutputV1$' -count=1`, keeping the existing cli:build and cli:man deps and the dist/hum.1 check. If the smoke wording changes, update docs/development.md:94. This task edits Taskfile.dist.yaml, so it carries the tooling label.
 
 Windows: HUM-119 and HUM-120 list ./cmd/hum in WINDOWS_PACKAGES and cmd/hum/*_test.go in their modified files. Those still exist after this task, and HUM-120 has fewer tests to port.
 

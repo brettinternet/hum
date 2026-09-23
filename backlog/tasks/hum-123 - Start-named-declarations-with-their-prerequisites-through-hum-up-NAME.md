@@ -4,7 +4,7 @@ title: Start named declarations with their prerequisites through hum up NAME
 status: To Do
 assignee: []
 created_date: '2026-09-23 21:21'
-updated_date: '2026-09-23 21:54'
+updated_date: '2026-09-23 22:24'
 labels:
   - cli
   - mcp
@@ -30,7 +30,7 @@ modified_files:
   - plugins/hum/skills/hum/SKILL.md
 priority: high
 type: feature
-ordinal: 6000
+ordinal: 5000
 ---
 
 ## Description
@@ -51,7 +51,7 @@ Implementation context (commit 465b774):
 - CLI path: upCommand internal/cli/commands.go:2922 calls requireNoArgs (:2924) and builds `names` from every definition (:2958). The --no-wait/after rejection at :2962 checks the whole manifest through manifestHasAfter (:3423). It calls manifestLaunchCommandWithStateMode (:3145; `ordered` is true for up, and start passes false at :3142), then manifestUpSchedule (:3565), then manifestUpScheduleWithOps (:3587), then orchestrate.OrchestrateUp (:3594). The same `names` also feed the interactive follow session, startUpLogFollow (:2991). The command block is at commands.go:142-158; UsageText and ArgsUsage must gain `[NAME...]`.
 - MCP path: Server.up internal/mcp/tools.go:1304 calls OrchestrateUp at :1351 without Names. upSchema is built from waitProps at :431-434. commonInput already has `Names []string` (:535, used by events). validateToolInputFields (:883) has no `array` case, so minItems, uniqueItems, and item type and minLength are not enforced today. Add an array case there; it will also enforce events' existing `maxItems: 2000`.
 - Completion: completionNamePosition internal/cli/completion.go:120 lists the commands that take names; add `up`. Candidates come from completionProcessNames (:321).
-- Docs to change: docs/design.md:390 says `start NAME...` never adds prerequisites. Keep that sentence and add the named `up` semantics next to it. In README.md's "Hum and pitchfork" section, remove `up NAME` from the gaps: the table row that lists `pitchfork start api` and the sentence "The planned `hum up NAME...` will start...".
+- Docs to change: docs/design.md:391 says `start NAME...` never adds prerequisites. Keep that sentence and add the named `up` semantics next to it. In README.md's "Hum and pitchfork" section, remove `up NAME` from the gaps: the table row that lists `pitchfork start api` and the sentence "The planned `hum up NAME...` will start...".
 
 Pitfalls, verified in code:
 - OrchestrateUp keeps only the definitions named in UpOptions.Names (orchestrate.go:958-975). A worker whose `after` names a definition outside that set never finds it in `byName` (:1017) and waits on the condition variable until the context is cancelled. Always pass the prerequisite closure, never raw user names. Make OrchestrateUp return an error for a dependency missing from its input, and cover that case in TestSelectWithPrerequisites or a sibling test.
