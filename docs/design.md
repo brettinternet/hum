@@ -21,9 +21,10 @@ Hum deliberately does not provide:
 - file-watch restarts or liveness/health monitoring;
 - child CPU/RSS sampling or resource-limit enforcement—operators can wrap exact argv with
   platform-native tools, while Hum still bounds its own retained output and machine-facing operations;
-- log parsing or query languages;
-- runtime shell interpretation or templating; or
-- Windows support.
+- log parsing or query languages; or
+- runtime shell interpretation or templating.
+
+Hum currently supports macOS and Linux. Native Windows support is planned (HUM-117 through HUM-122).
 
 The bounded process interface also excludes arbitrary or queued input, remote transport or
 authentication, live event-follow callbacks, an in-daemon plugin system, and OS service installation.

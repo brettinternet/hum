@@ -104,6 +104,22 @@ parser remains authoritative.
 | MCP | Closed-schema bounded tools | Status, lifecycle, and logs tools | Not documented | Not documented | Not documented |
 | UI | CLI; Herdr supplies panes | TUI and optional web UI | tmux windows | Multiplexed terminal output | Full terminal UI |
 
+### Hum and pitchfork
+
+| Choose pitchfork when | Choose Hum when |
+| --- | --- |
+| You want a broad manager for project services, configured in layered `pitchfork.toml`. | You want a narrow process API for tools and coding agents to start, observe, wait on, and type into processes. |
+| Shell commands, templating such as `{{ daemons.redis.port }}`, and service orchestration fit your setup. | You need exact argv without a shell string. |
+| You need port assignment, a reverse proxy with stable per-worktree hostnames, boot start, cron, `cd` autostart, file-watch restarts, health checks, retries, or lifecycle hooks. | You want each worktree isolated by its canonical Git root, without namespace configuration. |
+| You need oneshot setup tasks to finish successfully before dependents start, or `pitchfork start api` to start dependencies. | You need retained logs with stable cursors, `--match`, context, and byte bounds. `hum wait --match` waits for matching output or exit. |
+| You want a TUI or web UI, or SQLite log history with search. | You need one-shot TTY input through `hum input` or MCP, with a single input owner. |
+| Five MCP tools for status, start, stop, restart, and recent logs are enough. | You need 13 MCP tools with closed schemas, including `wait`, `input`, `signal`, and `events`, plus versioned CLI JSON and read-only `hum doctor`. |
+| You need builds for macOS, Linux, and Windows. | macOS and Linux are supported today; native Windows support is planned. |
+
+Hum does not yet run one-shot setup tasks before dependents, and `hum up` currently starts every declared process. The planned `hum up NAME...` will start the named processes together with their prerequisites. Hum has no UI of its own; Herdr supplies panes.
+
+The tools can coexist. Hum reads a private `.hum.yaml` before `hum.yaml`, and `.hum.yaml` suits Git ignore rules. You can use Hum in a repository that commits `pitchfork.toml` without adding shared Hum configuration. Teammates can keep using pitchfork.
+
 ## Non-goals
 
 Hum deliberately does not provide:
@@ -114,9 +130,8 @@ Hum deliberately does not provide:
 - file-watch restarts or liveness/health monitoring;
 - child CPU/RSS sampling or resource-limit enforcement—wrap exact argv with platform-native tools
   when needed; Hum still bounds its own retained output and machine-facing operations;
-- log parsing or query languages;
-- runtime shell interpretation or templating; or
-- Windows support.
+- log parsing or query languages; or
+- runtime shell interpretation or templating.
 
 ## Start processes
 
