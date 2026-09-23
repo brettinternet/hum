@@ -470,6 +470,10 @@ session.
 - Foreground `hum run NAME -- COMMAND` launches exactly one incarnation, streams raw output, returns
   its exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. `hum run NAME --detach -- COMMAND`
   remains daemon-owned; `hum attach` and `logs --follow` remain read-only durable observers.
+  In-flight CLI daemon requests observe command cancellation (including SIGTERM and SIGHUP).
+  The attached-run launch handoff is instead bounded independently so a signal can still reach
+  a child launched during that handoff. A stop sent after cancellation uses an independent deadline of the admitted process `stop_grace`
+  plus two seconds of transport slack; cleanup requests use the same bounded policy.
 - Copy-pasteable examples are `hum attach console` and `hum attach console --tail 50`.
 - `input` is the bounded request/response surface for an existing TTY record: `--text` sends
   exact non-empty text bytes without a newline, while `--base64` accepts only standard padded

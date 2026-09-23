@@ -738,13 +738,25 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return newCLIUsageError(errors.New("run " + name + " requires a command after --"))
 	}
 	launch := func(attached bool) (app.Process, error) {
-		if len(argv) != 0 {
-			return client.Start(context.Background(), daemon.StartRequest{Name: name, Scope: selection.scope, Source: "ad_hoc", Root: manifest.root, Argv: argv, Cwd: cwd, Env: os.Environ(), TTY: cmd.Bool("tty"), Attached: attached})
+		requestCtx := ctx
+		if attached {
+			// Signals during the start-to-follow handoff must still reach the
+			// launched child. Bound the request without discarding that handoff.
+			var cancel context.CancelFunc
+			requestCtx, cancel = boundedDaemonCleanup(cfg.StopGrace)
+			defer cancel()
 		}
-		if declared {
-			return client.Start(context.Background(), daemon.StartRequest{Name: name, Scope: selection.scope, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: manifestEnvironment(manifest, definition), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition), Attached: attached})
+		var process app.Process
+		var err error
+		switch {
+		case len(argv) != 0:
+			process, err = client.Start(requestCtx, daemon.StartRequest{Name: name, Scope: selection.scope, Source: "ad_hoc", Root: manifest.root, Argv: argv, Cwd: cwd, Env: os.Environ(), TTY: cmd.Bool("tty"), Attached: attached})
+		case declared:
+			process, err = client.Start(requestCtx, daemon.StartRequest{Name: name, Scope: selection.scope, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: manifestEnvironment(manifest, definition), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition), Attached: attached})
+		default:
+			process, err = client.Start(requestCtx, daemon.StartRequest{Name: name, Scope: selection.scope, Root: manifest.root, Cwd: current.Cwd, Attached: attached})
 		}
-		return client.Start(context.Background(), daemon.StartRequest{Name: name, Scope: selection.scope, Root: manifest.root, Cwd: current.Cwd, Attached: attached})
+		return process, daemonCancellationError("start", err)
 	}
 	if cmd.Bool("detach") {
 		process, startErr := launch(false)
@@ -786,7 +798,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		value := protocol.Cursor(current.NextCursor - 1)
 		after = &value
 	}
-	follower, err := client.Follow(context.Background(), daemon.FollowRequest{Name: name, Scope: selection.scope, Cwd: manifest.root, After: after, UntilExit: true, Stream: protocol.StreamBoth, MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes)})
+	follower, err := client.Follow(ctx, daemon.FollowRequest{Name: name, Scope: selection.scope, Cwd: manifest.root, After: after, UntilExit: true, Stream: protocol.StreamBoth, MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes)})
 	if err != nil {
 		return err
 	}
@@ -806,7 +818,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 			inputRequest.Cwd = current.Cwd
 		}
 		client.SetEventOperation("input", daemon.NewOperationID(), "cli")
-		session, attachErr := client.InputAttach(context.Background(), inputRequest)
+		session, attachErr := client.InputAttach(ctx, inputRequest)
 		if attachErr != nil {
 			return attachErr
 		}
@@ -831,7 +843,8 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	bridgedSignals := make(chan os.Signal, 4)
 	signal.Notify(bridgedSignals, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(bridgedSignals)
-	if _, err = launch(true); err != nil {
+	launched, err := launch(true)
+	if err != nil {
 		if isNameInUse(err) || errors.Is(err, app.ErrNameInUse) {
 			return fmt.Errorf("%s is already running; join it with %s or stop it with %s", name, projectCommand(selection.selector, "attach "+name), projectCommand(selection.selector, "stop "+name))
 		}
@@ -859,6 +872,10 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		case <-followCtx.Done():
 		}
 	}()
+	stopGrace := cfg.StopGrace
+	if launched.StopGrace > 0 || !launched.StopGraceInherited {
+		stopGrace = launched.StopGrace
+	}
 	terminal, detached := errors.New("attached run terminal"), errors.New("attached run detached")
 	var exit *output.Exit
 	interrupted, noticed := false, false
@@ -895,15 +912,27 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		case os.Interrupt:
 			if !interrupted {
 				interrupted = true
-				if err := client.ControlSignal(context.Background(), daemon.SignalRequest{Name: name, Scope: selection.scope, Cwd: manifest.root, Signal: "SIGINT", Control: true}); err != nil && !errors.Is(err, app.ErrNotRunning) {
+				if err := client.ControlSignal(ctx, daemon.SignalRequest{Name: name, Scope: selection.scope, Cwd: manifest.root, Signal: "SIGINT", Control: true}); err != nil && !errors.Is(err, app.ErrNotRunning) {
 					return false, err
 				}
 				_, err := fmt.Fprintf(errWriter, "interrupt sent to %s; press Ctrl+C again to stop\n", name)
 				return false, err
 			}
-			return false, client.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
+			stopCtx, cancel := boundedDaemonCleanup(stopGrace)
+			defer cancel()
+			err := client.Stop(stopCtx, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
+			if err != nil {
+				return false, fmt.Errorf("daemon stop request: %w", err)
+			}
+			return false, nil
 		case syscall.SIGTERM:
-			return false, client.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
+			stopCtx, cancel := boundedDaemonCleanup(stopGrace)
+			defer cancel()
+			err := client.Stop(stopCtx, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
+			if err != nil {
+				return false, fmt.Errorf("daemon stop request: %w", err)
+			}
+			return false, nil
 		default:
 			return false, nil
 		}
@@ -931,7 +960,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	// scheduled successor is still possible, so a clean exit is never delayed.
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for {
-		process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
+		process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 		if getErr != nil || process.Restart != app.RestartOnFailure || status == 0 {
 			break
 		}
@@ -1251,7 +1280,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	// Subscribe at the snapshot boundary before paging retained output. This
 	// buffers newer output without subjecting an exact tail to one response's
 	// byte cap, and avoids a gap between replay and live delivery.
-	follower, err := client.Follow(context.Background(), daemon.FollowRequest{
+	follower, err := client.Follow(ctx, daemon.FollowRequest{
 		Name: name, Scope: selection.scope, Cwd: root, After: snapshot, Stream: protocol.StreamBoth,
 		MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes),
 	})
@@ -1473,7 +1502,7 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if cmd.Bool("follow") {
 		signals := notifyFollowSignals()
 		defer signal.Stop(signals)
-		follower, err := client.Follow(context.Background(), daemon.FollowRequest{
+		follower, err := client.Follow(ctx, daemon.FollowRequest{
 			Name: request.Name, Scope: request.Scope, Cwd: request.Cwd, After: request.After, SinceUnixNano: request.SinceUnixNano, Tail: request.Tail, Stream: request.Stream,
 			Match: request.Match, MaxEntries: request.MaxEntries, MaxBytes: request.MaxBytes,
 		})
@@ -2275,7 +2304,10 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		if !running[name] && !resettable[name] {
 			result.Status = "not_running"
 		} else {
-			stopErr := client.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
+			stopCtx, cancel := boundedDaemonRequest(ctx, stopGraceForName(processes, name, cfg.StopGrace))
+			stopErr := client.Stop(stopCtx, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
+			cancel()
+			stopErr = daemonCancellationError("stop", stopErr)
 			if stopErr == nil {
 				result.Status = "stopped"
 				running[name] = false
@@ -2358,7 +2390,11 @@ func removeCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		sort.Strings(names)
 	}
 	for _, name := range names {
-		if err := client.Remove(context.Background(), daemon.RemoveRequest{Name: name, Scope: selection.scope, Cwd: cwd}); err != nil {
+		removeCtx, cancel := boundedDaemonRequest(ctx, cfg.StopGrace)
+		err := client.Remove(removeCtx, daemon.RemoveRequest{Name: name, Scope: selection.scope, Cwd: cwd})
+		cancel()
+		err = daemonCancellationError("remove", err)
+		if err != nil {
 			return crossScopeNotFoundError(err, "remove "+name)
 		}
 		result := stopResult{Name: name, Status: "removed"}
@@ -2455,7 +2491,9 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		go func(index int, name string) {
 			defer waitGroup.Done()
 			result := stopResult{Name: name}
-			worker, stopErr := daemonClient(context.Background(), cfg)
+			dialCtx, cancelDial := boundedDaemonRequest(ctx, cfg.StopGrace)
+			worker, stopErr := daemonClient(dialCtx, cfg)
+			cancelDial()
 			if worker != nil {
 				defer worker.Close()
 			}
@@ -2466,7 +2504,10 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 					stopErr = errors.New("daemon connection returned nil client")
 				} else {
 					worker.SetEventOperation("down", downOperationID, "cli")
-					stopErr = worker.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
+					stopCtx, cancel := boundedDaemonRequest(ctx, stopGraceForName(processes, name, cfg.StopGrace))
+					stopErr = worker.Stop(stopCtx, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
+					cancel()
+					stopErr = daemonCancellationError("stop", stopErr)
 				}
 			}
 			switch {
@@ -2887,7 +2928,10 @@ func shutdownCommand(ctx context.Context, cmd *urfavecli.Command, version, build
 	}
 	defer client.Close()
 	force := cmd.Bool("stop-processes")
-	shutdownErr := client.Shutdown(context.Background(), daemon.ShutdownRequest{Force: force})
+	shutdownCtx, cancel := boundedDaemonRequest(ctx, cfg.StopGrace)
+	shutdownErr := client.Shutdown(shutdownCtx, daemon.ShutdownRequest{Force: force})
+	cancel()
+	shutdownErr = daemonCancellationError("shutdown", shutdownErr)
 	if shutdownErr != nil {
 		if daemonUnavailable(shutdownErr) {
 			if cmd.Bool("json") {
@@ -3253,7 +3297,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 		if waitErr := session.wait(); waitErr != nil {
 			return waitErr
 		}
-		if err := stopInterruptedUpLaunches(client, manifest, launched, progressWriter); err != nil {
+		if err := stopInterruptedUpLaunches(client, manifest, launched, progressWriter, cfg.StopGrace); err != nil {
 			return err
 		}
 		return urfavecli.Exit("", 130)
@@ -3375,22 +3419,63 @@ func (r *upLaunchRecorder) launched() []string {
 	return names
 }
 
+// daemonCleanupSlack covers transport and daemon bookkeeping after stop grace.
+const daemonCleanupSlack = 2 * time.Second
+
+func boundedDaemonCleanup(grace time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), grace+daemonCleanupSlack)
+}
+
+func daemonCancellationError(operation string, err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("daemon %s request: %w", operation, err)
+	}
+	return err
+}
+
+func boundedDaemonRequest(ctx context.Context, grace time.Duration) (context.Context, context.CancelFunc) {
+	if ctx.Err() != nil {
+		return boundedDaemonCleanup(grace)
+	}
+	return context.WithTimeout(ctx, grace+daemonCleanupSlack)
+}
+
+func stopGraceForName(processes []app.Process, name string, fallback time.Duration) time.Duration {
+	for _, process := range processes {
+		if process.Name == name {
+			return process.StopGrace
+		}
+	}
+	return fallback
+}
+
+func manifestStopGraceForCleanup(manifest manifestState, name string, fallback time.Duration) time.Duration {
+	if definition, ok := manifest.byName[name]; ok && definition.StopGrace != nil {
+		return *definition.StopGrace
+	}
+	return fallback
+}
+
 // stopInterruptedUpLaunches treats Ctrl+C during startup as abort. The
 // canceled request may invalidate its connection, so cleanup uses a fresh one.
-func stopInterruptedUpLaunches(client *daemon.Client, manifest manifestState, launched *upLaunchRecorder, progressWriter io.Writer) error {
+func stopInterruptedUpLaunches(client *daemon.Client, manifest manifestState, launched *upLaunchRecorder, progressWriter io.Writer, defaultGrace time.Duration) error {
 	scope := app.ScopeProject
 	if manifest.selector == "--global" {
 		scope = app.ScopeGlobal
 	}
 	attempted := launched.launched()
 	var stopped, failed []string
-	cleanupClient, dialErr := daemon.Dial(context.Background(), client.SocketPath())
+	dialCtx, cancelDial := boundedDaemonCleanup(defaultGrace)
+	cleanupClient, dialErr := daemon.Dial(dialCtx, client.SocketPath())
+	cancelDial()
 	if dialErr != nil {
 		failed = append(failed, attempted...)
 	} else {
 		defer cleanupClient.Close()
 		for _, name := range attempted {
-			err := cleanupClient.Stop(context.Background(), daemon.StopRequest{Name: name, Scope: scope, Cwd: manifest.root})
+			stopCtx, cancel := boundedDaemonCleanup(manifestStopGraceForCleanup(manifest, name, defaultGrace))
+			err := cleanupClient.Stop(stopCtx, daemon.StopRequest{Name: name, Scope: scope, Cwd: manifest.root})
+			cancel()
 			switch {
 			case err == nil:
 				stopped = append(stopped, name)
