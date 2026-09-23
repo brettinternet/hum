@@ -145,14 +145,9 @@ func loadDefinitions(root string) ([]Definition, bool, error) {
 }
 
 func loadDefinitionsFile(root, filename, display, source string) ([]Definition, error) {
-	file, err := os.Open(filename)
+	contents, err := readDiscoveryDeclaration(filename)
 	if err != nil {
 		return nil, fmt.Errorf("%s: open: %w", display, err)
-	}
-	defer file.Close()
-	contents, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("%s: read: %w", display, err)
 	}
 	return parseDefinitions(root, contents, filepath.Dir(filename), display, source)
 }

@@ -307,7 +307,7 @@ hum restart -F hum.test.yaml api
 
 - A relative selector starts from the invocation directory.
 - Ad-hoc runs use the selected directory; manifest `cwd` stays project-relative.
-- `--file` must name a regular file inside the project.
+- `--file` must name a regular file inside the project. Every manifest is limited to 1 MiB.
 - Without `--file`, Hum uses `.hum.yaml` when present, otherwise `hum.yaml`; each is a complete declaration source.
 - All manifests share one project namespace. The same process name cannot run twice through separate files.
 - Runtime-only commands use `--file` only to identify the project.

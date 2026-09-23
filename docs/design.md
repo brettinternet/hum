@@ -114,6 +114,7 @@ command intentionally adds no short aliases, including for `--json`.
 physical absolute path, and applies the nearest-Git-root-or-directory-fallback rule. `--file PATH`
 resolves PATH relative to the invocation directory, requires a regular file whose resolved path is
 inside the selected project, and infers the project root from that file when `--project` is absent.
+Every manifest, selected or default, is read without blocking and must not exceed 1 MiB.
 Launch commands require an existing directory; observation and lifecycle commands can target a removed
 worktree when DIR exactly matches a canonical root retained by the daemon.
 

@@ -161,6 +161,25 @@ func TestExplicitManifestSelection(t *testing.T) {
 	}
 }
 
+// TestManifestReadsAreBounded keeps an untrusted checkout from exhausting
+// memory through any manifest load path, including shell completion.
+func TestManifestReadsAreBounded(t *testing.T) {
+	root := t.TempDir()
+	oversized := "version: 1\nprocesses: {}\n#" + strings.Repeat("x", 1<<20) + "\n"
+	writeTestManifest(t, root, oversized)
+	path := writeDiscoveryFile(t, root, "hum.dev.yaml", oversized, 0o600)
+	selection, err := ResolveManifestPath(root, root, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveExplicitDefinitions(context.Background(), selection); err == nil || !strings.Contains(err.Error(), "1 MiB") {
+		t.Fatalf("explicit oversized manifest error = %v", err)
+	}
+	if _, err := LoadDefinitions(root); err == nil || !strings.Contains(err.Error(), "1 MiB") {
+		t.Fatalf("default oversized manifest error = %v", err)
+	}
+}
+
 func TestResolveExplicit(t *testing.T) {
 	t.Run("valid manifest is authoritative", func(t *testing.T) {
 		root := t.TempDir()
