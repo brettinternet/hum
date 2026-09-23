@@ -4,6 +4,7 @@ title: Add native Windows TTY input and resize with ConPTY
 status: To Do
 assignee: []
 created_date: '2026-09-23 20:50'
+updated_date: '2026-09-23 21:18'
 labels:
   - process
   - cli
@@ -20,7 +21,9 @@ modified_files:
   - internal/cli/*windows*.go
   - internal/cli/*_test.go
   - internal/app/app.go
+  - internal/app/*windows*.go
   - internal/app/*_test.go
+  - internal/daemon/*windows*.go
   - internal/daemon/*_test.go
   - integration/*windows*.go
   - integration/*_test.go
@@ -36,15 +39,23 @@ ordinal: 5000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: the existing run --tty/attach/input lease supports interactive native Windows console children, not just pipe-backed non-TTY processes. This is a separate follow-up after the explicitly non-TTY Windows release in HUM-120. Current Unix implementation uses creack/pty, Setsid/Setctty and Fcntl/Poll in internal/process/process.go, SIGWINCH in internal/cli/tty.go, and daemon-owned PTY input/resize sessions in internal/daemon/client.go and app. Scope: implement ConPTY backed by Windows APIs or a maintained dependency, preserve single-owner input lease, bounded merged output, cursor validation, detach behavior, resize and cleanup on process exit/cancellation; define Ctrl+C, Ctrl+D and Ctrl+] behavior for Windows console apps and document intentional differences from Unix. Ensure failed ConPTY initialization does not leak child/console handles; preserve Unix PTY behavior and non-TTY Windows behavior. Non-goals: console emulation for legacy apps that do not support ConPTY, desktop terminal UI or altering wire protocol without necessity. Start at internal/process/process.go:145-216 and :318-448, internal/cli/tty.go, internal/app/app.go input methods, integration/tty_interactive_test.go.
+Outcome: the existing run --tty/attach/input lease supports interactive native Windows console children, not only pipe-backed non-TTY processes. This is a separate follow-up after the non-TTY Windows release in HUM-120. The current Unix implementation uses creack/pty, Setsid/Setctty, and Fcntl/Poll in internal/process/process.go, SIGWINCH in internal/cli/tty.go, and daemon-owned PTY input and resize sessions in internal/daemon/client.go and internal/app.
+
+Scope: implement ConPTY on Windows APIs or a maintained dependency. Keep the single-owner input lease, bounded merged output, cursor validation, detach behavior, resize, and cleanup on process exit or cancellation. Define Ctrl+C, Ctrl+D, and Ctrl+] behavior for Windows console apps and document intentional differences from Unix. A failed ConPTY initialization must not leak child or console handles. Keep Unix PTY behavior and Windows non-TTY behavior unchanged. GitHub Windows runners have no interactive console, so tests that exercise local console-mode restoration must host hum itself under a ConPTY instead of depending on the runner console.
+
+Non-goals: console emulation for legacy apps without ConPTY support, a desktop terminal UI, and wire-protocol changes that are not strictly necessary.
+
+Start at internal/process/process.go:145-216 and :318-448, internal/cli/tty.go, the input methods in internal/app/app.go, and integration/tty_interactive_test.go.
+
+Windows verification: after the owner approves, push HEAD to `windows/<task-id>` and run `task windows:watch` (HUM-122). Windows-only tests live in `*_windows_test.go` files so the Windows CI job runs them.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — On Windows, `go test ./internal/process ./internal/app ./internal/daemon ./internal/cli ./integration -run "TestWindowsTTY" -count=1` exits 0; tests use a real ConPTY child to prove input, output, resize and detach/reattach without a second input owner.
-- [ ] #2 AC2 — On Windows, `go test ./internal/process ./internal/cli -run "TestWindowsTTY" -count=1` exits 0; tests verify cancellation/failed startup restores local console mode and closes child/console handles, and Ctrl+C/Ctrl+] semantics are documented and exercised.
-- [ ] #3 AC3 — On macOS or Linux, `go test ./internal/process ./internal/cli ./integration -count=1` exits 0; the existing Unix PTY and non-TTY tests still pass.
-- [ ] #4 AC4 — On Windows, `go test ./... -count=1` exits 0; on macOS or Linux, `GOOS=windows GOARCH=amd64 go build ./...` exits 0.
+- [ ] #1 AC1 — After the owner-approved `git push origin HEAD:windows/HUM-121`, `task windows:watch` exits 0 on macOS, with WINDOWS_PACKAGES still ./... . Windows tests use a real ConPTY child to prove input, output, resize, and detach/reattach, with no second input owner.
+- [ ] #2 AC2 — On macOS, `rg -n "func TestWindowsTTY" internal/process internal/cli integration` lists tests in `*_windows_test.go` files proving that cancellation and failed startup restore the local console mode and close child and console handles, and that exercise Ctrl+C and Ctrl+]. `rg -n "ConPTY" README.md` exits 0 and documents those semantics. AC1 run executes these tests.
+- [ ] #3 AC3 — On macOS, `go test ./internal/process ./internal/cli ./integration -count=1` exits 0; existing Unix PTY and non-TTY tests still pass.
+- [ ] #4 AC4 — On macOS, `GOOS=windows GOARCH=amd64 go vet ./...` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done

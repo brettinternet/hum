@@ -4,6 +4,7 @@ title: Gate and distribute the supported non-TTY Windows build
 status: To Do
 assignee: []
 created_date: '2026-09-23 20:50'
+updated_date: '2026-09-23 21:18'
 labels:
   - tooling
   - integration
@@ -18,9 +19,11 @@ modified_files:
   - Taskfile.dist.yaml
   - .taskfiles/*.yaml
   - integration/*_test.go
+  - integration/*windows*.go
+  - integration/*unix*.go
   - cmd/hum/*_test.go
-  - internal/testutil/*_test.go
-  - internal/testutil/*windows*.go
+  - internal/testutil/*.go
+  - internal/testutil/cmd/hum-fixture/*.go
   - README.md
   - docs/design.md
   - docs/development.md
@@ -33,15 +36,25 @@ ordinal: 4000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: Windows is an honestly documented, tested and downloadable native non-TTY target rather than a cross-compiling curiosity. Scope: add a Windows runner that builds and tests the native binary and a Windows-focused local task target; adapt Unix-only untagged tests/fixtures to platform-specific implementations without deleting, skipping, or weakening Unix checks; add a Windows amd64 release artifact with checksums and a local packaging smoke test using the existing release conventions. Document verified PowerShell/manual install steps, PATH/executable conventions, named-pipe/runtime security, stop and signal semantics, and the deliberate absence of --tty/attach/ConPTY; update the Windows non-goal only once native Windows acceptance passes. Existing install.sh remains Unix-only. Inspect .github/workflows/ci.yaml, release.yaml, .taskfiles/cli.yaml, Taskfile.dist.yaml, integration/main_test.go, internal/testutil/harness.go, README.md:119 and docs/design.md:26. Non-goals: Windows GUI installer, winget/Homebrew, ConPTY, or adding unsupported Unix feature claims.
+Outcome: Windows becomes a documented, tested, downloadable native non-TTY target instead of something that merely cross-compiles. HUM-122 already provides the Windows CI job and `task windows:test`. This task grows WINDOWS_PACKAGES to ./... by porting the remaining untagged Unix-only tests and fixtures, chiefly the integration suite and internal/testutil, into platform-specific implementations, without deleting, skipping, or weakening any Unix check.
+
+Release: today .github/workflows/release.yaml builds only linux/darwin `hum-<version>-<os>-<arch>.tar.gz` archives, each holding `hum` and `hum.1`, and writes checksums with `sha256sum ./*.tar.gz`. Add a Windows amd64 artifact named `hum-<version>-windows-x64.zip` that contains `hum.exe`, because zip is the format PowerShell Expand-Archive handles natively. Produce it through a task target that release.yaml invokes, so the local smoke test exercises exactly what ships. Include it in checksums.txt and in the release upload. install.sh stays Unix-only.
+
+Docs: document verified PowerShell/manual install steps, PATH and executable conventions, named-pipe/runtime security, stop and signal semantics, and the deliberate absence of --tty/attach/ConPTY. Describe the Windows verification lane in docs/development.md. Replace the "Windows support" non-goal in README.md:119 and docs/design.md:26 only after native Windows acceptance passes.
+
+Inspect .github/workflows/release.yaml:58-95, .taskfiles/windows.yaml, .taskfiles/cli.yaml, Taskfile.dist.yaml, integration/main_test.go, internal/testutil/harness.go, README.md:119, and docs/design.md:26.
+
+Non-goals: a Windows GUI installer, winget or Homebrew, ConPTY, and claims about unsupported Unix features.
+
+Windows verification: after the owner approves, push HEAD to `windows/<task-id>` and run `task windows:watch` (HUM-122). Windows-only tests live in `*_windows_test.go` files so the Windows CI job runs them.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — On Windows, `task windows:test` exits 0 after native build and the Windows non-TTY integration suite; CI invokes this same target on a Windows runner.
-- [ ] #2 AC2 — On macOS or Linux, `task windows:package:smoke` exits 0 and checks the cross-built Windows amd64 archive contains hum.exe with expected naming plus matching checksum; release.yaml publishes that artifact and checksum.
-- [ ] #3 AC3 — On macOS or Linux, `task ci` exits 0 without weakening existing Unix tests; on Windows, `go test ./... -count=1` exits 0 with platform-specific replacements for Unix-only coverage.
-- [ ] #4 AC4 — On macOS or Linux, `rg -n "Windows|ConPTY|non-TTY|PowerShell" README.md docs/design.md docs/development.md` exits 0 and those docs state verified installation, supported commands and unsupported TTY/signal semantics accurately.
+- [ ] #1 AC1 — On macOS, `rg -n "WINDOWS_PACKAGES.*\./\.\.\." .taskfiles/windows.yaml` exits 0, and after the owner-approved `git push origin HEAD:windows/HUM-120`, `task windows:watch` exits 0, so `go test ./...` including ./integration passes natively on Windows with platform-specific replacements for Unix-only coverage.
+- [ ] #2 AC2 — On macOS, `task windows:package:smoke` exits 0. It cross-builds `dist/hum-<version>-windows-x64.zip`, confirms the zip contains `hum.exe`, and checks that checksums.txt has a matching sha256 line. `rg -n "windows:package|windows-x64" .github/workflows/release.yaml` exits 0, showing that release.yaml builds, checksums, and uploads the same artifact through that target.
+- [ ] #3 AC3 — On macOS, `task ci` exits 0 with no existing Unix test deleted, skipped, or weakened.
+- [ ] #4 AC4 — On macOS, `rg -n "Windows|ConPTY|non-TTY|PowerShell" README.md docs/design.md docs/development.md` exits 0 and `rg -n "^- Windows support\.$" README.md docs/design.md` exits 1; the docs accurately state verified installation, supported commands, and unsupported TTY/signal semantics.
 <!-- AC:END -->
 
 ## Definition of Done

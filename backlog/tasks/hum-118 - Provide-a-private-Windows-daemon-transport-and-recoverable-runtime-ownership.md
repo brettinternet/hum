@@ -4,7 +4,7 @@ title: Provide a private Windows daemon transport and recoverable runtime owners
 status: To Do
 assignee: []
 created_date: '2026-09-23 20:49'
-updated_date: '2026-09-23 20:49'
+updated_date: '2026-09-23 21:18'
 labels:
   - daemon
   - security
@@ -23,6 +23,7 @@ modified_files:
   - internal/config/*windows*.go
   - internal/config/*unix*.go
   - internal/config/*_test.go
+  - .taskfiles/windows.yaml
   - go.mod
   - go.sum
 priority: high
@@ -33,15 +34,23 @@ ordinal: 2000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Outcome: one native Windows daemon owns the runtime and exposes the existing bounded JSON wire protocol to the same user only. Today internal/daemon/runtime.go binds a Unix socket, uses flock, Unix permissions, PID/PGID and start identity for stale recovery; internal/daemon/client.go and server.go dial Unix; internal/config/config.go defaults to temp plus os.Getuid. Scope: Windows-private IPC (named pipe with explicit current-user-only ACL or an equally secure equivalent), cross-process startup exclusion, Windows runtime directory, ACL and stale-owner recovery; preserve the existing wire protocol, single-owner invariant, refusal to displace an unverifiable live owner, and startup reconciliation of recorded children. Coordinate persisted group identity and crash cleanup with HUM-117: a Windows Job Object normally closes on daemon death, so distinguish already-dead children from uncertain ownership and never terminate an unverified reused PID. Preserve Unix paths and permissions. Validate same-user isolation and test concurrent startup. Non-goals: network-facing TCP endpoint, CLI autostart, ConPTY or release packaging. Read internal/daemon/runtime.go:345-412, :530-688 and :748-760, internal/daemon/client.go:121-151, internal/daemon/server.go listen path, internal/config/config.go:119-126; do not remove old Unix tests to obtain a green Windows gate.
+Outcome: one native Windows daemon owns the runtime and serves the existing bounded JSON wire protocol to the same user only. Today internal/daemon/runtime.go binds a Unix socket and relies on flock, Unix permissions, and PID/PGID plus start identity for stale recovery. internal/daemon/client.go and server.go dial Unix sockets. internal/config/config.go:126 and internal/daemon/runtime.go:137 default the runtime directory to temp plus os.Getuid(), which returns -1 on Windows.
+
+Scope: private Windows IPC (a named pipe with an explicit current-user-only ACL, or an equally secure equivalent), cross-process startup exclusion, a Windows runtime directory, ACLs, and stale-owner recovery. Keep the existing wire protocol, the single-owner invariant, the refusal to displace an unverifiable live owner, and startup reconciliation of recorded children. Coordinate persisted group identity and crash cleanup with HUM-117. A Windows Job Object normally closes when the daemon dies, so distinguish children that are already dead from children whose ownership is uncertain, and never terminate an unverified reused PID. Keep Unix paths and permissions unchanged. Validate same-user isolation and test concurrent startup.
+
+Non-goals: a network-facing TCP endpoint, CLI autostart, ConPTY, and release packaging.
+
+Read internal/daemon/runtime.go:137, :345-412, :530-688, and :745-760, internal/daemon/client.go:121-151, the listen path in internal/daemon/server.go, and internal/config/config.go:119-127. Do not remove existing Unix tests to get a green Windows gate.
+
+Windows verification: after the owner approves, push HEAD to `windows/<task-id>` and run `task windows:watch` (HUM-122). Windows-only tests live in `*_windows_test.go` files so the Windows CI job runs them. Add every package this task ports to WINDOWS_PACKAGES in .taskfiles/windows.yaml.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — On Windows, `go test ./internal/daemon ./internal/config -count=1` exits 0; a real client can round-trip over the private transport and another simultaneous daemon cannot acquire the same runtime.
-- [ ] #2 AC2 — On Windows, `go test ./internal/daemon -run "TestWindows" -count=1` exits 0; tests inspect transport/runtime ACLs to verify no broader access, and exercise stale-owner/crash recovery, PID-reuse or ownership-mismatch refusal, and recorded child reconciliation without killing unrelated processes.
-- [ ] #3 AC3 — On macOS or Linux, `go test ./internal/daemon ./internal/config -count=1` exits 0; socket permission, locking, and existing stale-runtime recovery tests continue to pass.
-- [ ] #4 AC4 — On macOS or Linux, `GOOS=windows GOARCH=amd64 go build ./internal/daemon ./internal/config` exits 0.
+- [ ] #1 AC1 — After the owner-approved `git push origin HEAD:windows/HUM-118`, `task windows:watch` exits 0 on macOS, with WINDOWS_PACKAGES including ./internal/daemon ./internal/config. Windows tests show that a real client can round-trip over the private transport and that a second, simultaneous daemon cannot acquire the same runtime.
+- [ ] #2 AC2 — On macOS, `rg -n "func TestWindows" internal/daemon` lists tests in `*_windows_test.go` files that inspect transport and runtime ACLs to confirm access is no broader than intended, and that cover stale-owner and crash recovery, refusal on PID reuse or ownership mismatch, and reconciliation of recorded children without killing unrelated processes. AC1 run executes these tests.
+- [ ] #3 AC3 — On macOS, `go test ./internal/daemon ./internal/config -count=1` exits 0; socket permission, locking, and existing stale-runtime recovery tests still pass.
+- [ ] #4 AC4 — On macOS, `GOOS=windows GOARCH=amd64 go vet ./internal/daemon ./internal/config` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
