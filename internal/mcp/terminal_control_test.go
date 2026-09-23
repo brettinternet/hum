@@ -46,7 +46,7 @@ func TestLogsStripTerminalControl(t *testing.T) {
 
 	properties := s.toolDefinitions()[5].OutputSchema["properties"].(map[string]any)
 	entries := properties["entries"].(map[string]any)
-	if entries["type"] != "array" {
-		t.Fatalf("MCP logs schema entries = %#v, want array", entries)
+	if !reflect.DeepEqual(entries["type"], []string{"array", "null"}) {
+		t.Fatalf("MCP logs schema entries = %#v, want array or null for empty results", entries)
 	}
 }

@@ -292,6 +292,8 @@ func stringProperty(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
 }
 
+var readinessMethods = []string{"match", "exec", "http", "tcp"}
+
 func (s *Server) toolDefinitions() []toolDefinition {
 	root := stringProperty("Absolute path to an existing project directory; hum resolves its nearest Git root or uses the directory itself.")
 	nameResolved := stringProperty("Explicitly declared project process name.")
@@ -308,7 +310,8 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	restartProps := cloneProperties(waitProps)
 	restartProps["name"] = nameExisting
 	readiness := objectSchema(map[string]any{
-		"method":     map[string]any{"type": "string", "enum": []string{"match", "exec"}, "description": "Configured startup readiness method."},
+		"method":     map[string]any{"type": "string", "enum": readinessMethods, "description": "Configured startup readiness method."},
+		"target":     map[string]any{"type": "string"},
 		"argv":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Exact direct argv for exec readiness; no shell is used."},
 		"interval":   map[string]any{"type": "integer", "minimum": 0, "description": "Retry interval in nanoseconds; exec defaults to 1 second."},
 		"state":      stringProperty("starting, ready, or running_unverified; readiness gates startup and is not liveness monitoring"),
@@ -376,7 +379,8 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"stop_grace":           map[string]any{"type": "integer", "minimum": 0},
 		"stop_grace_inherited": map[string]any{"type": "boolean"},
 		"next_launch_at":       map[string]any{"type": "string"},
-		"readiness_method":     map[string]any{"type": "string", "enum": []string{"match", "exec", "http", "tcp"}},
+		"readiness_method":     map[string]any{"type": "string", "enum": readinessMethods},
+		"readiness_match":      map[string]any{"type": "string"},
 		"readiness_target":     map[string]any{"type": "string"},
 		"readiness_argv":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"readiness_interval":   map[string]any{"type": "integer", "minimum": 0},
@@ -384,7 +388,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}, "name", "outcome", "readiness", "pid", "launch_cursor")
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
-	output := objectSchema(map[string]any{"entries": map[string]any{"type": "array", "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}, "oldest": map[string]any{"type": "integer", "minimum": 0}, "latest": map[string]any{"type": "integer", "minimum": 0}, "evicted_through": map[string]any{"type": "integer", "minimum": 0}, "truncated": map[string]any{"type": "boolean"}, "more": map[string]any{"type": "boolean"}}, "entries")
+	output := objectSchema(map[string]any{"entries": map[string]any{"type": []string{"array", "null"}, "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}, "oldest": map[string]any{"type": "integer", "minimum": 0}, "latest": map[string]any{"type": "integer", "minimum": 0}, "evicted_through": map[string]any{"type": "integer", "minimum": 0}, "truncated": map[string]any{"type": "boolean"}, "more": map[string]any{"type": "boolean"}}, "entries")
 	wait := objectSchema(map[string]any{"op": map[string]any{"type": "string"}, "ok": map[string]any{"type": "boolean"}, "outcome": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "integer", "minimum": 0}, "exit": exit, "process_observed": map[string]any{"type": "boolean", "description": "On timeout, true when a matching runtime record existed initially or at any point during this wait request; false means no process record was observed."}, "message": map[string]any{"type": "string", "description": "Actionable guidance when a timeout observed no process record."}}, "op", "ok", "cursor")
 	inputText := map[string]any{"type": "string", "minLength": 1, "description": "Exact UTF-8 text bytes; no newline is appended."}
 	inputBase64 := map[string]any{
@@ -477,7 +481,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"signal":       map[string]any{"type": "string"},
 	}, "cursor", "time", "kind", "name", "event")
 	eventOutput := objectSchema(map[string]any{
-		"events": map[string]any{"type": "array", "items": eventRecord}, "next_cursor": map[string]any{"type": "integer", "minimum": 0},
+		"events": map[string]any{"type": []string{"array", "null"}, "items": eventRecord}, "next_cursor": map[string]any{"type": "integer", "minimum": 0},
 		"truncated": map[string]any{"type": "boolean"}, "has_more": map[string]any{"type": "boolean"},
 	}, "events", "next_cursor", "truncated", "has_more")
 	definitions := []toolDefinition{
