@@ -3,9 +3,10 @@ id: HUM-129
 title: >-
   Make MCP output schemas accept the http and tcp readiness snapshots hum
   returns
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-23 21:53'
+updated_date: '2026-09-23 22:45'
 labels:
   - mcp
   - contract
@@ -40,16 +41,25 @@ Notes: objectSchema (tools.go:270) injects a `scope` property into every object 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/mcp -run "^TestOutputSchemasAcceptStructuredContent$" -count=1 -v` exits 0; it validates start, up, list, status, and restart structuredContent for match, exec, http, tcp, and no-readiness processes plus one successful call of every other tool, and Implementation Notes record that it fails when the readiness enum fix is reverted.
-- [ ] #2 AC2 — `go test ./internal/mcp ./integration -run "MCP|Tool|Schema" -count=1` exits 0.
+- [x] #1 AC1 — `go test ./internal/mcp -run "^TestOutputSchemasAcceptStructuredContent$" -count=1 -v` exits 0; it validates start, up, list, status, and restart structuredContent for match, exec, http, tcp, and no-readiness processes plus one successful call of every other tool, and Implementation Notes record that it fails when the readiness enum fix is reverted.
+- [x] #2 AC2 — `go test ./internal/mcp ./integration -run "MCP|Tool|Schema" -count=1` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation (1656b2d, merged to main): Shared readinessMethods now includes match, exec, http, tcp; nested readiness permits target. Other output-schema mismatches found by the checker: restart readiness_match was missing; logs.entries and events.events can be null for empty slices, so both schemas permit array or null. The existing terminal-control schema assertion now checks the exact array/null contract rather than only array; no test deleted, skipped, or weakened. The checker rejects unknown schema types (regression test added).
+AC#1: go test ./internal/mcp -run "^TestOutputSchemasAcceptStructuredContent$" -count=1 -v — PASS; independent verifier PASS. Temporarily reverting the nested readiness enum to match/exec made start/up/list/status fail for http and tcp ("not in enum [match exec]"); restored the fix and reran successfully.
+AC#2: go test ./internal/mcp ./integration -run "MCP|Tool|Schema" -count=1 — PASS; independent verifier PASS.
+Delivery: task check:staged PASS; task ci PASS on 1656b2d (security, check, test, race, smoke). Initial task ci exposed the outdated logs schema expectation and a transient CLI burst timeout; after updating the contract assertion, task ci passed on the amended final commit. Independent verifier review found and confirmed correction of the unknown-type checker gap; final review outcome PASS. Diff limited to internal/mcp/tools.go and internal/mcp/*_test.go; no protected gate files changed. No remaining blocker; next step: select next dependency-ready item.
+<!-- SECTION:NOTES:END -->
