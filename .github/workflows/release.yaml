@@ -5,20 +5,23 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  actions: read
-  contents: write
+permissions: {}
 
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      actions: read # verify the tag commit's CI run
+      contents: write # publish the release and push the changelog
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          # The changelog step pushes to main with this token.
+          persist-credentials: true # zizmor: ignore[artipacked]
 
       - name: Verify CI result
         env:
@@ -35,6 +38,9 @@ jobs:
 
       - name: Install mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+        with:
+          # Published artifacts must not depend on a restored cache.
+          cache: false
 
       - name: Generate release notes
         run: |
