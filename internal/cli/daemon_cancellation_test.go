@@ -71,6 +71,9 @@ func stalledRunDaemon(t *testing.T, stall protocol.Operation) (string, <-chan pr
 					switch request.Op {
 					case protocol.OpGet:
 						_ = encoder.EncodeResponse(protocol.NewErrorResponse(protocol.OpGet, protocol.NewWireError(protocol.ErrorNotFound, "not found", nil)))
+					case protocol.OpList:
+						process := protocol.Process{Name: "demo", Scope: "global", State: "running", StopGrace: 100 * time.Millisecond}
+						_ = encoder.EncodeResponse(protocol.NewListResponse([]protocol.Process{process}))
 					case protocol.OpFollow:
 						if encoder.EncodeResponse(protocol.NewReadyEvent(nil)) != nil {
 							return
@@ -129,6 +132,22 @@ func TestUnresponsiveDaemonHonorsTermination(t *testing.T) {
 				t.Fatalf("missing unanswered request in stderr: %q", client.stderr())
 			}
 		})
+	}
+}
+
+func TestDownStalledStopHonorsTermination(t *testing.T) {
+	runtimeDir, requests := stalledRunDaemon(t, protocol.OpStop)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	client := cliServeRunStartClient(t, "--stop-grace", "100ms", "--global", "down")
+	awaitStalledRequest(t, requests, protocol.OpStop)
+	if err := client.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.wait(2 * time.Second); err == nil || strings.Contains(err.Error(), "did not exit") {
+		t.Fatalf("down should exit nonzero on termination: %v; stderr=%q", err, client.stderr())
+	}
+	if !strings.Contains(client.stderr(), "stop request") {
+		t.Fatalf("missing stop request error: %q", client.stderr())
 	}
 }
 
