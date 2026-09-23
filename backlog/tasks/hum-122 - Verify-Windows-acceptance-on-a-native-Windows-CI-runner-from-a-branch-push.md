@@ -4,11 +4,15 @@ title: Verify Windows acceptance on a native Windows CI runner from a branch pus
 status: To Do
 assignee: []
 created_date: '2026-09-23 21:17'
+updated_date: '2026-09-23 22:09'
 labels:
   - tooling
   - integration
 milestone: m-5
-dependencies: []
+dependencies:
+  - HUM-130
+  - HUM-131
+  - HUM-132
 modified_files:
   - .taskfiles/windows.yaml
   - Taskfile.dist.yaml
