@@ -27,6 +27,15 @@ func TestStripTerminalControl(t *testing.T) {
 		{name: "crlf", text: "a\r\nb\rc\r\n", want: "a\nb\rc\n"},
 		{name: "unterminated csi", text: "prefix\x1b[31", want: "prefix"},
 		{name: "unterminated string", text: "prefix\x1b]title", want: "prefix"},
+		{name: "c1 csi", text: "\u009b31mred\u009b0m\u009b2J\n", want: "red\n"},
+		{name: "c1 osc st", text: "before\u009d0;title\u009cafter", want: "beforeafter"},
+		{name: "c1 osc bel", text: "before\u009d8;;https://example.test\alink\u009d8;;\aafter", want: "beforelinkafter"},
+		{name: "osc with c1 st", text: "before\x1b]52;c;cGF5bG9hZA==\u009cafter", want: "beforeafter"},
+		{name: "c1 dcs with 7-bit st", text: "before\u0090payload\x1b\\after", want: "beforeafter"},
+		{name: "c1 apc bel is not terminator", text: "\u009fignored\aREADY", want: ""},
+		{name: "single c1 controls", text: "a\u0085b\u008dc\u009cd", want: "abcd"},
+		{name: "unterminated c1 csi", text: "prefix\u009b31", want: "prefix"},
+		{name: "latin-1 supplement", text: "caf\u00e9\u00a0\u00bf\u00c2\n", want: "caf\u00e9\u00a0\u00bf\u00c2\n"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -747,8 +747,8 @@ Each durable named session has one cursor sequence across stdout, stderr, and in
 - Process snapshots keep the existing `next_cursor` field. It is the next cursor that will be assigned.
 - `next` and `next_cursor` are intentionally different. Neither MCP field is renamed.
 - `StripTerminalControl` is the single byte-wise definition of stripped text: it removes
-  recognized terminal control sequences and CR immediately before LF from child stdout/stderr
-  per entry.
+  recognized terminal control sequences, introduced by ESC or a UTF-8 encoded C1 control, and
+  CR immediately before LF from child stdout/stderr per entry.
 - System entries remain raw, as do all stored bytes.
 - Bounded `logs`, MCP `logs`, `wait --match`, readiness matches, and ring predicates use
   stripped child text.
