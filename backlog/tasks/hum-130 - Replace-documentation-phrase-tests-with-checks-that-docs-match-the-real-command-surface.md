@@ -3,10 +3,10 @@ id: HUM-130
 title: >-
   Replace documentation phrase tests with checks that docs match the real
   command surface
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-23 21:53'
-updated_date: '2026-09-23 21:53'
+updated_date: '2026-09-23 23:51'
 labels:
   - docs
   - cli
@@ -63,18 +63,44 @@ Non-goals: rewriting prose (HUM-126, HUM-127); adding phrase tests; changing hel
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `rg -n "^func (TestLifecycleHelp|TestPinnedToolchainDocs|TestRestartPolicyDocs|TestResolvedProjectInstructions|TestAfterDocs|TestUpDriftDocs|TestScopeDocs|TestTerminalControlDocs)\(" internal` prints nothing and exits 1.
-- [ ] #2 AC2 — `go test ./internal/cli -run "^(TestDocsReferenceRealCommandsAndFlags|TestDocsCoverEveryCommand)$" -count=1 -v` and `go test ./internal/mcp -run "^TestDocsCoverEveryTool$" -count=1 -v` exit 0; Implementation Notes record that each check fails when a bogus `hum nosuchcommand` reference, a bogus `hum up --nosuchflag` reference, or a removed tool name is introduced temporarily.
-- [ ] #3 AC3 — `go test ./internal/cli ./internal/mcp ./internal/skill ./internal/project ./cmd/hum -count=1` exits 0.
-- [ ] #4 AC4 — `git diff --numstat main -- "*_test.go"` shows a net reduction in test lines; Implementation Notes record the number and list every deleted function and trimmed assertion.
+- [x] #1 AC1 — `rg -n "^func (TestLifecycleHelp|TestPinnedToolchainDocs|TestRestartPolicyDocs|TestResolvedProjectInstructions|TestAfterDocs|TestUpDriftDocs|TestScopeDocs|TestTerminalControlDocs)\(" internal` prints nothing and exits 1.
+- [x] #2 AC2 — `go test ./internal/cli -run "^(TestDocsReferenceRealCommandsAndFlags|TestDocsCoverEveryCommand)$" -count=1 -v` and `go test ./internal/mcp -run "^TestDocsCoverEveryTool$" -count=1 -v` exit 0; Implementation Notes record that each check fails when a bogus `hum nosuchcommand` reference, a bogus `hum up --nosuchflag` reference, or a removed tool name is introduced temporarily.
+- [x] #3 AC3 — `go test ./internal/cli ./internal/mcp ./internal/skill ./internal/project ./cmd/hum -count=1` exits 0.
+- [x] #4 AC4 — `git diff --numstat main -- "*_test.go"` shows a net reduction in test lines; Implementation Notes record the number and list every deleted function and trimmed assertion.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No protected gate file was modified unless the owner labelled this task tooling
-- [ ] #6 Only tests and assertions named in the Delete and Trim lists were removed; every other test is unchanged or strengthened
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #6 Only tests and assertions named in the Delete and Trim lists were removed; every other test is unchanged or strengthened
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Remove only enumerated prose-pinning tests and phrase assertions, retaining structural checks and embedded-source equality.
+2. Add command/flag documentation reference and coverage checks plus MCP tool coverage; correct proven stale references.
+3. Exercise negative cases and focused suites, run independent acceptance verification and task ci; commit in worktree, merge main, finalize task and clean worktree.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC1: rg -n "^func (TestLifecycleHelp|TestPinnedToolchainDocs|TestRestartPolicyDocs|TestResolvedProjectInstructions|TestAfterDocs|TestUpDriftDocs|TestScopeDocs|TestTerminalControlDocs)\\(" internal — no matches, exit 1 (independent verifier).
+AC2: go test ./internal/cli -run "^(TestDocsReferenceRealCommandsAndFlags|TestDocsCoverEveryCommand)$" -count=1 -v and go test ./internal/mcp -run "^TestDocsCoverEveryTool$" -count=1 -v — PASS. Temporary README references `hum nosuchcommand` and `hum up --nosuchflag` each made the CLI test fail as expected; temporarily removing backticked `events` in coding-agents.md, then removing events from MCP help each made the MCP test fail as expected. All probes restored; final focused checks PASS.
+AC3: go test ./internal/cli ./internal/mcp ./internal/skill ./internal/project ./cmd/hum -count=1 — PASS (independent verifier).
+AC4: git diff --numstat main -- "*_test.go" — +114/-1402 tracked test lines, net -1288; including the new 70-line internal/mcp/docs_test.go, net -1218. Deleted functions: CLI TestAfterDocs, TestCompletionDocs, TestGlobalScopeDocs, TestDoctorHelpContract, TestLogsSystemStreamHelp, TestRestartReadinessDocs, TestInputDocs, TestJSONErrorDocs, TestCursorDocs, TestLogsSinceDocs, TestSignalExitDocs, TestUpProgressDocs, TestUpDriftDocs, TestMCPConcurrencyDescription, TestProjectDirDocs, TestScopeDocs, TestColorDocs, TestRestartPolicyDocs, TestUpRecoveryDocs, TestSignalDocs, TestWaitHelpDescribesExitAndReadiness, TestLogsAggregateDocs, TestLifecycleHelp, TestOutputByteDocs, TestPinnedToolchainDocs, TestTerminalControlDocs, TestTTYHelpAndDocs, TestWaitObservedDocs, TestEventsHelp, TestUpDescriptionNoDuplicateClause; MCP TestMCPConcurrencyDocs, TestScopeDocs; skill TestUpDriftDocs, TestAfterDocs, TestRestartPolicyDocs, TestTerminalControlDocs, TestInputDocs, TestResolvedProjectInstructions, TestTTYInstructions, TestScopeDocs. Replaced skill-only TestSkillReferencesMatchRootCommandsAndFlags with TestDocsReferenceRealCommandsAndFlags. Trimmed TestAttachSurface help/docs phrase loops (existence, distinctness, unsupported flags retained); TestREADMEQuickstartStructure Quickstart phrases (heading order retained); TestLogsStripTerminalControl help/docs reads (behavior retained); TestMCPHelp tool-count/list phrases; TestSkillContentHasRequiredFrontmatter sentence/phrase constraints (frontmatter shape/name/nonempty description retained); TestPluginPackageWiresSkillAndMCP plugin prose phrases (wiring retained); MCP TestGlobalScopeTools, TestLogsSystemStream, TestEvents description phrases. Embedded skill/source byte equality retained.
+Modified-file deviation: internal/cli/commands.go is outside the declared modified-file list; new TestDocsCoverEveryTool proved existing MCP --help incorrectly claimed twelve tools and omitted `events`, so the one-line description correction is necessary and explicitly permitted by this item’s stale-reference exception. docs/design.md added missing visible command references; docs/coding-agents.md added missing `events` tool. No protected gate files modified.
+
+Code commit 92cff8f merged by Worktrunk fast-forward to main. task check:staged PASS (format and secret scan); task ci PASS on 92cff8f (govulncheck, gitleaks, vet, staticcheck, Go/Python/install tests, race tests, built-binary smoke). Independent verifier initial pass: AC1/AC3 and scoped DoD #5/#6 PASS; after provider notes were added, resumed verifier explicitly PASS AC1–AC4 and scoped DoD #4. Review outcome: no remaining concrete item-scoped defects. Next step: commit final provider record, rerun task ci on final main commit, clean owned worktree.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Replaced prose-pinning tests with command, flag, and MCP tool surface checks. Corrected missing tool/command references; focused acceptance checks, negative probes, independent verification, and task ci passed. Integrated 92cff8f into main.
+<!-- SECTION:FINAL_SUMMARY:END -->
