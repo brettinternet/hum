@@ -104,10 +104,6 @@ parser remains authoritative.
 | MCP | Closed-schema bounded tools | Status, lifecycle, and logs tools | Not documented | Not documented | Not documented |
 | UI | CLI; Herdr supplies panes | TUI and optional web UI | tmux windows | Multiplexed terminal output | Full terminal UI |
 
-Choose [pitchfork](https://pitchfork.jdx.dev/) or another manager when its cited capabilities—such as a
-built-in TUI, web UI, or log query store—fit the job. For a bounded process substrate that tools and
-agents build on, use Hum. “Not documented” does not claim that a feature is absent.
-
 ## Non-goals
 
 Hum deliberately does not provide:
