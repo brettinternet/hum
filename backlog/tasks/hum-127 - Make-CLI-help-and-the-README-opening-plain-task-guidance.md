@@ -4,7 +4,7 @@ title: Make CLI help and the README opening plain task guidance
 status: Done
 assignee: []
 created_date: '2026-09-23 21:22'
-updated_date: '2026-09-24 20:09'
+updated_date: '2026-09-24 20:10'
 labels:
   - cli
   - docs
@@ -80,6 +80,8 @@ Owner authorized replacing the four wording-pinning assertions with behavior/con
 Implementation commit 43cf610 (docs(cli): make help and README task-oriented) in worktree hum-127-help; task check:staged PASS; task ci PASS on 43cf610 (security, check, full Go tests, race, smoke). Independent verifier run 26c5a165 PASS for AC1-AC4, no concrete item-scoped defects and no test deleted/skipped/weakened; updated wording-pinned tests preserve test intent by checking actual guidance and excluding wire prose, while MCP scope/schema behavior is exercised by internal/mcp tests. Review outcome: PASS. AC#1: `go test ./internal/cli -run "^TestHelpContract$" -count=1 -v` PASS (all visible commands and completion). AC#2: `go test ./internal/cli ./internal/skill ./internal/mcp ./cmd/hum -count=1` PASS. AC#3: `go run ./cmd/hum mcp --help` PASS, lists 13 tools including events. AC#4: `head -12 README.md | rg -i "bounded|exact-argv"` exited 1 with no output; `rg -c "^## (Install|Quickstart)$" README.md` printed 2. Only modified-file deviation internal/cli/mcp.go is the canonical MCP command description that previously duplicated commands.go.
 
 Integrated 43cf610 by fast-forward merge into main; task ci passed on the final code commit. AC#4 exact command: `sed -n "1,12p" README.md | rg -i "bounded|exact-argv"` printed nothing and exited 1; `rg -c "^## (Install|Quickstart)$" README.md` printed 2. No outstanding blocker; next action: commit completed provider state, then remove the verified session-owned worktree and branch.
+
+Final cleanup completed: verified worktree and branch hum-127-help against creation receipt and `wt list --format=json`; checked idle zsh pane and closed associated Herdr workspace wNJ; `wt remove hum-127-help --foreground --format=json` removed checkout and branch. Provider claim released by Done status. No blocker or resumable step remains.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
