@@ -126,6 +126,8 @@ func waitForDaemon(ctx context.Context, paths daemon.RuntimePaths, child *exec.C
 	ticker := time.NewTicker(daemonStartupPoll)
 	defer ticker.Stop()
 	exited := reapDetachedChild(child)
+	childDone := exited.done
+	childExited := false
 
 	for {
 		if pid, err := probeDaemon(waitCtx, paths); err == nil {
@@ -143,22 +145,21 @@ func waitForDaemon(ctx context.Context, paths daemon.RuntimePaths, child *exec.C
 		}
 
 		select {
-		case <-exited.done:
-			// The child gave up before publishing readiness, for example
-			// because a live process owns the runtime or the runtime directory
-			// was rejected. Waiting out the recovery budget would only delay
-			// the same failure. A racing starter may still have won, so probe
-			// once more before reporting the child's exit.
-			if pid, err := probeDaemon(waitCtx, paths); err == nil {
-				return pid, nil
-			}
-			return 0, daemonStartupError(paths, fmt.Errorf("detached daemon exited before readiness: %w", exited.status()))
+		case <-childDone:
+			// Another starter may hold the runtime lock but not yet have
+			// published its pipe. Keep probing within the startup budget;
+			// a single immediate probe loses that race on Windows.
+			childExited = true
+			childDone = nil
 		case <-waitCtx.Done():
 			if err := ctx.Err(); err != nil {
 				cancelDetachedChild(child, exited)
 				return 0, err
 			}
 			terminateDetachedChild(child, exited)
+			if childExited {
+				return 0, daemonStartupError(paths, fmt.Errorf("detached daemon exited before readiness: %w", exited.status()))
+			}
 			return 0, daemonStartupError(paths, waitCtx.Err())
 		case <-ticker.C:
 		}
