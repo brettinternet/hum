@@ -4,7 +4,7 @@ title: Stop task smoke from re-running tests that task test already ran
 status: Done
 assignee: []
 created_date: '2026-09-24 22:52'
-updated_date: '2026-09-24 23:47'
+updated_date: '2026-09-24 23:49'
 labels:
   - tooling
 dependencies: []
@@ -64,6 +64,8 @@ Unrelated failures: if `task ci` or a package run fails in a test this task did 
 AC#1 — In hum-140-smoke, awk smoke block | rg -q "go test" exited 1; task smoke exited 0 (generated dist/hum.1, built and ran bin/hum --version: hum dev (built unknown)). AC#2 — rg -n "smoke step" docs/development.md exited 0 (line 47); paragraph says integration and CLI JSON v1 contracts run in task test, not smoke. AC#3 — task ci exited 0 in the implementation worktree (security, check, test, race, smoke). Independent verifier: PASS AC1 and AC2 directly; PASS AC3 on parent gate evidence and inspection of ci task. Diff limited to Taskfile.dist.yaml and docs/development.md; no tests deleted, skipped, or weakened; tooling label permits gate change. task check:staged passed. Next: commit implementation, merge to main, run task ci on final commit, finalize task and cleanup worktree.
 
 Integrated implementation commit e4b6eff into main via wt merge --no-commit --no-rebase --no-remove; task ci exited 0 on main at e4b6eff (security, check, test, race, smoke). Review outcome: independent verifier PASS for AC#1 and AC#2 by execution; PASS for AC#3 from parent task ci evidence plus independent inspection of the ci task; initial DoD incompleteness (no final commit or notes at review time) now addressed. No remaining blockers; next: record Done and commit task state, confirm final gate, remove owned worktree.
+
+Final delivery: task state committed as 1a79303 on main; task ci exited 0 at that commit. No blocker or resumable step remains; implementation and task state are merged locally. Cleanup: remove the session-owned hum-140-smoke worktree.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
