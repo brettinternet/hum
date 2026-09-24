@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"hum/internal/skill"
+
+	urfavecli "github.com/urfave/cli/v3"
 )
 
 func TestREADMEQuickstartStructure(t *testing.T) {
@@ -362,9 +364,12 @@ func TestDocsReferenceRealCommandsAndFlags(t *testing.T) {
 	// urfave/cli installs the shell completion command during command setup.
 	commands["completion"] = commandSurface{flags: map[string]bool{}}
 	rootFlags := make(map[string]bool)
+	rootValueFlags := make(map[string]bool)
 	for _, flag := range root.Flags {
+		valued, _ := flag.(urfavecli.DocGenerationFlag)
 		for _, name := range flag.Names() {
 			rootFlags[name] = true
+			rootValueFlags[name] = valued != nil && valued.TakesValue()
 		}
 	}
 	for _, flag := range root.VisibleFlags() {
@@ -384,22 +389,21 @@ func TestDocsReferenceRealCommandsAndFlags(t *testing.T) {
 		{name: "docs/coding-agents.md", content: readDocsSurfaceFile(t, "../../docs/coding-agents.md")},
 	}
 	inline := regexp.MustCompile("`([^`\\n]+)`")
-	commandReference := regexp.MustCompile(`\bhum\s+([a-z][a-z0-9-]*)\b`)
-	flagReference := regexp.MustCompile(`--([a-z][a-z0-9-]*)\b`)
+	// A trailing hyphen stays in the captured flag so `--detach-` is rejected.
+	flagReference := regexp.MustCompile(`--([a-z][a-z0-9-]*)`)
 	for _, document := range documents {
 		for _, unit := range markdownCommandUnits(document.content, inline) {
-			commandMatches := commandReference.FindAllStringSubmatchIndex(unit, -1)
+			commandMatches := docCommandReferences(unit, rootFlags, rootValueFlags)
 			for _, match := range commandMatches {
-				name := unit[match[2]:match[3]]
-				if _, ok := commands[name]; !ok {
-					t.Errorf("%s references missing root command %q in %q", document.name, name, unit)
+				if _, ok := commands[match.name]; !ok {
+					t.Errorf("%s references missing root command %q in %q", document.name, match.name, unit)
 				}
 			}
 			activeCommand := ""
 			commandIndex := 0
 			for _, match := range flagReference.FindAllStringSubmatchIndex(unit, -1) {
-				for commandIndex < len(commandMatches) && commandMatches[commandIndex][0] < match[0] {
-					activeCommand = unit[commandMatches[commandIndex][2]:commandMatches[commandIndex][3]]
+				for commandIndex < len(commandMatches) && commandMatches[commandIndex].offset < match[0] {
+					activeCommand = commandMatches[commandIndex].name
 					commandIndex++
 				}
 				flag := unit[match[2]:match[3]]
@@ -407,7 +411,7 @@ func TestDocsReferenceRealCommandsAndFlags(t *testing.T) {
 					continue
 				}
 				if activeCommand == "" && len(commandMatches) > 0 {
-					activeCommand = unit[commandMatches[0][2]:commandMatches[0][3]]
+					activeCommand = commandMatches[0].name
 				}
 				if activeCommand == "" {
 					continue
@@ -443,6 +447,64 @@ func TestDocsCoverEveryCommand(t *testing.T) {
 			t.Errorf("docs/design.md does not reference visible root command %q as hum %s", name, name)
 		}
 	}
+}
+
+type docCommandReference struct {
+	name   string
+	offset int
+}
+
+var (
+	docHumInvocation = regexp.MustCompile(`\bhum\s+`)
+	docCommandToken  = regexp.MustCompile(`^([a-z][a-z0-9-]*)(?:[^A-Za-z0-9_-].*)?$`)
+)
+
+// docCommandReferences finds the command named by each `hum` invocation in
+// unit, skipping root selectors such as `--project DIR`, `-C DIR`, and the
+// bracketed synopsis form `[--project DIR|-C DIR]`. Invocations whose command
+// position holds a placeholder such as COMMAND are ignored.
+func docCommandReferences(unit string, rootFlags, rootValueFlags map[string]bool) []docCommandReference {
+	var references []docCommandReference
+	for _, match := range docHumInvocation.FindAllStringIndex(unit, -1) {
+		position := match[1]
+		skipValue := false
+		for position < len(unit) {
+			rest := unit[position:]
+			trimmed := strings.TrimLeft(rest, " \t")
+			position += len(rest) - len(trimmed)
+			if trimmed == "" {
+				break
+			}
+			if strings.HasPrefix(trimmed, "[") {
+				end := strings.Index(trimmed, "]")
+				if end < 0 {
+					break
+				}
+				position += end + 1
+				continue
+			}
+			token, _, _ := strings.Cut(trimmed, " ")
+			if skipValue {
+				skipValue = false
+				position += len(token)
+				continue
+			}
+			if strings.HasPrefix(token, "-") {
+				name, _, hasValue := strings.Cut(strings.TrimLeft(token, "-"), "=")
+				if !rootFlags[name] {
+					break
+				}
+				skipValue = rootValueFlags[name] && !hasValue
+				position += len(token)
+				continue
+			}
+			if command := docCommandToken.FindStringSubmatch(token); command != nil {
+				references = append(references, docCommandReference{name: command[1], offset: position})
+			}
+			break
+		}
+	}
+	return references
 }
 
 func readDocsSurfaceFile(t *testing.T, path string) string {
