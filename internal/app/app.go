@@ -321,9 +321,12 @@ type Options struct {
 	// use the configuration field's name. CompletedLimit takes precedence.
 	CompletedRecords int
 	StopGrace        time.Duration
-	OutputLimits     output.Limits
-	MaxLineBytes     int
-	Now              func() time.Time
+	// PersistenceCleanupTimeout bounds cleanup after a failed runtime-state write.
+	// Zero uses the 5-second default.
+	PersistenceCleanupTimeout time.Duration
+	OutputLimits              output.Limits
+	MaxLineBytes              int
+	Now                       func() time.Time
 
 	// StartProcess is the only process seam. It is useful for deterministic
 	// lifecycle tests; nil selects process.Start.
@@ -1411,16 +1414,17 @@ type Supervisor struct {
 	processObservations map[string]uint64
 	complete            []*record
 
-	completedLimit int
-	stopGrace      time.Duration
-	outputLimits   output.Limits
-	maxLineBytes   int
-	now            func() time.Time
-	after          func(time.Duration) <-chan time.Time
-	startProcess   func(process.Spec) (Child, error)
-	persistStart   func(Process) error
-	persistExit    func(Process) error
-	lifecycleEvent func(LifecycleEvent)
+	completedLimit            int
+	stopGrace                 time.Duration
+	persistenceCleanupTimeout time.Duration
+	outputLimits              output.Limits
+	maxLineBytes              int
+	now                       func() time.Time
+	after                     func(time.Duration) <-chan time.Time
+	startProcess              func(process.Spec) (Child, error)
+	persistStart              func(Process) error
+	persistExit               func(Process) error
+	lifecycleEvent            func(LifecycleEvent)
 
 	closed          bool
 	launches        sync.WaitGroup
@@ -1434,9 +1438,9 @@ type Supervisor struct {
 }
 
 const (
-	defaultCompletedLimit     = 20
-	defaultMaxLineBytes       = 64 * 1024
-	persistenceCleanupTimeout = 5 * time.Second
+	defaultCompletedLimit            = 20
+	defaultMaxLineBytes              = 64 * 1024
+	defaultPersistenceCleanupTimeout = 5 * time.Second
 )
 
 // New constructs a Supervisor and validates output limits before any launch.
@@ -1453,6 +1457,13 @@ func New(opts Options) (*Supervisor, error) {
 	}
 	if opts.StopGrace < 0 {
 		return nil, fmt.Errorf("stop grace must not be negative: %s", opts.StopGrace)
+	}
+	cleanupTimeout := opts.PersistenceCleanupTimeout
+	if cleanupTimeout == 0 {
+		cleanupTimeout = defaultPersistenceCleanupTimeout
+	}
+	if cleanupTimeout < 0 {
+		return nil, fmt.Errorf("persistence cleanup timeout must not be negative: %s", cleanupTimeout)
 	}
 	maxLineBytes := opts.MaxLineBytes
 	if maxLineBytes == 0 {
@@ -1479,20 +1490,21 @@ func New(opts Options) (*Supervisor, error) {
 		}
 	}
 	return &Supervisor{
-		records:             make(map[string]*record),
-		starting:            make(map[string]struct{}),
-		processObservations: make(map[string]uint64),
-		completedLimit:      completedLimit,
-		stopGrace:           opts.StopGrace,
-		outputLimits:        opts.OutputLimits,
-		maxLineBytes:        maxLineBytes,
-		now:                 now,
-		after:               after,
-		startProcess:        starter,
-		persistStart:        opts.PersistStart,
-		persistExit:         opts.PersistExit,
-		shutdownDone:        make(chan struct{}),
-		timersDone:          make(chan struct{}),
+		records:                   make(map[string]*record),
+		starting:                  make(map[string]struct{}),
+		processObservations:       make(map[string]uint64),
+		completedLimit:            completedLimit,
+		stopGrace:                 opts.StopGrace,
+		persistenceCleanupTimeout: cleanupTimeout,
+		outputLimits:              opts.OutputLimits,
+		maxLineBytes:              maxLineBytes,
+		now:                       now,
+		after:                     after,
+		startProcess:              starter,
+		persistStart:              opts.PersistStart,
+		persistExit:               opts.PersistExit,
+		shutdownDone:              make(chan struct{}),
+		timersDone:                make(chan struct{}),
 	}, nil
 }
 
@@ -2211,7 +2223,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 			}
 			s.mu.Unlock()
 			go s.reconcile(rec)
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), persistenceCleanupTimeout)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), s.persistenceCleanupTimeout)
 			cleanupErr := s.stopRecord(cleanupCtx, rec)
 			cancel()
 			if cleanupErr != nil {
@@ -2512,7 +2524,7 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 			}
 			s.mu.Unlock()
 			go s.reconcile(rec)
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), persistenceCleanupTimeout)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), s.persistenceCleanupTimeout)
 			cleanupErr := s.stopRecord(cleanupCtx, rec)
 			cancel()
 			if cleanupErr != nil {

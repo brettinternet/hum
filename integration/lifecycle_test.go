@@ -168,6 +168,7 @@ func TestSignalledLeaderWithSurvivingDescendant(t *testing.T) {
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	runtime := lifecycleNewRuntime(t)
+	runtime.env = testutil.RuntimeEnv(runtime.dir, "HUM_STOP_GRACE=500ms")
 	var daemonPID int
 	t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
 

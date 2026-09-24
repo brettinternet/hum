@@ -217,8 +217,9 @@ func TestLaunchPersistenceFailureStopsChild(t *testing.T) {
 	t.Run("unconfirmed cleanup blocks duplicate", func(t *testing.T) {
 		child := &stuckRuntimeChild{pid: 2147483000, done: make(chan struct{})}
 		supervisor, err := app.New(app.Options{
-			StopGrace:    10 * time.Millisecond,
-			StartProcess: func(processpkg.Spec) (app.Child, error) { return child, nil },
+			StopGrace:                 10 * time.Millisecond,
+			PersistenceCleanupTimeout: 100 * time.Millisecond,
+			StartProcess:              func(processpkg.Spec) (app.Child, error) { return child, nil },
 		})
 		if err != nil {
 			t.Fatal(err)

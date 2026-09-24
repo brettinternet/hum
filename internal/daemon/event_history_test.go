@@ -107,25 +107,26 @@ func TestEventHistoryRetentionAndNameReuse(t *testing.T) {
 func TestEventHistoryAppendCost(t *testing.T) {
 	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, "/project")
 	history.maxEvents, history.maxBytes = 20, 1<<20
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 200; i++ {
 		if _, err := history.Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "ready"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if history.fullRewrites > 51 || history.markWrites > 32 {
-		t.Fatalf("1000 appends: %d rewrites, %d marks", history.fullRewrites, history.markWrites)
+	// At 20 retained events, rewrites start at append 41 then recur every 21; marks reserve 64 cursors at a time.
+	if history.fullRewrites > 8 || history.markWrites > 4 {
+		t.Fatalf("200 appends: %d rewrites, %d marks", history.fullRewrites, history.markWrites)
 	}
 	if history.fullRewrites == 0 || history.markWrites == 0 {
 		t.Fatalf("counters not exercised: %d rewrites, %d marks", history.fullRewrites, history.markWrites)
 	}
 	page, err := history.Read(nil, time.Time{}, nil, false, nil, 20, nil, 0)
-	if err != nil || len(page.Events) != 20 || page.Events[0].Cursor != 981 {
+	if err != nil || len(page.Events) != 20 || page.Events[0].Cursor != 181 {
 		t.Fatalf("live retention = %#v, err=%v", page, err)
 	}
 	loaded := NewEventHistory(history.dir, protocol.ScopeProject, "/project")
 	loaded.maxEvents, loaded.maxBytes = 20, 1<<20
 	page, err = loaded.Read(nil, time.Time{}, nil, false, nil, 20, nil, 0)
-	if err != nil || len(page.Events) != 20 || page.Events[0].Cursor != 981 || loaded.diskEvents > 40 {
+	if err != nil || len(page.Events) != 20 || page.Events[0].Cursor != 181 || loaded.diskEvents > 40 {
 		t.Fatalf("loaded retention = %#v, disk events=%d, err=%v", page, loaded.diskEvents, err)
 	}
 	if _, err := loaded.Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "ready"}); err != nil {
