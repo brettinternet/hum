@@ -25,7 +25,7 @@ func TestWindowsDoctorRuntimeManifestAndUnsupportedTTY(t *testing.T) {
 		t.Helper()
 		result := testutil.Run(t, hum, root, env, "doctor", "--json")
 		if result.Code != 0 || result.Stderr != "" {
-			t.Fatalf("doctor: code=%d stdout=%q stderr=%q", result.Code, result.Stdout, result.Stderr)
+			t.Fatalf("doctor: code=%d stdout=%q stderr=%q runtime ACL=%v", result.Code, result.Stdout, result.Stderr, checkDoctorRuntimeACL(runtimeDir))
 		}
 		var report doctorResult
 		if err := json.Unmarshal([]byte(result.Stdout), &report); err != nil {
