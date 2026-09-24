@@ -62,6 +62,25 @@ Or install releases with [mise](https://mise.jdx.dev/):
 "github:brettinternet/hum" = "latest"
 ```
 
+On Windows (amd64), download the release zip and verify its SHA-256 checksum in PowerShell:
+
+```powershell
+$version = '1.2.3' # replace with the release version
+$asset = "hum-$version-windows-x64.zip"
+$base = "https://github.com/brettinternet/hum/releases/download/v$version"
+Invoke-WebRequest "$base/$asset" -OutFile $asset
+Invoke-WebRequest "$base/checksums.txt" -OutFile checksums.txt
+$line = Get-Content checksums.txt | Where-Object { $_ -match "^([0-9a-fA-F]{64})  \./$([regex]::Escape($asset))$" }
+if (@($line).Count -ne 1) { throw 'hum checksum entry missing or duplicated' }
+if ((Get-FileHash $asset -Algorithm SHA256).Hash -ine ($line -split ' ')[0]) { throw 'hum checksum mismatch' }
+$installDir = Join-Path $env:LOCALAPPDATA 'Programs\hum'
+Expand-Archive $asset -DestinationPath $installDir -Force
+$env:Path += ";$installDir" # add this directory to your user PATH for future shells
+& (Join-Path $installDir 'hum.exe') --version
+```
+
+Windows supports native non-TTY process supervision through `hum.exe` (for example `run --detach`, `up --detach`, `status`, `logs`, `wait`, `stop`, and `mcp`). `--tty`, interactive input, `attach`, and Unix `signal` are not supported; see [Windows behavior](docs/design.md#scope-and-non-goals). `install.sh` is Unix-only.
+
 To build from a checkout, see [development setup](docs/development.md).
 
 ## Quickstart
@@ -114,7 +133,7 @@ parser remains authoritative.
 | You need lifecycle hooks, automatic file-watch restarts, or scheduled tasks. | You need `hum up NAME...` to start selected declarations with their transitive `after` prerequisites, including one-shot setup steps. |
 | You want a TUI or web UI, or SQLite log history with search. | You need one-shot TTY input through `hum input` or MCP, with a single input owner. |
 | Five MCP tools for status, start, stop, restart, and recent logs are enough. | You need 13 MCP tools with closed schemas, including `wait`, `input`, `signal`, and `events`, plus versioned CLI JSON and read-only `hum doctor`. |
-| You need builds for macOS, Linux, and Windows. | macOS and Linux are supported today; native Windows support is planned. |
+| You need builds for macOS, Linux, and Windows. | macOS and Linux support TTY; Windows amd64 supports native non-TTY supervision and a downloadable zip. |
 
 `ready: {exit: 0}` runs a one-shot setup step before its dependents. `hum up` starts every declaration as needed, while `hum up NAME...` selects only the named declarations and their transitive `after` prerequisites. Hum has no UI of its own; Herdr supplies panes.
 

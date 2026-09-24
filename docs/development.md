@@ -93,6 +93,12 @@ task ci
 - `task stress` repeatedly runs race-enabled daemon and child-process tests with shuffled ordering. It is intentionally separate from `task ci` and runs daily on Linux and macOS through `.github/workflows/stress.yaml`; the workflow also supports manual dispatch.
 - `task ci` independently runs the security gate, checks, tests, race-sensitive package tests, and release-output smoke tests with Go 1.27.1 and Staticcheck 2026.2.1. The smoke step builds the binary and `hum(1)` manual before exercising the integration lifecycle and CLI JSON v1 contract tests against the built binary. GitHub Actions preserves those gates on Linux and macOS while running each OS's race tests concurrently with its other checks, restoring a per-job Go build and module cache keyed by OS, Go version, and `go.sum`; `GOFLAGS=-count=1` keeps test results from being reused.
 
+## Windows verification and packaging
+
+On a Windows host, `task windows:test` runs `go test -count=1 ./...`, including the integration suite and platform-specific Windows fixtures. The `Go CI (Windows)` job runs this target on `windows-latest`. After explicit approval to publish a test branch, push the worktree HEAD to `windows/<task-id>` and run `task windows:watch` on macOS/Linux to wait for the matching CI run. A local cross-compile does not replace this native check.
+
+On macOS/Linux, `task windows:package:smoke` cross-builds the same `hum-<version>-windows-x64.zip` as the release job, checks that it contains `hum.exe`, and verifies its SHA-256 line in `dist/checksums.txt`. Set `VERSION`, `BUILD_TIME`, and `BUILD_COMMIT` for a labelled build. The release workflow calls `task windows:package`, regenerates checksums for tarballs and the zip, and uploads all of them. Windows installation is manual with PowerShell `Expand-Archive`; `install.sh` remains Unix-only.
+
 ## Commit messages
 
 Commits use [Conventional Commits](https://www.conventionalcommits.org/):

@@ -109,8 +109,10 @@ func run(args []string) (int, error) {
 		if err := writeFile(os.Stdout, args[2]+"\n"); err != nil {
 			return 0, err
 		}
-		if err := writeFile(os.Stderr, args[3]+"\n"); err != nil {
-			return 0, err
+		if args[3] != "-" {
+			if err := writeFile(os.Stderr, args[3]+"\n"); err != nil {
+				return 0, err
+			}
 		}
 		return 0, waitForFile(args[1], 0)
 	case "burst":

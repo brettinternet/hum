@@ -150,7 +150,9 @@ func TestWindowsBuiltBinaryConcurrentAutostartAndLifecycle(t *testing.T) {
 			t.Fatalf("Unix signal result: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
 		}
 
-		waiter := testutil.Start(t, hum, projectRoot, env, "wait", "adhoc")
+		// Pin the launch cursor so the exit remains observable even if the
+		// subprocess starts after stop completes under CI load.
+		waiter := testutil.Start(t, hum, projectRoot, env, "wait", "adhoc", "--after-cursor", "0")
 		result = testutil.Run(t, hum, projectRoot, env, "stop", "adhoc")
 		if result.Code != 0 || !strings.Contains(strings.ToLower(result.Stdout), "stopped") {
 			t.Fatalf("stop fixture: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)

@@ -564,6 +564,9 @@ func logsitEchoArgs(t *testing.T, harness *logsitHarness, stdout, stderr string)
 	}
 	gate := filepath.Join(harness.project, fmt.Sprintf("echo-%d.release", len(harness.gates)))
 	harness.gates = append(harness.gates, gate)
+	if stderr == "" {
+		stderr = "-" // Manifest argv entries cannot be empty.
+	}
 	return []string{harness.fixture, "echo-wait", gate, stdout, stderr}
 }
 

@@ -24,7 +24,9 @@ Hum deliberately does not provide:
 - log parsing or query languages; or
 - runtime shell interpretation or templating.
 
-Hum currently supports macOS and Linux. Native Windows support is planned (HUM-117 through HUM-122).
+Hum supports macOS and Linux, plus native non-TTY supervision on Windows amd64. The Windows release is a `hum-<version>-windows-x64.zip` containing `hum.exe`; install with PowerShell `Expand-Archive`, put its directory on `PATH`, and run `hum.exe` (see [installation](../README.md#install)). The Unix `install.sh` and `hum.1` are not Windows installers.
+
+On Windows the daemon uses a private named pipe derived from its runtime directory (by default `%LOCALAPPDATA%\hum-runtime`). The directory, runtime files, pipe ACL, and connecting peer must belong to the current user; a foreign or untrusted runtime is rejected rather than reused. Non-TTY `run --detach`, `start`, `up --detach`, `down`, `status`, `list`, `logs`, `wait`, `stop`, `remove`, `shutdown`, `doctor`, and `mcp` use the native daemon. `stop` and `down` terminate owned Job Object trees immediately; `stop_grace` cannot deliver Unix SIGTERM on Windows. `signal` rejects Unix signals. `--tty`, interactive input, `attach`, and ConPTY are not supported; use `logs --follow` to observe output. Windows children inherit a null stdin and separate bounded stdout/stderr capture.
 
 The bounded process interface also excludes arbitrary or queued input, remote transport or
 authentication, live event-follow callbacks, an in-daemon plugin system, and OS service installation.
