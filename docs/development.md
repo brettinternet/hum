@@ -91,7 +91,7 @@ task ci
 - `task coverage` runs all tests with repository-wide coverage and prints the per-function report. Its coverage profile is written outside the repository at `/tmp/hum-coverage.out`.
 - `task security` scans the full Git history with gitleaks and runs `govulncheck ./...`; govulncheck fails only for vulnerabilities reachable from project code.
 - `task stress` repeatedly runs race-enabled daemon and child-process tests with shuffled ordering. It is intentionally separate from `task ci` and runs daily on Linux and macOS through `.github/workflows/stress.yaml`; the workflow also supports manual dispatch.
-- `task ci` independently runs the security gate, checks, tests, race-sensitive package tests, and release-output smoke tests with Go 1.27.1 and Staticcheck 2026.2.1. The smoke step builds the binary and `hum(1)` manual before exercising the binary. GitHub Actions preserves those gates on Linux and macOS while running each OS's race tests concurrently with its other checks, restoring a per-job Go build and module cache keyed by OS, Go version, and `go.sum`; `GOFLAGS=-count=1` keeps test results from being reused.
+- `task ci` independently runs the security gate, checks, tests, race-sensitive package tests, and release-output smoke tests with Go 1.27.1 and Staticcheck 2026.2.1. The smoke step builds the binary and `hum(1)` manual before exercising the integration lifecycle and CLI JSON v1 contract tests against the built binary. GitHub Actions preserves those gates on Linux and macOS while running each OS's race tests concurrently with its other checks, restoring a per-job Go build and module cache keyed by OS, Go version, and `go.sum`; `GOFLAGS=-count=1` keeps test results from being reused.
 
 ## Commit messages
 

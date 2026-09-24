@@ -92,4 +92,5 @@ tasks:
       - task: cli:man
     cmds:
       - test -s dist/hum.1
-      - mise exec go -- go test ./cmd/hum -run TestBuiltBinaryIntegration -count=1
+      - mise exec go -- go test ./integration -run '^(TestAutomaticStartup|TestDetachedServe|TestForegroundServe|TestAttachedRunForegroundLifecycle|TestDetachedRun|TestNDJSONFollow|TestStopTree|TestShutdown)$' -count=1
+      - mise exec go -- go test ./cmd/hum -run '^TestBuiltCLIMachineOutputV1$' -count=1

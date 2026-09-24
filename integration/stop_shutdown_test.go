@@ -102,6 +102,21 @@ func TestStopTree(t *testing.T) {
 	testutil.WaitForProcessGone(t, tree.grandchildPID, stopitShutdownWait)
 	testutil.WaitForProcessGroupGone(t, tree.pgid, stopitShutdownWait)
 
+	again := testutil.Run(t, hum, projectRoot, env, "stop", tree.name, tree.name, "missing", "--json")
+	if again.Code != 0 || again.Err != nil || again.Stderr != "" {
+		t.Fatalf("stop already-stopped and missing: %+v", again)
+	}
+	lines := strings.Split(strings.TrimSpace(again.Stdout), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("stop results = %q, want three ordered results", again.Stdout)
+	}
+	for i, name := range []string{tree.name, tree.name, "missing"} {
+		var result stopitActionResult
+		if err := json.Unmarshal([]byte(lines[i]), &result); err != nil || result.Name != name || result.Status != "not_running" {
+			t.Fatalf("stop result %d = %+v, error %v, want %s not_running", i, result, err, name)
+		}
+	}
+
 	if !testutil.ProcessAlive(daemonPID) {
 		t.Fatal("daemon exited while stopping one process tree")
 	}
@@ -190,7 +205,7 @@ func TestShutdown(t *testing.T) {
 	// forced shutdown escalates the ignore-term tree to SIGKILL.
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=3s")
 
-	testutil.Start(t, hum, projectRoot, env, "serve")
+	serve := testutil.Start(t, hum, projectRoot, env, "serve")
 	paths := stopitRuntimePaths(runtimeDir)
 	testutil.WaitForFile(t, paths.ready, stopitReadyWait)
 	daemonPID := stopitReadPID(t, paths.pid)
@@ -228,6 +243,15 @@ func TestShutdown(t *testing.T) {
 	}
 	if !strings.Contains(refusalText, "hum shutdown --stop-processes") {
 		t.Errorf("shutdown refusal missing guidance: %q", refusalText)
+	}
+	refusedJSON := testutil.Run(t, hum, projectRoot, env, "shutdown", "--json")
+	var refusal struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if refusedJSON.Code == 0 || refusedJSON.Stderr != "" || json.Unmarshal([]byte(refusedJSON.Stdout), &refusal) != nil || refusal.Error.Code != "active_processes" || !strings.Contains(refusedJSON.Stdout, stubborn.name) {
+		t.Fatalf("JSON shutdown refusal = %+v, decoded %+v", refusedJSON, refusal)
 	}
 	if !testutil.ProcessAlive(daemonPID) {
 		t.Fatal("daemon exited after refusing shutdown")
@@ -284,6 +308,9 @@ func TestShutdown(t *testing.T) {
 	stopitWaitForPathGone(t, paths.pid, stopitShutdownWait)
 	stopitWaitForPathGone(t, paths.ready, stopitShutdownWait)
 	testutil.WaitForProcessGone(t, daemonPID, stopitShutdownWait)
+	if err := serve.Wait(stopitShutdownWait); err != nil || serve.Stdout() != "" {
+		t.Fatalf("foreground serve after forced shutdown: err=%v stdout=%q stderr=%q", err, serve.Stdout(), serve.Stderr())
+	}
 	if !forced.Exited() {
 		t.Fatal("forced shutdown process was not reaped")
 	}
