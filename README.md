@@ -276,14 +276,15 @@ hum completion fish > ~/.config/fish/completions/hum.fish  # fish
 | --- | --- | --- | --- | --- | --- |
 | Config | YAML, exact argv | TOML, shell | Procfile | Procfile | YAML or Procfile |
 | Ready checks | match, exec, HTTP, TCP, exit | match, command, HTTP, TCP, delay | – | – | – |
-| Log history | recent output + events | searchable SQLite | tmux | – | TUI, files |
+| Log history | bounded output + event history | SQLite with search | tmux | – | TUI, files |
+| Resume reads from a cursor | yes: `--after-cursor` returns `next` | – | – | – | – |
 | Type into a process | attach, one-shot input | – | tmux | stdin | TUI |
 | MCP tools | 13 | 5 | – | – | – |
 | UI | none (Herdr panes) | TUI, web | tmux | terminal | TUI |
 
 `–` means not documented.
 
-Pick pitchfork for ports, a reverse proxy, boot start, cron, file-watch restarts, lifecycle hooks, or a UI. Pick Hum for exact argv, per-worktree isolation with no setup, and a small, stable API for agents: `wait`, `input`, `signal`, `events`, and versioned JSON. They can share a repo: keep Hum config in a Git-ignored `.hum.yaml`.
+Pick pitchfork for ports, a reverse proxy, boot start, cron, file-watch restarts, lifecycle hooks, or a UI. Pick Hum for exact argv, per-worktree isolation with no setup, and a small, stable API for agents: cursor-paged `logs` and `events`, `wait`, `input`, `signal`, and versioned JSON. An agent can read a page, act, then continue from the last cursor without missing or repeating a line. They can share a repo: keep Hum config in a Git-ignored `.hum.yaml`.
 
 ## Non-goals
 
