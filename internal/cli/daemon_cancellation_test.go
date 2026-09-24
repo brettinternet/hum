@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,6 +18,12 @@ import (
 // stalledRunDaemon completes the handshake and startup handoff, then leaves
 // the chosen unary request unanswered until the client closes the socket.
 func stalledRunDaemon(t *testing.T, stall protocol.Operation) (string, <-chan protocol.Operation) {
+	t.Helper()
+	return stalledDaemonListing(t, stall, []protocol.Process{{Name: "demo", Scope: "global", State: "running", StopGrace: 100 * time.Millisecond}})
+}
+
+// stalledDaemonListing is stalledRunDaemon with a caller-supplied list response.
+func stalledDaemonListing(t *testing.T, stall protocol.Operation, listed []protocol.Process) (string, <-chan protocol.Operation) {
 	t.Helper()
 	runtimeDir, err := os.MkdirTemp("/tmp", "h-")
 	if err != nil {
@@ -72,8 +80,7 @@ func stalledRunDaemon(t *testing.T, stall protocol.Operation) (string, <-chan pr
 					case protocol.OpGet:
 						_ = encoder.EncodeResponse(protocol.NewErrorResponse(protocol.OpGet, protocol.NewWireError(protocol.ErrorNotFound, "not found", nil)))
 					case protocol.OpList:
-						process := protocol.Process{Name: "demo", Scope: "global", State: "running", StopGrace: 100 * time.Millisecond}
-						_ = encoder.EncodeResponse(protocol.NewListResponse([]protocol.Process{process}))
+						_ = encoder.EncodeResponse(protocol.NewListResponse(listed))
 					case protocol.OpFollow:
 						if encoder.EncodeResponse(protocol.NewReadyEvent(nil)) != nil {
 							return
@@ -151,6 +158,45 @@ func TestDownStalledStopHonorsTermination(t *testing.T) {
 	}
 }
 
+func TestDownTerminationSharesOneCleanupDeadline(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeManifestCLITestFile(t, root, `version: 1
+processes:
+  a:
+    argv: [a]
+    ready: {match: a}
+  b:
+    argv: [b]
+    ready: {match: b}
+    after: [a]
+  c:
+    argv: [c]
+    after: [b]
+`)
+	var listed []protocol.Process
+	for _, name := range []string{"a", "b", "c"} {
+		listed = append(listed, protocol.Process{Name: name, Source: "manifest:hum.yaml", Scope: "project", Root: root, Cwd: root, Argv: []string{name}, State: "running", StopGrace: 100 * time.Millisecond})
+	}
+	runtimeDir, requests := stalledDaemonListing(t, protocol.OpStop, listed)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	client := cliServeRunStartClientInDir(t, root, "--stop-grace", "100ms", "down")
+	awaitStalledRequest(t, requests, protocol.OpStop)
+	start := time.Now()
+	if err := client.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	// c's stop is canceled; b and a must share one grace-plus-slack budget
+	// rather than each receiving a fresh one.
+	awaitStalledRequest(t, requests, protocol.OpStop)
+	limit := 100*time.Millisecond + daemonCleanupSlack + 600*time.Millisecond
+	if err := client.wait(limit); err == nil || strings.Contains(err.Error(), "did not exit") || time.Since(start) > limit {
+		t.Fatalf("down should exit nonzero within one cleanup budget: %v; elapsed=%s stderr=%q", err, time.Since(start), client.stderr())
+	}
+}
+
 func TestTerminationStopRequestIsBounded(t *testing.T) {
 	runtimeDir, requests := stalledRunDaemon(t, protocol.OpStop)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
@@ -168,5 +214,23 @@ func TestTerminationStopRequestIsBounded(t *testing.T) {
 	}
 	if !strings.Contains(client.stderr(), "stop request") {
 		t.Fatalf("missing stop request error: %q", client.stderr())
+	}
+}
+
+// Live requests must not expire on the CLI's grace: the daemon applies each
+// process's admitted grace, which may be longer. Only cleanup is time-bounded.
+func TestBoundedDaemonRequestOnlyBoundsCleanup(t *testing.T) {
+	live, cancelLive := boundedDaemonRequest(context.Background(), 0)
+	defer cancelLive()
+	if _, ok := live.Deadline(); ok {
+		t.Fatal("live request has a deadline")
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	cleanup, cancelCleanup := boundedDaemonRequest(canceled, time.Second)
+	defer cancelCleanup()
+	deadline, ok := cleanup.Deadline()
+	if !ok || cleanup.Err() != nil || time.Until(deadline) > time.Second+daemonCleanupSlack {
+		t.Fatalf("cleanup deadline = %v, %v, err=%v", deadline, ok, cleanup.Err())
 	}
 }

@@ -490,7 +490,9 @@ session.
   In-flight CLI daemon requests observe command cancellation (including SIGTERM and SIGHUP).
   The attached-run launch handoff is instead bounded independently so a signal can still reach
   a child launched during that handoff. A stop sent after cancellation uses an independent deadline of the admitted process `stop_grace`
-  plus two seconds of transport slack; cleanup requests use the same bounded policy.
+  plus two seconds of transport slack; cleanup requests use the same bounded policy, and `down`
+  shares one such deadline (longest active grace) across all remaining dependency waves. Requests
+  sent before cancellation have no CLI deadline because the daemon applies each admitted grace.
 - Copy-pasteable examples are `hum attach console` and `hum attach console --tail 50`.
 - `input` is the bounded request/response surface for an existing TTY record: `--text` sends
   exact non-empty text bytes without a newline, while `--base64` accepts only standard padded

@@ -801,7 +801,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	}
 	follower, err := client.Follow(ctx, daemon.FollowRequest{Name: name, Scope: selection.scope, Cwd: manifest.root, After: after, UntilExit: true, Stream: protocol.StreamBoth, MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes)})
 	if err != nil {
-		return err
+		return daemonCancellationError("follow", err)
 	}
 	defer follower.Close()
 	wantTTY := cmd.Bool("tty") || len(argv) == 0 && ((declared && definition.TTY) || (getErr == nil && current.TTY))
@@ -821,7 +821,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		client.SetEventOperation("input", daemon.NewOperationID(), "cli")
 		session, attachErr := client.InputAttach(ctx, inputRequest)
 		if attachErr != nil {
-			return attachErr
+			return daemonCancellationError("input attach", attachErr)
 		}
 		localInput, err = newTTYInput(session, errWriter)
 		if err != nil {
@@ -914,7 +914,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 			if !interrupted {
 				interrupted = true
 				if err := client.ControlSignal(ctx, daemon.SignalRequest{Name: name, Scope: selection.scope, Cwd: manifest.root, Signal: "SIGINT", Control: true}); err != nil && !errors.Is(err, app.ErrNotRunning) {
-					return false, err
+					return false, daemonCancellationError("signal", err)
 				}
 				_, err := fmt.Fprintf(errWriter, "interrupt sent to %s; press Ctrl+C again to stop\n", name)
 				return false, err
@@ -1233,7 +1233,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		session, attachErr := client.InputAttach(ctx, inputRequest)
 		if attachErr != nil {
 			if !isInputConflict(attachErr) {
-				return attachErr
+				return daemonCancellationError("input attach", attachErr)
 			}
 			if _, writeErr := fmt.Fprintln(errWriter, "tty input is already owned; following output only"); writeErr != nil {
 				return writeErr
@@ -1286,7 +1286,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		MaxEntries: cfg.ReadEntries, MaxBytes: int(cfg.ReadBytes),
 	})
 	if err != nil {
-		return err
+		return daemonCancellationError("follow", err)
 	}
 	defer follower.Close()
 	live, cancelLive := bufferFollower(follower, 16)
@@ -1508,7 +1508,7 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			Match: request.Match, MaxEntries: request.MaxEntries, MaxBytes: request.MaxBytes,
 		})
 		if err != nil {
-			return crossScopeNotFoundError(err, "logs "+name)
+			return crossScopeNotFoundError(daemonCancellationError("follow", err), "logs "+name)
 		}
 		defer follower.Close()
 		if process, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: cwd}); getErr == nil && !app.IsActiveState(process.State) {
@@ -2490,10 +2490,22 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	for _, definition := range manifest.defs {
 		definitions = append(definitions, cliOrchestrateDefinition(definition))
 	}
+	// After termination, every remaining wave shares one cleanup deadline so a
+	// dependency chain cannot multiply the post-signal wait.
+	cleanupGrace := cfg.StopGrace
+	for _, name := range activeNames {
+		cleanupGrace = max(cleanupGrace, stopGraceForName(processes, name, cfg.StopGrace))
+	}
+	var cleanupOnce sync.Once
+	var cleanupCtx context.Context
+	cancelCleanup := context.CancelFunc(func() {})
+	defer func() { cancelCleanup() }()
 	stopErrorsByName := orchestrate.OrchestrateDown(ctx, definitions, activeNames, declaredActiveNames, func(ctx context.Context, name string) error {
-		dialCtx, cancelDial := boundedDaemonRequest(ctx, cfg.StopGrace)
-		worker, stopErr := daemonClient(dialCtx, cfg)
-		cancelDial()
+		if ctx.Err() != nil {
+			cleanupOnce.Do(func() { cleanupCtx, cancelCleanup = boundedDaemonCleanup(cleanupGrace) })
+			ctx = cleanupCtx
+		}
+		worker, stopErr := daemonClient(ctx, cfg)
 		if worker != nil {
 			defer worker.Close()
 		}
@@ -2504,9 +2516,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 			return errors.New("daemon connection returned nil client")
 		}
 		worker.SetEventOperation("down", downOperationID, "cli")
-		stopCtx, cancel := boundedDaemonRequest(ctx, stopGraceForName(processes, name, cfg.StopGrace))
-		stopErr = worker.Stop(stopCtx, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
-		cancel()
+		stopErr = worker.Stop(ctx, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
 		return daemonCancellationError("stop", stopErr)
 	})
 	stopErrors := make([]error, len(names))
@@ -3444,11 +3454,15 @@ func daemonCancellationError(operation string, err error) error {
 	return err
 }
 
+// boundedDaemonRequest observes ctx while the command runs. A request sent
+// after cancellation is cleanup and gets an independent grace-plus-slack
+// deadline instead; live requests are not time-bounded because the daemon
+// applies each process's admitted grace, which the CLI may not know.
 func boundedDaemonRequest(ctx context.Context, grace time.Duration) (context.Context, context.CancelFunc) {
 	if ctx.Err() != nil {
 		return boundedDaemonCleanup(grace)
 	}
-	return context.WithTimeout(ctx, grace+daemonCleanupSlack)
+	return context.WithCancel(ctx)
 }
 
 func stopGraceForName(processes []app.Process, name string, fallback time.Duration) time.Duration {
