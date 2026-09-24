@@ -73,22 +73,20 @@ func TestMarkdownH2PositionsIgnoresFences(t *testing.T) {
 	}
 }
 
-func TestMCPHelpScopeSchema(t *testing.T) {
+func TestMCPHelpKeepsWireSchemaOutOfGuidance(t *testing.T) {
 	var output, errorOutput bytes.Buffer
 	root := NewRootCommand("dev", "unknown", &output, &errorOutput)
 	if err := root.Run(context.Background(), []string{"hum", "mcp", "--help"}); err != nil {
 		t.Fatalf("mcp help: %v", err)
 	}
-	help := strings.Join(strings.Fields(strings.ToLower(output.String())), " ")
-	for _, want := range []string{
-		"project scope requires an absolute existing project_root",
-		"global scope forbids project_root",
-		"up supports project scope only",
-		"list all is available only from project scope",
-	} {
-		if !strings.Contains(help, want) {
-			t.Errorf("mcp help missing %q: %q", want, output.String())
+	help := output.String()
+	for _, unwanted := range []string{"project_root", "ad_hoc", "-32001", "-32600", "-32800"} {
+		if strings.Contains(help, unwanted) {
+			t.Errorf("mcp help exposes wire detail %q: %q", unwanted, help)
 		}
+	}
+	if !strings.Contains(help, "13") || !strings.Contains(help, "events") || !strings.Contains(help, "Examples:") || !strings.Contains(help, "hum mcp") {
+		t.Errorf("mcp help lacks purpose or example: %q", help)
 	}
 	if errorOutput.Len() != 0 {
 		t.Fatalf("mcp help stderr = %q", errorOutput.String())
@@ -140,45 +138,28 @@ func TestStatusAndWaitSurface(t *testing.T) {
 	}
 }
 
-func TestHelpWordBudgets(t *testing.T) {
-	tests := []struct {
-		name  string
-		limit int
-	}{
-		{name: "", limit: 250},
-		{name: "version", limit: 200},
-		{name: "serve", limit: 200},
-		{name: "doctor", limit: 200},
-		{name: "init", limit: 200},
-		{name: "mcp", limit: 200},
-		{name: "skill", limit: 200},
-		{name: "run", limit: 200},
-		{name: "start", limit: 200},
-		{name: "up", limit: 200},
-		{name: "down", limit: 200},
-		{name: "list", limit: 200},
-		{name: "events", limit: 200},
-		{name: "status", limit: 200},
-		{name: "attach", limit: 200},
-		{name: "logs", limit: 200},
-		{name: "wait", limit: 200},
-		{name: "input", limit: 200},
-		{name: "restart", limit: 200},
-		{name: "signal", limit: 200},
-		{name: "stop", limit: 200},
-		{name: "remove", limit: 200},
-		{name: "shutdown", limit: 200},
-		{name: "completion", limit: 200},
-	}
-	for _, tt := range tests {
-		label := tt.name
-		if label == "" {
-			label = "root"
-		}
-		t.Run(label, func(t *testing.T) {
-			help := renderHelp(t, tt.name)
-			if words := len(strings.Fields(help)); words > tt.limit {
-				t.Errorf("%s help has %d words, want at most %d\n%s", label, words, tt.limit, help)
+func TestHelpRenderedDescriptionBudget(t *testing.T) {
+	paths := visibleHelpPaths(NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{}))
+	paths = append(paths,
+		[]string{"hum", "completion"},
+		[]string{"hum", "completion", "bash"},
+		[]string{"hum", "completion", "zsh"},
+		[]string{"hum", "completion", "fish"},
+	)
+	for _, path := range paths {
+		t.Run(strings.Join(path, " "), func(t *testing.T) {
+			var output bytes.Buffer
+			root := NewRootCommand("test", "test", &output, &bytes.Buffer{})
+			if err := root.Run(context.Background(), append(append([]string(nil), path...), "--help")); err != nil {
+				t.Fatalf("render help: %v", err)
+			}
+			prose := helpSection(output.String(), "DESCRIPTION:")
+			if prose == "" {
+				t.Fatal("rendered help lacks a description")
+			}
+			plainProse, _, _ := strings.Cut(strings.Join(strings.Fields(prose), " "), " Exit codes:")
+			if len([]rune(plainProse)) > 240 {
+				t.Errorf("rendered description has %d characters, want at most 240: %q", len([]rune(plainProse)), plainProse)
 			}
 		})
 	}
@@ -324,7 +305,7 @@ func TestSkillHelp(t *testing.T) {
 		t.Fatalf("skill help: %v", err)
 	}
 	help := strings.ToLower(output.String())
-	for _, want := range []string{"shell-only", "fallback", "mcp-capable", "hum mcp"} {
+	for _, want := range []string{"instructions", "coding agents", "shell", "mcp", "hum mcp"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("skill help missing %q: %q", want, output.String())
 		}

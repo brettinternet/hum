@@ -417,7 +417,7 @@ func NewRootCommandWithCommit(version, commit, buildTime string, writer, errWrit
 		Name:      "hum",
 		Usage:     "A local development process supervisor",
 		UsageText: "hum [global options] [command [command options]]",
-		Description: "Supervise local development processes from --file PATH, then .hum.yaml, then hum.yaml; files never merge, and invalid .hum.yaml fails closed. Use hum up, hum run, hum logs, --project, or machine-wide --global; see docs/design.md.\n\n" +
+		Description: "Keep local development processes running so you and your coding agent can start, inspect, and stop them from any terminal. Use up for a project's stack or run for a single process.\n\n" +
 			"Examples:\n" +
 			"  hum up",
 		Version:                         formatVersion(version, commit, buildTime),

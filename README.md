@@ -2,16 +2,16 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Hum is a bounded, exact-argv process interface that tools and coding agents can start, observe, wait on, and type into.
-It scopes processes to a project so people and agents can share lifecycle state without sharing a terminal buffer.
+Hum keeps your development processes running while you work in another terminal or with a coding agent.
+Start a project stack, check what is running, read its logs, and stop it when you're done. You and your agent can use the same processes without sharing a terminal.
 
 ```text
 hum.yaml ──> hum daemon ──> db ──> api ──> web
                   │
-                  └── bounded logs <── CLI / coding agents
+                  └── logs <── CLI / coding agents
 ```
 
-Hum makes pane-visible processes queryable:
+Start your stack and check a process, read its latest errors, or wait for it to be ready:
 
 ```sh
 hum up --detach
@@ -20,7 +20,7 @@ hum logs api --stream stderr --tail 50 --json
 hum wait api --match "ready" --timeout 30s --json
 ```
 
-Tools get lifecycle state, bounded structured output, readiness, and stable cursors.
+Hum keeps the processes and their recent output available even when you close the terminal that started them.
 
 Run a process and follow its retained logs
 

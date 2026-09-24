@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -56,11 +57,21 @@ func TestHelpContract(t *testing.T) {
 				t.Fatalf("usage is not one line: %q", usage)
 			}
 			prose := helpDescription(command.Description)
-			if countSentences(prose) > 3 {
-				t.Fatalf("description has more than three sentences (%d): %q", countSentences(prose), prose)
+			plainProse, exitCodes, hasExitCodes := strings.Cut(prose, " Exit codes:")
+			if hasExitCodes && (!strings.HasPrefix(exitCodes, " ") || countSentences("Exit codes:"+exitCodes) != 1) {
+				t.Errorf("exit codes must be one final sentence: %q", prose)
 			}
-			if countSentences(prose) == 0 {
-				t.Fatalf("description has no sentence: %q", prose)
+			if sentences := countSentences(plainProse); sentences < 1 || sentences > 2 {
+				t.Errorf("description has %d plain sentences, want 1..2: %q", sentences, plainProse)
+			}
+			if characters := utf8.RuneCountInString(plainProse); characters > 240 {
+				t.Errorf("description has %d characters, want at most 240: %q", characters, plainProse)
+			}
+			if !strings.HasSuffix(plainProse, ".") && !strings.HasSuffix(plainProse, "!") && !strings.HasSuffix(plainProse, "?") {
+				t.Errorf("plain description does not end in a sentence: %q", plainProse)
+			}
+			if helpWireIdentifierRE.MatchString(prose) || strings.Contains(strings.ToLower(prose), "docs/") {
+				t.Errorf("description contains a wire identifier or docs/ path: %q", prose)
 			}
 
 			examples := helpExamples(command.Description)
@@ -149,6 +160,7 @@ func TestHelpExitCodes(t *testing.T) {
 
 var helpDefaultOrOmissionRE = regexp.MustCompile(`\b(default|omit|optional|required|exactly one|when using)\b`)
 var helpSentenceRE = regexp.MustCompile(`[.!?](?:\s|$)`)
+var helpWireIdentifierRE = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b`)
 
 func visibleHelpPaths(root *urfavecli.Command) [][]string {
 	var paths [][]string

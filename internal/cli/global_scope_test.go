@@ -72,10 +72,14 @@ func TestGlobalScopeSelection(t *testing.T) {
 
 func TestGlobalScopeDiscovery(t *testing.T) {
 	t.Parallel()
-	description := NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{}).Description
-	for _, phrase := range []string{"--project", "--global", "machine-wide"} {
-		if !strings.Contains(description, phrase) {
-			t.Fatalf("root help omits %q", phrase)
+	var help bytes.Buffer
+	root := NewRootCommand("test", "test", &help, &bytes.Buffer{})
+	if err := root.Run(context.Background(), []string{"hum", "run", "--help"}); err != nil {
+		t.Fatalf("run help: %v", err)
+	}
+	for _, flag := range []string{"--project", "--global"} {
+		if !strings.Contains(help.String(), flag) {
+			t.Fatalf("run help omits scope flag %q", flag)
 		}
 	}
 	processes := []app.Process{{Name: "proxy", Scope: app.ScopeProject, Root: "/project", State: app.StateRunning}, {Name: "proxy", Scope: app.ScopeGlobal, State: app.StateRunning}}

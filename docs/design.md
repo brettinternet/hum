@@ -925,8 +925,11 @@ MCP output. Process and probe commands should not print secrets.
 
 - Every request accepts `scope`: `project` (default) requires an absolute existing
   `project_root`, while `global` rejects `project_root` and addresses retained ad-hoc sessions.
-- It exposes twelve tools: `start`, `up`, `down`, `list`, `status`, `logs`, `wait`, `input`,
-  `restart`, `stop`, `remove`, and `signal`.
+  `up` accepts only project scope, and `list` with `all: true` is available only from
+  project scope.
+- It exposes thirteen tools: `start`, `up`, `down`, `list`, `status`, `logs`, `events`,
+  `wait`, `input`, `restart`, `stop`, `remove`, and `signal`. `events` reads a bounded page;
+  it cannot follow new events. `run`, `serve`, and `shutdown` are not MCP tools.
 - `input` accepts exactly one non-empty `text` or `base64` payload, uses the same bounded
   one-shot TTY semantics as the CLI, and returns `name`, decoded `bytes`, and `launch_cursor`.
 - MCP `signal` accepts the same case-insensitive named or supported positive decimal signal
@@ -973,7 +976,9 @@ The tools share CLI definition, readiness, cursor, collision, and aggregate sema
   status and omit ad-hoc/discovered records.
 - `up` with `no_wait: true` is rejected before daemon contact when any dependency is declared.
 - `start` remains singular and explicit-only.
-- Only `start` and `up` may create or replace a daemon.
+- Only `start` and `up` may create or replace a daemon. Without a manifest they cannot
+  start unresolved names; ad-hoc definitions retained from `hum run` disappear when the
+  daemon shuts down or is replaced.
 - Without one, `list` reports stopped definitions; `stop` and `down` succeed; the other control
   tools return unavailable-daemon errors.
 - Recorded environments are never returned.
