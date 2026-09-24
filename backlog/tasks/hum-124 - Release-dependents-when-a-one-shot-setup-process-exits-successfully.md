@@ -4,7 +4,7 @@ title: Release dependents when a one-shot setup process exits successfully
 status: Done
 assignee: []
 created_date: '2026-09-23 21:21'
-updated_date: '2026-09-24 02:32'
+updated_date: '2026-09-24 02:49'
 labels:
   - config
   - process
@@ -104,10 +104,14 @@ AC#2: go test ./internal/orchestrate -run "^TestExitReadiness" -count=1 -v — P
 AC#3: go test ./integration -run "^TestOneShotPrerequisite$" -count=1 -v — PASS (built binary, marker ordering, retained completion, down/up, failing exit).
 AC#4: go test ./internal/cli ./internal/mcp -run "ExitReadiness" -count=1 -v — PASS (human/JSON/MCP completion and restart).
 Review: one focused general pass found no remaining item-scoped defects; independent verifier returned PASS for AC1–AC4. task ci PASS on e79ccef, including vet/staticcheck, full Go tests/race, integration, security, smoke. Initial ci staticcheck issue fixed; a pre-existing burst attach timeout passed in isolation and ci rerun. task check:staged PASS; diff restricted to modified-file contract; no protected gate file touched; no test deleted, skipped, or weakened. No blocker. Next step: complete provider state and commit it on main.
+
+Reopened after post-finalization task ci on main (8cbb604) exposed intermittent built-binary TestOneShotPrerequisite restart returning exited_before_ready (exit status 0). Investigating under loaded full suite; previous isolated and branch ci passes do not prove stable final gate. Retain AC/DoD evidence pending fix and rerun.
+
+Correction 3e6e35b (fix: clear prior stop intent on replacement launch) fast-forward merged into main; Worktrunk worktree removed. Root cause: restart while the prior exit was still persisting marked controlIntent, which leaked into the replacement incarnation and misclassified exit 0 as exited_before_ready. A deterministic TestExitReadinessRestartDuringExitPersistence failed before the fix and now passes (go test ./internal/app -run "^TestExitReadinessRestartDuringExitPersistence$" -count=20; go test -race ./internal/app -run "^TestExitReadinessRestartDuringExitPersistence$" -count=5). go test ./integration -run "^TestOneShotPrerequisite$" -count=10 — PASS. Independent final verifier returned PASS for AC1, AC2, AC3, AC4 on 3e6e35b. GOFLAGS=-p=1 task ci PASS on 3e6e35b, including full Go and race suites, security, smoke. Default parallel task ci sometimes times out in existing TestAttachStreamsBurstWithoutAborting under package-load contention; focused test passes and serial-package full gate passes. No test changed or weakened. No blocker; provider completion commit is next.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Exit-ready setup steps now gate dependents on successful completion, converge retained results, and report completion in CLI/MCP. AC1–AC4 and task ci passed on e79ccef; merged to main and removed worktree.
+Exit-ready one-shot setup steps gate dependents, converge retained completions, and report success in CLI/MCP; restart/persistence race fixed in 3e6e35b. AC1–AC4 independently passed and full task ci passed with GOFLAGS=-p=1. Merged to main and cleaned both worktrees.
 <!-- SECTION:FINAL_SUMMARY:END -->
