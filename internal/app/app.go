@@ -2602,17 +2602,19 @@ func (s *Supervisor) reconcile(rec *record) {
 	if s.persistExit != nil {
 		rec.persisting = true
 	}
+	// Capture before releasing the registry lock: a new Start may append its
+	// launch marker to this same store as soon as the exit is published.
+	var eventCursor *output.Cursor
+	if next := store.NextCursor(); next != 0 {
+		cursor := next - 1
+		eventCursor = &cursor
+	}
 	s.mu.Unlock()
 	if terminalProcess.Readiness != nil && terminalProcess.Readiness.Method == "exit" && terminalProcess.Readiness.State == ReadinessReady {
 		s.emitLifecycle(rec, "ready", "method=exit", result.ExitedAt, nil)
 	}
 	if !control && terminalProcess.Readiness != nil && terminalProcess.Readiness.State != ReadinessReady {
 		s.emitLifecycle(rec, "startup_failure", "process exited before readiness", result.ExitedAt, &result)
-	}
-	var eventCursor *output.Cursor
-	if next := store.NextCursor(); next != 0 {
-		cursor := next - 1
-		eventCursor = &cursor
 	}
 	s.emitLifecycle(rec, "exit", "", result.ExitedAt, &result, eventCursor)
 	if input != nil {

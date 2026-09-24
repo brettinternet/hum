@@ -130,6 +130,60 @@ func TestLifecycleLogCursor(t *testing.T) {
 	if event := await("exit"); event.LogCursor != nil {
 		t.Fatalf("empty exit cursor = %v, want nil", event.LogCursor)
 	}
+
+	t.Run("exit cursor excludes concurrent next launch", func(t *testing.T) {
+		root := makeProject(t, false)
+		first := newSubscriptionChild(7301, 0, time.Now().UTC(), "first\n")
+		second := newSubscriptionChild(7302, 0, time.Now().UTC(), "second\n")
+		var launches int
+		s := testSupervisor(t, Options{StartProcess: func(spec process.Spec) (Child, error) {
+			child := first
+			if launches != 0 {
+				child = second
+			}
+			launches++
+			return subscriptionStarter(map[string]*subscriptionChild{"api": child})(spec)
+		}})
+		inReady := make(chan struct{})
+		continueExit := make(chan struct{})
+		var blockReady sync.Once
+		exits := make(chan LifecycleEvent, 2)
+		s.SetLifecycleHook(func(event LifecycleEvent) {
+			if event.Event == "ready" && event.Detail == "method=exit" {
+				blockReady.Do(func() {
+					close(inReady)
+					<-continueExit
+				})
+			}
+			if event.Event == "exit" {
+				exits <- event
+			}
+		})
+		request := StartRequest{Name: "api", Root: root, Cwd: root, Argv: []string{"fake", "api"}, Ready: &ReadinessConfig{Method: "exit"}}
+		if _, err := s.Start(request); err != nil {
+			t.Fatal(err)
+		}
+		first.release()
+		select {
+		case <-inReady:
+		case <-time.After(time.Second):
+			t.Fatal("first exit did not reach ready hook")
+		}
+		if _, err := s.Start(request); err != nil {
+			close(continueExit)
+			t.Fatal(err)
+		}
+		close(continueExit)
+		select {
+		case event := <-exits:
+			if event.LogCursor == nil || *event.LogCursor != 0 {
+				t.Fatalf("old exit cursor = %v, want first output cursor 0", event.LogCursor)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("first exit event missing")
+		}
+		second.release()
+	})
 }
 
 func TestExitReadinessSupervisorCompletion(t *testing.T) {
