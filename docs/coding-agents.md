@@ -183,7 +183,9 @@ Each tool rejects fields outside its advertised closed input schema before proje
   including for TERM and KILL.
 - Invalid, missing, and stopped targets return `invalid_signal`, `not_found`, and `not_running`.
 - `down` preserves sessions; a later `up` starts resolved definitions only, leaving ad hoc
-  sessions stopped.
+  sessions stopped. It stops declared processes in reverse `after` order: active dependents finish
+  their stop requests before prerequisites. Independent, ad hoc, and undeclared processes stop
+  concurrently; a failed dependent stop does not block prerequisites, and results remain lexical.
 
 See [the MCP design](design.md#mcp-adapter) for detailed behavior and
 failure semantics.

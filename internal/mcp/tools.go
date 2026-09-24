@@ -492,7 +492,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	definitions := []toolDefinition{
 		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml, and returns manifest_missing when a declaration is required. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. Retained records remain a fallback when no manifest declares the requested name. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. Exit readiness waits for exit status 0 and reports outcome completed. It never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
 		{Name: "up", Description: "Start every resolved project definition when names is omitted, or start the unique named declarations plus their transitive after prerequisites when names is provided; results cover only that selected subgraph. manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml, and returns manifest_missing when no retained manifest record can be reported. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. Exit readiness reports successful completion, and retained completions are reused until a direct dependent must launch. Independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Only unnamed up reports manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc records. no_wait is rejected before daemon contact when the selected subgraph declares after; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
-		{Name: "down", Description: "Stop every running runtime record in the selected scope and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
+		{Name: "down", Description: "Stop every active runtime record in the selected scope and return one result per name in lexical order. Declared processes stop in reverse manifest after order: active dependents finish their stop requests before prerequisites; unrelated, ad-hoc, and undeclared records stop concurrently. A failed dependent stop does not block its prerequisites. Down does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
 		{Name: "list", Description: "Merge selected stopped declarations with all daemon runtime records in the selected project scope, including readiness method, exact exec argv, interval, and bounded terminal diagnostic plus match output, and including ad_hoc records; retained records win by name. manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. A missing default manifest still returns retained records or an empty result. Use all from project scope to inspect every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record with readiness method, exact exec argv, interval, and bounded terminal diagnostic when configured; match readiness retains match and cursor; exit readiness reports ready for successful completion. This tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
 		{Name: "logs", Description: "Read one immutable bounded cursor-based output snapshot for an existing declared or ad_hoc runtime record. stream selects stdout, stderr, supervision-only system entries, or both; both includes all three streams. match selects entries and context expands each match by eligible entries on both sides; windows merge in cursor order before tail and whole-entry bounds. Context requires match and is unavailable for live following. since_ms uses one request-time cutoff and composes with stream and cursor boundaries. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: logsSchema, OutputSchema: output},
@@ -1773,11 +1773,39 @@ func (s *Server) down(ctx context.Context, resolution Resolution) (any, error) {
 	for _, process := range processes {
 		byName[process.Name] = process
 	}
-	results := make([]stopResult, 0, len(byName))
-	for _, process := range sortedProcesses(byName) {
-		result := stopResult{Name: process.Name, State: "not_running"}
+	processList := sortedProcesses(byName)
+	activeNames := make([]string, 0, len(processList))
+	declaredActiveNames := make([]string, 0, len(processList))
+	active := make(map[string]bool, len(processList))
+	for _, process := range processList {
 		if protocol.IsActiveState(process.State) || process.State == "starting" || processNeedsRestartControl(process) {
-			if stopErr := client.Stop(ctx, protocol.StopRequest{Op: protocol.OpStop, Name: process.Name, Scope: resolution.Scope, Cwd: resolution.Root}); stopErr != nil {
+			activeNames = append(activeNames, process.Name)
+			active[process.Name] = true
+			if _, declared := findDefinition(resolution, process.Name); declared && process.Source != "ad_hoc" {
+				declaredActiveNames = append(declaredActiveNames, process.Name)
+			}
+		}
+	}
+	definitions := make([]orchestrate.Definition, 0, len(resolution.Definitions))
+	for _, definition := range resolution.Definitions {
+		definitions = append(definitions, mcpDefinition(definition))
+	}
+	stopErrors := orchestrate.OrchestrateDown(ctx, definitions, activeNames, declaredActiveNames, func(ctx context.Context, name string) error {
+		stopClient, err := s.client(ctx, false)
+		if err != nil {
+			return err
+		}
+		if stopClient == nil {
+			return errors.New("daemon connection returned nil client")
+		}
+		defer stopClient.Close()
+		return stopClient.Stop(ctx, protocol.StopRequest{Op: protocol.OpStop, Name: name, Scope: resolution.Scope, Cwd: resolution.Root})
+	})
+	results := make([]stopResult, 0, len(processList))
+	for _, process := range processList {
+		result := stopResult{Name: process.Name, State: "not_running"}
+		if active[process.Name] {
+			if stopErr := stopErrors[process.Name]; stopErr != nil {
 				result.State = "error"
 				result.Error = mapError(stopErr)
 			} else {

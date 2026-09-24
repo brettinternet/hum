@@ -409,8 +409,11 @@ func newTestServer(t *testing.T, definitions []Definition, client *fakeClient) (
 		}
 	}
 	ensures := []bool{}
+	var ensuresMu sync.Mutex
 	s := NewServer(Options{Resolver: fakeResolver{resolution: Resolution{Root: root, Definitions: definitions}}, ClientFactory: func(_ context.Context, ensure bool) (Client, error) {
+		ensuresMu.Lock()
 		ensures = append(ensures, ensure)
+		ensuresMu.Unlock()
 		return client, nil
 	}, Environment: func() []string { return []string{"TOKEN=secret"} }, Version: "test"})
 	return s, root, &ensures
@@ -1578,6 +1581,145 @@ func TestUpRejectsNoWaitWithDependencies(t *testing.T) {
 	}
 }
 
+func TestDownStopsDependentsFirst(t *testing.T) {
+	root := t.TempDir()
+	definitions := []Definition{
+		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}},
+		{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, After: []string{"db"}},
+		{Name: "web", Source: "hum.yaml", Argv: []string{"web"}, After: []string{"api"}},
+		{Name: "idle", Source: "hum.yaml", Argv: []string{"idle"}, After: []string{"db"}},
+		{Name: "worker", Source: "hum.yaml", Argv: []string{"worker"}},
+	}
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"db":     {Name: "db", Source: "manifest", State: protocol.StateRunning},
+		"api":    {Name: "api", Source: "manifest", State: protocol.StateRunning},
+		"web":    {Name: "web", Source: "manifest", State: "starting"},
+		"worker": {Name: "worker", Source: "manifest", State: protocol.StateRunning},
+		"adhoc":  {Name: "adhoc", Source: "ad_hoc", State: protocol.StateRunning},
+	}}
+	entered := make(chan string, 16)
+	releases := map[string]chan struct{}{}
+	releaseOnce := map[string]*sync.Once{}
+	for _, name := range []string{"db", "api", "web", "worker", "adhoc"} {
+		releases[name] = make(chan struct{})
+		releaseOnce[name] = &sync.Once{}
+	}
+	release := func(name string) {
+		if once := releaseOnce[name]; once != nil {
+			once.Do(func() { close(releases[name]) })
+		}
+	}
+	releaseAll := func() {
+		for name := range releases {
+			release(name)
+		}
+	}
+	orderedClient := &mcpDownOrderClient{fakeClient: client, entered: entered, releases: releases}
+	server := NewServer(Options{
+		Resolver: fakeResolver{resolution: Resolution{Root: root, Scope: protocol.ScopeProject, Definitions: definitions}},
+		ClientFactory: func(context.Context, bool) (Client, error) {
+			return orderedClient, nil
+		},
+	})
+	type downCallResult struct {
+		value any
+		err   error
+	}
+	done := make(chan downCallResult, 1)
+	go func() {
+		value, err := server.callTool(context.Background(), "down", args(root))
+		done <- downCallResult{value: value, err: err}
+	}()
+
+	for _, wave := range [][]string{{"adhoc", "web", "worker"}, {"api"}, {"db"}} {
+		got := make([]string, 0, len(wave))
+		for len(got) < len(wave) {
+			select {
+			case name := <-entered:
+				got = append(got, name)
+			case <-time.After(2 * time.Second):
+				releaseAll()
+				t.Fatalf("down stop wave stalled: got %v, waiting for %v", got, wave)
+			}
+		}
+		sort.Strings(got)
+		want := append([]string(nil), wave...)
+		sort.Strings(want)
+		if !reflect.DeepEqual(got, want) {
+			releaseAll()
+			<-done
+			t.Fatalf("down stop wave = %v, want %v", got, want)
+		}
+		for _, name := range wave {
+			release(name)
+		}
+	}
+
+	var call downCallResult
+	select {
+	case call = <-done:
+	case <-time.After(2 * time.Second):
+		releaseAll()
+		t.Fatal("MCP down did not complete")
+	}
+	if call.err != nil {
+		t.Fatalf("MCP down: %v", call.err)
+	}
+	results, ok := call.value.([]stopResult)
+	if !ok {
+		t.Fatalf("MCP down result type = %T, want []stopResult", call.value)
+	}
+	wantNames := []string{"adhoc", "api", "db", "idle", "web", "worker"}
+	if len(results) != len(wantNames) {
+		t.Fatalf("MCP down results = %#v, want names %v", results, wantNames)
+	}
+	for index, result := range results {
+		if result.Name != wantNames[index] {
+			t.Errorf("MCP down result %d name = %q, want %q", index, result.Name, wantNames[index])
+		}
+		wantState := "stopped"
+		if result.Name == "idle" {
+			wantState = "not_running"
+		}
+		if result.State != wantState || result.Error != nil {
+			t.Errorf("MCP down result = %#v, want state %q without error", result, wantState)
+		}
+	}
+	client.mu.Lock()
+	stops := append([]protocol.StopRequest(nil), client.stops...)
+	client.mu.Unlock()
+	if len(stops) != 5 {
+		t.Fatalf("MCP stop requests = %#v, want five active names", stops)
+	}
+	gotNames := make([]string, len(stops))
+	for index, request := range stops {
+		gotNames[index] = request.Name
+	}
+	sort.Strings(gotNames)
+	if !reflect.DeepEqual(gotNames, []string{"adhoc", "api", "db", "web", "worker"}) {
+		t.Fatalf("MCP stop request names = %v", gotNames)
+	}
+}
+
+type mcpDownOrderClient struct {
+	*fakeClient
+	entered  chan<- string
+	releases map[string]chan struct{}
+}
+
+func (c *mcpDownOrderClient) Stop(ctx context.Context, request protocol.StopRequest) error {
+	c.fakeClient.mu.Lock()
+	c.fakeClient.stops = append(c.fakeClient.stops, request)
+	c.fakeClient.mu.Unlock()
+	c.entered <- request.Name
+	select {
+	case <-c.releases[request.Name]:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func TestDown(t *testing.T) {
 	defs := []Definition{{Name: "declared", Source: "hum.yaml", Argv: []string{"x"}, Cwd: "/tmp"}}
 	client := &fakeClient{processes: map[string]protocol.Process{
@@ -1593,8 +1735,13 @@ func TestDown(t *testing.T) {
 	if len(results) != 3 || results[0].Name != "declared" || results[0].State != "not_running" || results[1].Name != "descendants" || results[1].State != "stopped" || results[2].Name != "transient" || results[2].State != "stopped" {
 		t.Fatalf("down=%#v", results)
 	}
-	if len(client.stops) != 2 || client.stops[0].Name != "descendants" || client.stops[1].Name != "transient" {
-		t.Fatalf("stops=%#v", client.stops)
+	stopNames := make([]string, len(client.stops))
+	for index, request := range client.stops {
+		stopNames[index] = request.Name
+	}
+	sort.Strings(stopNames)
+	if !reflect.DeepEqual(stopNames, []string{"descendants", "transient"}) {
+		t.Fatalf("stop names=%v, want [descendants transient]", stopNames)
 	}
 	if (*ensures)[0] {
 		t.Fatal("down created daemon")

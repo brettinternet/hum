@@ -241,8 +241,9 @@ hum down
 `hum start NAME` does not start dependencies; named `hum up` does. `hum up --no-wait` is rejected
 only when the selected subgraph declares `after`. `ready.exec` runs exact argv without a shell, inherits
 cwd/env, and retries every second by default; `ready.http` and `ready.tcp` run in-process with the
-same retry policy. All readiness methods gate startup, not liveness. `hum down` stops project
-processes concurrently. See [design and command semantics](docs/design.md).
+same retry policy. All readiness methods gate startup, not liveness. `hum down` stops declared processes in reverse
+`after` order; independent, ad-hoc, and undeclared processes stop concurrently. Results remain lexical.
+See [design and command semantics](docs/design.md).
 
 ### Manifest environments
 

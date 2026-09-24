@@ -49,6 +49,83 @@ type downWorkflowRun struct {
 	PID  int    `json:"pid"`
 }
 
+func TestDownStopsDependentsFirst(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
+	projectRoot := stopitCanonicalTempDir(t)
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
+	markers := map[string]string{
+		"db":  filepath.Join(projectRoot, "db"),
+		"api": filepath.Join(projectRoot, "api"),
+		"web": filepath.Join(projectRoot, "web"),
+	}
+	writeManifestTestYAML(t, projectRoot, []manifestTestDefinition{
+		{Name: "db", Argv: []string{fixture, "stream", markers["db"]}, Ready: &manifestTestReady{Match: "stdout:live"}},
+		{Name: "api", Argv: []string{fixture, "stream", markers["api"]}, After: []string{"db"}, Ready: &manifestTestReady{Match: "stdout:live"}},
+		{Name: "web", Argv: []string{fixture, "stream", markers["web"]}, After: []string{"api"}, Ready: &manifestTestReady{Match: "stdout:live"}},
+	})
+
+	daemon := testutil.Start(t, hum, projectRoot, env, "serve")
+	t.Cleanup(func() {
+		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
+	})
+	up := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if up.Code != 0 || up.Err != nil || up.Stderr != "" {
+		t.Fatalf("up --json: code=%d err=%v stdout=%q stderr=%q", up.Code, up.Err, up.Stdout, up.Stderr)
+	}
+	for _, marker := range markers {
+		testutil.WaitForFile(t, marker+".started", downWorkflowTimeout)
+	}
+
+	down := testutil.Run(t, hum, projectRoot, env, "down", "--json")
+	if down.Code != 0 || down.Err != nil || down.Stderr != "" {
+		t.Fatalf("down --json: code=%d err=%v stdout=%q stderr=%q", down.Code, down.Err, down.Stdout, down.Stderr)
+	}
+	results := downWorkflowDecodeResults(t, down.Stdout)
+	if got, want := downWorkflowResultNames(results), []string{"api", "db", "web"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("down results = %v, want lexical %v", got, want)
+	}
+	for _, result := range results {
+		if result.Status != "stopped" {
+			t.Errorf("down result %q status = %q, want stopped", result.Name, result.Status)
+		}
+	}
+
+	eventResult := testutil.Run(t, hum, projectRoot, env, "events", "--kind", "lifecycle", "--json")
+	if eventResult.Code != 0 || eventResult.Err != nil || eventResult.Stderr != "" {
+		t.Fatalf("events --kind lifecycle --json: code=%d err=%v stdout=%q stderr=%q", eventResult.Code, eventResult.Err, eventResult.Stdout, eventResult.Stderr)
+	}
+	type lifecycleExitEvent struct {
+		Cursor uint64 `json:"cursor"`
+		Kind   string `json:"kind"`
+		Name   string `json:"name"`
+		Event  string `json:"event"`
+	}
+	exitCursors := make(map[string]uint64, len(markers))
+	for _, line := range strings.Split(strings.TrimSpace(eventResult.Stdout), "\n") {
+		var event lifecycleExitEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode lifecycle event %q: %v", line, err)
+		}
+		if event.Kind == "lifecycle" && event.Event == "exit" {
+			if _, wanted := markers[event.Name]; wanted {
+				exitCursors[event.Name] = event.Cursor
+			}
+		}
+	}
+	webCursor, webExited := exitCursors["web"]
+	apiCursor, apiExited := exitCursors["api"]
+	dbCursor, dbExited := exitCursors["db"]
+	if !webExited || !apiExited || !dbExited || !(webCursor < apiCursor && apiCursor < dbCursor) {
+		t.Fatalf("lifecycle exit cursors = %v, want web < api < db", exitCursors)
+	}
+	if daemon == nil || daemon.Cmd == nil || daemon.Cmd.Process == nil || !testutil.ProcessAlive(daemon.Cmd.Process.Pid) {
+		t.Fatal("daemon is not alive after down")
+	}
+}
+
 func TestDownWorkflow(t *testing.T) {
 	fixture := integrationFixture(t)
 	hum := integrationHum(t)

@@ -162,7 +162,7 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 			Usage:       "stop current-project processes",
 			UsageText:   "hum down [--json]",
 			ArgsUsage:   "",
-			Description: "Stop every process that is active in the current project, including resolved manifest and ad-hoc processes, concurrently; declared names without records are not running, and the daemon stays up. Down never starts or shuts down the daemon; it is idempotent and emits one result per name, or a no-work message.\n\nExamples:\n  hum down\n  hum down --json",
+			Description: "Stop every process that is active in the current project, including resolved manifest and ad-hoc processes. Declared processes stop in reverse after order, with active dependents completing their stop requests before prerequisites; independent, ad-hoc, and undeclared processes stop concurrently. Results are lexical, declared names without records are not running, and the daemon stays up; down is idempotent, never starts or shuts down the daemon, and emits one result per name or a no-work message.\n\nExamples:\n  hum down\n  hum down --json",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
 			},
@@ -2473,71 +2473,59 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		return renderDownResults(writer, nil, cmd.Bool("json"), selection.root)
 	}
 
-	type workerResult struct {
-		index  int
-		result stopResult
-		err    error
-	}
-	workers := make(chan workerResult, len(names))
-	readyWorkers := make(chan struct{}, len(names))
-	startStops := make(chan struct{})
-	var waitGroup sync.WaitGroup
-	activeWorkers := 0
-	for index, name := range names {
-		if !app.IsActiveState(byName[name].State) && !processNeedsRestartControl(byName[name]) {
-			continue
+	activeNames := make([]string, 0, len(names))
+	declaredActiveNames := make([]string, 0, len(names))
+	active := make(map[string]bool, len(names))
+	for _, name := range names {
+		process := byName[name]
+		if app.IsActiveState(process.State) || processNeedsRestartControl(process) {
+			activeNames = append(activeNames, name)
+			active[name] = true
+			if _, declared := manifest.byName[name]; declared && process.Source != "ad_hoc" {
+				declaredActiveNames = append(declaredActiveNames, name)
+			}
 		}
-		waitGroup.Add(1)
-		activeWorkers++
-		go func(index int, name string) {
-			defer waitGroup.Done()
-			result := stopResult{Name: name}
-			dialCtx, cancelDial := boundedDaemonRequest(ctx, cfg.StopGrace)
-			worker, stopErr := daemonClient(dialCtx, cfg)
-			cancelDial()
-			if worker != nil {
-				defer worker.Close()
-			}
-			readyWorkers <- struct{}{}
-			<-startStops
-			if stopErr == nil {
-				if worker == nil {
-					stopErr = errors.New("daemon connection returned nil client")
-				} else {
-					worker.SetEventOperation("down", downOperationID, "cli")
-					stopCtx, cancel := boundedDaemonRequest(ctx, stopGraceForName(processes, name, cfg.StopGrace))
-					stopErr = worker.Stop(stopCtx, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
-					cancel()
-					stopErr = daemonCancellationError("stop", stopErr)
-				}
-			}
-			switch {
-			case stopErr == nil:
-				result.Status = "stopped"
-			case isNotFound(stopErr):
-				result.Status = "not_running"
-			default:
-				result.Status = "error"
-				result.Message = stopErr.Error()
-			}
-			workers <- workerResult{index: index, result: result, err: stopErr}
-		}(index, name)
 	}
-	for range activeWorkers {
-		<-readyWorkers
+	definitions := make([]orchestrate.Definition, 0, len(manifest.defs))
+	for _, definition := range manifest.defs {
+		definitions = append(definitions, cliOrchestrateDefinition(definition))
 	}
-	close(startStops)
-	waitGroup.Wait()
-	close(workers)
+	stopErrorsByName := orchestrate.OrchestrateDown(ctx, definitions, activeNames, declaredActiveNames, func(ctx context.Context, name string) error {
+		dialCtx, cancelDial := boundedDaemonRequest(ctx, cfg.StopGrace)
+		worker, stopErr := daemonClient(dialCtx, cfg)
+		cancelDial()
+		if worker != nil {
+			defer worker.Close()
+		}
+		if stopErr != nil {
+			return stopErr
+		}
+		if worker == nil {
+			return errors.New("daemon connection returned nil client")
+		}
+		worker.SetEventOperation("down", downOperationID, "cli")
+		stopCtx, cancel := boundedDaemonRequest(ctx, stopGraceForName(processes, name, cfg.StopGrace))
+		stopErr = worker.Stop(stopCtx, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: cwd})
+		cancel()
+		return daemonCancellationError("stop", stopErr)
+	})
 	stopErrors := make([]error, len(names))
 	results := make([]stopResult, len(names))
 	for index, name := range names {
 		results[index] = stopResult{Name: name, Status: "not_running"}
-	}
-	for worker := range workers {
-		results[worker.index] = worker.result
-		if worker.result.Status == "error" {
-			stopErrors[worker.index] = worker.err
+		if !active[name] {
+			continue
+		}
+		stopErr := stopErrorsByName[name]
+		switch {
+		case stopErr == nil:
+			results[index].Status = "stopped"
+		case isNotFound(stopErr):
+			results[index].Status = "not_running"
+		default:
+			results[index].Status = "error"
+			results[index].Message = stopErr.Error()
+			stopErrors[index] = stopErr
 		}
 	}
 	if err := renderDownResults(writer, results, cmd.Bool("json"), selection.root); err != nil {

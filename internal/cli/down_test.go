@@ -283,6 +283,126 @@ func TestDownStopTransportFailureIsError(t *testing.T) {
 	}
 }
 
+func TestDownStopsDependentsFirst(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	concurrency := &downTestConcurrency{}
+	events := make(chan downLifecycleEvent, 16)
+	children := map[string]*downTestChild{
+		"db":     newDownTestChild(8201, 120*time.Millisecond, nil),
+		"api":    newDownTestChild(8202, 120*time.Millisecond, nil),
+		"web":    newDownTestChild(8203, 120*time.Millisecond, nil),
+		"worker": newDownTestChild(8204, 120*time.Millisecond, nil),
+		"adhoc":  newDownTestChild(8205, 120*time.Millisecond, nil),
+	}
+	for name, child := range children {
+		child.concurrency = concurrency
+		child.onTerm = func(name string) func() {
+			return func() { events <- downLifecycleEvent{name: name, kind: "request"} }
+		}(name)
+		child.onDone = func(name string) func() {
+			return func() { events <- downLifecycleEvent{name: name, kind: "complete"} }
+		}(name)
+	}
+	supervisor := downTestSupervisor(t, children)
+	server, runtimeDir := downTestServer(t, supervisor)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, projectRoot, `version: 1
+processes:
+  db:
+    argv: [db]
+    ready: {match: "ready"}
+  api:
+    argv: [api]
+    after: [db]
+    ready: {match: "ready"}
+  web:
+    argv: [web]
+    after: [api]
+    ready: {match: "ready"}
+  idle:
+    argv: [idle]
+    after: [db]
+  worker:
+    argv: [worker]
+`)
+	for _, name := range []string{"db", "api", "web", "worker"} {
+		downStartProcess(t, server, projectRoot, name, "manifest", []string{name})
+	}
+	downStartProcess(t, server, projectRoot, "adhoc", "ad_hoc", []string{"adhoc"})
+
+	stdout, stderr, err := stopShutdownRun(t, "down", "--json")
+	if err != nil {
+		t.Fatalf("down --json: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+	results := stopShutdownDecodeResults(t, stdout)
+	wantResults := []stopShutdownJSONResult{
+		{Name: "adhoc", Status: "stopped"},
+		{Name: "api", Status: "stopped"},
+		{Name: "db", Status: "stopped"},
+		{Name: "idle", Status: "not_running"},
+		{Name: "web", Status: "stopped"},
+		{Name: "worker", Status: "stopped"},
+	}
+	if len(results) != len(wantResults) {
+		t.Fatalf("down results = %#v, want lexical %#v", results, wantResults)
+	}
+	for index := range wantResults {
+		if results[index] != wantResults[index] {
+			t.Errorf("down result %d = %#v, want %#v", index, results[index], wantResults[index])
+		}
+	}
+
+	gotEvents := make([]downLifecycleEvent, 0, len(children)*2)
+	for range len(children) * 2 {
+		select {
+		case event := <-events:
+			gotEvents = append(gotEvents, event)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out collecting stop events: %#v", gotEvents)
+		}
+	}
+	positions := make(map[string]map[string]int, len(children))
+	for index, event := range gotEvents {
+		if positions[event.name] == nil {
+			positions[event.name] = make(map[string]int)
+		}
+		positions[event.name][event.kind] = index
+	}
+	apiRequest, apiRequested := positions["api"]["request"]
+	apiComplete, apiCompleted := positions["api"]["complete"]
+	dbRequest, dbRequested := positions["db"]["request"]
+	if !apiRequested || !apiCompleted || !dbRequested {
+		t.Fatalf("dependency stop events missing: %#v", gotEvents)
+	}
+	for _, name := range []string{"adhoc", "web", "worker"} {
+		_, requested := positions[name]["request"]
+		complete, completed := positions[name]["complete"]
+		if !requested || !completed {
+			t.Fatalf("first-wave stop events missing for %q: %#v", name, gotEvents)
+		}
+		if apiRequest <= complete {
+			t.Errorf("api stop request at %d preceded %s completion at %d: %#v", apiRequest, name, complete, gotEvents)
+		}
+	}
+	if dbRequest <= apiComplete {
+		t.Errorf("db stop request at %d preceded api completion at %d: %#v", dbRequest, apiComplete, gotEvents)
+	}
+	if got := concurrency.maximum.Load(); got < 3 {
+		t.Errorf("maximum concurrent stop signals = %d, want at least three in first wave", got)
+	}
+	if _, stopped := positions["idle"]; stopped {
+		t.Errorf("inactive declaration was stopped: %#v", gotEvents)
+	}
+}
+
+type downLifecycleEvent struct {
+	name string
+	kind string
+}
+
 func TestDownStopsProcessesConcurrentlyWithIndependentConnections(t *testing.T) {
 	const delay = 300 * time.Millisecond
 	concurrency := &downTestConcurrency{}
@@ -343,6 +463,8 @@ type downTestChild struct {
 	stopErr     error
 	done        chan struct{}
 	once        sync.Once
+	onTerm      func()
+	onDone      func()
 	termCalls   atomic.Int32
 	killCalls   atomic.Int32
 	concurrency *downTestConcurrency
@@ -364,13 +486,21 @@ func (c *downTestChild) Signal(sig os.Signal) error {
 	switch sig {
 	case syscall.SIGTERM:
 		c.termCalls.Add(1)
+		if c.onTerm != nil {
+			c.onTerm()
+		}
 		if c.concurrency != nil {
 			defer c.concurrency.enter()()
 		}
 		if c.delay != 0 {
 			time.Sleep(c.delay)
 		}
-		c.once.Do(func() { close(c.done) })
+		c.once.Do(func() {
+			close(c.done)
+			if c.onDone != nil {
+				c.onDone()
+			}
+		})
 		return c.stopErr
 	case syscall.SIGKILL:
 		c.killCalls.Add(1)

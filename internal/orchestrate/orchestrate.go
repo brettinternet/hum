@@ -908,6 +908,120 @@ func DefinitionsHaveAfter(definitions []Definition) bool {
 	return false
 }
 
+// OrchestrateDown stops active names in reverse after-dependency waves. Names
+// without a declaration are independent, and only active declared prerequisites
+// delay a declared name. A failed stop still releases its prerequisites after
+// its wave ends.
+func OrchestrateDown(ctx context.Context, definitions []Definition, activeNames, declaredActiveNames []string, stop func(context.Context, string) error) map[string]error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	active := make(map[string]struct{}, len(activeNames))
+	names := make([]string, 0, len(activeNames))
+	for _, name := range activeNames {
+		if _, exists := active[name]; exists {
+			continue
+		}
+		active[name] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	results := make(map[string]error, len(names))
+	if stop == nil {
+		err := errors.New("orchestration stop operation is not configured")
+		for _, name := range names {
+			results[name] = err
+		}
+		return results
+	}
+
+	declaredActive := make(map[string]struct{}, len(declaredActiveNames))
+	for _, name := range declaredActiveNames {
+		if _, isActive := active[name]; isActive {
+			declaredActive[name] = struct{}{}
+		}
+	}
+	definitionsByName := make(map[string]Definition, len(definitions))
+	for _, definition := range definitions {
+		definitionsByName[definition.Name] = definition
+	}
+	prerequisites := make(map[string][]string, len(names))
+	remainingDependents := make(map[string]int, len(names))
+	for _, name := range names {
+		if _, declared := declaredActive[name]; !declared {
+			continue
+		}
+		definition, declared := definitionsByName[name]
+		if !declared {
+			continue
+		}
+		seen := make(map[string]struct{}, len(definition.After))
+		for _, prerequisite := range definition.After {
+			if _, isActive := declaredActive[prerequisite]; !isActive {
+				continue
+			}
+			if _, duplicate := seen[prerequisite]; duplicate {
+				continue
+			}
+			seen[prerequisite] = struct{}{}
+			prerequisites[name] = append(prerequisites[name], prerequisite)
+			remainingDependents[prerequisite]++
+		}
+	}
+
+	remaining := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		remaining[name] = struct{}{}
+	}
+	for len(remaining) != 0 {
+		wave := make([]string, 0, len(remaining))
+		for name := range remaining {
+			if remainingDependents[name] == 0 {
+				wave = append(wave, name)
+			}
+		}
+		if len(wave) == 0 {
+			// Manifest validation prevents cycles. Still make progress if a caller
+			// supplies an invalid graph directly instead of leaving stops blocked.
+			for name := range remaining {
+				wave = append(wave, name)
+			}
+		}
+		sort.Strings(wave)
+
+		completed := make(chan struct {
+			name string
+			err  error
+		}, len(wave))
+		var waitGroup sync.WaitGroup
+		for _, name := range wave {
+			waitGroup.Add(1)
+			go func(name string) {
+				defer waitGroup.Done()
+				completed <- struct {
+					name string
+					err  error
+				}{name: name, err: stop(ctx, name)}
+			}(name)
+		}
+		waitGroup.Wait()
+		close(completed)
+		for result := range completed {
+			results[result.name] = result.err
+		}
+
+		for _, name := range wave {
+			delete(remaining, name)
+			for _, prerequisite := range prerequisites[name] {
+				remainingDependents[prerequisite]--
+			}
+		}
+	}
+	return results
+}
+
 // Ensure performs the shared read/classify/start operation for one definition.
 func Ensure(ctx context.Context, root string, definition Definition, env []string, preserveRecovery bool, ops EnsureOperations) StartResult {
 	definition = copyDefinition(definition)

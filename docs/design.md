@@ -400,7 +400,7 @@ Human `hum up` has an attached interactive mode and bounded startup progress.
   final results remain lexical. With no names, `up` retains its all-definitions behavior.
 - `start NAME...` remains explicitly named and concurrent but never adds or waits for transitive
   prerequisites.
-- `down` remains concurrent rather than reverse ordered.
+- `down` stops declared processes in reverse `after` order: a prerequisite waits until every active dependent's stop request has completed before its own request begins. Each wave runs concurrently; independent roots, ad-hoc and undeclared records stop without dependency edges. Inactive records do not delay later waves, failed dependent stops do not block prerequisites, and results remain lexical.
 
 `run <name>` uses an existing resolved definition or attaches to an existing running or stopped
 session.
