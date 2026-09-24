@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -20,8 +21,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	integrationHumPath = filepath.Join(binaryDir, "hum")
-	integrationFixturePath = filepath.Join(binaryDir, "hum-fixture")
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	integrationHumPath = filepath.Join(binaryDir, "hum"+suffix)
+	integrationFixturePath = filepath.Join(binaryDir, "hum-fixture"+suffix)
 	if err := buildIntegrationBinary(integrationHumPath, "../cmd/hum"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		_ = os.RemoveAll(binaryDir)

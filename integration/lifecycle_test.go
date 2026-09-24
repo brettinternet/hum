@@ -54,7 +54,7 @@ func TestDaemonCrashReclaimsOrphans(t *testing.T) {
 		t.Fatalf("observe managed output before daemon crash: code=%d err=%v stdout=%q stderr=%q", observed.Code, observed.Err, observed.Stdout, observed.Stderr)
 	}
 	daemonPID = lifecycleReadPID(t, runtime.paths.PID)
-	if err := syscall.Kill(daemonPID, syscall.SIGKILL); err != nil {
+	if err := lifecycleKill(daemonPID); err != nil {
 		t.Fatalf("kill daemon: %v", err)
 	}
 	testutil.WaitForProcessGone(t, daemonPID, lifecycleTimeout)
@@ -178,7 +178,7 @@ func TestSignalledLeaderWithSurvivingDescendant(t *testing.T) {
 		t.Fatalf("descendant launch: code=%d err=%v stdout=%q stderr=%q", started.Code, started.Err, started.Stdout, started.Stderr)
 	}
 	leaderPID := lifecycleParseManagedPID(t, started.Stdout, "descendant-state")
-	t.Cleanup(func() { _ = syscall.Kill(-leaderPID, syscall.SIGKILL) })
+	t.Cleanup(func() { _ = lifecycleKill(-leaderPID) })
 	testutil.WaitForFile(t, marker+".child.pid", lifecycleTimeout)
 	testutil.WaitForFile(t, marker+".grandchild.pid", lifecycleTimeout)
 	daemonPID = lifecycleReadPID(t, runtime.paths.PID)
@@ -704,25 +704,6 @@ func lifecycleReadPIDNoFatal(path string) int {
 		return 0
 	}
 	return pid
-}
-
-func lifecycleAssertDetachedSession(t *testing.T, pid int) {
-	t.Helper()
-	pgid, err := syscall.Getpgid(pid)
-	if err != nil {
-		t.Fatalf("get detached daemon process group: %v", err)
-	}
-	if pgid != pid {
-		t.Fatalf("detached daemon PGID = %d, want session/process-group leader PID %d", pgid, pid)
-	}
-	sid := lifecycleProcessSessionID(t, pid)
-	callerSID := lifecycleProcessSessionID(t, os.Getpid())
-	if sid != pid {
-		t.Fatalf("detached daemon SID = %d, want PID %d from setsid", sid, pid)
-	}
-	if sid == callerSID {
-		t.Fatalf("detached daemon SID = %d is caller session %d", sid, callerSID)
-	}
 }
 
 func lifecycleAssertBoundedLog(t *testing.T, path string, limit int64) {

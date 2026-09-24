@@ -84,8 +84,10 @@ jobs:
             tar -C dist -czf "dist/$archive" hum hum.1
           done
 
+          VERSION="$version" BUILD_TIME="$build_time" BUILD_COMMIT="$GITHUB_SHA" task windows:package
+
           cd dist
-          sha256sum ./*.tar.gz > checksums.txt
+          sha256sum ./*.tar.gz ./*.zip > checksums.txt
 
       - name: Create GitHub release
         env:
@@ -96,7 +98,7 @@ jobs:
             echo "Release ${GITHUB_REF_NAME} already exists; reusing its immutable assets"
             gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md
           else
-            gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/checksums.txt \
+            gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.zip dist/checksums.txt \
               --verify-tag --notes-file release-notes.md --title "${GITHUB_REF_NAME}"
           fi
 
