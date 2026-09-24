@@ -422,6 +422,11 @@ func TestWindowsTTYStartupFailureCleansUpConsole(t *testing.T) {
 	}
 	spec.Argv[0] = invalid
 	spec.Dir = t.TempDir()
+	// Warm up kernel32's lazy procedure bindings and the Go runtime's
+	// console machinery before measuring repeated failed launches.
+	if _, err := Start(spec); err == nil {
+		t.Fatal("invalid PE started under ConPTY")
+	}
 	before := windowsTTYHandleCount(t)
 	for range 10 {
 		if _, err := Start(spec); err == nil {
