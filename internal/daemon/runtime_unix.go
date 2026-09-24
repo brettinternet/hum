@@ -24,6 +24,10 @@ func checkRuntimeFile(_ string, info os.FileInfo) error {
 	}
 	return nil
 }
+func openStartupLock(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+}
+func secureNewArtifact(string) error { return nil }
 func lockRuntimeFile(lock *os.File) error {
 	if err := lock.Chmod(0o600); err != nil {
 		return fmt.Errorf("secure startup lock: %w", err)

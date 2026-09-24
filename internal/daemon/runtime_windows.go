@@ -72,6 +72,29 @@ func checkPrivateDir(dir string) error {
 }
 func checkRuntimeFile(path string, _ os.FileInfo) error { return checkPrivateACL(path) }
 
+func secureNewArtifact(path string) error {
+	sid, err := currentSID()
+	if err != nil {
+		return err
+	}
+	// An elevated token may default new file ownership to Administrators. Give
+	// this newly-created artifact the actual user SID before it can be trusted.
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION, sid, nil, nil, nil)
+}
+func openStartupLock(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err == nil {
+		if err := secureNewArtifact(path); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		return file, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_RDWR, 0o600)
+}
 func lockRuntimeFile(file *os.File) error {
 	if err := checkRuntimeFile(file.Name(), nil); err != nil {
 		return fmt.Errorf("secure startup lock: %w", err)

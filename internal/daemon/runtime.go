@@ -346,7 +346,7 @@ func acquireRuntime(paths RuntimePaths) (*runtimeOwner, error) {
 	if err := ensurePrivateDir(paths.Dir); err != nil {
 		return nil, err
 	}
-	lock, err := os.OpenFile(paths.Lock, os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := openStartupLock(paths.Lock)
 	if err != nil {
 		return nil, fmt.Errorf("open startup lock: %w", err)
 	}
@@ -629,6 +629,10 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
+	if err := secureNewArtifact(tmpName); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
