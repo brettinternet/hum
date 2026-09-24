@@ -2838,13 +2838,23 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		if definition.Ready == nil && process.Readiness != nil && (process.Readiness.State == app.ReadinessStarting || process.Readiness.State == app.ReadinessReady) {
 			definition.Ready = &project.ReadyDefinition{Match: process.Readiness.Match}
 		}
-		if definition.Ready != nil && process.Readiness == nil && process.State == app.StateRunning {
+		if definition.Ready != nil && process.Readiness == nil && (process.State == app.StateRunning || definition.Ready.Exit != nil) {
 			method := "match"
 			readyArgv := append([]string(nil), definition.Ready.Exec...)
+			target := definition.Ready.HTTP
 			if len(readyArgv) != 0 {
 				method = "exec"
 			}
-			process.Readiness = &app.Readiness{Method: method, Argv: readyArgv, Interval: definition.Ready.Interval, Match: definition.Ready.Match, State: app.ReadinessStarting}
+			if definition.Ready.TCP != "" {
+				method, target = "tcp", definition.Ready.TCP
+			}
+			if definition.Ready.HTTP != "" {
+				method, target = "http", definition.Ready.HTTP
+			}
+			if definition.Ready.Exit != nil {
+				method, target = "exit", ""
+			}
+			process.Readiness = &app.Readiness{Method: method, Target: target, Argv: readyArgv, Interval: definition.Ready.Interval, Match: definition.Ready.Match, State: app.ReadinessStarting}
 		}
 
 		var result restartOutputResult
@@ -3655,9 +3665,11 @@ func manifestRemainingTimeout(timeout time.Duration, observedAt time.Time) time.
 }
 
 type manifestUpScheduleOps struct {
-	start     func(context.Context, project.Definition) (manifestLaunchResult, app.Process, time.Time)
-	readiness func(context.Context, project.Definition, app.Process, string, time.Duration) (manifestLaunchResult, error)
-	skipped   func(context.Context, project.Definition, []string) manifestLaunchResult
+	start      func(context.Context, project.Definition) (manifestLaunchResult, app.Process, time.Time)
+	readiness  func(context.Context, project.Definition, app.Process, string, time.Duration) (manifestLaunchResult, error)
+	skipped    func(context.Context, project.Definition, []string) manifestLaunchResult
+	get        func(context.Context, string, string) (orchestrate.Process, error)
+	isNotFound func(error) bool
 }
 
 func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, timeoutOverride time.Duration, preserveRecovery bool, progress *manifestProgressRenderer, launched *upLaunchRecorder) ([]manifestLaunchResult, error) {
@@ -3678,6 +3690,11 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 		skipped: func(ctx context.Context, definition project.Definition, blocked []string) manifestLaunchResult {
 			return manifestLaunchSkipped(ctx, client, manifest.root, definition, blocked)
 		},
+		get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
+			process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: root})
+			return cliOrchestrateProcess(process), err
+		},
+		isNotFound: isNotFound,
 	}
 	return manifestUpScheduleWithOps(ctx, cmd, manifest, names, timeoutOverride, progress, ops)
 }
@@ -3712,6 +3729,8 @@ func manifestUpScheduleWithOps(ctx context.Context, cmd *urfavecli.Command, mani
 			projectDefinition := manifest.byName[definition.Name]
 			return cliSharedLaunchResult(projectDefinition, ops.skipped(ctx, projectDefinition, blocked), nil)
 		},
+		Get:        ops.get,
+		IsNotFound: ops.isNotFound,
 		OnProgress: func(event orchestrate.ProgressEvent) {
 			if progress == nil {
 				return

@@ -159,7 +159,7 @@ func TestManifestSchemaContract(t *testing.T) {
 	}
 
 	oneOf, ok := readiness["oneOf"].([]any)
-	if !ok || len(oneOf) != 4 || !requiredOnly(oneOf[0], "match") || !requiredOnly(oneOf[1], "exec") || !requiredOnly(oneOf[2], "http") || !requiredOnly(oneOf[3], "tcp") {
+	if !ok || len(oneOf) != 5 || !requiredOnly(oneOf[0], "match") || !requiredOnly(oneOf[1], "exec") || !requiredOnly(oneOf[2], "http") || !requiredOnly(oneOf[3], "tcp") || !requiredOnly(oneOf[4], "exit") {
 		t.Fatalf("readiness oneOf = %#v, want exactly one readiness method", readiness["oneOf"])
 	}
 
@@ -290,6 +290,11 @@ func assertReadinessDocumentCorpus(t *testing.T, readiness map[string]any) {
 	cases := []readinessSchemaCase{
 		{"match", "match: ready", map[string]any{"match": "ready"}},
 		{"exec", "exec: [probe]", map[string]any{"exec": []any{"probe"}}},
+		{"exit zero", "exit: 0", map[string]any{"exit": 0}},
+		{"exit nonzero", "exit: 1", map[string]any{"exit": 1}},
+		{"exit string", `exit: "0"`, map[string]any{"exit": "0"}},
+		{"exit with interval", "exit: 0\n      interval: 1s", map[string]any{"exit": 0, "interval": "1s"}},
+		{"exit and match", "exit: 0\n      match: ready", map[string]any{"exit": 0, "match": "ready"}},
 		{"http IPv4 explicit", "http: http://127.0.0.1:8080/ready", map[string]any{"http": "http://127.0.0.1:8080/ready"}},
 		{"http localhost default", "http: https://localhost/ready", map[string]any{"http": "https://localhost/ready"}},
 		{"http compressed IPv6", "http: http://[2001:db8::1]/ready", map[string]any{"http": "http://[2001:db8::1]/ready"}},
@@ -331,6 +336,19 @@ func schemaReadinessDocumentAccepts(readiness map[string]any, document map[strin
 			return false
 		}
 		switch property["type"] {
+		case "integer":
+			number, ok := value.(int)
+			if !ok {
+				if numeric, isNumber := value.(float64); isNumber && numeric == float64(int(numeric)) {
+					number, ok = int(numeric), true
+				}
+			}
+			if !ok {
+				return false
+			}
+			if constant, hasConstant := property["const"].(float64); hasConstant && float64(number) != constant {
+				return false
+			}
 		case "string":
 			text, ok := value.(string)
 			if !ok {

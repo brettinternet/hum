@@ -173,6 +173,325 @@ func TestReadinessDriftAllMethodPairs(t *testing.T) {
 	}
 }
 
+func TestExitReadinessWaitsForSuccessfulCompletion(t *testing.T) {
+	root := t.TempDir()
+	initial := Process{
+		Name: "migrate", Source: "manifest", Root: root, Cwd: root, PID: 41, LaunchCursor: 3,
+		State: "running", Readiness: &Readiness{Method: "exit", State: ReadinessStarting},
+	}
+	current := initial
+	definition := Definition{Name: "migrate", Source: "manifest", Cwd: root, Argv: []string{"migrate"}, Ready: &ReadinessConfig{Method: "exit"}}
+	calls := 0
+	result, err := WaitForReadiness(context.Background(), root, definition, initial, "started", time.Second, ReadinessOperations{
+		Get: func(context.Context, string, string) (Process, error) {
+			calls++
+			if calls == 2 {
+				at := time.Now()
+				current.State = "exited"
+				current.Exit = &Exit{Code: 0, Time: at}
+				current.Readiness = &Readiness{Method: "exit", State: ReadinessReady, Time: at}
+			}
+			return current, nil
+		},
+		Wait: func(context.Context, WaitRequest) (WaitResult, error) {
+			t.Fatal("exit readiness must not use output wait")
+			return WaitResult{}, nil
+		},
+	})
+	if err != nil || result.Outcome != "completed" || result.Process == nil || result.Process.State != "exited" || !ResultSatisfiesGate(result) {
+		t.Fatalf("completed exit readiness result = %#v, err = %v", result, err)
+	}
+
+	t.Run("timeout", func(t *testing.T) {
+		waiting := initial
+		result, err := WaitForReadiness(context.Background(), root, definition, waiting, "started", 5*time.Millisecond, ReadinessOperations{
+			Get: func(context.Context, string, string) (Process, error) { return waiting, nil },
+		})
+		if err != nil || result.Outcome != "timed_out" {
+			t.Fatalf("exit readiness timeout = %#v, err = %v", result, err)
+		}
+	})
+}
+
+func TestExitReadinessOrchestrateUp(t *testing.T) {
+	root := t.TempDir()
+	missing := errors.New("not found")
+	definitions := []Definition{
+		{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, After: []string{"migrate"}, Ready: &ReadinessConfig{Match: "ready"}},
+		{Name: "migrate", Source: "manifest", Cwd: root, Argv: []string{"migrate"}, Ready: &ReadinessConfig{Method: "exit"}},
+	}
+
+	t.Run("exit zero releases dependents even when no-wait is set", func(t *testing.T) {
+		var started []string
+		results, err := OrchestrateUp(context.Background(), UpOptions{Root: root, Definitions: definitions, NoWait: true}, UpOperations{
+			Start: func(_ context.Context, definition Definition) (StartResult, error) {
+				started = append(started, definition.Name)
+				process := Process{Name: definition.Name, Source: definition.Source, Root: root, Cwd: root, Argv: definition.Argv, PID: len(started), State: "running", LaunchCursor: uint64(len(started)), StopGraceInherited: true}
+				if definition.Ready.Method == "exit" {
+					process.Readiness = &Readiness{Method: "exit", State: ReadinessStarting}
+				} else {
+					process.Readiness = &Readiness{Method: "match", Match: "ready", State: ReadinessStarting}
+				}
+				return StartResult{Result: ResultForProcess(definition, process, "started"), Process: process}, nil
+			},
+			Readiness: func(ctx context.Context, definition Definition, process Process, outcome string, timeout time.Duration) (Result, error) {
+				if definition.Name == "migrate" {
+					at := time.Now()
+					process.State = "exited"
+					process.Exit = &Exit{Code: 0, Time: at}
+					process.Readiness = &Readiness{Method: "exit", State: ReadinessReady, Time: at}
+					current := process
+					return WaitForReadiness(ctx, root, definition, process, outcome, timeout, ReadinessOperations{
+						Get: func(context.Context, string, string) (Process, error) { return current, nil },
+					})
+				}
+				process.Readiness.State = ReadinessReady
+				return ResultForProcess(definition, process, "started"), nil
+			},
+			IsNotFound: func(err error) bool { return errors.Is(err, missing) },
+			Get:        func(context.Context, string, string) (Process, error) { return Process{}, missing },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(started, []string{"migrate", "api"}) || len(results) != 2 || results[0].Outcome != "started" || results[1].Outcome != "completed" || !ResultSatisfiesGate(results[1]) {
+			t.Fatalf("started=%v, results=%#v", started, results)
+		}
+	})
+
+	for _, test := range []struct {
+		name  string
+		state string
+		exit  *Exit
+	}{
+		{name: "nonzero", state: "exited", exit: &Exit{Code: 3}},
+		{name: "signal", state: "exited", exit: &Exit{Code: -1, Signal: &SignalInfo{Name: "SIGTERM", Number: 15}}},
+		{name: "operator stop", state: "stopped"},
+	} {
+		t.Run(test.name+" skips dependents", func(t *testing.T) {
+			var started []string
+			results, err := OrchestrateUp(context.Background(), UpOptions{Root: root, Definitions: definitions, NoWait: true}, UpOperations{
+				Start: func(_ context.Context, definition Definition) (StartResult, error) {
+					started = append(started, definition.Name)
+					process := Process{Name: definition.Name, Source: definition.Source, Root: root, Cwd: root, Argv: definition.Argv, PID: 41, State: "running", LaunchCursor: 3, StopGraceInherited: true, Readiness: &Readiness{Method: "exit", State: ReadinessStarting}}
+					return StartResult{Result: ResultForProcess(definition, process, "started"), Process: process}, nil
+				},
+				Readiness: func(ctx context.Context, definition Definition, process Process, outcome string, timeout time.Duration) (Result, error) {
+					process.State = test.state
+					process.Exit = test.exit
+					current := process
+					return WaitForReadiness(ctx, root, definition, process, outcome, timeout, ReadinessOperations{
+						Get: func(context.Context, string, string) (Process, error) { return current, nil },
+					})
+				},
+				Skipped: func(_ context.Context, definition Definition, blocked []string) Result {
+					return Result{Name: definition.Name, Outcome: "skipped", BlockedBy: blocked}
+				},
+				IsNotFound: func(err error) bool { return errors.Is(err, missing) },
+				Get:        func(context.Context, string, string) (Process, error) { return Process{}, missing },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(started, []string{"migrate"}) || len(results) != 2 || results[0].Outcome != "skipped" || !reflect.DeepEqual(results[0].BlockedBy, []string{"migrate"}) || results[1].Outcome != "exited_before_ready" || ResultSatisfiesGate(results[1]) {
+				t.Fatalf("started=%v, results=%#v", started, results)
+			}
+		})
+	}
+}
+
+func TestExitReadinessRetainedCompletionConvergence(t *testing.T) {
+	root := t.TempDir()
+	missing := errors.New("not found")
+	definitions := []Definition{
+		{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, After: []string{"migrate"}, Ready: &ReadinessConfig{Match: "ready"}},
+		{Name: "migrate", Source: "manifest", Cwd: root, Argv: []string{"migrate"}, Ready: &ReadinessConfig{Method: "exit"}},
+	}
+	completedAt := time.Now()
+	completed := Process{
+		Name: "migrate", Source: "manifest", Root: root, Cwd: root, Argv: []string{"migrate"}, State: "exited",
+		Exit: &Exit{Code: 0, Time: completedAt}, Readiness: &Readiness{Method: "exit", State: ReadinessReady, Time: completedAt}, StopGraceInherited: true,
+	}
+	readyAPI := Process{
+		Name: "api", Source: "manifest", Root: root, Cwd: root, Argv: []string{"api"}, PID: 42, LaunchCursor: 4, State: "running",
+		Readiness: &Readiness{Method: "match", Match: "ready", State: ReadinessReady}, StopGraceInherited: true,
+	}
+
+	t.Run("running and ready dependents use retained completion", func(t *testing.T) {
+		processes := map[string]Process{"migrate": completed, "api": readyAPI}
+		starts := 0
+		results, err := runExitReadinessUp(t, root, definitions, processes, missing, &starts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if starts != 0 || len(results) != 2 || results[0].Outcome != "already_running" || results[1].Outcome != "completed" {
+			t.Fatalf("actual launches=%d, results=%#v", starts, results)
+		}
+	})
+
+	t.Run("missing dependent reruns one-shot first", func(t *testing.T) {
+		processes := map[string]Process{"migrate": completed}
+		var launches []string
+		results, err := runExitReadinessUpOrdered(t, root, definitions, processes, missing, &launches)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(launches, []string{"migrate", "api"}) || len(results) != 2 || results[1].Outcome != "completed" {
+			t.Fatalf("launches=%v, results=%#v", launches, results)
+		}
+	})
+}
+
+func TestExitReadinessDriftedCompletion(t *testing.T) {
+	root := t.TempDir()
+	missing := errors.New("not found")
+	definition := Definition{Name: "migrate", Source: "manifest", Cwd: root, Argv: []string{"new-migrate"}, Ready: &ReadinessConfig{Method: "exit"}}
+	at := time.Now()
+	current := Process{
+		Name: "migrate", Source: "manifest", Root: root, Cwd: root, Argv: []string{"old-migrate"}, State: "exited",
+		Exit: &Exit{Code: 0, Time: at}, Readiness: &Readiness{Method: "exit", State: ReadinessReady, Time: at}, StopGraceInherited: true,
+	}
+	starts := 0
+	results, err := OrchestrateUp(context.Background(), UpOptions{Root: root, Definitions: []Definition{definition}}, UpOperations{
+		Get:        func(context.Context, string, string) (Process, error) { return current, nil },
+		IsNotFound: func(err error) bool { return errors.Is(err, missing) },
+		Start: func(ctx context.Context, definition Definition) (StartResult, error) {
+			ensured := Ensure(ctx, root, definition, nil, true, EnsureOperations{
+				Get: func(context.Context, string, string) (Process, error) { return current, nil },
+				Start: func(context.Context, StartRequest) (Process, error) {
+					starts++
+					return Process{}, errors.New("drifted completion relaunched")
+				},
+			})
+			return StartResult{Result: ensured.Result, Process: ensured.Process, Already: ensured.Already}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if starts != 0 || len(results) != 1 || results[0].Outcome != "definition_drift" || !reflect.DeepEqual(results[0].ChangedFields, []string{"argv"}) || results[0].Process.Readiness.Method != "exit" {
+		t.Fatalf("drifted completion = %#v, starts=%d", results, starts)
+	}
+	if !ProcessSupportsDrift(current) {
+		t.Fatal("successful exit-ready record must retain definition identity for drift reporting")
+	}
+}
+
+func TestExitReadinessDriftAllMethodPairs(t *testing.T) {
+	root := t.TempDir()
+	methods := []string{"", "match", "exec", "http", "tcp", "exit"}
+	makeConfig := func(method string) *ReadinessConfig {
+		if method == "" {
+			return nil
+		}
+		if method == "exit" {
+			return &ReadinessConfig{Method: method}
+		}
+		config := &ReadinessConfig{Method: method, Match: "ready", Argv: []string{"probe"}, Target: "http://127.0.0.1:1/"}
+		if method == "tcp" {
+			config.Target = "127.0.0.1:1"
+		}
+		return config
+	}
+	for _, oldMethod := range methods {
+		for _, newMethod := range methods {
+			t.Run(oldMethod+"-to-"+newMethod, func(t *testing.T) {
+				definition := Definition{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, Ready: makeConfig(newMethod)}
+				process := Process{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, State: "running", StopGraceInherited: true}
+				if oldMethod != "" {
+					config := makeConfig(oldMethod)
+					process.Readiness = &Readiness{Method: oldMethod, Match: config.Match, Argv: config.Argv, Target: config.Target, State: ReadinessStarting}
+				}
+				got := DefinitionChangedFields(root, definition, process)
+				want := []string{}
+				if oldMethod != newMethod {
+					if oldMethod != "" {
+						want = append(want, "readiness_"+oldMethod)
+					}
+					if newMethod != "" {
+						want = append(want, "readiness_"+newMethod)
+					}
+				}
+				sort.Strings(want)
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("old=%q new=%q got=%v want=%v", oldMethod, newMethod, got, want)
+				}
+			})
+		}
+	}
+}
+
+func runExitReadinessUp(t *testing.T, root string, definitions []Definition, processes map[string]Process, missing error, launches *int) ([]Result, error) {
+	t.Helper()
+	return runExitReadinessUpOrdered(t, root, definitions, processes, missing, nil, launches)
+}
+
+func runExitReadinessUpOrdered(t *testing.T, root string, definitions []Definition, processes map[string]Process, missing error, launchOrder *[]string, launchCount ...*int) ([]Result, error) {
+	t.Helper()
+	var mu sync.Mutex
+	ops := UpOperations{
+		IsNotFound: func(err error) bool { return errors.Is(err, missing) },
+		Get: func(_ context.Context, name, _ string) (Process, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			process, ok := processes[name]
+			if !ok {
+				return Process{}, missing
+			}
+			return process, nil
+		},
+		Start: func(ctx context.Context, definition Definition) (StartResult, error) {
+			ensured := Ensure(ctx, root, definition, nil, true, EnsureOperations{
+				IsNotFound: func(err error) bool { return errors.Is(err, missing) },
+				Get: func(_ context.Context, name, _ string) (Process, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					process, ok := processes[name]
+					if !ok {
+						return Process{}, missing
+					}
+					return process, nil
+				},
+				Start: func(_ context.Context, request StartRequest) (Process, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					if launchOrder != nil {
+						*launchOrder = append(*launchOrder, request.Name)
+					}
+					for _, count := range launchCount {
+						(*count)++
+					}
+					process := Process{Name: request.Name, Source: request.Source, Root: request.Root, Cwd: request.Cwd, Argv: request.Argv, PID: len(processes) + 1, State: "running", LaunchCursor: 1, StopGraceInherited: true}
+					if request.Ready != nil {
+						process.Readiness = &Readiness{Method: request.Ready.Method, Match: request.Ready.Match, Argv: request.Ready.Argv, Target: request.Ready.Target, State: ReadinessStarting}
+					}
+					processes[request.Name] = process
+					return process, nil
+				},
+			})
+			return StartResult{Result: ensured.Result, Process: ensured.Process, Already: ensured.Already, ObservedAt: ensured.ObservedAt}, nil
+		},
+		Readiness: func(_ context.Context, definition Definition, process Process, outcome string, _ time.Duration) (Result, error) {
+			if readinessMethod(definition.Ready) == "exit" {
+				at := time.Now()
+				process.State = "exited"
+				process.Exit = &Exit{Code: 0, Time: at}
+				process.Readiness = &Readiness{Method: "exit", State: ReadinessReady, Time: at}
+			} else {
+				process.Readiness.State = ReadinessReady
+			}
+			mu.Lock()
+			processes[definition.Name] = process
+			mu.Unlock()
+			if readinessMethod(definition.Ready) == "exit" {
+				outcome = "completed"
+			}
+			return ResultForProcess(definition, process, outcome), nil
+		},
+	}
+	return OrchestrateUp(context.Background(), UpOptions{Root: root, Definitions: definitions}, ops)
+}
+
 func TestOrchestrateUp(t *testing.T) {
 	root := t.TempDir()
 	t.Run("readiness success timeout early exit", func(t *testing.T) {

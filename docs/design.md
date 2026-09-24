@@ -11,7 +11,7 @@ Hum is a local exact-argv process supervisor for humans and coding agents.
 - Process names are scoped to the nearest canonical Git root, or the caller's working directory
   when no Git marker exists.
 
-Readiness is a startup gate. `ready.exec` is a non-empty exact argv executed directly without a shell; `ready.http` performs GET and accepts only 2xx, and `ready.tcp` waits for a connection. HTTP/TCP targets must be absolute HTTP(S) URLs or host:port using literal IPs or localhost (bracket IPv6). Network probes run in-process, immediately then serially after a positive `interval` (default 1s), with each attempt bounded to 1s and the remaining `timeout` (default 30s). They inherit no environment, follow no redirects, retain only one bounded status/dial diagnostic, and cancel on stop/restart/shutdown. This is not liveness monitoring. Readiness method/target changes report readiness_http/readiness_tcp (and corresponding old/new fields); interval and timeout are wait policy.
+Readiness is a startup gate. `ready.exec` is a non-empty exact argv executed directly without a shell; `ready.http` performs GET and accepts only 2xx, and `ready.tcp` waits for a connection. HTTP/TCP targets must be absolute HTTP(S) URLs or host:port using literal IPs or localhost (bracket IPv6). Network probes run in-process, immediately then serially after a positive `interval` (default 1s), with each attempt bounded to 1s and the remaining `timeout` (default 30s). They inherit no environment, follow no redirects, retain only one bounded status/dial diagnostic, and cancel on stop/restart/shutdown. This is not liveness monitoring. `ready: {exit: 0}` instead marks a process ready only on successful exit; nonzero exit, signal, and stop block dependents. It accepts a timeout but no interval. Readiness method/target changes report readiness_http/readiness_tcp/readiness_exit (and corresponding old/new fields); interval and timeout are wait policy.
 
 Hum deliberately does not provide:
 
@@ -373,8 +373,12 @@ Human `hum up` has an attached interactive mode and bounded startup progress.
 - `up` does the same only for current resolved definitions.
 - It launches every zero-dependency root concurrently, waits for each direct `after`
   prerequisite to settle, and launches a dependent only when all direct prerequisites were
-  observed as `started` or `already_running` with readiness `ready`.
-- A running-ready prerequisite is satisfied without relaunch.
+  observed as `started` or `already_running` with readiness `ready`, or as a successfully
+  `completed` exit-ready setup step.
+- A running-ready prerequisite is satisfied without relaunch. A retained successful exit-ready
+  prerequisite satisfies `up` without rerunning if its direct dependents need no launch. It reruns
+  before any direct dependent that must launch; `down` then `up` reruns it. Explicit `start` and
+  `restart` rerun and wait for completion. Completion does not survive daemon replacement.
 - Each process timeout starts at its own launch or first running observation, so independent
   roots overlap and the critical path controls total wait time.
 - During bounded recovery, CLI and MCP `up` preserve the exited record and report

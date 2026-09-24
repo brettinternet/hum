@@ -220,6 +220,20 @@ type fakeClient struct {
 	retainReadinessOnStart bool
 }
 
+func fakeCompletedExitReadiness(process protocol.Process) protocol.Process {
+	completedAt := time.Now()
+	process.State = protocol.StateExited
+	process.PID = 0
+	process.ExitCode = 0
+	process.ExitedAt = completedAt
+	process.Exit = &protocol.Exit{Code: 0, Time: completedAt}
+	if process.Readiness != nil {
+		process.Readiness.State = protocol.ReadinessReady
+		process.Readiness.Time = completedAt
+	}
+	return process
+}
+
 func (f *fakeClient) Close() error { return nil }
 func (f *fakeClient) Start(_ context.Context, req protocol.StartRequest) (protocol.Process, error) {
 	f.mu.Lock()
@@ -241,6 +255,9 @@ func (f *fakeClient) Start(_ context.Context, req protocol.StartRequest) (protoc
 	}
 	if req.Ready != nil {
 		p.Readiness = &protocol.Readiness{Method: req.Ready.Method, Target: req.Ready.Target, Argv: append([]string(nil), req.Ready.Argv...), Interval: req.Ready.Interval, State: protocol.ReadinessStarting, Match: req.Ready.Match, Diagnostic: f.readinessDiagnostic}
+	}
+	if p.Readiness != nil && p.Readiness.Method == "exit" {
+		p = fakeCompletedExitReadiness(p)
 	}
 	f.processes[req.Name] = p
 	return p, nil
@@ -366,6 +383,9 @@ func (f *fakeClient) Restart(_ context.Context, req protocol.RestartRequest) (pr
 			p.Readiness = &protocol.Readiness{Method: req.Ready.Method, Target: req.Ready.Target, Argv: append([]string(nil), req.Ready.Argv...), Interval: req.Ready.Interval, State: protocol.ReadinessStarting, Match: req.Ready.Match, Diagnostic: f.readinessDiagnostic}
 		}
 	}
+	if p.Readiness != nil && p.Readiness.Method == "exit" {
+		p = fakeCompletedExitReadiness(p)
+	}
 	f.processes[req.Name] = p
 	return p, nil
 }
@@ -402,6 +422,101 @@ func args(root string, values ...any) json.RawMessage {
 	}
 	b, _ := json.Marshal(m)
 	return b
+}
+
+func TestExitReadinessMCPPropagationAndCompletion(t *testing.T) {
+	root := t.TempDir()
+	readyExit := &protocol.ReadinessConfig{Method: "exit", Timeout: time.Second}
+	definitions := []Definition{
+		{Name: "migrate", Source: "manifest", Cwd: root, Argv: []string{"migrate"}, Ready: readyExit},
+		{Name: "api", Source: "manifest", Cwd: root, Argv: []string{"api"}, Ready: &protocol.ReadinessConfig{Method: "match", Match: "api-ready"}, After: []string{"migrate"}},
+	}
+	shared := mcpDefinition(definitions[0])
+	if shared.Ready == nil || shared.Ready.Method != "exit" {
+		t.Fatalf("shared readiness config = %#v, want exit", shared.Ready)
+	}
+	client := &fakeClient{readyBeforeWait: true, processes: make(map[string]protocol.Process)}
+	server := NewServer(Options{
+		Resolver:      fakeResolver{resolution: Resolution{Root: root, Scope: protocol.ScopeProject, Definitions: definitions}},
+		ClientFactory: func(context.Context, bool) (Client, error) { return client, nil },
+	})
+	resolution := Resolution{Root: root, Scope: protocol.ScopeProject, Definitions: definitions}
+
+	startedValue, err := server.start(context.Background(), resolution, commonInput{Name: "migrate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := startedValue.(launchResult)
+	if started.Outcome != "completed" || started.Process == nil || started.Process.State != protocol.StateExited || started.Process.Readiness == nil || started.Process.Readiness.State != protocol.ReadinessReady || started.Process.Readiness.Method != "exit" {
+		t.Fatalf("MCP start result = %#v, want completed and exit-ready", started)
+	}
+
+	upValue, err := server.up(context.Background(), resolution, commonInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := upValue.([]launchResult)
+	upByName := make(map[string]launchResult, len(up))
+	for _, result := range up {
+		upByName[result.Name] = result
+	}
+	if upByName["migrate"].Outcome != "completed" || upByName["api"].Outcome != "started" || len(client.starts) != 3 || client.starts[1].Name != "migrate" || client.starts[2].Name != "api" {
+		t.Fatalf("MCP up results=%#v starts=%#v, want rerun migrate before api", up, client.starts)
+	}
+
+	statusValue, err := server.status(context.Background(), resolution, "migrate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := statusValue.(protocol.Process)
+	if status.State != protocol.StateExited || status.Readiness == nil || status.Readiness.Method != "exit" || status.Readiness.State != protocol.ReadinessReady || status.ExitCode != 0 {
+		t.Fatalf("MCP completed status = %#v", status)
+	}
+
+	startsBeforeConvergedUp := len(client.starts)
+	convergedValue, err := server.up(context.Background(), resolution, commonInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	converged := convergedValue.([]launchResult)
+	convergedByName := make(map[string]launchResult, len(converged))
+	for _, result := range converged {
+		convergedByName[result.Name] = result
+	}
+	if len(client.starts) != startsBeforeConvergedUp || convergedByName["migrate"].Outcome != "completed" || convergedByName["api"].Outcome != "already_running" {
+		t.Fatalf("converged MCP up=%#v starts=%#v, launches before=%d", converged, client.starts, startsBeforeConvergedUp)
+	}
+
+	restartedValue, err := server.restart(context.Background(), resolution, commonInput{Name: "migrate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := restartedValue.(restartResult)
+	if restarted.Outcome != "completed" || restarted.Readiness != protocol.ReadinessReady || restarted.ReadinessMethod != "exit" || len(client.restarts) != 1 || client.restarts[0].Ready == nil || client.restarts[0].Ready.Method != "exit" {
+		t.Fatalf("MCP completed restart=%#v requests=%#v", restarted, client.restarts)
+	}
+
+	toolDefinitions := server.toolDefinitions()
+	var readinessMethodsFromSchema []string
+	for _, tool := range toolDefinitions {
+		if tool.Name != "start" {
+			continue
+		}
+		properties := tool.OutputSchema["properties"].(map[string]any)["process"].(map[string]any)["properties"].(map[string]any)["readiness"].(map[string]any)["properties"].(map[string]any)
+		readinessMethodsFromSchema = properties["method"].(map[string]any)["enum"].([]string)
+	}
+	if !containsString(readinessMethodsFromSchema, "exit") {
+		t.Fatalf("MCP readiness methods = %v, missing exit", readinessMethodsFromSchema)
+	}
+	encoded, err := json.Marshal(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"outcome":"completed"`, `"state":"exited"`, `"method":"exit"`, `"state":"ready"`} {
+		if !bytes.Contains(encoded, []byte(want)) {
+			t.Errorf("MCP completion JSON %s missing %s", encoded, want)
+		}
+	}
 }
 
 func TestSignalExitSnapshots(t *testing.T) {

@@ -190,6 +190,7 @@ type UpOperations struct {
 	Readiness  func(context.Context, Definition, Process, string, time.Duration) (Result, error)
 	Skipped    func(context.Context, Definition, []string) Result
 	Get        func(context.Context, string, string) (Process, error)
+	IsNotFound func(error) bool
 	List       func(context.Context) ([]Process, error)
 	OnProgress func(ProgressEvent)
 }
@@ -417,11 +418,13 @@ func DefinitionChangedFields(root string, definition Definition, process Process
 			return !slices.Equal(definition.Ready.Argv, process.Readiness.Argv)
 		case "http", "tcp":
 			return definition.Ready.Target != process.Readiness.Target
+		case "exit":
+			return false
 		default:
 			return true
 		}
 	}
-	for _, method := range []string{"match", "exec", "http", "tcp"} {
+	for _, method := range []string{"match", "exec", "http", "tcp", "exit"} {
 		if readinessChanged(method) {
 			changed = append(changed, "readiness_"+method)
 		}
@@ -443,13 +446,22 @@ func DefinitionChangedFields(root string, definition Definition, process Process
 	return changed
 }
 
-// ProcessSupportsDrift identifies running and recovery-capable records whose
-// retained launch identity must not be silently replaced.
+// ProcessSupportsDrift identifies running, successfully completed exit-ready,
+// and recovery-capable records whose retained launch identity must not be
+// silently replaced.
 func ProcessSupportsDrift(process Process) bool {
-	if IsActiveState(process.State) {
+	if IsActiveState(process.State) || successfulExitReadiness(process) {
 		return true
 	}
 	return process.State == "exited" && (process.NextLaunchAt != nil || EffectiveRestart(process.Restart) == "on-failure" && process.Relaunches >= AutomaticRelaunchLimit)
+}
+
+func successfulExitReadiness(process Process) bool {
+	return process.State == "exited" && process.Readiness != nil && process.Readiness.Method == "exit" && process.Readiness.State == ReadinessReady && process.Exit != nil && process.Exit.Code == 0 && process.Exit.Signal == nil
+}
+
+func successfulExitCompletion(definition Definition, process Process) bool {
+	return readinessMethod(definition.Ready) == "exit" && DefinitionMatchesProcess(definition, process) && successfulExitReadiness(process)
 }
 
 // DefinitionDriftResult classifies an unchanged runtime record whose launch
@@ -605,6 +617,10 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 	}
 	markExited := func() (Result, error) { return refresh("exited_before_ready") }
 	markTimedOut := func() (Result, error) { return refresh("timed_out") }
+
+	if readinessMethod(definition.Ready) == "exit" {
+		return waitForExitReadiness(ctx, definition, initialProcess, initialOutcome, deadline, getCurrent)
+	}
 
 	if process.Readiness != nil && process.Readiness.State == ReadinessReady {
 		if !readinessBeforeDeadline(process.Readiness, deadline) {
@@ -801,6 +817,47 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 	}
 }
 
+func waitForExitReadiness(ctx context.Context, definition Definition, process Process, initialOutcome string, deadline time.Time, getCurrent func() (Process, error)) (Result, error) {
+	observed := NormalizeProcess(process)
+	if successfulExitReadiness(observed) {
+		if !readinessBeforeDeadline(observed.Readiness, deadline) {
+			return ResultForProcess(definition, observed, "timed_out"), nil
+		}
+		return ResultForProcess(definition, observed, "completed"), nil
+	}
+	if !IsActiveState(observed.State) {
+		return ResultForProcess(definition, observed, "exited_before_ready"), nil
+	}
+	for {
+		current, err := getCurrent()
+		if err != nil {
+			return ResultForProcess(definition, observed, initialOutcome), err
+		}
+		if !sameProcessIncarnation(observed, current) {
+			return ResultForProcess(definition, current, "exited_before_ready"), nil
+		}
+		if successfulExitReadiness(current) {
+			if !readinessBeforeDeadline(current.Readiness, deadline) {
+				return ResultForProcess(definition, current, "timed_out"), nil
+			}
+			return ResultForProcess(definition, current, "completed"), nil
+		}
+		if !IsActiveState(current.State) {
+			return ResultForProcess(definition, current, "exited_before_ready"), nil
+		}
+		if time.Until(deadline) <= 0 {
+			return ResultForProcess(definition, current, "timed_out"), nil
+		}
+		timer := time.NewTimer(min(time.Until(deadline), 25*time.Millisecond))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ResultForProcess(definition, observed, initialOutcome), ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func copyProcess(process Process) Process {
 	return NormalizeProcess(process)
 }
@@ -823,11 +880,11 @@ func LaunchOutcome(already bool, definition Definition) string {
 // ProgressWaitsForReadiness identifies results that receive a terminal
 // progress transition in human CLI mode.
 func ProgressWaitsForReadiness(definition Definition, result Result) bool {
-	if definition.Ready == nil || (result.Outcome != "started" && result.Outcome != "already_running") {
+	if definition.Ready == nil || (result.Outcome != "started" && result.Outcome != "already_running") || result.Process == nil {
 		return false
 	}
-	if result.Process == nil {
-		return false
+	if readinessMethod(definition.Ready) == "exit" {
+		return result.Process.Readiness != nil && result.Process.Readiness.State == ReadinessStarting
 	}
 	if result.Process.State != "running" {
 		return false
@@ -838,7 +895,7 @@ func ProgressWaitsForReadiness(definition Definition, result Result) bool {
 // ResultSatisfiesGate reports whether a prerequisite may release its direct
 // dependents.
 func ResultSatisfiesGate(result Result) bool {
-	return (result.Outcome == "started" || result.Outcome == "already_running") && result.Process != nil && result.Process.Readiness != nil && result.Process.Readiness.State == ReadinessReady
+	return (result.Outcome == "started" || result.Outcome == "already_running" || result.Outcome == "completed") && result.Process != nil && result.Process.Readiness != nil && result.Process.Readiness.State == ReadinessReady
 }
 
 // DefinitionsHaveAfter reports whether any definition declares a dependency.
@@ -1054,6 +1111,81 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 			}
 		}
 	}
+
+	retainedExit := make(map[string]Process)
+	hasExitReadiness := false
+	for _, definition := range filtered {
+		if readinessMethod(definition.Ready) == "exit" {
+			hasExitReadiness = true
+			break
+		}
+	}
+	if hasExitReadiness && ops.Get != nil {
+		observed := make(map[string]Process, len(filtered))
+		lookupErrors := make(map[string]error, len(filtered))
+		for _, definition := range filtered {
+			process, err := ops.Get(ctx, definition.Name, options.Root)
+			lookupErrors[definition.Name] = err
+			if err == nil {
+				observed[definition.Name] = NormalizeProcess(process)
+			}
+		}
+		var willStart func(string, map[string]bool) bool
+		willStart = func(name string, visiting map[string]bool) bool {
+			if visiting[name] {
+				return false
+			}
+			definition := filtered[byName[name]]
+			process, ok := observed[name]
+			if !ok {
+				err := lookupErrors[name]
+				return err != nil && ops.IsNotFound != nil && ops.IsNotFound(err)
+			}
+			if IsActiveState(process.State) {
+				if !DefinitionMatchesProcess(definition, process) || len(DefinitionChangedFields(options.Root, definition, process)) != 0 || definition.TTY && !process.TTY {
+					return false
+				}
+				return false
+			}
+			if DefinitionMatchesProcess(definition, process) && ProcessSupportsDrift(process) && len(DefinitionChangedFields(options.Root, definition, process)) != 0 {
+				return false
+			}
+			if _, recovering := RecoveryOutcome(definition, process); recovering {
+				return false
+			}
+			if successfulExitCompletion(definition, process) {
+				visiting[name] = true
+				defer delete(visiting, name)
+				for _, dependent := range filtered {
+					if slices.Contains(dependent.After, name) && willStart(dependent.Name, visiting) {
+						return true
+					}
+				}
+				return false
+			}
+			return true
+		}
+		for _, definition := range filtered {
+			if readinessMethod(definition.Ready) != "exit" {
+				continue
+			}
+			process, ok := observed[definition.Name]
+			if !ok || !successfulExitCompletion(definition, process) || len(DefinitionChangedFields(options.Root, definition, process)) != 0 {
+				continue
+			}
+			dependentNeedsStart := false
+			for _, dependent := range filtered {
+				if slices.Contains(dependent.After, definition.Name) && willStart(dependent.Name, make(map[string]bool)) {
+					dependentNeedsStart = true
+					break
+				}
+			}
+			if !dependentNeedsStart {
+				retainedExit[definition.Name] = process
+			}
+		}
+	}
+
 	var mu sync.Mutex
 	cond := sync.NewCond(&mu)
 	wakeDone := make(chan struct{})
@@ -1128,6 +1260,19 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 			}
 			mu.Unlock()
 
+			if process, retained := retainedExit[definition.Name]; retained {
+				result := ResultForProcess(definition, process, "completed")
+				if ops.OnProgress != nil {
+					ops.OnProgress(ProgressEvent{Definition: definition, Result: result})
+				}
+				mu.Lock()
+				results[index] = result
+				done[index] = true
+				cond.Broadcast()
+				mu.Unlock()
+				return
+			}
+
 			var started StartResult
 			var startErr error
 			if ops.Start == nil {
@@ -1146,12 +1291,18 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 				process := NormalizeProcess(started.Process)
 				result.Process = &process
 			}
+			if result.Error == nil && result.Process != nil && (result.Outcome == "started" || result.Outcome == "already_running") && successfulExitCompletion(definition, *result.Process) {
+				result.Outcome = "completed"
+			}
 			if ops.OnProgress != nil {
 				ops.OnProgress(ProgressEvent{Definition: definition, Result: result})
 			}
 
 			waitsForReadiness := ProgressWaitsForReadiness(definition, result)
-			if startErr == nil && result.Error == nil && !options.NoWait && definition.Ready != nil && started.Process.State == "running" && (result.Outcome == "started" || result.Outcome == "already_running") {
+			waitProcess := started.Process
+			exitReadiness := readinessMethod(definition.Ready) == "exit"
+			shouldWait := exitReadiness || !options.NoWait && waitProcess.State == "running"
+			if startErr == nil && result.Error == nil && shouldWait && definition.Ready != nil && (result.Outcome == "started" || result.Outcome == "already_running") {
 				timeoutFor := options.TimeoutFor
 				if timeoutFor == nil {
 					timeoutFor = func(definition Definition) (time.Duration, error) { return ReadinessTimeout(0, definition) }
@@ -1172,7 +1323,7 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 						result = ErrorResult(definition, errors.New("up readiness operation is not configured"))
 					} else {
 						var waitErr error
-						result, waitErr = ops.Readiness(ctx, definition, started.Process, result.Outcome, timeout)
+						result, waitErr = ops.Readiness(ctx, definition, waitProcess, result.Outcome, timeout)
 						if waitErr != nil {
 							result = ErrorResult(definition, waitErr)
 						}

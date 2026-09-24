@@ -240,6 +240,49 @@ func TestParseReadyManifest(t *testing.T) {
 	}
 }
 
+func TestManifestReadyExit(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		ready       string
+		wantErr     bool
+		wantTimeout time.Duration
+	}{
+		{name: "default timeout and dependency", ready: "exit: 0", wantTimeout: defaultReadyTimeout},
+		{name: "custom timeout", ready: "exit: 0\n      timeout: 2s", wantTimeout: 2 * time.Second},
+		{name: "nonzero", ready: "exit: 1", wantErr: true},
+		{name: "string zero", ready: `exit: "0"`, wantErr: true},
+		{name: "float zero", ready: "exit: 0.0", wantErr: true},
+		{name: "boolean", ready: "exit: false", wantErr: true},
+		{name: "interval", ready: "exit: 0\n      interval: 1s", wantErr: true},
+		{name: "combination", ready: "exit: 0\n      match: ready", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTestManifest(t, root, "version: 1\nprocesses:\n  migrate:\n    argv: [migrate]\n    ready:\n      "+test.ready+"\n  api:\n    argv: [api]\n    after: [migrate]\n")
+			definitions, err := LoadDefinitions(root)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("invalid exit readiness accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(definitions) != 2 || definitions[0].Name != "api" || definitions[1].Name != "migrate" {
+				t.Fatalf("definitions = %#v", definitions)
+			}
+			ready := definitions[1].Ready
+			if ready == nil || ready.Exit == nil || *ready.Exit != 0 || ready.Timeout != test.wantTimeout || ready.Interval != 0 {
+				t.Fatalf("exit readiness = %#v, want exit 0, timeout %s, no interval", ready, test.wantTimeout)
+			}
+			if !reflect.DeepEqual(definitions[0].After, []string{"migrate"}) {
+				t.Fatalf("exit-ready dependency = %v, want [migrate]", definitions[0].After)
+			}
+		})
+	}
+}
+
 func TestLoadDefinitionsManifest(t *testing.T) {
 	root := t.TempDir()
 	for _, directory := range []string{"api", "web"} {

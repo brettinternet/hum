@@ -236,8 +236,10 @@ func (r *ShutdownRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ReadinessConfig describes output matching or a direct executable. Timeout
-// and interval use the standard duration JSON number on the wire.
+// ReadinessConfig describes output matching, a direct executable, or a native
+// network target. Method "exit" waits for successful process completion and
+// has no target, argv, match, or interval. Timeout and interval use the standard
+// duration JSON number on the wire.
 type ReadinessConfig struct {
 	Method   string        `json:"method,omitempty"`
 	Target   string        `json:"target,omitempty"`
@@ -1112,8 +1114,10 @@ type Exit struct {
 }
 
 // Readiness describes process readiness state and, when ready, the matching
-// output cursor. Recovery-capable terminal records retain Match so clients can
-// reconcile the effective declaration without exposing the environment.
+// output cursor. Exit readiness retains Method "exit" and State ready on a
+// successfully completed process. Recovery-capable terminal records retain
+// Match so clients can reconcile the effective declaration without exposing
+// the environment.
 type Readiness struct {
 	Method     string        `json:"method,omitempty"`
 	Target     string        `json:"target,omitempty"`

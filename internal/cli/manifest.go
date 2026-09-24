@@ -196,6 +196,9 @@ func readinessConfig(definition project.Definition) *protocol.ReadinessConfig {
 	if definition.Ready.TCP != "" {
 		method = "tcp"
 	}
+	if definition.Ready.Exit != nil {
+		method = "exit"
+	}
 	target := definition.Ready.HTTP
 	if method == "tcp" {
 		target = definition.Ready.TCP
@@ -257,6 +260,9 @@ func manifestProcess(definition project.Definition, root string) app.Process {
 		}
 		if definition.Ready.HTTP != "" {
 			method, target = "http", definition.Ready.HTTP
+		}
+		if definition.Ready.Exit != nil {
+			method, target = "exit", ""
 		}
 		process.Readiness = &app.Readiness{Method: method, Target: target, Argv: append([]string(nil), readyArgv...), Interval: definition.Ready.Interval, Match: definition.Ready.Match}
 	}
@@ -403,6 +409,13 @@ func manifestLaunchResultFor(definition project.Definition, process app.Process,
 		result.ReadinessInterval = process.Readiness.Interval
 		result.ReadinessDiagnostic = process.Readiness.Diagnostic
 		result.ReadinessTarget = process.Readiness.Target
+		if process.State == app.StateRunning || process.Readiness.Method == "exit" && process.Readiness.State == app.ReadinessReady {
+			result.Readiness = process.Readiness.State
+			if process.Readiness.Cursor != nil {
+				readyCursor := uint64(*process.Readiness.Cursor)
+				result.ReadyCursor = &readyCursor
+			}
+		}
 	}
 	if process.State != app.StateRunning {
 		return result
@@ -443,6 +456,9 @@ func cliOrchestrateDefinition(definition project.Definition) orchestrate.Definit
 		}
 		if definition.Ready.HTTP != "" {
 			method, target = "http", definition.Ready.HTTP
+		}
+		if definition.Ready.Exit != nil {
+			method, target = "exit", ""
 		}
 		shared.Ready = &orchestrate.ReadinessConfig{Method: method, Target: target, Match: definition.Ready.Match, Argv: append([]string(nil), definition.Ready.Exec...), Interval: definition.Ready.Interval, Timeout: definition.Ready.Timeout}
 	}
@@ -818,8 +834,13 @@ func manifestResultJSON(result manifestLaunchResult) manifestLaunchResult {
 }
 
 func processReadinessFields(process app.Process) (string, *protocol.Cursor) {
-	if process.State != app.StateRunning || process.Source == "" || process.Source == "ad_hoc" {
+	if process.Source == "" || process.Source == "ad_hoc" {
 		return "", nil
+	}
+	if process.State != app.StateRunning {
+		if process.State != app.StateExited || process.Readiness == nil || process.Readiness.Method != "exit" || process.Readiness.State != app.ReadinessReady {
+			return "", nil
+		}
 	}
 	if process.Readiness == nil {
 		return app.ReadinessRunningUnverified, nil

@@ -99,7 +99,7 @@ parser remains authoritative.
 | Config | Exact argv in `hum.yaml` or `--file`; ad hoc `run` | Layered TOML daemon config | Procfile plus env/flags | Procfile plus `.env`/flags | Local/global YAML or Procfile |
 | Scope | Canonical Git root; cwd fallback outside Git | Filesystem config hierarchy and namespace | Working directory and per-project socket | Working directory/root | Current-directory config |
 | Logs | Bounded retained streams and durable service events | SQLite history with search and retention | tmux output/`echo`; history not documented | Prefixed foreground output; history not documented | TUI output and optional files; query API not documented |
-| Wait/readiness | Match, exact-argv, HTTP, and TCP startup gates; bounded `wait` | Delay, match, HTTP, TCP, or command readiness; exit wait | Readiness/wait not documented | Readiness not documented; waits for process exit | Readiness not documented; shutdown waits |
+| Wait/readiness | Match, exact-argv, HTTP, TCP, and successful-exit startup gates; bounded `wait` | Delay, match, HTTP, TCP, or command readiness; exit wait | Readiness/wait not documented | Readiness not documented; waits for process exit | Readiness not documented; shutdown waits |
 | TTY input | Attached PTY or one-shot CLI/MCP input | PTY buffering; interactive input not documented | Attach to a process's tmux window | Child PTY receives stdin | Interactive TUI and `send-key` |
 | MCP | Closed-schema bounded tools | Status, lifecycle, and logs tools | Not documented | Not documented | Not documented |
 | UI | CLI; Herdr supplies panes | TUI and optional web UI | tmux windows | Multiplexed terminal output | Full terminal UI |
@@ -111,12 +111,12 @@ parser remains authoritative.
 | You want a broad manager for project services, configured in layered `pitchfork.toml`. | You want a narrow process API for tools and coding agents to start, observe, wait on, and type into processes. |
 | Shell commands, templating such as `{{ daemons.redis.port }}`, and service orchestration fit your setup. | You need exact argv without a shell string. |
 | You need port assignment, a reverse proxy with stable per-worktree hostnames, boot start, cron, `cd` autostart, file-watch restarts, health checks, retries, or lifecycle hooks. | You want each worktree isolated by its canonical Git root, without namespace configuration. |
-| You need oneshot setup tasks to finish successfully before dependents start. | You need `hum up NAME...` to start selected declarations with their transitive `after` prerequisites. |
+| You need lifecycle hooks, automatic file-watch restarts, or scheduled tasks. | You need `hum up NAME...` to start selected declarations with their transitive `after` prerequisites, including one-shot setup steps. |
 | You want a TUI or web UI, or SQLite log history with search. | You need one-shot TTY input through `hum input` or MCP, with a single input owner. |
 | Five MCP tools for status, start, stop, restart, and recent logs are enough. | You need 13 MCP tools with closed schemas, including `wait`, `input`, `signal`, and `events`, plus versioned CLI JSON and read-only `hum doctor`. |
 | You need builds for macOS, Linux, and Windows. | macOS and Linux are supported today; native Windows support is planned. |
 
-Hum does not yet run one-shot setup tasks before dependents. `hum up` starts every declared process, while `hum up NAME...` starts only the named declarations and their transitive `after` prerequisites. Hum has no UI of its own; Herdr supplies panes.
+`ready: {exit: 0}` runs a one-shot setup step before its dependents. `hum up` starts every declaration as needed, while `hum up NAME...` selects only the named declarations and their transitive `after` prerequisites. Hum has no UI of its own; Herdr supplies panes.
 
 The tools can coexist. Hum reads a private `.hum.yaml` before `hum.yaml`, and `.hum.yaml` suits Git ignore rules. You can use Hum in a repository that commits `pitchfork.toml` without adding shared Hum configuration. Teammates can keep using pitchfork.
 
@@ -179,6 +179,25 @@ ready:
   interval: 1s
   timeout: 30s
 ```
+
+A setup step can instead become ready when its own process exits successfully:
+
+```yaml
+processes:
+  migrate:
+    argv: [bun, run, migrate]
+    ready: {exit: 0, timeout: 30s}
+  api:
+    argv: [bun, run, api]
+    after: [migrate]
+    ready: {match: "Listening"}
+```
+
+A nonzero exit, signal, or stop before completion blocks dependents. A retained successful
+completion satisfies `up` without rerunning when its direct dependents are already running; if
+one must launch, the setup step reruns first. `down` followed by `up` reruns it. Explicit
+`start` or `restart` reruns it and waits for completion. `exit` accepts only `0`, allows
+`timeout`, and does not allow `interval`.
 
 Native HTTP and TCP readiness probes avoid shelling out:
 

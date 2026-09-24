@@ -521,6 +521,37 @@ func TestExecutableReadiness(t *testing.T) {
 	}
 }
 
+func TestExitReadinessConfigValidation(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config *ReadinessConfig
+		valid  bool
+	}{
+		{name: "default timeout", config: &ReadinessConfig{Method: "exit"}, valid: true},
+		{name: "configured timeout", config: &ReadinessConfig{Method: "exit", Timeout: 2 * time.Second}, valid: true},
+		{name: "interval", config: &ReadinessConfig{Method: "exit", Interval: time.Second}},
+		{name: "match", config: &ReadinessConfig{Method: "exit", Match: "ready"}},
+		{name: "target", config: &ReadinessConfig{Method: "exit", Target: "127.0.0.1:80"}},
+		{name: "argv", config: &ReadinessConfig{Method: "exit", Argv: []string{"probe"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, _, err := validateReadinessConfig(test.config)
+			if (err == nil) != test.valid {
+				t.Fatalf("validation error = %v, valid = %v", err, test.valid)
+			}
+			if err == nil {
+				wantTimeout := 30 * time.Second
+				if test.config.Timeout != 0 {
+					wantTimeout = test.config.Timeout
+				}
+				if got.Method != "exit" || got.Interval != 0 || got.Timeout != wantTimeout {
+					t.Fatalf("normalized exit readiness = %#v", got)
+				}
+			}
+		})
+	}
+}
+
 func TestReadinessConfigNetworkValidation(t *testing.T) {
 	for _, config := range []*ReadinessConfig{
 		{Method: "http", Target: "http://example.invalid/"},

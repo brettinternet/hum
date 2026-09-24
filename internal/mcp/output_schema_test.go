@@ -139,7 +139,7 @@ func outputJSONValue(t *testing.T, value any) any {
 }
 
 func TestOutputSchemasAcceptStructuredContent(t *testing.T) {
-	for _, method := range []string{"match", "exec", "http", "tcp", "none"} {
+	for _, method := range []string{"match", "exec", "http", "tcp", "exit", "none"} {
 		t.Run(method, func(t *testing.T) {
 			var ready *protocol.ReadinessConfig
 			switch method {
@@ -151,6 +151,8 @@ func TestOutputSchemasAcceptStructuredContent(t *testing.T) {
 				ready = &protocol.ReadinessConfig{Method: method, Target: "http://127.0.0.1:1/ready"}
 			case "tcp":
 				ready = &protocol.ReadinessConfig{Method: method, Target: "127.0.0.1:1"}
+			case "exit":
+				ready = &protocol.ReadinessConfig{Method: method}
 			}
 			client := &fakeClient{readyBeforeWait: true}
 			server, root, _ := newTestServer(t, []Definition{{Name: "api", Source: "manifest", Cwd: ".", Argv: []string{"api"}, Ready: ready}}, client)

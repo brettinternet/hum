@@ -109,13 +109,17 @@ func validateReadinessConfig(input *ReadinessConfig) (*ReadinessConfig, *regexp.
 		if config.Target != "" || len(config.Argv) != 0 {
 			return nil, nil, fmt.Errorf("%w: readiness match cannot include target or exec argv", ErrInvalidRequest)
 		}
+	case "exit":
+		if config.Match != "" || config.Target != "" || len(config.Argv) != 0 {
+			return nil, nil, fmt.Errorf("%w: readiness exit cannot include match, target, or exec argv", ErrInvalidRequest)
+		}
 	default:
 		return nil, nil, fmt.Errorf("%w: unknown readiness method %q", ErrInvalidRequest, config.Method)
 	}
-	if config.Method == "match" && config.Interval != 0 {
+	if (config.Method == "match" || config.Method == "exit") && config.Interval != 0 {
 		return nil, nil, fmt.Errorf("%w: readiness interval requires exec, http, or tcp readiness", ErrInvalidRequest)
 	}
-	if config.Method != "match" && config.Interval == 0 {
+	if config.Method != "match" && config.Method != "exit" && config.Interval == 0 {
 		config.Interval = time.Second
 	}
 	if config.Interval < 0 {
@@ -151,8 +155,8 @@ func restartPolicyForSource(source string, policy RestartPolicy) RestartPolicy {
 	return effectiveRestartPolicy(policy)
 }
 
-// ReadinessConfig describes either output matching or a direct executable
-// used to mark a manifest process ready.
+// ReadinessConfig describes output matching, a direct executable, a native
+// network target, or successful process exit used to mark a manifest process ready.
 type ReadinessConfig struct {
 	Method   string
 	Match    string
@@ -1177,6 +1181,7 @@ type record struct {
 
 	readyConfig         *ReadinessConfig
 	readyPattern        *regexp.Regexp
+	exitReady           bool
 	tracker             *readinessTracker
 	execTracker         *executableReadinessTracker
 	tty                 bool
@@ -1283,6 +1288,7 @@ func (s *Supervisor) transitionRunningLocked(rec *record, child Child, startedAt
 	rec.incarnation++
 	s.processObservations[rec.key]++
 	rec.tracker = tracker
+	rec.exitReady = false
 	rec.execReady = false
 	rec.execReadyAt = time.Time{}
 	rec.execDiagnostic = ""
@@ -2536,6 +2542,10 @@ func (s *Supervisor) reconcile(rec *record) {
 		return
 	}
 	transitionTerminalLocked(rec, result)
+	control := rec.controlIntent
+	if !control && rec.readyConfig != nil && rec.readyConfig.Method == "exit" && result.ExitCode == 0 && result.Signal == nil {
+		rec.exitReady = true
+	}
 	store := rec.store
 	execTracker := rec.execTracker
 	if execTracker != nil {
@@ -2553,7 +2563,6 @@ func (s *Supervisor) reconcile(rec *record) {
 	cursor := rec.cursor
 	tty := rec.tty
 	unexpected := !rec.controlIntent && (result.ExitCode != 0 || result.ExitCode < 0)
-	control := rec.controlIntent
 	rec.controlIntent = false
 	automaticIncarnation := rec.automaticCurrent
 	terminalIncarnation := rec.incarnation
@@ -2571,6 +2580,9 @@ func (s *Supervisor) reconcile(rec *record) {
 		rec.persisting = true
 	}
 	s.mu.Unlock()
+	if terminalProcess.Readiness != nil && terminalProcess.Readiness.Method == "exit" && terminalProcess.Readiness.State == ReadinessReady {
+		s.emitLifecycle(rec, "ready", "method=exit", result.ExitedAt, nil)
+	}
 	if !control && terminalProcess.Readiness != nil && terminalProcess.Readiness.State != ReadinessReady {
 		s.emitLifecycle(rec, "startup_failure", "process exited before readiness", result.ExitedAt, &result)
 	}
@@ -4076,6 +4088,8 @@ func (r *record) snapshotLocked() Process {
 		switch {
 		case r.readyConfig == nil:
 			model.Readiness = &Readiness{State: ReadinessRunningUnverified}
+		case r.readyConfig.Method == "exit":
+			model.Readiness = &Readiness{Method: "exit", State: ReadinessStarting}
 		case r.readyConfig.Method == "exec" || r.readyConfig.Method == "http" || r.readyConfig.Method == "tcp":
 			ready, at, diagnostic := r.execTracker.snapshot()
 			if r.execTracker == nil {
@@ -4098,7 +4112,15 @@ func (r *record) snapshotLocked() Process {
 	// relaunch. It is needed to reconcile the retained launch specification
 	// without exposing the launch environment.
 	if r.terminal && r.readyConfig != nil {
-		if r.readyConfig.Method == "exec" || r.readyConfig.Method == "http" || r.readyConfig.Method == "tcp" {
+		if r.readyConfig.Method == "exit" {
+			state := ReadinessStarting
+			var at time.Time
+			if r.exitReady {
+				state = ReadinessReady
+				at = r.result.ExitedAt
+			}
+			model.Readiness = &Readiness{Method: "exit", State: state, Time: at}
+		} else if r.readyConfig.Method == "exec" || r.readyConfig.Method == "http" || r.readyConfig.Method == "tcp" {
 			ready, at, diagnostic := r.execTracker.snapshot()
 			if r.execTracker == nil {
 				ready, at, diagnostic = r.execReady, r.execReadyAt, r.execDiagnostic

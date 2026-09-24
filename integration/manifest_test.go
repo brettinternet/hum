@@ -703,6 +703,169 @@ processes:
 	}
 }
 
+func TestOneShotPrerequisite(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := integrationHum(t)
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
+	marker := filepath.Join(projectRoot, "sequence")
+	manifestPath := filepath.Join(projectRoot, "hum.yaml")
+	writeManifest := func(migrateExit int) {
+		t.Helper()
+		migrateCommand := fmt.Sprintf("printf 'migrate\\n' >> %s; sleep 0.15; exit %d", yamlQuote(marker), migrateExit)
+		apiCommand := fmt.Sprintf("test -f %s && printf 'api\\n' >> %s && printf 'api-ready\\n' && sleep 30", yamlQuote(marker), yamlQuote(marker))
+		manifest := fmt.Sprintf(`version: 1
+processes:
+  migrate:
+    argv: [/bin/sh, -c, %s]
+    ready: {exit: 0}
+  api:
+    argv: [/bin/sh, -c, %s]
+    after: [migrate]
+    ready: {match: api-ready}
+`, yamlQuote(migrateCommand), yamlQuote(apiCommand))
+		if err := os.WriteFile(manifestPath, []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeManifest(0)
+	t.Cleanup(func() { _ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes") })
+
+	first := testutil.Run(t, hum, projectRoot, env, "up", "--detach", "--json")
+	if first.Code != 0 || first.Err != nil || first.Stderr != "" {
+		t.Fatalf("initial one-shot up = code %d err=%v stdout=%q stderr=%q", first.Code, first.Err, first.Stdout, first.Stderr)
+	}
+	firstResults := manifestDecodeLaunchResults(t, first.Stdout)
+	firstByName := make(map[string]manifestLaunchResult, len(firstResults))
+	for _, result := range firstResults {
+		firstByName[result.Name] = result
+	}
+	if firstByName["migrate"].Outcome != "completed" || firstByName["migrate"].State != "exited" || firstByName["migrate"].Readiness != "ready" || firstByName["migrate"].ReadinessMethod != "exit" || firstByName["api"].Outcome != "started" || firstByName["api"].Readiness != "ready" {
+		t.Fatalf("initial one-shot results = %#v", firstByName)
+	}
+	contents, err := os.ReadFile(marker)
+	if err != nil || string(contents) != "migrate\napi\n" {
+		t.Fatalf("initial prerequisite sequence = %q, err=%v; want migrate before api", contents, err)
+	}
+
+	status := testutil.Run(t, hum, projectRoot, env, "status", "--json", "migrate")
+	if status.Code != 0 || status.Err != nil {
+		t.Fatalf("completed status = code %d err=%v stdout=%q stderr=%q", status.Code, status.Err, status.Stdout, status.Stderr)
+	}
+	var completedStatus struct {
+		State           string `json:"state"`
+		Readiness       string `json:"readiness"`
+		ReadinessMethod string `json:"readiness_method"`
+		ExitStatus      *int   `json:"exit_status"`
+	}
+	if err := json.Unmarshal([]byte(status.Stdout), &completedStatus); err != nil {
+		t.Fatalf("decode completed status %q: %v", status.Stdout, err)
+	}
+	if completedStatus.State != "exited" || completedStatus.Readiness != "ready" || completedStatus.ReadinessMethod != "exit" || completedStatus.ExitStatus == nil || *completedStatus.ExitStatus != 0 {
+		t.Fatalf("completed status = %#v", completedStatus)
+	}
+	apiStatus := testutil.Run(t, hum, projectRoot, env, "status", "--json", "api")
+	var apiBefore struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal([]byte(apiStatus.Stdout), &apiBefore); err != nil || apiBefore.PID == 0 {
+		t.Fatalf("decode api status %q: %v", apiStatus.Stdout, err)
+	}
+
+	second := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if second.Code != 0 || second.Err != nil || second.Stderr != "" {
+		t.Fatalf("converged one-shot up = code %d err=%v stdout=%q stderr=%q", second.Code, second.Err, second.Stdout, second.Stderr)
+	}
+	secondResults := manifestDecodeLaunchResults(t, second.Stdout)
+	secondByName := make(map[string]manifestLaunchResult, len(secondResults))
+	for _, result := range secondResults {
+		secondByName[result.Name] = result
+	}
+	if secondByName["migrate"].Outcome != "completed" || secondByName["api"].Outcome != "already_running" {
+		t.Fatalf("converged one-shot results = %#v", secondByName)
+	}
+	apiStatus = testutil.Run(t, hum, projectRoot, env, "status", "--json", "api")
+	var apiAfter struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal([]byte(apiStatus.Stdout), &apiAfter); err != nil || apiAfter.PID != apiBefore.PID {
+		t.Fatalf("converged up replaced api pid %d with %#v (err=%v)", apiBefore.PID, apiAfter, err)
+	}
+	contents, err = os.ReadFile(marker)
+	if err != nil || string(contents) != "migrate\napi\n" {
+		t.Fatalf("converged up launched processes: sequence=%q err=%v", contents, err)
+	}
+
+	startedAt := time.Now()
+	started := testutil.Run(t, hum, projectRoot, env, "start", "--json", "migrate")
+	if started.Code != 0 || started.Err != nil || !strings.Contains(started.Stdout, `"outcome":"completed"`) {
+		t.Fatalf("explicit one-shot start = code %d err=%v stdout=%q stderr=%q", started.Code, started.Err, started.Stdout, started.Stderr)
+	}
+	if elapsed := time.Since(startedAt); elapsed < 100*time.Millisecond {
+		t.Fatalf("start returned before the one-shot completed: elapsed %s", elapsed)
+	}
+	contents, err = os.ReadFile(marker)
+	if err != nil || string(contents) != "migrate\napi\nmigrate\n" {
+		t.Fatalf("explicit start sequence = %q, err=%v", contents, err)
+	}
+
+	restartedAt := time.Now()
+	restarted := testutil.Run(t, hum, projectRoot, env, "restart", "migrate")
+	if restarted.Code != 0 || restarted.Err != nil || !strings.Contains(restarted.Stdout, "migrate completed") {
+		t.Fatalf("restart one-shot = code %d err=%v stdout=%q stderr=%q", restarted.Code, restarted.Err, restarted.Stdout, restarted.Stderr)
+	}
+	if elapsed := time.Since(restartedAt); elapsed < 100*time.Millisecond {
+		t.Fatalf("restart returned before the one-shot completed: elapsed %s", elapsed)
+	}
+	contents, err = os.ReadFile(marker)
+	if err != nil || string(contents) != "migrate\napi\nmigrate\nmigrate\n" {
+		t.Fatalf("restart sequence = %q, err=%v", contents, err)
+	}
+
+	down := testutil.Run(t, hum, projectRoot, env, "down")
+	if down.Code != 0 || down.Err != nil {
+		t.Fatalf("down after one-shot = code %d err=%v stdout=%q stderr=%q", down.Code, down.Err, down.Stdout, down.Stderr)
+	}
+	afterDown := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if afterDown.Code != 0 || afterDown.Err != nil {
+		t.Fatalf("up after down = code %d err=%v stdout=%q stderr=%q", afterDown.Code, afterDown.Err, afterDown.Stdout, afterDown.Stderr)
+	}
+	contents, err = os.ReadFile(marker)
+	if err != nil || string(contents) != "migrate\napi\nmigrate\nmigrate\nmigrate\napi\n" {
+		t.Fatalf("up after down sequence = %q, err=%v; want rerun migrate before api", contents, err)
+	}
+
+	down = testutil.Run(t, hum, projectRoot, env, "down")
+	if down.Code != 0 || down.Err != nil {
+		t.Fatalf("down before failure case = code %d err=%v stdout=%q stderr=%q", down.Code, down.Err, down.Stdout, down.Stderr)
+	}
+	writeManifest(3)
+	removed := testutil.Run(t, hum, projectRoot, env, "remove", "migrate")
+	if removed.Code != 0 || removed.Err != nil {
+		t.Fatalf("remove retained completion = code %d err=%v stdout=%q stderr=%q", removed.Code, removed.Err, removed.Stdout, removed.Stderr)
+	}
+	failed := testutil.Run(t, hum, projectRoot, env, "up", "--json")
+	if failed.Code != 3 || failed.Err == nil {
+		t.Fatalf("failing one-shot up = code %d err=%v stdout=%q stderr=%q; want exit 3", failed.Code, failed.Err, failed.Stdout, failed.Stderr)
+	}
+	failedResults := manifestDecodeLaunchResults(t, failed.Stdout)
+	failedByName := make(map[string]manifestLaunchResult, len(failedResults))
+	for _, result := range failedResults {
+		failedByName[result.Name] = result
+	}
+	if failedByName["migrate"].Outcome != "exited_before_ready" || failedByName["api"].Outcome != "skipped" || !reflect.DeepEqual(failedByName["api"].BlockedBy, []string{"migrate"}) {
+		t.Fatalf("failing one-shot results = %#v", failedByName)
+	}
+	contents, err = os.ReadFile(marker)
+	if err != nil || string(contents) != "migrate\napi\nmigrate\nmigrate\nmigrate\napi\nmigrate\n" {
+		t.Fatalf("failure sequence = %q, err=%v; api should remain skipped", contents, err)
+	}
+}
+
 func TestUpOrderedStack(t *testing.T) {
 	lifecycleRequireUnix(t)
 	hum := integrationHum(t)

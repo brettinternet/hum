@@ -130,7 +130,7 @@ func readinessStyle(readiness string) ansiStyle {
 
 func manifestOutcomeStyle(outcome string) ansiStyle {
 	switch outcome {
-	case "started", "already_running", "running_unverified":
+	case "started", "already_running", "running_unverified", "completed":
 		return ansiGreen
 	case "recovery_pending":
 		return ansiYellow
@@ -1040,6 +1040,8 @@ func manifestProgressInitialLineWithPolicy(definition project.Definition, result
 		return line + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "timed_out":
 		return prefix + colors.apply(ansiRed, "readiness timed out") + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+	case "completed":
+		return prefix + colors.apply(ansiGreen, "completed")
 	case "started", "already_running":
 		action := colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressAction(result))
 		if manifestProgressWaitsForReadiness(definition, result) {
@@ -1077,6 +1079,8 @@ func manifestProgressTerminalLineWithPolicy(result manifestLaunchResult, colors 
 		return line + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
 	case "timed_out":
 		return prefix + colors.apply(ansiRed, "readiness timed out") + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+	case "completed":
+		return prefix + colors.apply(ansiGreen, "completed")
 	case "started", "already_running":
 		if result.Readiness == app.ReadinessReady {
 			return prefix + colors.apply(ansiGreen, "ready")

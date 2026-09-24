@@ -35,6 +35,107 @@ func writeManifestCLITestFile(t *testing.T, root, contents string) {
 	}
 }
 
+func TestExitReadinessAdapterAndRendering(t *testing.T) {
+	exitCode := 0
+	definition := project.Definition{
+		Name: "migrate", Source: "manifest", Cwd: "/project", Argv: []string{"/bin/sh", "-c", "exit 0"},
+		Ready: &project.ReadyDefinition{Exit: &exitCode},
+	}
+	ready := readinessConfig(definition)
+	if ready == nil || ready.Method != "exit" || ready.Target != "" {
+		t.Fatalf("protocol readiness config = %#v, want exit", ready)
+	}
+	manifest := manifestProcess(definition, "/project")
+	if manifest.Readiness == nil || manifest.Readiness.Method != "exit" {
+		t.Fatalf("manifest process readiness = %#v, want exit", manifest.Readiness)
+	}
+	sharedDefinition := cliOrchestrateDefinition(definition)
+	if sharedDefinition.Ready == nil || sharedDefinition.Ready.Method != "exit" {
+		t.Fatalf("orchestrator readiness = %#v, want exit", sharedDefinition.Ready)
+	}
+
+	process := app.Process{
+		Name: "migrate", Source: "manifest", Root: "/project", Cwd: "/project",
+		Argv: append([]string(nil), definition.Argv...), State: app.StateExited, ExitCode: 0,
+		Readiness: &app.Readiness{Method: "exit", State: app.ReadinessReady},
+	}
+	converted := cliAppProcess(cliOrchestrateProcess(process))
+	if converted.Readiness == nil || converted.Readiness.Method != "exit" || converted.Readiness.State != app.ReadinessReady {
+		t.Fatalf("readiness round-trip = %#v", converted.Readiness)
+	}
+	result := manifestLaunchResultFor(definition, process, "completed")
+	if result.Outcome != "completed" || result.Readiness != app.ReadinessReady || result.ReadinessMethod != "exit" || result.ExitCode == nil || *result.ExitCode != 0 {
+		t.Fatalf("completed launch result = %#v", result)
+	}
+	if err := aggregateManifestExit([]manifestLaunchResult{result}); err != nil {
+		t.Fatalf("successful completion produced an aggregate error: %v", err)
+	}
+
+	var upHuman bytes.Buffer
+	if err := renderManifestLaunchHuman(&upHuman, result); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"completed migrate", "readiness=ready", "readiness_method=exit"} {
+		if !strings.Contains(upHuman.String(), want) {
+			t.Errorf("human up output %q missing %q", upHuman.String(), want)
+		}
+	}
+	var upJSON bytes.Buffer
+	if err := encodeJSON(&upJSON, manifestResultJSON(result)); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"outcome":"completed"`, `"readiness":"ready"`, `"readiness_method":"exit"`, `"exit_code":0`} {
+		if !strings.Contains(upJSON.String(), want) {
+			t.Errorf("up JSON %q missing %q", upJSON.String(), want)
+		}
+	}
+
+	var statusHuman bytes.Buffer
+	if err := renderStatusHuman(&statusHuman, process); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"state: exited", "readiness: ready", "readiness_method: exit", "exit_status: 0"} {
+		if !strings.Contains(statusHuman.String(), want) {
+			t.Errorf("human status %q missing %q", statusHuman.String(), want)
+		}
+	}
+	statusEncoded, err := json.Marshal(statusJSONFor(process))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"state":"exited"`, `"readiness":"ready"`, `"readiness_method":"exit"`, `"exit_status":0`} {
+		if !strings.Contains(string(statusEncoded), want) {
+			t.Errorf("status JSON %s missing %q", statusEncoded, want)
+		}
+	}
+	listEncoded, err := json.Marshal(processJSON(process))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"state":"exited"`, `"readiness":"ready"`, `"readiness_method":"exit"`} {
+		if !strings.Contains(string(listEncoded), want) {
+			t.Errorf("list JSON %s missing %q", listEncoded, want)
+		}
+	}
+	var fullList bytes.Buffer
+	if err := renderListHuman(&fullList, []app.Process{process}, false, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"readiness=ready", "readiness_method=exit"} {
+		if !strings.Contains(fullList.String(), want) {
+			t.Errorf("full human list %q missing %q", fullList.String(), want)
+		}
+	}
+
+	failed := process
+	failed.ExitCode = 3
+	failed.Readiness = &app.Readiness{Method: "exit", State: app.ReadinessStarting}
+	failure := manifestLaunchResultFor(definition, failed, "exited_before_ready")
+	if failure.Outcome != "exited_before_ready" || failure.Readiness == app.ReadinessReady || failure.ExitCode == nil || *failure.ExitCode != 3 {
+		t.Fatalf("failed exit readiness result = %#v", failure)
+	}
+}
+
 func TestPrivateManifest(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  shared:\n    argv: [shared]\n"), 0o600); err != nil {

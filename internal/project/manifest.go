@@ -57,6 +57,7 @@ var (
 		"exec":     {},
 		"http":     {},
 		"tcp":      {},
+		"exit":     {},
 		"interval": {},
 		"timeout":  {},
 	}
@@ -83,13 +84,14 @@ type Definition struct {
 	StopGrace   *time.Duration
 }
 
-// ReadyDefinition describes the output expression, direct executable, or
-// native network target used to determine whether a manifest process is ready.
+// ReadyDefinition describes the output expression, direct executable, native
+// network target, or successful process exit used to determine readiness.
 type ReadyDefinition struct {
 	Match    string
 	Exec     []string
 	HTTP     string
 	TCP      string
+	Exit     *int
 	Interval time.Duration
 	Timeout  time.Duration
 }
@@ -541,6 +543,7 @@ func parseReady(filename, context string, node *yaml.Node) (*ReadyDefinition, er
 	execNode, hasExec := fields["exec"]
 	httpNode, hasHTTP := fields["http"]
 	tcpNode, hasTCP := fields["tcp"]
+	exitNode, hasExit := fields["exit"]
 	readyNodeError := func(node *yaml.Node, context, format string, args ...any) error {
 		line := 0
 		if node != nil {
@@ -552,13 +555,13 @@ func parseReady(filename, context string, node *yaml.Node) (*ReadyDefinition, er
 		return manifestError(filename, context, format, args...)
 	}
 	methods := 0
-	for _, present := range []bool{hasMatch, hasExec, hasHTTP, hasTCP} {
+	for _, present := range []bool{hasMatch, hasExec, hasHTTP, hasTCP, hasExit} {
 		if present {
 			methods++
 		}
 	}
 	if methods != 1 {
-		return nil, readyNodeError(node, readyContext, "requires exactly one of match, exec, http, or tcp")
+		return nil, readyNodeError(node, readyContext, "requires exactly one of match, exec, http, tcp, or exit")
 	}
 	definition := &ReadyDefinition{Timeout: defaultReadyTimeout}
 	switch {
@@ -591,9 +594,18 @@ func parseReady(filename, context string, node *yaml.Node) (*ReadyDefinition, er
 			return nil, readyNodeError(tcpNode, readyContext+".tcp", "%v", err)
 		}
 		definition.TCP = tcpNode.Value
+	case hasExit:
+		if exitNode == nil || exitNode.Kind != yaml.ScalarNode || exitNode.ShortTag() != "!!int" {
+			return nil, readyNodeError(exitNode, readyContext+".exit", "must be integer 0")
+		}
+		var exitCode int
+		if err := exitNode.Decode(&exitCode); err != nil || exitCode != 0 {
+			return nil, readyNodeError(exitNode, readyContext+".exit", "must be integer 0")
+		}
+		definition.Exit = &exitCode
 	}
 	if intervalNode, ok := fields["interval"]; ok {
-		if hasMatch {
+		if hasMatch || hasExit {
 			return nil, manifestError(filename, readyContext, "interval is only valid with exec, http, or tcp")
 		}
 		if !isStringScalar(intervalNode) {
@@ -604,7 +616,7 @@ func parseReady(filename, context string, node *yaml.Node) (*ReadyDefinition, er
 			return nil, manifestError(filename, readyContext, "interval must be a positive duration")
 		}
 		definition.Interval = parsed
-	} else if !hasMatch {
+	} else if !hasMatch && !hasExit {
 		definition.Interval = time.Second
 	}
 	if timeoutNode, ok := fields["timeout"]; ok {

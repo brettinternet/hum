@@ -42,6 +42,40 @@ func TestExecutableReadinessRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExitReadinessProtocolRoundTrip(t *testing.T) {
+	request := StartRequest{
+		Op: OpStart, Name: "migrate", Argv: []string{"migrate"}, Cwd: "/project",
+		Ready: &ReadinessConfig{Method: "exit", Timeout: 2 * time.Second},
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded StartRequest
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Ready == nil || decoded.Ready.Method != "exit" || decoded.Ready.Timeout != 2*time.Second || decoded.Ready.Interval != 0 {
+		t.Fatalf("decoded exit readiness config = %#v", decoded.Ready)
+	}
+
+	completed := Process{
+		Name: "migrate", State: StateExited, Exit: &Exit{Code: 0},
+		Readiness: &Readiness{Method: "exit", State: ReadinessReady},
+	}
+	encoded, err = json.Marshal(completed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var round Process
+	if err := json.Unmarshal(encoded, &round); err != nil {
+		t.Fatal(err)
+	}
+	if round.State != StateExited || round.Exit == nil || round.Exit.Code != 0 || round.Readiness == nil || round.Readiness.Method != "exit" || round.Readiness.State != ReadinessReady {
+		t.Fatalf("decoded completed process = %#v", round)
+	}
+}
+
 func TestReadinessHTTPAndTCPTargetRoundTrip(t *testing.T) {
 	for _, method := range []string{"http", "tcp"} {
 		input := ReadinessConfig{Method: method, Target: "http://127.0.0.1:1"}

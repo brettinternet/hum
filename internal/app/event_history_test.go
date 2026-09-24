@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"regexp"
 	"strings"
@@ -58,6 +59,104 @@ func TestEventHistoryLifecycleKinds(t *testing.T) {
 		if !seen {
 			t.Errorf("missing %s event in %#v", event, events)
 		}
+	}
+}
+
+func TestExitReadinessSupervisorCompletion(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		code               int
+		stop               bool
+		wantState          State
+		wantReady          string
+		wantStartupFailure bool
+	}{
+		{name: "successful exit", wantState: StateExited, wantReady: ReadinessReady},
+		{name: "nonzero exit", code: 3, wantState: StateExited, wantReady: ReadinessStarting, wantStartupFailure: true},
+		{name: "operator stop", stop: true, wantState: StateStopped, wantReady: ReadinessStarting},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := makeProject(t, false)
+			child := newSubscriptionChild(7100, test.code, time.Now().UTC(), "setup output\n")
+			s := testSupervisor(t, Options{StartProcess: subscriptionStarter(map[string]*subscriptionChild{"migrate": child})})
+			var mu sync.Mutex
+			var events []LifecycleEvent
+			s.SetLifecycleHook(func(event LifecycleEvent) {
+				mu.Lock()
+				events = append(events, event)
+				mu.Unlock()
+			})
+			started, err := s.Start(StartRequest{
+				Name: "migrate", Root: root, Cwd: root, Source: "manifest", Argv: []string{"fake", "migrate"},
+				Ready: &ReadinessConfig{Method: "exit", Timeout: time.Second},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if started.Readiness == nil || started.Readiness.Method != "exit" || started.Readiness.State != ReadinessStarting {
+				t.Fatalf("initial readiness = %#v", started.Readiness)
+			}
+			if test.stop {
+				if err := s.Stop(context.Background(), root, "migrate"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				child.release()
+			}
+			deadline := time.Now().Add(time.Second)
+			var current Process
+			for time.Now().Before(deadline) {
+				current, err = s.Get(root, "migrate")
+				if err == nil && current.State == test.wantState {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if err != nil || current.State != test.wantState {
+				t.Fatalf("terminal process = %+v, err=%v, want state %s", current, err, test.wantState)
+			}
+			if current.Readiness == nil || current.Readiness.Method != "exit" || current.Readiness.State != test.wantReady {
+				t.Fatalf("terminal readiness = %#v, want %s", current.Readiness, test.wantReady)
+			}
+			if test.wantReady == ReadinessReady && (current.Exit == nil || current.Exit.ExitCode != 0 || !current.Readiness.Time.Equal(current.Exit.ExitedAt)) {
+				t.Fatalf("successful completion status = process %#v", current)
+			}
+
+			eventDeadline := time.Now().Add(time.Second)
+			for time.Now().Before(eventDeadline) {
+				mu.Lock()
+				seenExit := false
+				for _, event := range events {
+					seenExit = seenExit || event.Event == "exit"
+				}
+				mu.Unlock()
+				if seenExit {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			readyIndex, exitIndex, startupFailure := -1, -1, false
+			for index, event := range events {
+				switch event.Event {
+				case "ready":
+					if event.Detail == "method=exit" {
+						readyIndex = index
+					}
+				case "exit":
+					exitIndex = index
+				case "startup_failure":
+					startupFailure = true
+				}
+			}
+			if (readyIndex >= 0) != (test.wantReady == ReadinessReady) || readyIndex >= exitIndex && readyIndex >= 0 {
+				t.Fatalf("ready event index %d, exit event index %d, events=%#v", readyIndex, exitIndex, events)
+			}
+			if startupFailure != test.wantStartupFailure {
+				t.Fatalf("startup failure event = %v, want %v (events=%#v)", startupFailure, test.wantStartupFailure, events)
+			}
+		})
 	}
 }
 

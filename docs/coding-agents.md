@@ -121,18 +121,23 @@ Each tool rejects fields outside its advertised closed input schema before proje
 - Prefer `up` over sequencing `start` calls when `hum.yaml` declares `after`: independent roots
   launch concurrently, each dependency waits for readiness, and each process timeout starts at
   its launch or first running observation; final results are lexical.
-- `up` reports `skipped` with sorted direct `blocked_by` names when a prerequisite fails.
+- `ready: {exit: 0}` makes a setup step ready on successful exit (with an optional timeout,
+  never an interval). `up` reports its success as `completed`; retained success is reused when
+  direct dependents are already running, but reruns before a dependent that must launch.
+  `down` then `up`, explicit `start`, and explicit `restart` rerun it. A nonzero exit, signal, or
+  stop before completion fails the gate; `up` reports `skipped` with sorted direct `blocked_by`
+  names for the dependents and exits 3.
 - CLI `hum up NAME...` and MCP `up` with `names` select only those declarations and their
   transitive `after` prerequisites, and return results only for that subgraph. Omit names to retain
   full-manifest `up` behavior.
 - A skip may include read-only `existing_state` and process snapshot data; it still means no
   launch occurred and still blocks dependents.
-- A changed running or recovery-capable manifest record returns `definition_drift` with sorted
+- A changed running, successfully completed exit-ready, or recovery-capable manifest record returns `definition_drift` with sorted
   `changed_fields` and `hum restart NAME` guidance; CLI `up` exits 1 for drift and it never
   satisfies an `after` dependency.
 - Readiness method (including the readiness matcher), match or exact exec argv, normalized restart
   policy, and `stop_grace` are comparison boundaries; environment, exec interval, and readiness
-  timeout are not compared.
+  timeout are not compared. The exit readiness method participates in method drift.
 - `ready.exec` is direct exact argv (never a shell). The first probe is immediate; failed attempts
   run serially with the configured interval (1s by default), using the launched cwd and environment.
   Only one bounded last-attempt diagnostic is exposed on terminal results; probe output is never
