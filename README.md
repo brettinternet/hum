@@ -2,67 +2,44 @@
 
 [![CI](https://github.com/brettinternet/hum/actions/workflows/ci.yaml/badge.svg)](https://github.com/brettinternet/hum/actions/workflows/ci.yaml)
 
-Hum keeps your development processes running while you work in another terminal or with a coding agent.
-Start a project stack, check what is running, read its logs, and stop it when you're done. You and your agent can use the same processes without sharing a terminal.
+Hum runs your dev processes in the background. You and your coding agent can start, check, and stop them from any terminal.
+
+[![Demo of hum supervising a clock process while another terminal follows its logs](docs/demo.gif)](docs/demo.tape)
 
 ```text
-hum.yaml ──> hum daemon ──> db ──> api ──> web
-                  │
-                  └── logs <── CLI / coding agents
+you (CLI) ───┐                    ┌─▶ db
+             ├──▶ hum daemon ─────┼─▶ api   starts after db is ready
+agent (MCP) ─┘    keeps the logs  └─▶ web   starts after api is ready
 ```
 
-Start your stack and check a process, read its latest errors, or wait for it to be ready:
+Processes keep running when you close the terminal that started them.
 
-```sh
-hum up --detach
-hum status api --json
-hum logs api --stream stderr --tail 50 --json
-hum wait api --match "ready" --timeout 30s --json
-```
-
-Hum keeps the processes and their recent output available even when you close the terminal that started them.
-
-Run a process and follow its retained logs
-
-[![Demo of hum supervising an ad-hoc clock process while another terminal follows its logs](docs/demo.gif)](docs/demo.tape)
-
-Start and stop a dependency-ordered stack
-
-[![Demo of hum starting a stack by readiness, recovering failed work, and stopping every process](docs/demo-up-down.gif)](docs/demo-up-down.tape)
-
-Let a coding agent diagnose a failed process from its retained logs
-
-[![Demo of Codex using hum MCP to read a failed process's logs and identify its missing environment variable](docs/demo-codex.gif)](docs/demo-codex.tape)
+<table>
+<tr>
+<td width="50%"><a href="docs/demo-up-down.tape"><img src="docs/demo-up-down.gif" alt="Demo of hum starting a stack in order, recovering failed work, and stopping every process"></a><br>Start and stop a stack in order</td>
+<td width="50%"><a href="docs/demo-codex.tape"><img src="docs/demo-codex.gif" alt="Demo of Codex using hum MCP to read a failed process's logs and find its missing environment variable"></a><br>An agent finds why a process failed</td>
+</tr>
+</table>
 
 ## Install
-
-Install on macOS with [Homebrew](https://brew.sh/):
 
 ```sh
 brew trust --formula brettinternet/tap/hum
 brew install brettinternet/tap/hum
-man hum
 ```
 
-Homebrew installs the generated `hum(1)` manual. Release archives also include `hum.1` for other package integrations.
+| Other ways | Command |
+| --- | --- |
+| Script (macOS, Linux) | `curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/brettinternet/hum/main/install.sh \| sh` |
+| [mise](https://mise.jdx.dev/) | `mise use -g github:brettinternet/hum` |
+| From source | See [development setup](docs/development.md) |
 
-Or download and verify the latest macOS or Linux release directly:
+The script verifies checksums and installs to `~/.local/bin`. Set `HUM_VERSION=0.9.0` to pin a release or `HUM_INSTALL_DIR` to change the location. Homebrew and release archives include the `hum(1)` man page.
 
-```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/brettinternet/hum/main/install.sh | sh
-```
+<details>
+<summary>Windows (amd64)</summary>
 
-Set `HUM_VERSION=0.9.0` (with or without the leading `v`) to pin a release, or set
-`HUM_INSTALL_DIR` to install somewhere other than `$HOME/.local/bin`.
-
-Or install releases with [mise](https://mise.jdx.dev/):
-
-```toml
-[tools]
-"github:brettinternet/hum" = "latest"
-```
-
-On Windows (amd64), download the release zip and verify its SHA-256 checksum in PowerShell:
+Download the release zip, check its SHA-256, and unpack it:
 
 ```powershell
 $version = '1.2.3' # replace with the release version
@@ -79,194 +56,122 @@ $env:Path += ";$installDir" # add this directory to your user PATH for future sh
 & (Join-Path $installDir 'hum.exe') --version
 ```
 
-Windows supports native process supervision through `hum.exe`, including interactive `--tty` children hosted by ConPTY. `hum attach` gives one client the input lease; Ctrl+] releases that lease without stopping the child, and Ctrl+C is forwarded to the console application when local input is raw. Ctrl+D is forwarded as a byte, not treated as EOF (Windows console apps generally use Ctrl+Z for EOF). Terminal size is polled while attached, so resize can take up to 200 ms. Unix `signal` remains unsupported; see [Windows behavior](docs/design.md#scope-and-non-goals). `install.sh` is Unix-only.
+Everything works except `hum signal`. TTY processes use ConPTY: in `hum attach`, Ctrl+] detaches, Ctrl+C goes to the process, and Ctrl+Z (not Ctrl+D) sends EOF. See [Windows behavior](docs/design.md#scope-and-non-goals).
 
-To build from a checkout, see [development setup](docs/development.md).
+</details>
 
 ## Quickstart
 
-Try a portable clock process in a directory:
-
-```sh
-mkdir hum-quickstart && cd hum-quickstart
-git init -q
-cat > hum.yaml <<'YAML'
-version: 1
-processes:
-  clock:
-    argv: [sh, -c, "while :; do date; sleep 1; done"]
-YAML
-hum run hello --detach -- sh -c 'printf "hello from hum\\n"'
-hum up
-```
-
-`hum up` follows output. Press Ctrl+C to detach, then stop:
-
-```sh
-hum down
-```
-
-SchemaStore-aware editors load [`hum.schema.json`](hum.schema.json) automatically for `hum.yaml` and
-alternate filenames matching `hum.*.yaml`, `*.hum.yaml`, `hum.yml`, or `*.hum.yml`. `hum init` also
-adds an inline schema directive. Other editors can select the root schema manually. The Go manifest
-parser remains authoritative.
-
-## Hum and other process managers
-
-| Dimension | Hum | [pitchfork](https://pitchfork.jdx.dev/) | [Overmind](https://github.com/DarthSim/overmind) | [Hivemind](https://github.com/DarthSim/hivemind) | [mprocs](https://github.com/pvolok/dekit/blob/master/README-mprocs.md) |
-| --- | --- | --- | --- | --- | --- |
-| Config | Exact argv in `hum.yaml` or `--file`; ad hoc `run` | Layered TOML daemon config | Procfile plus env/flags | Procfile plus `.env`/flags | Local/global YAML or Procfile |
-| Scope | Canonical Git root; cwd fallback outside Git | Filesystem config hierarchy and namespace | Working directory and per-project socket | Working directory/root | Current-directory config |
-| Logs | Bounded retained streams and durable service events | SQLite history with search and retention | tmux output/`echo`; history not documented | Prefixed foreground output; history not documented | TUI output and optional files; query API not documented |
-| Wait/readiness | Match, exact-argv, HTTP, TCP, and successful-exit startup gates; bounded `wait` | Delay, match, HTTP, TCP, or command readiness; exit wait | Readiness/wait not documented | Readiness not documented; waits for process exit | Readiness not documented; shutdown waits |
-| TTY input | Attached PTY or one-shot CLI/MCP input | PTY buffering; interactive input not documented | Attach to a process's tmux window | Child PTY receives stdin | Interactive TUI and `send-key` |
-| MCP | Closed-schema bounded tools | Status, lifecycle, and logs tools | Not documented | Not documented | Not documented |
-| UI | CLI; Herdr supplies panes | TUI and optional web UI | tmux windows | Multiplexed terminal output | Full terminal UI |
-
-### Hum and pitchfork
-
-| Choose pitchfork when | Choose Hum when |
-| --- | --- |
-| You want a broad manager for project services, configured in layered `pitchfork.toml`. | You want a narrow process API for tools and coding agents to start, observe, wait on, and type into processes. |
-| Shell commands, templating such as `{{ daemons.redis.port }}`, and service orchestration fit your setup. | You need exact argv without a shell string. |
-| You need port assignment, a reverse proxy with stable per-worktree hostnames, boot start, cron, `cd` autostart, file-watch restarts, health checks, retries, or lifecycle hooks. | You want each worktree isolated by its canonical Git root, without namespace configuration. |
-| You need lifecycle hooks, automatic file-watch restarts, or scheduled tasks. | You need `hum up NAME...` to start selected declarations with their transitive `after` prerequisites, including one-shot setup steps. |
-| You want a TUI or web UI, or SQLite log history with search. | You need one-shot TTY input through `hum input` or MCP, with a single input owner. |
-| Five MCP tools for status, start, stop, restart, and recent logs are enough. | You need 13 MCP tools with closed schemas, including `wait`, `input`, `signal`, and `events`, plus versioned CLI JSON and read-only `hum doctor`. |
-| You need builds for macOS, Linux, and Windows. | macOS and Linux support TTY; Windows amd64 supports native non-TTY supervision and a downloadable zip. |
-
-`ready: {exit: 0}` runs a one-shot setup step before its dependents. `hum up` starts every declaration as needed, while `hum up NAME...` selects only the named declarations and their transitive `after` prerequisites. Hum has no UI of its own; Herdr supplies panes.
-
-The tools can coexist. Hum reads a private `.hum.yaml` before `hum.yaml`, and `.hum.yaml` suits Git ignore rules. You can use Hum in a repository that commits `pitchfork.toml` without adding shared Hum configuration. Teammates can keep using pitchfork.
-
-## Non-goals
-
-Hum deliberately does not provide:
-
-- a TUI or web UI; Herdr provides panes;
-- port allocation or a reverse proxy;
-- cron scheduling, boot start, or shell-hook autostart;
-- file-watch restarts or liveness/health monitoring;
-- child CPU/RSS sampling or resource-limit enforcement—wrap exact argv with platform-native tools
-  when needed; Hum still bounds its own retained output and machine-facing operations;
-- log parsing or query languages; or
-- runtime shell interpretation or templating.
-
-## Start processes
-
-Hum has two declaration paths: use the complete default manifest (`.hum.yaml` when present, otherwise
-`hum.yaml`) or select one with `--file`, or use `hum run NAME -- COMMAND` for one-off ad-hoc work.
-Precedence is `--file PATH` > `.hum.yaml` > `hum.yaml`; Hum never merges manifests. An invalid,
-unreadable, unsafe, or non-regular `.hum.yaml` is authoritative and fails closed rather than falling
-back to `hum.yaml`. The private file suits repository or global Git ignore rules, but ignored
-configuration is not shared with collaborators or CI. Without a manifest, definition-requiring
-commands return `manifest_missing` with guidance to run `hum init` or `hum run NAME -- COMMAND`.
-
-For multiple processes, add `hum.yaml`:
+Save this as `hum.yaml` in a Git repository:
 
 ```yaml
 version: 1
 processes:
   db:
-    argv: [docker, compose, up, db]
-    ready:
-      match: "ready"
+    argv: [sh, -c, "sleep 1; echo ready; exec sleep 3600"]
+    ready: {match: ready}
   api:
-    argv: [bun, run, api]
+    argv: [sh, -c, "echo listening; while :; do date; sleep 2; done"]
     after: [db]
-    ready:
-      match: "Listening"
-  web:
-    argv: [bun, run, dev]
-    after: [api]
-    ready:
-      match: "Local:"
+    ready: {match: listening}
 ```
 
-`hum up` starts every declaration in dependency order; `hum up NAME...` starts only those declarations
-and their transitive `after` prerequisites, reporting results for that subgraph. Both follow output.
-Once startup completes, Ctrl+C detaches and `hum down` stops; the daemon owns the processes, so closing
-the follower never kills them. Ctrl+C during startup aborts instead and stops what that `hum up` launched.
-Use `hum up api --detach` to start one process with its prerequisites and wait for readiness, or
-`hum up --detach` for the full manifest. `--full` shows full readiness details.
+Start it, check it, read its logs, and stop it:
 
-For checks that do not emit a reliable startup message, use an executable probe. Exit status 0 marks the process ready. For example, check PostgreSQL inside Docker Compose:
+```console
+$ hum up --detach
+hum up: db: started; waiting for readiness
+hum up: db: ready
+hum up: api: started; waiting for readiness
+hum up: api: ready
+NAME  RESULT   STATE    PID
+api   started  running  28813
+db    started  running  27456
 
-```yaml
-ready:
-  exec: [docker, compose, exec, -T, db, pg_isready, -U, postgres]
-  interval: 1s
-  timeout: 30s
+$ hum status
+NAME  STATE    PID    READINESS  RESTART  FOLLOWERS
+api   running  28813  ready      never    0
+db    running  27456  ready      never    0
+
+$ hum logs api --tail 2
+Thu Sep 24 15:48:03 MDT 2026
+Thu Sep 24 15:48:05 MDT 2026
+next cursor: 7
+
+$ hum down
+api stopped
+db stopped
 ```
 
-A setup step can instead become ready when its own process exits successfully:
+Without `--detach`, `hum up` follows the logs. Ctrl+C stops following; the processes keep running.
+
+`hum init` writes a starter `hum.yaml`. Editors with SchemaStore check it against [`hum.schema.json`](hum.schema.json). See [`hum.example.yaml`](hum.example.yaml) for every option.
+
+## Everyday commands
+
+| To | Run |
+| --- | --- |
+| Start everything and follow logs | `hum up` |
+| Start in the background | `hum up --detach` |
+| Start `api` and what it needs | `hum up api` |
+| See what's running | `hum status` |
+| See one process in detail | `hum status api` |
+| See every project | `hum list --all` |
+| Read recent logs | `hum logs api --tail 50` |
+| Read only errors | `hum logs api --stream stderr` |
+| Follow all logs | `hum logs --follow` |
+| Wait for a log line | `hum wait api --match ready --timeout 30s` |
+| Restart and reload config | `hum restart api` |
+| Stop one process | `hum stop api` |
+| Stop everything | `hum down` |
+| See starts, exits, and failures | `hum events --failed` |
+| Check setup without starting anything | `hum doctor` |
+
+Add `--json` for machine-readable output ([format](docs/cli-json-v1.md)). `hum start api` starts only `api`; `hum up api` also starts everything listed in its `after`. Full command reference: [design](docs/design.md) or `man hum`.
+
+## Configure processes
+
+### Wait until ready
+
+A process listed in `after` waits until this check passes:
+
+| Ready when | Config |
+| --- | --- |
+| a log line matches | `ready: {match: "Listening"}` |
+| a command exits 0 | `ready: {exec: [pg_isready, -h, localhost]}` |
+| an HTTP GET returns 2xx | `ready: {http: "http://127.0.0.1:3000/readyz"}` |
+| a TCP port accepts | `ready: {tcp: "127.0.0.1:5432"}` |
+| the process itself exits 0 | `ready: {exit: 0}` |
+
+Checks retry every `interval` (1s) until `timeout` (30s). They run only at startup; Hum does not monitor health. HTTP and TCP targets must use an IP address or `localhost`.
+
+Use `exit: 0` for setup steps such as migrations:
 
 ```yaml
 processes:
   migrate:
     argv: [bun, run, migrate]
-    ready: {exit: 0, timeout: 30s}
+    ready: {exit: 0}
   api:
     argv: [bun, run, api]
     after: [migrate]
-    ready: {match: "Listening"}
 ```
 
-A nonzero exit, signal, or stop before completion blocks dependents. A retained successful
-completion satisfies `up` without rerunning when its direct dependents are already running; if
-one must launch, the setup step reruns first. `down` followed by `up` reruns it. Explicit
-`start` or `restart` reruns it and waits for completion. `exit` accepts only `0`, allows
-`timeout`, and does not allow `interval`.
+If `migrate` fails, `api` does not start.
 
-Native HTTP and TCP readiness probes avoid shelling out:
-
-```yaml
-ready:
-  http: http://127.0.0.1:3000/readyz
-  interval: 1s
-  timeout: 30s
-# or: tcp: 127.0.0.1:5432
-```
-
-`ready.http` uses GET and accepts only 2xx; `ready.tcp` is ready when a connection is accepted.
-Targets must use a literal IP or `localhost` (with bracketed IPv6), and probes are startup-only,
-non-shell, bounded, and canceled on stop/restart. Environment variables are not expanded in targets;
-repeat a value such as `PORT` literally. `hum doctor` validates syntax without connecting.
-
-JSON and redirected output stay bounded:
+### Restart on failure
 
 ```yaml
 processes:
-  web:
-    argv: [task, "dev:web"]
-    ready:
-      match: "Listening on"
+  api:
+    argv: [bun, run, api]
+    restart: on-failure # retry after 1s, 2s, 4s, 8s, 16s, then give up
+    stop_grace: 5s      # wait between SIGTERM and SIGKILL (default 10s; 0s kills at once)
 ```
 
-```sh
-hum up
-hum up --detach
-hum up --full
-hum status
-hum status web
-hum logs --follow
-hum start web
-hum stop web
-hum down
-```
+`hum stop` always wins over automatic restarts.
 
-`hum status` shows a compact project overview. `hum status NAME` adds readiness and diagnostics.
-
-`hum start NAME` does not start dependencies; named `hum up` does. `hum up --no-wait` is rejected
-only when the selected subgraph declares `after`. `ready.exec` runs exact argv without a shell, inherits
-cwd/env, and retries every second by default; `ready.http` and `ready.tcp` run in-process with the
-same retry policy. All readiness methods gate startup, not liveness. `hum down` stops declared processes in reverse
-`after` order; independent, ad-hoc, and undeclared processes stop concurrently. Results remain lexical.
-See [design and command semantics](docs/design.md).
-
-### Manifest environments
-
-Load shared values from files, then override or remove them per process:
+### Environment
 
 ```yaml
 version: 1
@@ -277,250 +182,48 @@ processes:
     argv: [bun, run, api]
     env:
       PORT: "3001"
-      LEGACY_DATABASE_URL: null
+      LEGACY_DATABASE_URL: null # remove it
 ```
-
-```dotenv
-# .env
-DATABASE_URL=postgres://localhost/app
-LEGACY_DATABASE_URL=postgres://localhost/old
-export PORT = "3000" # overridden by api.env
-LITERAL_DOLLAR='$NAME'
-```
-
-The result for `api` includes `PORT=3001` and no `LEGACY_DATABASE_URL`:
 
 ```text
-caller environment → .env → processes.api.env
+your shell env  →  .env  →  processes.api.env     (later wins)
 ```
 
-- `inherit: false` skips the caller environment.
-- `env` accepts strings or `null`; quote numeric and boolean YAML values.
-- Every file is required, relative to the selected manifest, and inside the project root.
-- Files accept UTF-8 assignments, comments, `export`, whitespace, and whole quoted values.
-- Hum does not discover files or expand `$NAME`, `${...}`, `$()`, or backticks. Single-quote literal forms or use an external loader.
+Set `environment.inherit: false` to skip your shell env. Hum never expands `$VAR`, `$(...)`, or backticks. Changes apply on `hum restart`. Limits and file syntax: [design](docs/design.md#daemon-and-environments).
 
-No configuration preserves the caller environment exactly. `start`, `up`, declared `run`, and
-`restart` load files before daemon contact; ordinary read-only commands do not. `hum doctor` loads
-and validates them without exposing values or launching anything. Processes and automatic relaunches
-keep their launch snapshot. Use `hum restart NAME` to reload changes.
-
-#### Ports across worktrees
-
-Use a checkout-local environment file to assign a literal port in each worktree:
-
-```yaml
-version: 1
-environment:
-  files: [.env.local]
-processes:
-  web:
-    argv: [bun, run, dev]
-```
-
-```dotenv
-# .env.local in this worktree
-PORT=3101
-```
-
-Set another worktree's `.env.local` to a different literal value, such as `PORT=3102`, or select a
-complete alternate manifest with `--file`. Hum does not allocate ports. Values are not interpolated
-into argv or readiness targets, and this configuration does not connect services across worktrees.
-
-Limits: 16 files; 1 MiB and 4,096 assignments per file; 4 MiB per environment; 8 MiB per encoded
-request. Environment metadata stays private, but child and probe output is unredacted. Do not print secrets.
-
-### Operate from anywhere
-
-Use `--project DIR` or `-C DIR` before or after the subcommand:
+## Run without a manifest
 
 ```sh
-hum --project /path/to/checkout up
-hum status -C ../checkout api
-hum run preview --project /path/to/checkout -- bun run preview
+hum run preview -- bun run preview            # run in the foreground
+hum run preview --detach -- bun run preview   # run in the background
+hum attach preview                            # watch it
+hum logs preview --follow
+hum stop preview                              # stop, keep logs
+hum remove preview                            # stop and forget
 ```
 
-Select an alternate manifest with `--file PATH` or `-F PATH`:
+## Projects and worktrees
+
+Each Git root is its own project, so every worktree gets its own processes:
 
 ```sh
-hum -F hum.dev.yaml up
-hum restart -F hum.test.yaml api
-```
-
-- A relative selector starts from the invocation directory.
-- Ad-hoc runs use the selected directory; manifest `cwd` stays project-relative.
-- `--file` must name a regular file inside the project. Every manifest is limited to 1 MiB.
-- Without `--file`, Hum uses `.hum.yaml` when present, otherwise `hum.yaml`; each is a complete declaration source.
-- All manifests share one project namespace. The same process name cannot run twice through separate files.
-- Runtime-only commands use `--file` only to identify the project.
-- `--file` is unavailable on `version`, `serve`, `shutdown`, `mcp`, and `skill`.
-
-Run `hum doctor` before launching work to check the selected project, Hum settings, runtime path,
-manifest environments, process and `ready.exec` executables, readiness_http/readiness_tcp syntax, and any already-present daemon. It never
-starts the daemon, executes a process or readiness probe, repairs files, or retains state; an absent
-daemon is informational. Human output ends with PASS/WARN/FAIL/INFO counts. `--json` emits one
-schema-versioned object, and the command exits 1 only when a check fails or usage is invalid.
-
-`hum init` creates `hum.yaml` when neither default exists, otherwise it preserves or replaces the
-selected `.hum.yaml`/`hum.yaml` manifest; Hum does not merge manifests or support overlays. `-d` means
-`--detach` for `daemon`, `run`, and `up`.
-
-## Sessions
-
-Run a named process without a manifest:
-
-```sh
-hum run preview -- bun run preview
-hum run preview --detach -- bun run preview
-hum attach preview
-hum logs preview --follow --tail 0
-hum wait preview --match "ready"
-hum stop preview       # preserve state
-hum remove preview     # discard state
-hum remove --all       # discard sessions in this scope
-```
-
-Put scope selectors before the child `--`. Foreground runs propagate exit status, stop on Ctrl+C
-or SIGTERM, and detach on SIGHUP. Detached runs belong to the daemon; `hum attach NAME` and
-`hum logs --follow` only observe them.
-
-## Restart on failure
-
-Manifest processes default to `never`. Enable bounded recovery:
-
-```yaml
-processes:
-  api:
-    argv: [bun, run, api]
-    restart: on-failure
-```
-
-A non-zero exit retries after `1s`, `2s`, `4s`, `8s`, and `16s`, then stops. Manual controls win.
-Automatic relaunches reuse the previous definition; `hum restart NAME` adopts manifest changes.
-Status, JSON, and MCP show recovery state and counts.
-
-For `stop_grace`:
-
-- Omit it to inherit the daemon default.
-- Use `0s` for an immediate kill.
-- Restarts adopt changes; automatic relaunches and orphan reclaim keep the previous policy.
-- Status, JSON, and MCP show the effective value and whether it was inherited.
-
-## Aggregate logs
-
-```sh
-hum logs --follow                                  # declared processes
-hum logs web worker --tail 50                     # selected processes
-hum logs web --stream stdout --match Listening    # matching stdout
-hum logs web --stream system                      # supervision events
-```
-
-Ad-hoc sessions are selected by name. The default stream, `both`, includes stdout, stderr, and
-system events. `--after-cursor` pages from the oldest retained entry; otherwise logs start with the
-newest default window. Ctrl+C closes only the follower.
-
-Human output uses `[NAME]` prefixes; JSON uses named NDJSON events. Logs `next` is the consumed cursor.
-A process `next_cursor` is the next cursor to assign.
-
-## JSON and NDJSON
-
-Every supported CLI `--json` result and NDJSON record includes `schema_version: 1`.
-`hum doctor --json` is the read-only preflight result for automation. See the
-[version 1 CLI machine-output contract](docs/cli-json-v1.md) for covered commands, required and
-optional fields, framing, ordering, exit-code interaction, Compatibility rules, and the boundary
-from Hum's private daemon protocol. Attached `hum run` remains raw child output and does not use the CLI JSON contract.
-
-## Shell completion
-
-Completion is opt-in and does not start a daemon:
-
-```sh
-# bash
-source <(hum completion bash)
-
-# zsh
-source <(hum completion zsh)
-
-# fish
-hum completion fish > ~/.config/fish/completions/hum.fish
-```
-
-## Coding agents
-
-Detect Hum's CLI machine-output contract before relying on JSON field semantics:
-
-```sh
-hum version --json
-# {"schema_version":1,"version":"<version>","build_time":"<time>"}
-```
-
-This feature-detection call does not resolve a project or contact the daemon.
-
-### Herdr plugin
-
-With `hum` and Python 3.10+ on Herdr's `PATH`, install the process picker:
-
-```sh
-herdr plugin install brettinternet/hum/plugins/herdr --yes
-```
-
-The picker uses the public CLI contract to open followed logs or interactive attachments for the
-selected workspace. See the [Herdr plugin guide](plugins/herdr/README.md) for actions and ownership.
-
-### Claude Code plugin
-
-With `hum` on `PATH`, install the Claude Code plugin:
-
-```sh
-claude plugin marketplace add brettinternet/hum
-claude plugin install hum@hum
-```
-
-### Codex plugin
-
-Install the Codex plugin from a checkout with `hum` on `PATH`:
-
-```sh
-codex plugin marketplace add .
-codex plugin add hum@hum
-```
-
-The plugins bundle the hum skill and MCP registration. If plugin installation is
-unavailable, register `hum mcp` manually as described in the
-[coding-agent setup](docs/coding-agents.md).
-
-`hum mcp` exposes project processes, bounded output, and one-shot TTY input.
-
-```json
-// .mcp.json
-{
-  "mcpServers": {
-    "hum": {
-      "command": "hum",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-Separate worktrees run independently:
-
-```sh
-cd .worktrees/agent-a
-hum up --detach
-
-cd .worktrees/agent-b
-hum up --detach
-
+hum -C .worktrees/agent-a up --detach
+hum -C .worktrees/agent-b up --detach
 hum list --all
-hum --project .worktrees/agent-a down
+hum -C .worktrees/agent-a down
 ```
 
-See [coding-agent setup](docs/coding-agents.md) for Claude Code, Cursor, MCP, and the shell-only skill.
+Hum does not assign ports. To run two worktrees at once, give each a different `PORT` in a Git-ignored `.env.local` listed under `environment.files`.
 
-## TTY input
+| Pick a project or manifest | Example |
+| --- | --- |
+| Another project | `hum -C ../other status` |
+| Another manifest | `hum -F hum.test.yaml up` |
+| Machine-wide, no project | `hum -g run proxy -- caddy run` |
 
-Enable TTY support per process:
+Hum uses `--file` if given, else `.hum.yaml`, else `hum.yaml`. It never merges them. Put a personal `.hum.yaml` in `.gitignore` to use Hum without changing shared config.
+
+## Interactive processes
 
 ```yaml
 processes:
@@ -530,42 +233,58 @@ processes:
 ```
 
 ```sh
-hum run console --tty -- ./console
-hum logs console
-hum input console --text 'value'
-hum input console --base64 PADDED_VALUE
+hum attach console                   # type into it; Ctrl+] detaches
+hum input console --text 'yes'       # answer a prompt without attaching
 ```
 
-Each TTY has one input owner. Input is sent once, never queued or echoed. `logs --follow` receives output only. `--json` and MCP expose the same operation result.
+Only one client can type at a time. Input is sent once and never queued.
 
-## Project scopes
+## Coding agents
+
+Install a plugin, or point any MCP client at `hum mcp`:
 
 ```sh
-hum status                            # nearest Git root
-hum -C ../other-worktree status       # another project, even if removed
-hum list                              # compact name, state, and PID
-hum list --full                       # all human-readable process details
-hum list --all                        # every scope; combine with --full if needed
-hum -g run proxy -- caddy run         # machine-wide ad-hoc session
-hum signal proxy HUP --global         # global selector after positionals
+claude plugin marketplace add brettinternet/hum && claude plugin install hum@hum   # Claude Code
+codex plugin marketplace add . && codex plugin add hum@hum                         # Codex, from a checkout
+herdr plugin install brettinternet/hum/plugins/herdr --yes                         # Herdr process picker
 ```
 
-`hum ls` is an interactive alias for `hum list`; documentation and scripts use the canonical name.
+```json
+{ "mcpServers": { "hum": { "command": "hum", "args": ["mcp"] } } }
+```
 
-Project roots are canonical: symlink aliases share a scope, while separate worktrees do not. Use
-`--project PATH` or `-C PATH`
-to select another project. Use `--global` or `-g` only for machine-wide ad-hoc sessions, before
-`run`'s child `--`.
+Scripts can check the JSON format version first:
 
-`--global` conflicts with `--project` and `list --all`; `init` and `up` reject it. JSON reports
-`scope` as `project` or `global`; global records omit `project_root`.
+```console
+$ hum version --json
+{"schema_version":1,"version":"<version>","build_time":"<time>"}
+```
 
-`hum events [NAME...]` reads recent durable service history without requiring a manifest or a
-running daemon. Use repeatable `--kind`, `--failed`, `--match`, `--since`, `--tail`, and
-`--after-cursor` to narrow bounded pages; `--json` emits schema-versioned event records and trailing
-cursor metadata. Human output fits the terminal width (80 columns when unknown), elides detail first,
-and colors only semantic event words under the usual TTY/`TERM`/`NO_COLOR` policy; `--full` prints
-complete multi-line details. History is private, retained to 2,000 events or 1 MiB per scope, and
-excludes child output, environment, and input. It survives daemon replacement but not runtime-directory
-cleanup. An unreadable cursor high-water mark makes that scope's history unavailable rather than
-reusing cursors; service control remains available.
+See [coding-agent setup](docs/coding-agents.md) and the [Herdr plugin](plugins/herdr/README.md).
+
+## Shell completion
+
+```sh
+source <(hum completion bash)                              # bash
+source <(hum completion zsh)                               # zsh
+hum completion fish > ~/.config/fish/completions/hum.fish  # fish
+```
+
+## Compared to other tools
+
+| | Hum | [pitchfork](https://pitchfork.jdx.dev/) | [Overmind](https://github.com/DarthSim/overmind) | [Hivemind](https://github.com/DarthSim/hivemind) | [mprocs](https://github.com/pvolok/dekit/blob/master/README-mprocs.md) |
+| --- | --- | --- | --- | --- | --- |
+| Config | YAML, exact argv | TOML, shell | Procfile | Procfile | YAML or Procfile |
+| Ready checks | match, exec, HTTP, TCP, exit | match, command, HTTP, TCP, delay | – | – | – |
+| Log history | recent output + events | searchable SQLite | tmux | – | TUI, files |
+| Type into a process | attach, one-shot input | – | tmux | stdin | TUI |
+| MCP tools | 13 | 5 | – | – | – |
+| UI | none (Herdr panes) | TUI, web | tmux | terminal | TUI |
+
+`–` means not documented.
+
+Pick pitchfork for ports, a reverse proxy, boot start, cron, file-watch restarts, lifecycle hooks, or a UI. Pick Hum for exact argv, per-worktree isolation with no setup, and a small, stable API for agents: `wait`, `input`, `signal`, `events`, and versioned JSON. They can share a repo: keep Hum config in a Git-ignored `.hum.yaml`.
+
+## Non-goals
+
+Hum does not provide a UI, port allocation, a reverse proxy, scheduling, boot start, file-watch restarts, health monitoring, resource limits, log queries, or shell templating. See [decision-001](backlog/decisions/decision-001%20-%20Hum-stays-a-process-API-no-port-allocation-proxying-or-shell-level-conveniences.md).
