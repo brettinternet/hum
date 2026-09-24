@@ -64,32 +64,33 @@ func TestTTYCLI(t *testing.T) {
 		t.Fatalf("attach owner for %+v: %v", current, err)
 	}
 	defer owner.Release()
-	deadline := time.Now().Add(3 * time.Second)
+	stoppedCtx, cancelStopped := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelStopped()
 	for {
-		process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: "dev", Cwd: cwd})
-		if getErr == nil && process.State == app.StateExited {
+		event, nextErr := owner.Next(stoppedCtx)
+		if nextErr != nil {
+			t.Fatalf("owner did not receive stopped state: %v", nextErr)
+		}
+		if event.State == "stopped" {
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("dev did not stop: process=%+v err=%v", process, getErr)
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
-	select {
-	case <-owner.Events():
-	case <-time.After(time.Second):
-		t.Fatal("owner did not receive stopped state")
+	process, getErr := client.Get(context.Background(), daemon.GetRequest{Name: "dev", Cwd: cwd})
+	if getErr != nil || process.State != app.StateExited {
+		t.Fatalf("dev did not stop: process=%+v err=%v", process, getErr)
 	}
 	if err := owner.Release(); err != nil {
 		t.Fatalf("release stopped input owner: %v", err)
 	}
-	conflictCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	conflictCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	output.Reset()
 	errors.Reset()
 	err = cliServeRunInvoke(conflictCtx, []string{"run", "dev", "--tty", "--", "/bin/echo", "replacement"}, &output, &errors)
 	if err != nil || !strings.Contains(output.String(), "replacement") {
-		t.Fatalf("replacement TTY run = %v, output %q stderr %q", err, output.String(), errors.String())
+		latest, latestErr := client.Get(context.Background(), daemon.GetRequest{Name: "dev", Cwd: cwd})
+		logs, logsErr := client.Output(context.Background(), daemon.OutputRequest{Name: "dev", Cwd: cwd})
+		t.Fatalf("replacement TTY run = %v, output %q stderr %q; process=%#v err=%v exit=%#v logs=%+v logsErr=%v", err, output.String(), errors.String(), latest, latestErr, latest.Exit, logs, logsErr)
 	}
 
 	if _, _, err := cliServeRunInvokeForTest("shutdown", "--stop-processes"); err != nil {

@@ -496,6 +496,30 @@ func entries(t *testing.T, store *output.Store) []output.Entry {
 	return result.Entries
 }
 
+func TestTTYShortLivedOutput(t *testing.T) {
+	for attempt := 0; attempt < 20; attempt++ {
+		store := newStore(t)
+		child, err := Start(Spec{Argv: []string{"/bin/echo", "replacement"}, Dir: t.TempDir(), Env: []string{"PATH=/usr/bin:/bin"}, Output: store, MaxLineBytes: 1024, TTY: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result := child.Wait(); result.Err != nil || result.ExitCode != 0 {
+			t.Fatalf("attempt %d: child result %+v", attempt, result)
+		}
+		read, err := store.Read(output.ReadOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var text string
+		for _, entry := range read.Entries {
+			text += entry.Text
+		}
+		if !strings.Contains(text, "replacement") {
+			t.Fatalf("attempt %d: short-lived TTY output = %q", attempt, text)
+		}
+	}
+}
+
 func TestTTYProcess(t *testing.T) {
 	store := newStore(t)
 	subscription := store.Subscribe(output.ReadOptions{})

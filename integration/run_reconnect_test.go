@@ -223,6 +223,9 @@ func TestAttachedRunForegroundLifecycle(t *testing.T) {
 		marker := filepath.Join(t.TempDir(), "hup")
 		client := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, "run", name, "--", scenario.fixture, "stream", marker)
 		testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
+		// The fixture writes .started before emitting stdout; wait for the
+		// attached stream before detaching so retained output is observable.
+		runitWaitForOutput(t, client, false, "stdout:live")
 		if err := client.Signal(syscall.SIGHUP); err != nil {
 			t.Fatal(err)
 		}

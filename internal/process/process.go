@@ -156,14 +156,27 @@ func Start(spec Spec) (*Child, error) {
 		if spec.TTYSize != nil {
 			size = *spec.TTYSize
 		}
-		master, err := pty.StartWithAttrs(cmd, &pty.Winsize{Cols: size.Columns, Rows: size.Rows}, &syscall.SysProcAttr{Setsid: true, Setctty: true})
+		master, slave, err := pty.Open()
 		if err != nil {
+			return nil, fmt.Errorf("process: open tty %q: %w", argv[0], err)
+		}
+		if err := pty.Setsize(master, &pty.Winsize{Cols: size.Columns, Rows: size.Rows}); err != nil {
+			_ = slave.Close()
+			_ = master.Close()
+			return nil, fmt.Errorf("process: size tty %q: %w", argv[0], err)
+		}
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+		if err := cmd.Start(); err != nil {
+			_ = slave.Close()
+			_ = master.Close()
 			return nil, fmt.Errorf("process: start tty %q: %w", argv[0], err)
 		}
 		startIdentity, identityErr := ProcessStartIdentity(cmd.Process.Pid)
 		if identityErr != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			_ = cmd.Wait()
+			_ = slave.Close()
 			_ = master.Close()
 			return nil, fmt.Errorf("process: read tty start identity: %w", identityErr)
 		}
@@ -171,6 +184,7 @@ func Start(spec Spec) (*Child, error) {
 			if err := spec.Started(); err != nil {
 				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 				_ = cmd.Wait()
+				_ = slave.Close()
 				_ = master.Close()
 				return nil, fmt.Errorf("process: started callback: %w", err)
 			}
@@ -191,7 +205,7 @@ func Start(spec Spec) (*Child, error) {
 			res:           Result{},
 		}
 		go child.observeGroupExit()
-		go child.runTTY(cmd, master)
+		go child.runTTY(cmd, master, slave)
 		return child, nil
 	}
 
@@ -586,8 +600,8 @@ func (c *Child) run(cmd *exec.Cmd, stdoutReader, stderrReader *os.File) {
 	at := c.groupEndedAt
 	c.mu.Unlock()
 	hardDeadline := time.Now().Add(captureHardTimeout)
-	stdoutControl.setHardDeadline(hardDeadline)
-	stderrControl.setHardDeadline(hardDeadline)
+	stdoutControl.setHardDeadline(hardDeadline, false)
+	stderrControl.setHardDeadline(hardDeadline, false)
 	stdoutCancelDone := make(chan struct{})
 	stderrCancelDone := make(chan struct{})
 	go func() {
@@ -620,7 +634,7 @@ func (c *Child) run(cmd *exec.Cmd, stdoutReader, stderrReader *os.File) {
 	close(c.done)
 }
 
-func (c *Child) runTTY(cmd *exec.Cmd, master *os.File) {
+func (c *Child) runTTY(cmd *exec.Cmd, master, slave *os.File) {
 	stdoutWriter, stdoutSetupErr := output.NewLineWriter(
 		output.Stdout,
 		c.maxLineBytes,
@@ -631,7 +645,7 @@ func (c *Child) runTTY(cmd *exec.Cmd, master *os.File) {
 	stdoutDone := make(chan error, 1)
 	stdoutFinished := make(chan struct{})
 	stdoutProgress := make(chan struct{}, 1)
-	stdoutControl := &captureControl{}
+	stdoutControl := &captureControl{reads: make(chan struct{}, 1)}
 	go func() {
 		defer close(stdoutFinished)
 		stdoutDone <- capture(master, stdoutWriter, stdoutSetupErr, c.groupGone, stdoutProgress, stdoutControl, true)
@@ -644,8 +658,32 @@ func (c *Child) runTTY(cmd *exec.Cmd, master *os.File) {
 	c.mu.Lock()
 	at := c.groupEndedAt
 	c.mu.Unlock()
+	// macOS discards unread PTY data when the last slave closes. Keep the
+	// parent's slave open until the capture goroutine consumes pending bytes;
+	// empty PTYs close immediately and escaped holders remain hard-bounded.
 	hardDeadline := time.Now().Add(captureHardTimeout)
-	stdoutControl.setHardDeadline(hardDeadline)
+	quiet := time.NewTimer(captureHardTimeout)
+	defer quiet.Stop()
+waitForTTYOutput:
+	for {
+		if pending, err := ttyPendingBytes(master); err == nil && pending == 0 {
+			break
+		}
+		select {
+		case <-stdoutControl.reads:
+			if !time.Now().Before(hardDeadline) {
+				break waitForTTYOutput
+			}
+			resetCaptureTimer(quiet, captureDrainTimeout)
+		case <-quiet.C:
+			break waitForTTYOutput
+		}
+	}
+	_ = slave.Close()
+	// A short-lived TTY can exit before the capture goroutine gets scheduled.
+	// Do not close its PTY after an idle drain window without reading a byte;
+	// let the bounded hard deadline protect against escaped descriptor holders.
+	stdoutControl.setHardDeadline(hardDeadline, true)
 	cancelDone := make(chan struct{})
 	go func() {
 		cancelCapture(master, stdoutFinished, stdoutProgress, stdoutControl, func() {
@@ -806,15 +844,18 @@ func (c *Child) markGroupEndedLocked() {
 }
 
 type captureControl struct {
-	mu           sync.Mutex
-	active       bool
-	hardDeadline time.Time
+	mu             sync.Mutex
+	active         bool
+	hardDeadline   time.Time
+	drainUntilHard bool
+	reads          chan struct{}
 }
 
-func (c *captureControl) setHardDeadline(deadline time.Time) {
+func (c *captureControl) setHardDeadline(deadline time.Time, drainUntilHard bool) {
 	c.mu.Lock()
 	c.active = true
 	c.hardDeadline = deadline
+	c.drainUntilHard = drainUntilHard
 	c.mu.Unlock()
 }
 
@@ -828,9 +869,9 @@ func (c *captureControl) isActive() bool {
 func (c *captureControl) nextDeadline() time.Time {
 	deadline := time.Now().Add(captureDrainTimeout)
 	c.mu.Lock()
-	hardDeadline := c.hardDeadline
+	hardDeadline, drainUntilHard := c.hardDeadline, c.drainUntilHard
 	c.mu.Unlock()
-	if !hardDeadline.IsZero() && hardDeadline.Before(deadline) {
+	if drainUntilHard || !hardDeadline.IsZero() && hardDeadline.Before(deadline) {
 		return hardDeadline
 	}
 	return deadline
@@ -868,6 +909,12 @@ func (r captureReader) Read(p []byte) (int, error) {
 }
 
 func (r captureReader) noteProgress() {
+	if r.control.reads != nil {
+		select {
+		case r.control.reads <- struct{}{}:
+		default:
+		}
+	}
 	select {
 	case <-r.canceled:
 		if !r.control.isActive() {
@@ -900,7 +947,7 @@ func cancelCapture(
 	}
 
 	hardDeadline := control.hardDeadlineAt()
-	if err := reader.SetReadDeadline(control.nextDeadline()); err == nil {
+	if len(closeReader) == 0 && reader.SetReadDeadline(control.nextDeadline()) == nil {
 		// A descriptor deadline lets capture finish as soon as the short drain
 		// window expires. Progress extends that window, but never beyond the
 		// hard deadline. Waiting unconditionally for the hard deadline made a

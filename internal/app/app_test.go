@@ -1217,14 +1217,37 @@ func TestExecutableReadinessShutdownCancellation(t *testing.T) {
 func TestExecutableReadinessAutomaticRelaunchIncarnationIsolation(t *testing.T) {
 	root := makeProject(t, false)
 	pidFile := filepath.Join(root, "probe-pids")
-	s := testSupervisor(t, Options{})
+	countFile := filepath.Join(root, "launch-count")
+	if err := os.WriteFile(pidFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(countFile, []byte("0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Each child exits only after its own probe has started. The former
+	// 100ms lifespan could end before the probe goroutine ran on a busy runner.
+	// Drive the relaunch timer after observing the first exit rather than
+	// consuming most of the two-second PID wait in the one-second backoff.
+	timers := newRelaunchTestTimers(time.Now())
+	s := testSupervisor(t, Options{After: func(delay time.Duration) <-chan time.Time {
+		if delay == time.Second {
+			return timers.after(delay)
+		}
+		return time.After(delay)
+	}})
 	_, err := s.Start(StartRequest{
 		Name: "relaunch-isolation", Source: "manifest", Cwd: root, Restart: RestartOnFailure,
-		Argv: []string{"/bin/sh", "-c", "sleep .1; exit 7"}, Env: []string{"PATH=/usr/bin:/bin", "PROBE_PID_FILE=" + pidFile},
+		Argv: []string{"/bin/sh", "-c", `count=$(cat "$LAUNCH_COUNT_FILE"); count=$((count + 1)); echo "$count" > "$LAUNCH_COUNT_FILE"; while [ "$(wc -l < "$PROBE_PID_FILE")" -lt "$count" ]; do sleep .01; done; exit 7`}, Env: []string{"PATH=/usr/bin:/bin", "PROBE_PID_FILE=" + pidFile, "LAUNCH_COUNT_FILE=" + countFile},
 		Ready: &ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo $$ >> \"$PROBE_PID_FILE\"; exec sleep 30"}, Timeout: 3 * time.Second},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	first := waitExecutableProbePID(t, pidFile, 1)
+	waitExecutableProbeGroupGone(t, first[0])
+	waitForRelaunch(t, s, root, "relaunch-isolation", func(process Process) bool { return process.NextLaunchAt != nil })
+	if !timers.fire(time.Second) {
+		t.Fatal("missing automatic relaunch timer")
 	}
 	pids := waitExecutableProbePID(t, pidFile, 2)
 	if pids[0] == pids[1] {
