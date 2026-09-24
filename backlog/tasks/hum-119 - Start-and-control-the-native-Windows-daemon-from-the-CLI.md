@@ -1,10 +1,10 @@
 ---
 id: HUM-119
 title: Start and control the native Windows daemon from the CLI
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-23 20:49'
-updated_date: '2026-09-23 22:24'
+updated_date: '2026-09-24 15:18'
 labels:
   - cli
   - daemon
@@ -57,18 +57,38 @@ Windows verification: after the owner approves, push HEAD to `windows/<task-id>`
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — After the owner-approved `git push origin HEAD:windows/HUM-119`, `task windows:watch` exits 0 on macOS, with WINDOWS_PACKAGES including ./internal/cli ./internal/mcp ./cmd/hum ./cmd/hum-man. Real built-binary Windows tests cover autostart, non-TTY run, status, logs, wait, stop, and shutdown.
-- [ ] #2 AC2 — On macOS, `rg -n "func TestWindows" internal/cli cmd/hum` lists tests in `*_windows_test.go` files proving that concurrent autostart yields exactly one daemon, that cancellation leaves no orphan daemon, and that unsupported TTY and Unix-signal requests return explicit stable errors. AC1 run executes these tests.
-- [ ] #3 AC3 — On macOS, `go test ./internal/cli ./internal/mcp ./cmd/hum -count=1` exits 0; existing detach, Ctrl+C, HUP, doctor, and interactive tests keep their coverage.
-- [ ] #4 AC4 — On macOS, `GOOS=windows GOARCH=amd64 go build ./... && GOOS=windows GOARCH=amd64 go vet ./internal/cli ./internal/mcp ./cmd/...` exits 0.
+- [x] #1 AC1 — After the owner-approved `git push origin HEAD:windows/HUM-119`, `task windows:watch` exits 0 on macOS, with WINDOWS_PACKAGES including ./internal/cli ./internal/mcp ./cmd/hum ./cmd/hum-man. Real built-binary Windows tests cover autostart, non-TTY run, status, logs, wait, stop, and shutdown.
+- [x] #2 AC2 — On macOS, `rg -n "func TestWindows" internal/cli cmd/hum` lists tests in `*_windows_test.go` files proving that concurrent autostart yields exactly one daemon, that cancellation leaves no orphan daemon, and that unsupported TTY and Unix-signal requests return explicit stable errors. AC1 run executes these tests.
+- [x] #3 AC3 — On macOS, `go test ./internal/cli ./internal/mcp ./cmd/hum -count=1` exits 0; existing detach, Ctrl+C, HUP, doctor, and interactive tests keep their coverage.
+- [x] #4 AC4 — On macOS, `GOOS=windows GOARCH=amd64 go build ./... && GOOS=windows GOARCH=amd64 go vet ./internal/cli ./internal/mcp ./cmd/...` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Isolate Unix startup, signals, TTY and doctor checks behind OS-specific implementations while preserving Unix behavior.
+2. Port Windows CLI and fixture workflows with real built-binary tests for autostart, lifecycle, cancellation, unsupported requests.
+3. Cross-build/vet and run focused Unix checks, then native Windows CI with owner-approved push; independent verification and task ci.
+4. Commit implementation, integrate main, finalize provider evidence and clean up owned worktree.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC#1: git push https://github.com/brettinternet/hum.git HEAD:windows/HUM-119 at 47eca25; task windows:watch exited 0 (run 36018910860). Go CI (Windows) task windows:test ran ./internal/cli ./internal/mcp ./cmd/hum ./cmd/hum-man; TestWindowsBuiltBinaryConcurrentAutostartAndLifecycle covers built-binary autostart, run, status, logs, wait, stop, shutdown.
+AC#2: rg -n "func TestWindows" internal/cli cmd/hum lists native tests for concurrent autostart, daemon cancellation/reaping, unsupported TTY and Unix-signal errors, doctor readiness/manifest, and foreground interrupt cleanup; run 36018910860 passed.
+AC#3: go test ./internal/cli ./internal/mcp ./cmd/hum -count=1 exited 0 on macOS; GOFLAGS=-p=1 task ci passed at 47eca25 with Unix detach, Ctrl+C, HUP, doctor and interactive coverage intact.
+AC#4: GOOS=windows GOARCH=amd64 go build ./... and GOOS=windows GOARCH=amd64 go vet ./internal/cli ./internal/mcp ./cmd/... exited 0 on macOS.
+Modified-file deviations: internal/daemon/transport_windows.go handles absent named pipes for built-binary autostart; internal/daemon/event_history.go and internal/daemon/event_history_windows_test.go handle Windows-incompatible directory fsync. Required support for scoped Windows CLI runtime.
+Review: independent verifier PASS AC1-4 at 7a0fb7b; its doctor/interrupt findings corrected in b056b9f and dc470b0. Targeted verifier PASS DoD #5 at dc470b0; additional native doctor readiness/private-manifest/environment/colors tests passed in run 36018910860. Console-level Ctrl+C delivery remains untested on headless Windows CI; synthetic interrupt through production follow-loop stops and reaps real child. Main integration and worktree cleanup remain.
+<!-- SECTION:NOTES:END -->
