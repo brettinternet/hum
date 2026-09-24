@@ -4,39 +4,64 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"hum/internal/cli"
 	"hum/internal/mcp"
 )
 
 func TestDocsCoverEveryTool(t *testing.T) {
-	// tools/list is the public projection of the toolDefinitions surface.
-	var serverOutput bytes.Buffer
+	// Keep stdin open until the asynchronous tools/list response arrives: EOF
+	// cancels in-flight requests and need not preserve response order.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	inputReader, input := io.Pipe()
+	output, outputWriter := io.Pipe()
+	defer input.Close()
+	defer output.Close()
+	stopOnDeadline := context.AfterFunc(ctx, func() {
+		_ = input.Close()
+		_ = output.Close()
+	})
+	defer stopOnDeadline()
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- mcp.NewServer(mcp.Options{}).Serve(ctx, inputReader, outputWriter)
+		_ = outputWriter.Close()
+	}()
 	request := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
 	}, "\n") + "\n"
-	if err := mcp.NewServer(mcp.Options{}).Serve(context.Background(), strings.NewReader(request), &serverOutput); err != nil {
-		t.Fatalf("list MCP tools: %v", err)
-	}
-	responses := strings.Split(strings.TrimSpace(serverOutput.String()), "\n")
-	if len(responses) == 0 {
-		t.Fatal("MCP tools/list returned no response")
+	if _, err := io.WriteString(input, request); err != nil {
+		t.Fatalf("send tools/list: %v", err)
 	}
 	var listing struct {
+		ID     int `json:"id"`
 		Result struct {
 			Tools []struct {
 				Name string `json:"name"`
 			} `json:"tools"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal([]byte(responses[len(responses)-1]), &listing); err != nil {
-		t.Fatalf("decode MCP tools/list: %v", err)
+	decoder := json.NewDecoder(output)
+	for {
+		if err := decoder.Decode(&listing); err != nil {
+			t.Fatalf("read tools/list response: %v", err)
+		}
+		if listing.ID == 2 {
+			break
+		}
+	}
+	_ = input.Close()
+	if err := <-serveDone; err != nil {
+		t.Fatalf("list MCP tools: %v", err)
 	}
 	if len(listing.Result.Tools) == 0 {
 		t.Fatal("MCP tools/list returned no tools")

@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"hum/internal/testutil"
 )
 
 type machineOutputResult struct {
@@ -16,17 +19,13 @@ type machineOutputResult struct {
 }
 
 func TestBuiltCLIMachineOutputV1(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "hum")
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build hum: %v\n%s", err, output)
-	}
+	binary := testutil.BuildHum(t)
 
 	project := t.TempDir()
 	if err := os.Mkdir(filepath.Join(project, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runtimeDir := t.TempDir()
+	runtimeDir := testutil.RuntimeDir(t)
 
 	aggregate := runMachineOutputCommand(t, binary, project, runtimeDir, "list", "--json")
 	if aggregate.code != 0 || aggregate.stderr != "" {
@@ -48,9 +47,17 @@ func TestBuiltCLIMachineOutputV1(t *testing.T) {
 	t.Cleanup(func() {
 		_ = runMachineOutputCommand(t, binary, project, runtimeDir, "shutdown", "--stop-processes", "--json")
 	})
-	attached := runMachineOutputCommand(t, binary, project, runtimeDir, "run", "raw", "--", "/bin/sh", "-c", "printf 'raw-child-output\\n'; exit 7")
-	if attached.code != 7 || attached.stdout != "raw-child-output\n" || attached.stderr != "" {
-		t.Fatalf("attached run = code %d, stdout=%q stderr=%q; want raw output and code 7", attached.code, attached.stdout, attached.stderr)
+	if runtime.GOOS == "windows" {
+		fixture := testutil.BuildFixture(t)
+		attached := runMachineOutputCommand(t, binary, project, runtimeDir, "run", "raw", "--", fixture, "inspect")
+		if attached.code != 23 || !strings.Contains(attached.stdout, "SNAPSHOT ") || !strings.Contains(attached.stderr, "stderr:raw with spaces") {
+			t.Fatalf("attached Windows run = code %d, stdout=%q stderr=%q; want raw fixture output and code 23", attached.code, attached.stdout, attached.stderr)
+		}
+	} else {
+		attached := runMachineOutputCommand(t, binary, project, runtimeDir, "run", "raw", "--", "/bin/sh", "-c", "printf 'raw-child-output\\n'; exit 7")
+		if attached.code != 7 || attached.stdout != "raw-child-output\n" || attached.stderr != "" {
+			t.Fatalf("attached run = code %d, stdout=%q stderr=%q; want raw output and code 7", attached.code, attached.stdout, attached.stderr)
+		}
 	}
 }
 

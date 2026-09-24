@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"hum/internal/output"
 	"hum/internal/project"
 	"hum/internal/protocol"
+	"hum/internal/testutil"
 )
 
 func TestMCPManifestEnvironmentContract(t *testing.T) {
@@ -1822,6 +1824,12 @@ func TestSignalTool(t *testing.T) {
 	client := &fakeClient{processes: map[string]protocol.Process{"api": {Name: "api", State: protocol.StateRunning}}}
 	server, root, _ := newTestServer(t, nil, client)
 	value, err := server.callTool(context.Background(), "signal", args(root, "name", "api", "signal", "hup"))
+	if runtime.GOOS == "windows" {
+		if mapError(err).Code != string(protocol.ErrorInvalidSignal) || len(client.signals) != 0 {
+			t.Fatalf("Windows Unix signal error = %v, requests = %#v; want invalid_signal without delivery", err, client.signals)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2594,11 +2602,7 @@ func TestLogsSince(t *testing.T) {
 }
 
 func testMCPLogsSinceLive(t *testing.T) {
-	runtimeDir, err := os.MkdirTemp("/tmp", "h-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+	runtimeDir := testutil.RuntimeDir(t)
 	daemonServer, err := daemon.NewServer(daemon.Config{RuntimeDir: runtimeDir})
 	if err != nil {
 		t.Fatal(err)
@@ -2639,7 +2643,11 @@ func testMCPLogsSinceLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	start := protocol.NewStartRequest("api", []string{"/bin/sh", "-c", "printf 'old-mcp\\n'; sleep 2; printf 'new-mcp\\n'"}, root, nil)
+	argv := []string{"/bin/sh", "-c", "printf 'old-mcp\\n'; sleep 2; printf 'new-mcp\\n'"}
+	if runtime.GOOS == "windows" {
+		argv = []string{testutil.BuildFixture(t), "since"}
+	}
+	start := protocol.NewStartRequest("api", argv, root, nil)
 	start.Root, start.Source = root, "ad_hoc"
 	started, err := client.Start(context.Background(), start)
 	if err != nil {

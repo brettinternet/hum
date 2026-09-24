@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 
 	"golang.org/x/term"
 
@@ -82,6 +81,9 @@ func isInputStopped(err error) bool {
 }
 
 func newTTYInput(session *daemon.InputSession, errOut io.Writer) (*ttyInput, error) {
+	if err := validateTTYRequest(true); err != nil {
+		return nil, err
+	}
 	if session == nil {
 		return nil, errors.New("nil tty input session")
 	}
@@ -123,7 +125,7 @@ func (i *ttyInput) watchSession() {
 
 func (i *ttyInput) resizeLoop() {
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGWINCH)
+	registerTTYResizeSignal(signals)
 	defer signal.Stop(signals)
 	for {
 		select {

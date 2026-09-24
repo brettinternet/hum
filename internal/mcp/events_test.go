@@ -10,6 +10,7 @@ import (
 
 	"hum/internal/daemon"
 	"hum/internal/protocol"
+	"hum/internal/testutil"
 )
 
 type eventHistoryClient struct {
@@ -78,7 +79,7 @@ func TestEvents(t *testing.T) {
 
 	t.Run("offline reader applies byte bounded forward paging", func(t *testing.T) {
 		root := t.TempDir()
-		history := daemon.NewEventHistory(t.TempDir(), protocol.ScopeProject, root)
+		history := daemon.NewEventHistory(testutil.RuntimeDir(t), protocol.ScopeProject, root)
 		for i := 0; i < 6; i++ {
 			if _, err := history.Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch", Detail: strings.Repeat("x", 100)}); err != nil {
 				t.Fatal(err)

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package cli
 
 import (
@@ -229,7 +231,7 @@ processes:
 
 func TestCompletionIsQuietAndInert(t *testing.T) {
 	projectRoot := stopShutdownTestProject(t)
-	runtimeParent, err := os.MkdirTemp("/tmp", "h-comp-")
+	runtimeParent, err := os.MkdirTemp("", "h-comp-")
 	if err != nil {
 		t.Fatalf("create runtime parent: %v", err)
 	}
@@ -261,7 +263,7 @@ processes:
 		t.Fatalf("manifest error completion touched daemon runtime: %v", statErr)
 	}
 
-	malformedParent, err := os.MkdirTemp("/tmp", "h-comp-")
+	malformedParent, err := os.MkdirTemp("", "h-comp-")
 	if err != nil {
 		t.Fatalf("create malformed runtime parent: %v", err)
 	}

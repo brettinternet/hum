@@ -859,7 +859,7 @@ func TestConcurrentServerShutdown(t *testing.T) {
 		writer := newShutdownWriter()
 		done := make(chan error, 1)
 		go func() { done <- server.Serve(ctx, inputReader, writer) }()
-		request := `{"jsonrpc":"2.0","id":"slow","method":"tools/call","params":{"name":"wait","arguments":{"project_root":"` + root + `","name":"slow"}}}` + "\n"
+		request := fmt.Sprintf(`{"jsonrpc":"2.0","id":"slow","method":"tools/call","params":{"name":"wait","arguments":{"project_root":%q,"name":"slow"}}}`, root) + "\n"
 		if _, err := io.WriteString(input, request); err != nil {
 			t.Fatal(err)
 		}

@@ -75,7 +75,10 @@ func dialRuntime(ctx context.Context, path string) (net.Conn, error) {
 			}
 			return &securePipeConn{ReadWriteCloser: file, handle: h, path: path, deadlines: deadlines}, nil
 		}
-		if !errors.Is(err, windows.ERROR_PIPE_BUSY) && !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+		// An absent endpoint is not a transient busy listener. Return it so
+		// callers can autostart (or report an absent daemon) without requiring
+		// an explicit deadline on every read-only request.
+		if !errors.Is(err, windows.ERROR_PIPE_BUSY) {
 			return nil, err
 		}
 		select {

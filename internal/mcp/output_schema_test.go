@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -221,6 +222,12 @@ func checkToolResult(t *testing.T, server *Server, root, name string, fields map
 			t.Fatalf("RPC: %#v", rpcErr)
 		}
 		result, ok := value.(callToolResult)
+		if name == "signal" && runtime.GOOS == "windows" {
+			if !ok || !result.IsError || result.StructuredContent == nil || result.StructuredContent.(*ToolError).Code != string(protocol.ErrorInvalidSignal) {
+				t.Fatalf("unsupported Windows signal result: %#v", value)
+			}
+			return
+		}
 		if !ok || result.IsError || result.StructuredContent == nil {
 			t.Fatalf("tool result: %#v", value)
 		}
