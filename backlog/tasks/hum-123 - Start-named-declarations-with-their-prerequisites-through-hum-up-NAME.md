@@ -1,10 +1,10 @@
 ---
 id: HUM-123
 title: Start named declarations with their prerequisites through hum up NAME
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-23 21:21'
-updated_date: '2026-09-23 22:24'
+updated_date: '2026-09-24 01:27'
 labels:
   - cli
   - mcp
@@ -69,19 +69,33 @@ HUM-131 moves scheduler-rule assertions into internal/orchestrate first. Follow 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/orchestrate -run "^TestSelectWithPrerequisites$" -count=1 -v` exits 0 and prints its PASS line; cases cover a chain, a diamond, multiple names sharing prerequisites (deduplicated), declaration order preserved, a name without `after` selecting only itself, and several unknown names reported in one error.
-- [ ] #2 AC2 — `go test ./internal/cli -run "^TestUpNamedSelectsPrerequisites$" -count=1 -v` exits 0; with a manifest db <- api <- web plus independent worker, `hum up api --json` launches db then api only and returns exactly those two results; a repeat reports both `already_running`; `hum up nope` exits 1 without daemon contact; `hum up` with no names still launches all four.
-- [ ] #3 AC3 — `go test ./internal/mcp -run "^TestUpNames$" -count=1 -v` exits 0; `names` selects the same subgraph as the CLI; an empty array, duplicate names, and non-string items are rejected by input validation before any daemon call; unknown names return an error before any start request.
-- [ ] #4 AC4 — `go test ./integration -run "^TestUpNamedStack$" -count=1 -v` exits 0; against the built binary, `hum up api --detach` in a db <- api <- web chain leaves exactly db and api running according to `hum status --json`.
-- [ ] #5 AC5 — `go test ./internal/cli -run "Completion" -count=1 -v` exits 0 and includes a case where completion at the `hum up` NAME position returns the declared process names.
+- [x] #1 AC1 — `go test ./internal/orchestrate -run "^TestSelectWithPrerequisites$" -count=1 -v` exits 0 and prints its PASS line; cases cover a chain, a diamond, multiple names sharing prerequisites (deduplicated), declaration order preserved, a name without `after` selecting only itself, and several unknown names reported in one error.
+- [x] #2 AC2 — `go test ./internal/cli -run "^TestUpNamedSelectsPrerequisites$" -count=1 -v` exits 0; with a manifest db <- api <- web plus independent worker, `hum up api --json` launches db then api only and returns exactly those two results; a repeat reports both `already_running`; `hum up nope` exits 1 without daemon contact; `hum up` with no names still launches all four.
+- [x] #3 AC3 — `go test ./internal/mcp -run "^TestUpNames$" -count=1 -v` exits 0; `names` selects the same subgraph as the CLI; an empty array, duplicate names, and non-string items are rejected by input validation before any daemon call; unknown names return an error before any start request.
+- [x] #4 AC4 — `go test ./integration -run "^TestUpNamedStack$" -count=1 -v` exits 0; against the built binary, `hum up api --detach` in a db <- api <- web chain leaves exactly db and api running according to `hum status --json`.
+- [x] #5 AC5 — `go test ./internal/cli -run "Completion" -count=1 -v` exits 0 and includes a case where completion at the `hum up` NAME position returns the declared process names.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation 08e062c (merged fast-forward into main): orchestrate selects named prerequisite closure; CLI/MCP up use it; completion and docs updated. AC#1 go test ./internal/orchestrate -run "^TestSelectWithPrerequisites$" -count=1 -v: PASS. AC#2 go test ./internal/cli -run "^TestUpNamedSelectsPrerequisites$" -count=1 -v: PASS. AC#3 go test ./internal/mcp -run "^TestUpNames$" -count=1 -v: PASS. AC#4 go test ./integration -run "^TestUpNamedStack$" -count=1 -v: PASS. AC#5 go test ./internal/cli -run Completion -count=1 -v: PASS, includes up name completion. Focused package suite and git diff --check: PASS. Independent verifier: PASS AC1–AC5, no concrete defects, no test deletion/skip/weakening, diff within modified-file contract. task ci: first run failed intermittently in unrelated TestAttachStreamsBurstWithoutAborting (burst timing); isolated rerun PASS, second full task ci PASS (including race and smoke). task check:staged PASS before implementation commit. Next: finalize task evidence/status, commit provider record, verify final commit, clean owned worktree.
+
+Finalization: Done; all AC/DoD checked. Delivery: code commit 08e062c integrated into main by fast-forward; provider evidence commit follows. Next resumable step: none; verify task ci on the provider commit and remove the owned hum-123 worktree.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Named up starts only the requested declarations and transitive prerequisites through the shared scheduler, in CLI and MCP; completion and docs updated. AC1–AC5 and independent verifier passed; task ci passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
