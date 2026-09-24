@@ -21,6 +21,8 @@ modes:
   inspect <args...>
       Print SNAPSHOT JSON (argv, cwd, and HUM_TEST_* env) followed by
       separate raw stdout/stderr fragments, then exit with status 23.
+  since
+      Emit old-mcp and new-mcp lines two seconds apart, then exit.
   stream <marker>
       Write <marker>.started, emit live stdout/stderr fragments, report
       counted SIGINTs, and write <marker>.terminated on SIGTERM.
@@ -79,6 +81,15 @@ func run(args []string) (int, error) {
 		return 0, err
 	case "inspect":
 		return runInspect()
+	case "since":
+		if len(args) != 1 {
+			return 0, errors.New("since does not accept arguments")
+		}
+		if err := writeFile(os.Stdout, "old-mcp\n"); err != nil {
+			return 0, err
+		}
+		time.Sleep(2 * time.Second)
+		return 0, writeFile(os.Stdout, "new-mcp\n")
 	case "stream":
 		if len(args) != 2 || args[1] == "" {
 			return 0, errors.New("stream requires exactly one non-empty marker path")

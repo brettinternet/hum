@@ -32,10 +32,7 @@ func cliServeRunInvokeForTest(args ...string) (string, string, error) {
 
 func cliServeRunRuntimeDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "h-")
-	if err != nil {
-		t.Fatalf("create runtime directory: %v", err)
-	}
+	dir := testutil.RuntimeDir(t)
 	t.Cleanup(func() { cliServeRunCleanupRuntime(t, dir) })
 	return dir
 }
@@ -63,12 +60,7 @@ func cliServeRunCleanupRuntime(t *testing.T, runtimeDir string) {
 
 func stopShutdownTestServer(t *testing.T, stopGrace time.Duration) (*daemon.Server, string) {
 	t.Helper()
-	runtimeDir, err := os.MkdirTemp("", "h-")
-	if err != nil {
-		t.Fatalf("create runtime directory: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
-
+	runtimeDir := testutil.RuntimeDir(t)
 	server, err := daemon.NewServer(daemon.Config{RuntimeDir: runtimeDir, StopGrace: stopGrace})
 	if err != nil {
 		t.Fatalf("create runtime daemon: %v", err)

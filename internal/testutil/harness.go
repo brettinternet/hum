@@ -91,7 +91,7 @@ func RuntimeDir(t testing.TB) string {
 		t.Fatalf("create runtime directory: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
+	return runtimePath(dir)
 }
 
 // RuntimeEnv copies the current environment, sets HUM_RUNTIME_DIR, and applies overrides.

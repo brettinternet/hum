@@ -9,6 +9,7 @@ import (
 
 func binarySuffix() string              { return "" }
 func runtimeTempParent() string         { return "/tmp" }
+func runtimePath(dir string) string     { return dir }
 func processAlreadyGone(err error) bool { return errors.Is(err, syscall.ESRCH) }
 
 func ProcessAlive(pid int) bool {
