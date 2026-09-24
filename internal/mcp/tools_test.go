@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"hum/internal/daemon"
-	"hum/internal/orchestrate"
 	"hum/internal/output"
 	"hum/internal/project"
 	"hum/internal/protocol"
@@ -730,201 +729,50 @@ func contains(values []string, want string) bool {
 	return false
 }
 
-func TestUpPreservesCrashRecovery(t *testing.T) {
-	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
+func TestUpAdapterSurfaceContent(t *testing.T) {
+	next := time.Now().Add(time.Minute)
 	client := &fakeClient{processes: map[string]protocol.Process{
-		"pending": {
-			Name: "pending", Source: "manifest", State: "exited", Argv: []string{"pending"},
-			Readiness:    &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"},
-			LaunchCursor: 11, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next,
-		},
-		"exhausted": {
-			Name: "exhausted", Source: "manifest", State: "exited", Argv: []string{"exhausted"},
-			Readiness:    &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"},
-			LaunchCursor: 19, Restart: protocol.RestartOnFailure, Relaunches: 5,
-		},
+		"db":        {Name: "db", Source: "manifest", State: "running", Argv: []string{"db"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}, StopGraceInherited: true},
+		"api":       {Name: "api", Source: "manifest", State: "running", Argv: []string{"api"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "api-ready"}, StopGraceInherited: true},
+		"pending":   {Name: "pending", Source: "manifest", State: "exited", Argv: []string{"pending"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next, StopGraceInherited: true},
+		"exhausted": {Name: "exhausted", Source: "manifest", State: "exited", Argv: []string{"exhausted"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "ready"}, Restart: protocol.RestartOnFailure, Relaunches: 5, StopGraceInherited: true},
+		"removed":   {Name: "removed", Source: "manifest", State: "running", Argv: []string{"removed"}, PID: 11},
 	}}
-	ready := &protocol.ReadinessConfig{Match: "ready", Timeout: time.Second}
-	server, root, _ := newTestServer(t, []Definition{
-		{Name: "pending", Source: "manifest", Cwd: ".", Argv: []string{"pending"}, Ready: ready, Restart: protocol.RestartOnFailure},
-		{Name: "exhausted", Source: "manifest", Cwd: ".", Argv: []string{"exhausted"}, Ready: ready, Restart: protocol.RestartOnFailure},
-	}, client)
-	for name := range client.processes {
-		process := client.processes[name]
-		process.Root, process.Cwd = root, root
-		client.processes[name] = process
-	}
-
-	for attempt := 0; attempt < 2; attempt++ {
-		value, err := server.callTool(context.Background(), "up", args(root))
-		if err != nil {
-			t.Fatalf("up attempt %d: %v", attempt+1, err)
-		}
-		results, ok := value.([]launchResult)
-		if !ok || len(results) != 2 {
-			t.Fatalf("up attempt %d result = %#v (type %T), want two results", attempt+1, value, value)
-		}
-		if results[0].Name != "exhausted" || results[1].Name != "pending" {
-			t.Fatalf("up attempt %d order = %#v, want lexical order", attempt+1, results)
-		}
-		for index, result := range results {
-			if result.Process == nil {
-				t.Fatalf("up attempt %d result %q omitted process", attempt+1, result.Name)
-			}
-			process := result.Process
-			if process.State != "exited" || process.Source != "manifest" || process.Restart != protocol.RestartOnFailure || process.Readiness == nil || process.Readiness.Match != "ready" {
-				t.Fatalf("up attempt %d process %q = %#v, want exited manifest on-failure with retained readiness matcher", attempt+1, result.Name, process)
-			}
-			if result.Name == "exhausted" {
-				if result.Outcome != "recovery_exhausted" || process.Relaunches != 5 || process.NextLaunchAt != nil || process.LaunchCursor != 19 {
-					t.Fatalf("up attempt %d exhausted result = %#v", attempt+1, result)
-				}
-			} else {
-				if result.Outcome != "recovery_pending" || process.Relaunches != 2 || process.NextLaunchAt == nil || !process.NextLaunchAt.Equal(next) || process.LaunchCursor != 11 {
-					t.Fatalf("up attempt %d pending result = %#v", attempt+1, result)
-				}
-			}
-			if (index == 0 && result.Name != "exhausted") || (index == 1 && result.Name != "pending") {
-				t.Fatalf("up attempt %d result index %d = %#v", attempt+1, index, result)
-			}
-		}
-	}
-	if len(client.starts) != 0 {
-		t.Fatalf("up sent start requests: %#v", client.starts)
-	}
-	if len(client.waits) != 0 {
-		t.Fatalf("up waited on exited recovery: %#v", client.waits)
-	}
-}
-
-func TestUpReportsManifestRuntimeDrift(t *testing.T) {
-	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
-	baseProcesses := map[string]protocol.Process{
-		"running":   {Name: "running", Source: "manifest", State: "running", Argv: []string{"running"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}},
-		"pending":   {Name: "pending", Source: "manifest", State: "exited", Argv: []string{"pending"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next},
-		"exhausted": {Name: "exhausted", Source: "manifest", State: "exited", Argv: []string{"exhausted"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}, Restart: protocol.RestartOnFailure, Relaunches: 5},
-	}
 	definitions := []Definition{
-		{Name: "exhausted", Source: "manifest", Cwd: ".", Argv: []string{"exhausted"}, Ready: &protocol.ReadinessConfig{Match: "old"}, Restart: protocol.RestartOnFailure},
-		{Name: "pending", Source: "manifest", Cwd: ".", Argv: []string{"pending"}, Ready: &protocol.ReadinessConfig{Match: "old"}, Restart: protocol.RestartOnFailure},
-		{Name: "running", Source: "manifest", Cwd: ".", Argv: []string{"running"}, Ready: &protocol.ReadinessConfig{Match: "old"}},
+		{Name: "api", Source: "manifest", Argv: []string{"api"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "api-ready"}, After: []string{"db"}},
+		{Name: "db", Source: "manifest", Argv: []string{"db"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "new"}},
+		{Name: "pending", Source: "manifest", Argv: []string{"pending"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "ready"}, Restart: protocol.RestartOnFailure},
+		{Name: "exhausted", Source: "manifest", Argv: []string{"exhausted"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "ready"}, Restart: protocol.RestartOnFailure},
 	}
-	client := &fakeClient{processes: baseProcesses}
 	server, root, _ := newTestServer(t, definitions, client)
 	for name, process := range client.processes {
 		process.Root, process.Cwd = root, root
 		client.processes[name] = process
 	}
-	value, err := server.callTool(context.Background(), "up", args(root, "no_wait", true))
+
+	upSchema := server.toolDefinitions()[1].OutputSchema["properties"].(map[string]any)["results"].(map[string]any)["items"].(map[string]any)
+	if _, ok := upSchema["properties"].(map[string]any)["existing_state"]; !ok || upSchema["additionalProperties"] != false {
+		t.Fatalf("up result schema omits existing_state: %#v", upSchema)
+	}
+	params, err := json.Marshal(callToolParams{Name: "up", Arguments: args(root)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	matching := value.([]launchResult)
-	if len(matching) != 3 || matching[0].Outcome != "recovery_exhausted" || matching[1].Outcome != "recovery_pending" || matching[2].Outcome != "already_running" {
-		t.Fatalf("matching MCP up = %#v", matching)
+	value, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"up-surface"`), Method: "tools/call", Params: params})
+	if rpcErr != nil {
+		t.Fatalf("up RPC: %#v", rpcErr)
 	}
-
-	for _, name := range []string{"running", "pending", "exhausted"} {
-		changed := append([]Definition(nil), definitions...)
-		for index := range changed {
-			if changed[index].Name == name {
-				changed[index].Ready = &protocol.ReadinessConfig{Match: "new"}
-			}
-		}
-		changedClient := &fakeClient{processes: make(map[string]protocol.Process, len(baseProcesses))}
-		for processName, process := range baseProcesses {
-			process.Root, process.Cwd = root, root
-			changedClient.processes[processName] = process
-		}
-		changedServer, changedRoot, _ := newTestServer(t, changed, changedClient)
-		for processName, process := range changedClient.processes {
-			process.Root, process.Cwd = changedRoot, changedRoot
-			changedClient.processes[processName] = process
-		}
-		changedValue, changedErr := changedServer.callTool(context.Background(), "up", args(changedRoot, "no_wait", true))
-		if changedErr != nil {
-			t.Fatalf("%s changed up: %v", name, changedErr)
-		}
-		changedResults := changedValue.([]launchResult)
-		for _, result := range changedResults {
-			if result.Name == name {
-				if result.Outcome != "definition_drift" || !reflect.DeepEqual(result.ChangedFields, []string{"readiness_match"}) || result.Guidance != "hum restart "+name || result.Process == nil || result.Process.Readiness == nil || result.Process.Readiness.Match != "old" {
-					t.Fatalf("%s changed result = %#v", name, result)
-				}
-			}
-		}
-		startValue, startErr := changedServer.callTool(context.Background(), "start", args(changedRoot, "name", name, "no_wait", true))
-		if startErr != nil {
-			t.Fatalf("%s changed start: %v", name, startErr)
-		}
-		startResult := startValue.(launchResult)
-		if startResult.Outcome != "definition_drift" || !reflect.DeepEqual(startResult.ChangedFields, []string{"readiness_match"}) || len(changedClient.starts) != 0 {
-			t.Fatalf("%s changed start result = %#v starts=%#v", name, startResult, changedClient.starts)
-		}
+	result, ok := value.(callToolResult)
+	if !ok || result.IsError || result.StructuredContent == nil || len(result.Content) != 1 {
+		t.Fatalf("up surface result = %#v", value)
 	}
-}
-
-func TestUpRejectsDriftedReadinessGate(t *testing.T) {
-	client := &fakeClient{processes: map[string]protocol.Process{
-		"db": {Name: "db", Source: "manifest", State: "running", Argv: []string{"db"}, Readiness: &protocol.Readiness{State: protocol.ReadinessStarting, Match: "old"}},
-	}}
-	definitions := []Definition{
-		{Name: "api", Source: "manifest", Cwd: ".", Argv: []string{"api"}, Ready: &protocol.ReadinessConfig{Match: "api-ready"}, After: []string{"db"}},
-		{Name: "db", Source: "manifest", Cwd: ".", Argv: []string{"db"}, Ready: &protocol.ReadinessConfig{Match: "new"}},
-	}
-	server, root, _ := newTestServer(t, definitions, client)
-	process := client.processes["db"]
-	process.Root, process.Cwd = root, root
-	client.processes["db"] = process
-	value, err := server.callTool(context.Background(), "up", args(root))
+	encoded, err := json.Marshal(result.StructuredContent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	results := value.([]launchResult)
-	if len(results) != 2 || results[0].Name != "api" || results[0].Outcome != "skipped" || !reflect.DeepEqual(results[0].BlockedBy, []string{"db"}) || results[1].Name != "db" || results[1].Outcome != "definition_drift" {
-		t.Fatalf("drifted MCP gate results = %#v", results)
-	}
-	if len(client.starts) != 0 {
-		t.Fatalf("drifted MCP gate starts = %#v", client.starts)
-	}
-}
-
-func TestUpReportsRemovedManifestSessions(t *testing.T) {
-	next := time.Date(2026, time.September, 6, 5, 0, 1, 0, time.UTC)
-	client := &fakeClient{processes: map[string]protocol.Process{
-		"current":    {Name: "current", Source: "manifest", State: "running", Argv: []string{"current"}},
-		"running":    {Name: "running", Source: "manifest", State: "running", Argv: []string{"running"}},
-		"pending":    {Name: "pending", Source: "manifest", State: "exited", Argv: []string{"pending"}, Restart: protocol.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next},
-		"exhausted":  {Name: "exhausted", Source: "manifest", State: "exited", Argv: []string{"exhausted"}, Restart: protocol.RestartOnFailure, Relaunches: 5},
-		"stopped":    {Name: "stopped", Source: "manifest", State: "exited", Argv: []string{"stopped"}},
-		"ad_hoc":     {Name: "ad_hoc", Source: "ad_hoc", State: "running", Argv: []string{"ad_hoc"}},
-		"discovered": {Name: "discovered", Source: "package_json", State: "running", Argv: []string{"discovered"}},
-	}}
-	definitions := []Definition{{Name: "current", Source: "manifest", Cwd: ".", Argv: []string{"current"}}}
-	server, root, _ := newTestServer(t, definitions, client)
-	for name, process := range client.processes {
-		process.Root, process.Cwd = root, root
-		client.processes[name] = process
-	}
-	value, err := server.callTool(context.Background(), "up", args(root, "no_wait", true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	results := value.([]launchResult)
-	if len(results) != 4 {
-		t.Fatalf("removed MCP results = %#v", results)
-	}
-	for index, name := range []string{"current", "exhausted", "pending", "running"} {
-		if results[index].Name != name {
-			t.Fatalf("removed MCP order = %#v", results)
-		}
-	}
-	if results[0].Outcome != "already_running" {
-		t.Fatalf("current MCP result = %#v", results[0])
-	}
-	for _, result := range results[1:] {
-		if result.Outcome != "removed_definition" || !strings.Contains(result.Guidance, "hum stop "+result.Name) || !strings.Contains(result.Guidance, "hum remove "+result.Name) || result.Process == nil {
-			t.Fatalf("removed MCP result = %#v", result)
+	for _, field := range []string{`"blocked_by":["db"]`, `"existing_state":"running"`, `"changed_fields"`, `"guidance":"hum restart db"`, `"restart":"on-failure"`, `"relaunches"`, `"next_launch_at"`, `"removed_definition"`} {
+		if !bytes.Contains(encoded, []byte(field)) || !strings.Contains(result.Content[0].Text, field) {
+			t.Fatalf("MCP up output omitted %s: text=%s structuredContent=%s", field, result.Content[0].Text, encoded)
 		}
 	}
 }
@@ -1330,109 +1178,72 @@ func TestReadinessHTTPAndTCPMCPStartStatusList(t *testing.T) {
 func TestExecutableReadiness(t *testing.T) {
 	root := t.TempDir()
 	argv := []string{"probe", "--service", "api"}
-	ready := &protocol.ReadinessConfig{Method: "exec", Argv: argv, Interval: 20 * time.Millisecond, Timeout: time.Second}
-	definitions := []Definition{{Name: "api", Source: "manifest", Argv: []string{"server"}, Cwd: root, Ready: ready}}
+	interval := 20 * time.Millisecond
+	definition := Definition{Name: "api", Source: "manifest", Argv: []string{"server"}, Cwd: root, Ready: &protocol.ReadinessConfig{Method: "exec", Argv: argv, Interval: interval, Timeout: time.Second}}
+	sharedDefinition := mcpDefinition(definition)
+	if sharedDefinition.Ready == nil || sharedDefinition.Ready.Method != "exec" || !reflect.DeepEqual(sharedDefinition.Ready.Argv, argv) || sharedDefinition.Ready.Interval != interval {
+		t.Fatalf("MCP readiness definition=%#v", sharedDefinition.Ready)
+	}
 	client := &fakeClient{readyBeforeWait: true, readinessDiagnostic: "status 1"}
-	server, resolvedRoot, _ := newTestServer(t, definitions, client)
+	server, resolvedRoot, _ := newTestServer(t, []Definition{definition}, client)
+	resolution := Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: []Definition{definition}}
 	input := commonInput{Name: "api"}
-
-	value, err := server.start(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, input)
+	value, err := server.start(context.Background(), resolution, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	startResult, ok := value.(launchResult)
-	if !ok || startResult.Process == nil || startResult.Process.Readiness == nil {
-		t.Fatalf("MCP start result=%#v", value)
+	launch := value.(launchResult)
+	if launch.Outcome != "started" || launch.Process == nil || launch.Process.Readiness == nil || launch.Process.Readiness.State != protocol.ReadinessReady || launch.Process.Readiness.Method != "exec" || !reflect.DeepEqual(launch.Process.Readiness.Argv, argv) || launch.Process.Readiness.Interval != interval || len(client.waits) != 0 {
+		t.Fatalf("executable start=%#v waits=%#v", launch, client.waits)
 	}
-	if startResult.Outcome != "started" || startResult.Process.Readiness.Method != "exec" || !reflect.DeepEqual(startResult.Process.Readiness.Argv, argv) || startResult.Process.Readiness.Interval != ready.Interval || startResult.Process.Readiness.State != protocol.ReadinessReady {
-		t.Fatalf("MCP start result=%#v, want ready executable snapshot", startResult)
-	}
-	if len(client.waits) != 0 {
-		t.Fatalf("MCP exec readiness issued output waits: %#v", client.waits)
-	}
-
-	upValue, err := server.up(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, input)
+	up, err := server.up(context.Background(), resolution, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	upResults, ok := upValue.([]launchResult)
-	if !ok || len(upResults) != 1 || upResults[0].Outcome != "already_running" || upResults[0].Process == nil || upResults[0].Process.Readiness == nil || upResults[0].Process.Readiness.Method != "exec" {
-		t.Fatalf("MCP up result=%#v, want parity with start", upValue)
+	upResults := up.([]launchResult)
+	if len(upResults) != 1 || upResults[0].Outcome != "already_running" || upResults[0].Process == nil || upResults[0].Process.Readiness == nil || upResults[0].Process.Readiness.Method != "exec" {
+		t.Fatalf("executable up=%#v", up)
 	}
-
-	restartValue, err := server.restart(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, input)
+	restarted, err := server.restart(context.Background(), resolution, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	restartResult, ok := restartValue.(restartResult)
-	if !ok || restartResult.Outcome != "restarted" || restartResult.Readiness != protocol.ReadinessReady || len(client.restarts) != 1 || client.restarts[0].Ready == nil || client.restarts[0].Ready.Method != "exec" || !reflect.DeepEqual(client.restarts[0].Ready.Argv, argv) {
-		t.Fatalf("MCP restart result=%#v request=%#v, want executable readiness parity", restartValue, client.restarts)
+	restart := restarted.(restartResult)
+	if restart.Outcome != "restarted" || restart.Readiness != protocol.ReadinessReady || len(client.restarts) != 1 || client.restarts[0].Ready == nil || client.restarts[0].Ready.Method != "exec" || !reflect.DeepEqual(client.restarts[0].Ready.Argv, argv) || len(client.waits) != 0 {
+		t.Fatalf("executable restart=%#v requests=%#v waits=%#v", restart, client.restarts, client.waits)
 	}
-	if len(client.waits) != 0 {
-		t.Fatalf("MCP restart exec readiness issued output waits: %#v", client.waits)
+	status, err := server.status(context.Background(), resolution, "api")
+	if err != nil {
+		t.Fatal(err)
 	}
-	assertReadiness := func(label string, process protocol.Process) {
-		t.Helper()
-		if process.Readiness == nil || process.Readiness.Method != "exec" || !reflect.DeepEqual(process.Readiness.Argv, argv) || process.Readiness.Interval != ready.Interval || process.Readiness.Diagnostic != "status 1" {
-			t.Fatalf("MCP %s process=%#v, want executable readiness fields", label, process)
+	listed, err := server.list(context.Background(), resolution, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := status.(protocol.Process)
+	if len(listed.([]protocol.Process)) != 1 || listed.([]protocol.Process)[0].Readiness == nil {
+		t.Fatalf("executable list=%#v", listed)
+	}
+	outputs := map[string]struct {
+		value  any
+		fields []string
+	}{
+		"launch":  {launch, []string{`"readiness":{"method":"exec"`, `"argv":["probe","--service","api"]`, `"interval":20000000`, `"diagnostic":"status 1"`}},
+		"up":      {upResults[0], []string{`"readiness":{"method":"exec"`, `"argv":["probe","--service","api"]`, `"interval":20000000`, `"diagnostic":"status 1"`}},
+		"status":  {process, []string{`"readiness":{"method":"exec"`, `"argv":["probe","--service","api"]`, `"interval":20000000`, `"diagnostic":"status 1"`}},
+		"list":    {listed, []string{`"readiness":{"method":"exec"`, `"argv":["probe","--service","api"]`, `"interval":20000000`, `"diagnostic":"status 1"`}},
+		"restart": {restart, []string{`"readiness_method":"exec"`, `"readiness_argv":["probe","--service","api"]`, `"readiness_interval":20000000`, `"readiness_diagnostic":"status 1"`}},
+	}
+	for name, output := range outputs {
+		encoded, err := json.Marshal(output.value)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	assertReadiness("start", *startResult.Process)
-	if upResults[0].Process == nil {
-		t.Fatalf("MCP up result=%#v, missing process", upResults[0])
-	}
-	assertReadiness("up", *upResults[0].Process)
-	if restartResult.ReadinessMethod != "exec" || !reflect.DeepEqual(restartResult.ReadinessArgv, argv) || restartResult.ReadinessInterval != ready.Interval || restartResult.ReadinessDiagnostic != "status 1" {
-		t.Fatalf("MCP restart result=%#v, want executable readiness fields", restartResult)
-	}
-	statusValue, err := server.status(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, "api")
-	if err != nil {
-		t.Fatal(err)
-	}
-	statusProcess, ok := statusValue.(protocol.Process)
-	if !ok {
-		t.Fatalf("MCP status result type=%T, want protocol.Process", statusValue)
-	}
-	assertReadiness("status", statusProcess)
-	listValue, err := server.list(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	listed, ok := listValue.([]protocol.Process)
-	if !ok {
-		t.Fatalf("MCP list result type=%T, want []protocol.Process", listValue)
-	}
-	var listedAPI protocol.Process
-	for _, process := range listed {
-		if process.Name == "api" {
-			listedAPI = process
-			break
+		for _, field := range output.fields {
+			if !bytes.Contains(encoded, []byte(field)) {
+				t.Fatalf("MCP %s result=%s, missing %s", name, encoded, field)
+			}
 		}
-	}
-	if listedAPI.Name == "" {
-		t.Fatalf("MCP list result=%#v, missing api", listed)
-	}
-	assertReadiness("list", listedAPI)
-
-	execDriftDefinition := definitions[0]
-	execDriftDefinition.Ready = &protocol.ReadinessConfig{Method: "exec", Argv: []string{"probe", "different"}, Interval: ready.Interval, Timeout: ready.Timeout}
-	execDrift := orchestrate.DefinitionDriftResult(resolvedRoot, mcpDefinition(execDriftDefinition), orchestrateProcess(*startResult.Process))
-	if execDrift.Outcome != "definition_drift" || !reflect.DeepEqual(execDrift.ChangedFields, []string{"readiness_exec"}) {
-		t.Fatalf("MCP executable readiness drift=%#v, want readiness_exec", execDrift)
-	}
-	matchDefinition := Definition{Name: "api", Source: "manifest", Argv: []string{"server"}, Cwd: root, Ready: &protocol.ReadinessConfig{Method: "match", Match: "ready"}}
-	matchProcess := protocol.Process{Name: "api", Source: "manifest", Root: resolvedRoot, Cwd: root, Argv: []string{"server"}, State: "running", StopGraceInherited: true, Readiness: &protocol.Readiness{Method: "match", Match: "ready", State: protocol.ReadinessStarting}}
-	matchDrift := orchestrate.DefinitionDriftResult(resolvedRoot, mcpDefinition(matchDefinition), orchestrateProcess(matchProcess))
-	if len(matchDrift.ChangedFields) != 0 {
-		t.Fatalf("unchanged MCP match readiness drift=%#v, want no changed fields", matchDrift)
-	}
-	matchToExec := orchestrate.DefinitionDriftResult(resolvedRoot, mcpDefinition(definitions[0]), orchestrateProcess(matchProcess))
-	if !reflect.DeepEqual(matchToExec.ChangedFields, []string{"readiness_exec", "readiness_match"}) {
-		t.Fatalf("MCP match-to-exec readiness drift=%#v, want readiness_exec", matchToExec)
-	}
-	execToMatch := orchestrate.DefinitionDriftResult(resolvedRoot, mcpDefinition(matchDefinition), orchestrateProcess(*startResult.Process))
-	if !reflect.DeepEqual(execToMatch.ChangedFields, []string{"readiness_exec", "readiness_match"}) {
-		t.Fatalf("MCP exec-to-match readiness drift=%#v, want readiness_exec", execToMatch)
 	}
 }
 
@@ -1551,140 +1362,18 @@ func TestStartUp(t *testing.T) {
 	}
 }
 
-func TestUpOrdersByAfter(t *testing.T) {
-	ready := &protocol.ReadinessConfig{Match: "ready"}
+func TestUpRejectsNoWaitWithDependencies(t *testing.T) {
 	client := &fakeClient{}
-	defs := []Definition{
-		{Name: "web", Source: "hum.yaml", Argv: []string{"web"}, Cwd: "/tmp", Ready: ready, After: []string{"api"}},
-		{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp", Ready: ready, After: []string{"db"}},
-		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: ready},
-	}
-	server, root, _ := newTestServer(t, defs, client)
-	value, err := server.callTool(context.Background(), "up", args(root))
-	if err != nil {
-		t.Fatal(err)
-	}
-	results := value.([]launchResult)
-	if got := []string{results[0].Name, results[1].Name, results[2].Name}; !reflect.DeepEqual(got, []string{"api", "db", "web"}) {
-		t.Fatalf("MCP up order = %v", got)
-	}
-	for _, result := range results {
-		if result.Outcome != "started" || result.Process == nil || result.Process.Readiness == nil || result.Process.Readiness.State != protocol.ReadinessReady {
-			t.Fatalf("MCP up result = %#v", result)
-		}
-	}
-	if got := []string{client.starts[0].Name, client.starts[1].Name, client.starts[2].Name}; !reflect.DeepEqual(got, []string{"db", "api", "web"}) {
-		t.Fatalf("MCP launch order = %v", got)
-	}
-	if _, err := server.callTool(context.Background(), "up", args(root)); err != nil {
-		t.Fatalf("idempotent MCP up: %v", err)
-	}
-	if len(client.starts) != 3 {
-		t.Fatalf("idempotent MCP up relaunched: %#v", client.starts)
-	}
-
-	noWaitClient := &fakeClient{}
-	noWaitServer, noWaitRoot, noWaitEnsures := newTestServer(t, []Definition{{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp", Ready: ready, After: []string{"db"}}, {Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: ready}}, noWaitClient)
-	if _, err := noWaitServer.callTool(context.Background(), "up", args(noWaitRoot, "no_wait", true)); err == nil {
-		t.Fatal("MCP up no_wait accepted after dependency")
-	}
-	if len(*noWaitEnsures) != 0 {
-		t.Fatalf("MCP no_wait contacted daemon: %v", *noWaitEnsures)
-	}
-
-	blockedClient := &fakeClient{startErr: map[string]error{"db": errors.New("request failed"), "queue": errors.New("queue failed")}}
-	blockedServer, blockedRoot, _ := newTestServer(t, []Definition{
-		{Name: "web", Source: "hum.yaml", Argv: []string{"web"}, Cwd: "/tmp", Ready: ready, After: []string{"api"}},
-		{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp", Ready: ready, After: []string{"queue", "db"}},
-		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: ready},
-		{Name: "queue", Source: "hum.yaml", Argv: []string{"queue"}, Cwd: "/tmp", Ready: ready},
-	}, blockedClient)
-	blockedValue, err := blockedServer.callTool(context.Background(), "up", args(blockedRoot))
-	if err != nil {
-		t.Fatal(err)
-	}
-	blockedResults := blockedValue.([]launchResult)
-	if !reflect.DeepEqual(blockedResults[0].BlockedBy, []string{"db", "queue"}) || blockedResults[0].Outcome != "skipped" {
-		t.Fatalf("direct blockers = %#v", blockedResults[0])
-	}
-	if !reflect.DeepEqual(blockedResults[3].BlockedBy, []string{"api"}) || blockedResults[3].Outcome != "skipped" {
-		t.Fatalf("cascade blockers = %#v", blockedResults[3])
-	}
-
-	matchedThenExited := &fakeClient{keepStarting: true}
-	matchedThenExited.waitHook = func(req protocol.WaitRequest) {
-		process := matchedThenExited.processes[req.Name]
-		process.State = "exited"
-		matchedThenExited.processes[req.Name] = process
-	}
-	matchedServer, matchedRoot, _ := newTestServer(t, []Definition{
-		{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp", Ready: ready, After: []string{"db"}},
-		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: ready},
-	}, matchedThenExited)
-	matchedValue, err := matchedServer.callTool(context.Background(), "up", args(matchedRoot))
-	if err != nil {
-		t.Fatal(err)
-	}
-	matchedResults := matchedValue.([]launchResult)
-	if matchedResults[1].Outcome != "started" || matchedResults[1].Process == nil || matchedResults[1].Process.Readiness == nil || matchedResults[1].Process.Readiness.State != protocol.ReadinessReady {
-		t.Fatalf("matched-then-exited prerequisite = %#v, want started/ready", matchedResults[1])
-	}
-	if len(matchedThenExited.starts) != 2 || matchedThenExited.starts[1].Name != "api" {
-		t.Fatalf("matched-then-exited starts = %#v, want dependent api launched", matchedThenExited.starts)
-	}
-}
-
-func TestUpReportsBlockedExistingState(t *testing.T) {
-	ready := &protocol.ReadinessConfig{Match: "ready"}
 	definitions := []Definition{
-		{Name: "web", Source: "hum.yaml", Argv: []string{"web"}, Cwd: "/tmp", Ready: ready, After: []string{"api"}},
-		{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: "/tmp", Ready: ready, After: []string{"db"}},
-		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: "/tmp", Ready: ready},
+		{Name: "api", Source: "manifest", Argv: []string{"api"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "ready"}, After: []string{"db"}},
+		{Name: "db", Source: "manifest", Argv: []string{"db"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "ready"}},
 	}
-	nextLaunch := time.Now().Add(time.Second).UTC().Truncate(time.Millisecond)
-	for _, test := range []struct {
-		name  string
-		state string
-		pid   int
-	}{
-		{name: "running", state: "running", pid: 41},
-		{name: "stopped", state: "stopped"},
-		{name: "exited", state: "exited"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			client := &fakeClient{
-				processes: map[string]protocol.Process{
-					"api": {Name: "api", Source: "manifest", Root: "/root", State: test.state, PID: test.pid, LaunchCursor: 12, Restart: "on-failure", Relaunches: 2, NextLaunchAt: &nextLaunch},
-				},
-				startErr: map[string]error{"db": errors.New("request failed")},
-			}
-			server, root, _ := newTestServer(t, definitions, client)
-			upSchema := server.toolDefinitions()[1].OutputSchema
-			upProperties := upSchema["properties"].(map[string]any)
-			resultsSchema := upProperties["results"].(map[string]any)
-			upItems := resultsSchema["items"].(map[string]any)
-			upResultProperties := upItems["properties"].(map[string]any)
-			if _, ok := upResultProperties["existing_state"]; !ok || upItems["additionalProperties"] != false {
-				t.Fatalf("up result schema omits closed existing_state: %#v", upItems)
-			}
-			value, err := server.callTool(context.Background(), "up", args(root))
-			if err != nil {
-				t.Fatal(err)
-			}
-			results := value.([]launchResult)
-			if results[0].Outcome != "skipped" || results[0].ExistingState != test.state || results[0].Process == nil || results[0].Process.LaunchCursor != 12 || results[0].Process.Restart != "on-failure" || results[0].Process.Relaunches != 2 || results[0].Process.NextLaunchAt == nil {
-				t.Fatalf("blocked %s api = %#v", test.state, results[0])
-			}
-			if test.state == "running" && results[0].Process.PID != test.pid {
-				t.Fatalf("blocked running PID = %d, want %d", results[0].Process.PID, test.pid)
-			}
-			if !reflect.DeepEqual(results[0].BlockedBy, []string{"db"}) || results[2].Outcome != "skipped" || !reflect.DeepEqual(results[2].BlockedBy, []string{"api"}) || results[2].ExistingState != "" || results[2].Process != nil {
-				t.Fatalf("blocked chain = %#v", results)
-			}
-			if len(client.starts) != 1 || client.starts[0].Name != "db" {
-				t.Fatalf("blocked lifecycle requests = %#v, want only db start", client.starts)
-			}
-		})
+	server, root, ensures := newTestServer(t, definitions, client)
+	if _, err := server.callTool(context.Background(), "up", args(root, "no_wait", true)); err == nil {
+		t.Fatal("MCP up no_wait accepted dependency definitions")
+	}
+	if len(*ensures) != 0 || len(client.starts) != 0 {
+		t.Fatalf("invalid no_wait contacted the daemon: ensures=%v starts=%#v", *ensures, client.starts)
 	}
 }
 

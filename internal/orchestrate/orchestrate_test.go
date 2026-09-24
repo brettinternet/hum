@@ -3,8 +3,10 @@ package orchestrate
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -237,12 +239,17 @@ func TestOrchestrateUp(t *testing.T) {
 		ready := func(name string) Definition {
 			return Definition{Name: name, Source: "manifest", Cwd: root, Argv: []string{name}, Ready: &ReadinessConfig{Match: "ready"}}
 		}
+		chain := ready("chain")
+		chain.After = []string{"dependent"}
 		definitions := []Definition{
 			{Name: "dependent", Source: "manifest", Cwd: root, Argv: []string{"dependent"}, After: []string{"root-a"}, Ready: &ReadinessConfig{Match: "ready"}},
-			ready("root-a"), ready("root-b"),
+			chain, ready("root-a"), ready("root-b"),
 			{Name: "failure", Source: "manifest", Cwd: root, Argv: []string{"failure"}},
 			{Name: "timeout", Source: "manifest", Cwd: root, Argv: []string{"timeout"}, Ready: &ReadinessConfig{Match: "ready"}},
 			{Name: "blocked", Source: "manifest", Cwd: root, Argv: []string{"blocked"}, After: []string{"timeout", "failure"}, Ready: &ReadinessConfig{Match: "ready"}},
+		}
+		if !DefinitionsHaveAfter(definitions) || DefinitionsHaveAfter([]Definition{{Name: "independent"}}) {
+			t.Fatal("after dependency detection did not match definitions")
 		}
 		bothRoots := make(chan struct{})
 		var rootsMu sync.Mutex
@@ -292,8 +299,8 @@ func TestOrchestrateUp(t *testing.T) {
 		if !reflect.DeepEqual(rootStarts, []string{"root-a", "root-b"}) && !reflect.DeepEqual(rootStarts, []string{"root-b", "root-a"}) {
 			t.Fatalf("root starts=%v, want both independent roots", rootStarts)
 		}
-		if indexOf(started, "dependent") < indexOf(started, "root-a") {
-			t.Fatalf("dependent launched before root-a: %v", started)
+		if indexOf(started, "dependent") < indexOf(started, "root-a") || indexOf(started, "chain") < indexOf(started, "dependent") {
+			t.Fatalf("dependent launch order violates its after chain: %v", started)
 		}
 		byName := make(map[string]Result, len(results))
 		names := make([]string, 0, len(results))
@@ -306,6 +313,9 @@ func TestOrchestrateUp(t *testing.T) {
 		}
 		if byName["dependent"].Outcome != "started" || byName["dependent"].Process == nil || byName["dependent"].Process.Readiness.State != ReadinessReady {
 			t.Fatalf("dependent=%#v", byName["dependent"])
+		}
+		if byName["chain"].Outcome != "started" || byName["chain"].Process == nil || byName["chain"].Process.Readiness.State != ReadinessReady {
+			t.Fatalf("chain=%#v", byName["chain"])
 		}
 		if byName["blocked"].Outcome != "skipped" || !reflect.DeepEqual(byName["blocked"].BlockedBy, []string{"failure", "timeout"}) {
 			t.Fatalf("blocked=%#v, want sorted direct blockers", byName["blocked"])
@@ -368,6 +378,402 @@ func TestOrchestrateUp(t *testing.T) {
 			t.Fatalf("descendants ensure = %#v, starts=%d", result, starts)
 		}
 	})
+}
+
+func TestOrchestrateUpRetainsRulesForAdapters(t *testing.T) {
+	root := t.TempDir()
+	missing := errors.New("not found")
+
+	t.Run("matched prerequisite that exited still releases dependent", func(t *testing.T) {
+		definitions := []Definition{
+			{Name: "api", Source: "manifest", Argv: []string{"api"}, After: []string{"db"}, Ready: &ReadinessConfig{Match: "ready"}},
+			{Name: "db", Source: "manifest", Argv: []string{"db"}, Ready: &ReadinessConfig{Match: "ready"}},
+		}
+		var started []string
+		results, err := OrchestrateUp(context.Background(), UpOptions{Root: root, Definitions: definitions}, UpOperations{
+			Start: func(_ context.Context, definition Definition) (StartResult, error) {
+				started = append(started, definition.Name)
+				process := Process{Name: definition.Name, State: "running", Readiness: &Readiness{State: ReadinessStarting, Match: "ready"}}
+				return StartResult{Result: ResultForProcess(definition, process, "started"), Process: process}, nil
+			},
+			Readiness: func(_ context.Context, definition Definition, process Process, outcome string, _ time.Duration) (Result, error) {
+				process.Readiness.State = ReadinessReady
+				if definition.Name == "db" {
+					process.State = "exited"
+				}
+				return ResultForProcess(definition, process, outcome), nil
+			},
+		})
+		if err != nil || !reflect.DeepEqual(started, []string{"db", "api"}) || len(results) != 2 || results[1].Outcome != "started" || results[1].Process == nil || results[1].Process.State != "exited" {
+			t.Fatalf("matched then exited: started=%v results=%#v err=%v", started, results, err)
+		}
+	})
+
+	t.Run("blocked dependents retain existing state", func(t *testing.T) {
+		next := time.Now().Add(time.Minute)
+		for _, state := range []string{"running", "stopped", "exited"} {
+			t.Run(state, func(t *testing.T) {
+				definitions := []Definition{
+					{Name: "web", Source: "manifest:hum.yaml", Argv: []string{"web"}, After: []string{"api"}},
+					{Name: "api", Source: "manifest:hum.yaml", Argv: []string{"api"}, After: []string{"db"}},
+					{Name: "db", Source: "manifest:hum.yaml", Argv: []string{"db"}},
+				}
+				api := Process{Name: "api", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"api"}, State: state, PID: 41, LaunchCursor: 12, Restart: "on-failure", Relaunches: 2, NextLaunchAt: &next}
+				var started []string
+				results, err := OrchestrateUp(context.Background(), UpOptions{Root: root, Definitions: definitions}, UpOperations{
+					Start: func(_ context.Context, definition Definition) (StartResult, error) {
+						started = append(started, definition.Name)
+						return StartResult{Result: ErrorResult(definition, errors.New("dependency failed"))}, nil
+					},
+					Get: func(_ context.Context, name, _ string) (Process, error) {
+						if name == "api" {
+							return api, nil
+						}
+						return Process{}, missing
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(started, []string{"db"}) {
+					t.Fatalf("started=%v, want only db", started)
+				}
+				if len(results) != 3 || results[0].Name != "api" || results[0].Outcome != "skipped" || results[0].ExistingState != state || results[0].Process == nil || results[0].Process.PID != 41 || results[0].Process.LaunchCursor != 12 || !reflect.DeepEqual(results[0].BlockedBy, []string{"db"}) {
+					t.Fatalf("blocked api=%#v", results)
+				}
+				if results[2].Name != "web" || results[2].Outcome != "skipped" || results[2].ExistingState != "" || results[2].Process != nil || !reflect.DeepEqual(results[2].BlockedBy, []string{"api"}) {
+					t.Fatalf("blocked web=%#v", results[2])
+				}
+			})
+		}
+	})
+
+	t.Run("drifted prerequisite gates dependents", func(t *testing.T) {
+		next := time.Now().Add(time.Minute)
+		for _, test := range []struct {
+			name    string
+			process Process
+		}{
+			{name: "running", process: Process{State: "running", PID: 9}},
+			{name: "recovery pending", process: Process{State: "exited", Restart: "on-failure", Relaunches: 2, NextLaunchAt: &next}},
+			{name: "recovery exhausted", process: Process{State: "exited", Restart: "on-failure", Relaunches: AutomaticRelaunchLimit}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				current := test.process
+				current.Name, current.Source, current.Root, current.Cwd = "db", "manifest:hum.yaml", root, root
+				current.Argv = []string{"db"}
+				current.Restart = "on-failure"
+				current.StopGraceInherited = true
+				current.Readiness = &Readiness{State: ReadinessStarting, Match: "old"}
+				definitions := []Definition{
+					{Name: "api", Source: "manifest:hum.yaml", Argv: []string{"api"}, After: []string{"db"}},
+					{Name: "db", Source: "manifest:hum.yaml", Cwd: root, Argv: []string{"db"}, Ready: &ReadinessConfig{Match: "new"}, Restart: "on-failure"},
+				}
+				var launches, waits int
+				results, err := OrchestrateUp(context.Background(), UpOptions{Root: root, Definitions: definitions}, UpOperations{
+					Start: func(ctx context.Context, definition Definition) (StartResult, error) {
+						if definition.Name == "api" {
+							launches++
+							return StartResult{}, errors.New("blocked dependent launched")
+						}
+						ensured := Ensure(ctx, root, definition, nil, true, EnsureOperations{
+							Get: func(context.Context, string, string) (Process, error) { return current, nil },
+							Start: func(context.Context, StartRequest) (Process, error) {
+								launches++
+								return Process{}, errors.New("drifted process launched")
+							},
+						})
+						return StartResult{Result: ensured.Result, Process: ensured.Process, Already: ensured.Already}, nil
+					},
+					Get: func(_ context.Context, name, _ string) (Process, error) {
+						if name == "db" {
+							return current, nil
+						}
+						return Process{}, missing
+					},
+					Readiness: func(context.Context, Definition, Process, string, time.Duration) (Result, error) {
+						waits++
+						return Result{}, nil
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(results) != 2 || results[0].Outcome != "skipped" || !reflect.DeepEqual(results[0].BlockedBy, []string{"db"}) || results[1].Outcome != "definition_drift" || !reflect.DeepEqual(results[1].ChangedFields, []string{"readiness_match"}) || results[1].Guidance != "hum restart db" || results[1].Process == nil || results[1].Process.Readiness.Match != "old" {
+					t.Fatalf("drifted gate results=%#v", results)
+				}
+				if launches != 0 || waits != 0 {
+					t.Fatalf("drifted launches=%d waits=%d, want neither", launches, waits)
+				}
+			})
+		}
+	})
+
+	t.Run("crash recovery is classified without launch or wait", func(t *testing.T) {
+		next := time.Now().Add(time.Minute)
+		definitions := []Definition{
+			{Name: "pending", Source: "manifest:hum.yaml", Argv: []string{"pending"}, Ready: &ReadinessConfig{Match: "ready"}, Restart: "on-failure"},
+			{Name: "exhausted", Source: "manifest:hum.yaml", Argv: []string{"exhausted"}, Ready: &ReadinessConfig{Match: "ready"}, Restart: "on-failure"},
+		}
+		processes := map[string]Process{
+			"pending":   {Name: "pending", Source: "manifest:hum.yaml", Root: root, State: "exited", Argv: []string{"pending"}, Readiness: &Readiness{State: ReadinessStarting, Match: "ready"}, Restart: "on-failure", Relaunches: 2, NextLaunchAt: &next, StopGraceInherited: true},
+			"exhausted": {Name: "exhausted", Source: "manifest:hum.yaml", Root: root, State: "exited", Argv: []string{"exhausted"}, Readiness: &Readiness{State: ReadinessStarting, Match: "ready"}, Restart: "on-failure", Relaunches: AutomaticRelaunchLimit, StopGraceInherited: true},
+		}
+		var launches, waits int
+		results, err := OrchestrateUp(context.Background(), UpOptions{Root: root, Definitions: definitions}, UpOperations{
+			Start: func(ctx context.Context, definition Definition) (StartResult, error) {
+				ensured := Ensure(ctx, root, definition, nil, true, EnsureOperations{
+					Get: func(_ context.Context, name, _ string) (Process, error) { return processes[name], nil },
+					Start: func(context.Context, StartRequest) (Process, error) {
+						launches++
+						return Process{}, errors.New("recovery process relaunched")
+					},
+				})
+				return StartResult{Result: ensured.Result, Process: ensured.Process, Already: ensured.Already}, nil
+			},
+			Readiness: func(context.Context, Definition, Process, string, time.Duration) (Result, error) {
+				waits++
+				return Result{}, nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		byName := make(map[string]Result, len(results))
+		for _, result := range results {
+			byName[result.Name] = result
+		}
+		if byName["pending"].Outcome != "recovery_pending" || byName["pending"].Process == nil || byName["pending"].Process.NextLaunchAt == nil || byName["exhausted"].Outcome != "recovery_exhausted" || byName["exhausted"].Process == nil || byName["exhausted"].Process.Relaunches != AutomaticRelaunchLimit {
+			t.Fatalf("recovery results=%#v", results)
+		}
+		if launches != 0 || waits != 0 {
+			t.Fatalf("recovery launches=%d waits=%d, want neither", launches, waits)
+		}
+	})
+
+	t.Run("removed definitions are appended and sorted", func(t *testing.T) {
+		next := time.Now().Add(time.Minute)
+		otherRoot := t.TempDir()
+		definitions := []Definition{{Name: "current", Source: "manifest:hum.yaml", Cwd: root, Argv: []string{"current"}}}
+		processes := []Process{
+			{Name: "current", Source: "manifest:hum.yaml", Root: root, State: "running", Argv: []string{"current"}},
+			{Name: "pending", Source: "manifest:hum.yaml", Root: root, State: "exited", Restart: "on-failure", Relaunches: 2, NextLaunchAt: &next},
+			{Name: "exhausted", Source: "manifest:hum.yaml", Root: root, State: "exited", Restart: "on-failure", Relaunches: AutomaticRelaunchLimit},
+			{Name: "running", Source: "manifest:hum.yaml", Root: root, State: "running", PID: 12},
+			{Name: "stopped", Source: "manifest:hum.yaml", Root: root, State: "exited"},
+			{Name: "ad-hoc", Source: "ad_hoc", Root: root, State: "running", PID: 13},
+			{Name: "discovered", Source: "package_json", Root: root, State: "running", PID: 14},
+			{Name: "other-root", Source: "manifest:hum.yaml", Root: otherRoot, State: "running", PID: 15},
+		}
+		results, err := OrchestrateUp(context.Background(), UpOptions{Root: root, Definitions: definitions}, UpOperations{
+			Start: func(_ context.Context, definition Definition) (StartResult, error) {
+				process := processes[0]
+				return StartResult{Result: ResultForProcess(definition, process, "already_running"), Process: process, Already: true}, nil
+			},
+			List: func(context.Context) ([]Process, error) { return processes, nil },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 4 || !reflect.DeepEqual([]string{results[0].Name, results[1].Name, results[2].Name, results[3].Name}, []string{"current", "exhausted", "pending", "running"}) {
+			t.Fatalf("up results=%#v", results)
+		}
+		for _, result := range results[1:] {
+			if result.Outcome != "removed_definition" || result.Process == nil || !strings.Contains(result.Guidance, "hum stop "+result.Name) || !strings.Contains(result.Guidance, "hum remove "+result.Name) {
+				t.Fatalf("removed result=%#v", result)
+			}
+		}
+	})
+}
+
+func TestEnsureStartsFromMissingProcess(t *testing.T) {
+	root := t.TempDir()
+	grace := time.Second
+	definition := Definition{
+		Name: "api", Source: "manifest:hum.yaml", Cwd: "service", Argv: []string{"server"},
+		Ready:   &ReadinessConfig{Method: "exec", Argv: []string{"probe", "api"}, Interval: 25 * time.Millisecond},
+		Restart: "on-failure", StopGrace: &grace, TTY: true,
+	}
+	missing := errors.New("not found")
+	var request StartRequest
+	result := Ensure(context.Background(), root, definition, []string{"TOKEN=secret"}, false, EnsureOperations{
+		Get:        func(context.Context, string, string) (Process, error) { return Process{}, missing },
+		IsNotFound: func(err error) bool { return errors.Is(err, missing) },
+		Start: func(_ context.Context, got StartRequest) (Process, error) {
+			request = got
+			return Process{Name: got.Name, Source: got.Source, Root: got.Root, Cwd: got.Cwd, Argv: got.Argv, State: "running", PID: 42, Readiness: &Readiness{Method: "exec", Argv: got.Ready.Argv, Interval: got.Ready.Interval, State: ReadinessStarting}}, nil
+		},
+	})
+	if result.Result.Outcome != "started" || result.Process.PID != 42 || result.Already {
+		t.Fatalf("ensure result=%#v", result)
+	}
+	if request.Name != "api" || request.Root != root || request.Cwd != "service" || !reflect.DeepEqual(request.Argv, definition.Argv) || !reflect.DeepEqual(request.Env, []string{"TOKEN=secret"}) || request.Ready == nil || request.Ready.Method != "exec" || !reflect.DeepEqual(request.Ready.Argv, []string{"probe", "api"}) || request.Restart != "on-failure" || request.StopGrace == nil || *request.StopGrace != grace || !request.TTY {
+		t.Fatalf("start request=%#v", request)
+	}
+	definition.Argv[0] = "changed"
+	definition.Ready.Argv[0] = "changed"
+	grace = 2 * time.Second
+	if request.Argv[0] != "server" || request.Ready.Argv[0] != "probe" || *request.StopGrace != time.Second {
+		t.Fatalf("start request aliased definition: request=%#v definition=%#v", request, definition)
+	}
+}
+
+func TestEnsureClassifiesExistingAndErrors(t *testing.T) {
+	root := t.TempDir()
+	definition := Definition{Name: "api", Source: "manifest:hum.yaml", Cwd: root, Argv: []string{"api"}, StopGrace: nil}
+	running := Process{Name: "api", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"api"}, State: "running", PID: 41, StopGraceInherited: true}
+
+	t.Run("matching active process is already running", func(t *testing.T) {
+		starts := 0
+		result := Ensure(context.Background(), root, definition, nil, false, EnsureOperations{
+			Get: func(context.Context, string, string) (Process, error) { return running, nil },
+			Start: func(context.Context, StartRequest) (Process, error) {
+				starts++
+				return Process{}, errors.New("unexpected start")
+			},
+		})
+		if starts != 0 || !result.Already || result.Result.Outcome != "already_running" || result.Process.PID != 41 {
+			t.Fatalf("ensure result=%#v starts=%d", result, starts)
+		}
+	})
+
+	t.Run("active name conflict and tty mismatch", func(t *testing.T) {
+		adHoc := running
+		adHoc.Source = "ad_hoc"
+		nameConflict := Ensure(context.Background(), root, definition, nil, false, EnsureOperations{
+			Get: func(context.Context, string, string) (Process, error) { return adHoc, nil },
+		})
+		if ErrorKindOf(nameConflict.Result.Error) != ErrorNameInUse {
+			t.Fatalf("name conflict=%#v", nameConflict)
+		}
+		ttyDefinition := definition
+		ttyDefinition.TTY = true
+		ttyMismatch := Ensure(context.Background(), root, ttyDefinition, nil, false, EnsureOperations{
+			Get: func(context.Context, string, string) (Process, error) { return running, nil },
+		})
+		if ttyMismatch.Result.Outcome != "definition_drift" || !reflect.DeepEqual(ttyMismatch.Result.ChangedFields, []string{"tty"}) {
+			t.Fatalf("tty mismatch=%#v", ttyMismatch)
+		}
+	})
+
+	t.Run("get and start failures are retained", func(t *testing.T) {
+		getFailure := errors.New("get failed")
+		got := Ensure(context.Background(), root, definition, nil, false, EnsureOperations{
+			Get:        func(context.Context, string, string) (Process, error) { return Process{}, getFailure },
+			IsNotFound: func(error) bool { return false },
+		})
+		if !errors.Is(got.Result.Error, getFailure) {
+			t.Fatalf("get failure=%#v", got)
+		}
+		startFailure := errors.New("start failed")
+		got = Ensure(context.Background(), root, definition, nil, false, EnsureOperations{
+			Get:        func(context.Context, string, string) (Process, error) { return Process{}, errors.New("missing") },
+			IsNotFound: func(error) bool { return true },
+			Start:      func(context.Context, StartRequest) (Process, error) { return Process{}, startFailure },
+		})
+		if !errors.Is(got.Result.Error, startFailure) {
+			t.Fatalf("start failure=%#v", got)
+		}
+	})
+
+	t.Run("name-in-use race converges on the active process", func(t *testing.T) {
+		calls := 0
+		result := Ensure(context.Background(), root, definition, nil, false, EnsureOperations{
+			Get: func(context.Context, string, string) (Process, error) {
+				calls++
+				if calls == 1 {
+					return Process{}, errors.New("missing")
+				}
+				return running, nil
+			},
+			IsNotFound:  func(error) bool { return true },
+			IsNameInUse: func(err error) bool { return ErrorKindOf(err) == ErrorNameInUse },
+			Start: func(context.Context, StartRequest) (Process, error) {
+				return Process{}, &Error{Kind: ErrorNameInUse, Name: "api"}
+			},
+		})
+		if calls != 2 || !result.Already || result.Result.Outcome != "already_running" || result.Process.PID != 41 {
+			t.Fatalf("racing ensure=%#v gets=%d", result, calls)
+		}
+	})
+}
+
+func TestEnsureReportsDriftedDefinitionFields(t *testing.T) {
+	root := t.TempDir()
+	definition := Definition{Name: "web", Source: "manifest:hum.yaml", Cwd: root, Argv: []string{"server"}}
+	process := Process{Name: "web", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"server"}, State: "running", StopGraceInherited: true}
+	for _, test := range []struct {
+		name  string
+		field string
+		edit  func(*Definition)
+	}{
+		{name: "argv", field: "argv", edit: func(definition *Definition) { definition.Argv = []string{"changed"} }},
+		{name: "cwd", field: "cwd", edit: func(definition *Definition) { definition.Cwd = filepath.Join(root, "sub") }},
+		{name: "readiness", field: "readiness_match", edit: func(definition *Definition) { definition.Ready = &ReadinessConfig{Match: "ready"} }},
+		{name: "tty", field: "tty", edit: func(definition *Definition) { definition.TTY = true }},
+		{name: "restart", field: "restart", edit: func(definition *Definition) { definition.Restart = "on-failure" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := definition
+			test.edit(&changed)
+			starts := 0
+			result := Ensure(context.Background(), root, changed, nil, false, EnsureOperations{
+				Get: func(context.Context, string, string) (Process, error) { return process, nil },
+				Start: func(context.Context, StartRequest) (Process, error) {
+					starts++
+					return Process{}, errors.New("drifted definition relaunched")
+				},
+			})
+			if starts != 0 || result.Result.Outcome != "definition_drift" || !reflect.DeepEqual(result.Result.ChangedFields, []string{test.field}) || !result.Already {
+				t.Fatalf("drift result=%#v starts=%d, want [%s] without launch", result, starts, test.field)
+			}
+		})
+	}
+}
+
+func TestReadinessTimeoutAndLaunchOutcome(t *testing.T) {
+	definition := Definition{Name: "api", Ready: &ReadinessConfig{Match: "ready", Timeout: 3 * time.Second}}
+	for _, test := range []struct {
+		name       string
+		override   time.Duration
+		definition Definition
+		want       time.Duration
+		wantErr    bool
+	}{
+		{name: "default", definition: Definition{Name: "api"}, want: DefaultReadinessTimeout},
+		{name: "definition", definition: definition, want: 3 * time.Second},
+		{name: "override", definition: definition, override: 2 * time.Second, want: 2 * time.Second},
+		{name: "invalid", definition: definition, override: -time.Second, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := ReadinessTimeout(test.override, test.definition)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("invalid timeout accepted")
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("ReadinessTimeout=%s,%v want %s", got, err, test.want)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name       string
+		already    bool
+		definition Definition
+		want       string
+	}{
+		{name: "already", already: true, definition: definition, want: "already_running"},
+		{name: "no readiness", definition: Definition{Name: "plain"}, want: ReadinessRunningUnverified},
+		{name: "readiness", definition: definition, want: "started"},
+	} {
+		t.Run("outcome/"+test.name, func(t *testing.T) {
+			if got := LaunchOutcome(test.already, test.definition); got != test.want {
+				t.Fatalf("LaunchOutcome=%q, want %q", got, test.want)
+			}
+		})
+	}
 }
 
 func indexOf(values []string, value string) int {
