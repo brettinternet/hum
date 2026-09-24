@@ -994,9 +994,10 @@ MCP exposes no follow or other unbounded operation; agents use bounded `wait`, `
 
 The runtime directory contains the socket, PID/startup/readiness files, durable live-group state,
 bounded daemon diagnostics, and private per-scope event-history payload/cursor files. Event history is
-limited to 2,000 records or 1 MiB with 16 KiB records, survives daemon replacement, and does not
-survive runtime cleanup. Atomic cursor high-water metadata prevents cursor reuse independently of
-oldest-first payload eviction; unreadable cursor metadata makes only history unavailable. A torn tail
+readable up to the newest 2,000 records or 1 MiB with 16 KiB records; disk appends compact after
+4,000 records or 2 MiB. It survives daemon replacement, but not runtime cleanup. Atomic cursor
+reservations persist before payloads in blocks of 64: a crash can skip cursors but never reuses them.
+Unreadable cursor metadata makes only history unavailable. A torn tail
 keeps its complete prefix. A malformed payload is treated as empty and diagnosed once per scope per
 daemon lifetime while control operations continue; environment values, input, child output, argv, and
 unbounded raw errors are never persisted as event detail.

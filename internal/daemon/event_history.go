@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	maxHistoryEvents = 2000
-	maxHistoryBytes  = 1 << 20
-	maxHistoryEvent  = 16 << 10
+	maxHistoryEvents   = 2000
+	maxHistoryBytes    = 1 << 20
+	maxHistoryEvent    = 16 << 10
+	historyCursorBlock = 64
 )
 
 var (
@@ -54,7 +55,12 @@ type EventHistory struct {
 	mu                         *sync.Mutex
 	loaded                     bool
 	events                     []protocol.HistoryEvent
-	highwater                  protocol.Cursor
+	eventSizes                 []int
+	retainedBytes              int
+	diskEvents, diskBytes      int
+	maxEvents, maxBytes        int
+	highwater, reserved        protocol.Cursor
+	fullRewrites, markWrites   int
 	malformed                  bool
 	needsRewrite               bool
 	unavailable                error
@@ -76,7 +82,7 @@ func NewEventHistory(runtimeDir, scope, root string) *EventHistory {
 	digest := sha256.Sum256([]byte(key))
 	name := fmt.Sprintf("events-%x", digest[:12])
 	eventPath := filepath.Join(runtimeDir, name+".ndjson")
-	return &EventHistory{dir: runtimeDir, eventPath: eventPath, cursorPath: filepath.Join(runtimeDir, name+".cursor"), mu: historyLock(eventPath)}
+	return &EventHistory{dir: runtimeDir, eventPath: eventPath, cursorPath: filepath.Join(runtimeDir, name+".cursor"), mu: historyLock(eventPath), maxEvents: maxHistoryEvents, maxBytes: maxHistoryBytes}
 }
 
 // NewHistory is a concise compatibility alias.
@@ -135,6 +141,7 @@ func (h *EventHistory) loadLocked() error {
 			return h.unavailable
 		}
 		h.highwater = protocol.Cursor(mark.Cursor)
+		h.reserved = h.highwater
 	} else if !cursorMissing {
 		h.unavailable = ErrHistoryUnavailable
 		return h.unavailable
@@ -169,30 +176,39 @@ func (h *EventHistory) loadLocked() error {
 		var event protocol.HistoryEvent
 		if len(line)+1 > maxHistoryEvent || json.Unmarshal(line, &event) != nil || event.Cursor == 0 || event.Cursor <= previous || event.Cursor > h.highwater || event.Kind != protocol.EventLifecycle && event.Kind != protocol.EventOperation || event.Name == "" || event.Event == "" {
 			h.malformed = true
-			h.events = nil
+			h.events, h.eventSizes, h.retainedBytes = nil, nil, 0
 			h.diagnose(errors.New("malformed event history payload"))
 			return nil
 		}
 		previous = event.Cursor
 		if event.Time.IsZero() {
 			h.malformed = true
-			h.events = nil
+			h.events, h.eventSizes, h.retainedBytes = nil, nil, 0
 			h.diagnose(errors.New("malformed event history timestamp"))
 			return nil
 		}
+		h.diskEvents++
+		h.diskBytes += len(line) + 1
 		h.events = append(h.events, event)
+		h.eventSizes = append(h.eventSizes, len(line)+1)
+		h.retainedBytes += len(line) + 1
+		h.trimLocked()
 	}
 	if scanner.Err() != nil {
 		h.unavailable = ErrHistoryUnavailable
 		return h.unavailable
 	}
-	if len(h.events) != 0 && protocol.Cursor(h.events[len(h.events)-1].Cursor) > h.highwater {
-		// An event ahead of the independent mark cannot be trusted after a crash.
-		h.events = nil
-		h.malformed = true
-		h.diagnose(errors.New("event history cursor mark is behind payload"))
-	}
 	return nil
+}
+
+// trimLocked keeps the visible window bounded while the disk can use its slack.
+func (h *EventHistory) trimLocked() {
+	for len(h.events) > h.maxEvents || h.retainedBytes > h.maxBytes {
+		h.retainedBytes -= h.eventSizes[0]
+		h.events[0] = protocol.HistoryEvent{}
+		h.events = h.events[1:]
+		h.eventSizes = h.eventSizes[1:]
+	}
 }
 
 func (h *EventHistory) ensureDir() error {
@@ -271,8 +287,7 @@ func boundedEvent(event protocol.HistoryEvent) (protocol.HistoryEvent, []byte, e
 }
 
 // Append assigns the next cursor and durably records event. On a write error,
-// the operation is returned as failed and the high-water mark is left at the
-// already persisted value.
+// the operation is returned as failed; assigned cursors are never reused.
 func (h *EventHistory) Append(event protocol.HistoryEvent) (protocol.HistoryEvent, error) {
 	if h == nil {
 		return event, ErrHistoryUnavailable
@@ -289,39 +304,44 @@ func (h *EventHistory) Append(event protocol.HistoryEvent) (protocol.HistoryEven
 	if event.Cursor == 0 {
 		return event, ErrHistoryUnavailable
 	}
-	bounded, _, err := boundedEvent(event)
+	bounded, line, err := boundedEvent(event)
 	if err != nil {
 		return event, err
 	}
-	// Advance the independent mark first. A crash can leave a gap, but can
-	// never cause cursor reuse.
-	mark, err := json.Marshal(historyCursor{Cursor: uint64(event.Cursor)})
-	if err != nil {
-		return event, err
-	}
-	if err = historyWriteAtomic(h.cursorPath, mark); err != nil {
-		return event, err
-	}
-	highwater := h.highwater
-	h.highwater = event.Cursor
-	h.events = append(h.events, bounded)
-	lineEvent := bounded
-	lineEvent.Cursor = event.Cursor
-	line, marshalErr := json.Marshal(lineEvent)
-	if marshalErr != nil {
-		h.highwater = highwater
-		return event, marshalErr
-	}
-	line = append(line, '\n')
-	needsRewrite := h.malformed || h.needsRewrite || len(h.events) > maxHistoryEvents || historyBytes(h.events) > maxHistoryBytes
-	if needsRewrite {
-		for len(h.events) > maxHistoryEvents || historyBytes(h.events) > maxHistoryBytes {
-			h.events = h.events[1:]
+	// Reserve ahead of the payload. A restart begins at the persisted mark,
+	// skipping unused cursors in the block rather than reusing them.
+	if event.Cursor > h.reserved {
+		reserved := event.Cursor + historyCursorBlock - 1
+		if reserved < event.Cursor {
+			reserved = ^protocol.Cursor(0)
 		}
-		payload := make([]byte, 0, historyBytes(h.events))
-		for _, item := range h.events {
-			value := item
-			encoded, marshalErr := json.Marshal(value)
+		mark, marshalErr := json.Marshal(historyCursor{Cursor: uint64(reserved)})
+		if marshalErr != nil {
+			return event, marshalErr
+		}
+		if err = historyWriteAtomic(h.cursorPath, mark); err != nil {
+			return event, err
+		}
+		h.reserved = reserved
+		h.markWrites++
+	}
+	h.highwater = event.Cursor
+
+	// Only publish the new event and trim the window after the payload is durable.
+	// Compute the compacted window without mutating the live one on failure.
+	retained := append(append([]protocol.HistoryEvent(nil), h.events...), bounded)
+	sizes := append(append([]int(nil), h.eventSizes...), len(line))
+	bytes := h.retainedBytes + len(line)
+	for len(retained) > h.maxEvents || bytes > h.maxBytes {
+		bytes -= sizes[0]
+		retained = retained[1:]
+		sizes = sizes[1:]
+	}
+	rewrite := h.malformed || h.needsRewrite || h.diskEvents+1 > 2*h.maxEvents || h.diskBytes+len(line) > 2*h.maxBytes
+	if rewrite {
+		payload := make([]byte, 0, bytes)
+		for _, item := range retained {
+			encoded, marshalErr := json.Marshal(item)
 			if marshalErr != nil {
 				return event, marshalErr
 			}
@@ -330,8 +350,9 @@ func (h *EventHistory) Append(event protocol.HistoryEvent) (protocol.HistoryEven
 		}
 		err = historyWriteAtomic(h.eventPath, payload)
 		if err == nil {
-			h.malformed = false
-			h.needsRewrite = false
+			h.fullRewrites++
+			h.diskEvents, h.diskBytes = len(retained), len(payload)
+			h.malformed, h.needsRewrite = false, false
 		}
 	} else {
 		file, openErr := os.OpenFile(h.eventPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -345,30 +366,22 @@ func (h *EventHistory) Append(event protocol.HistoryEvent) (protocol.HistoryEven
 				openErr = closeErr
 			}
 			err = openErr
-		}
-		if openErr != nil {
+		} else {
 			err = openErr
+		}
+		if err == nil {
+			h.diskEvents++
+			h.diskBytes += len(line)
 		}
 	}
 	if err != nil {
-		// The cursor mark was already made durable, so keep the high-water mark
-		// but never expose the undurable payload from this in-memory instance.
-		if len(h.events) != 0 && h.events[len(h.events)-1].Cursor == bounded.Cursor {
-			h.events = h.events[:len(h.events)-1]
-		}
+		// The cursor was reserved even if the payload failed. A retry must
+		// replace any partial line before writing another event.
 		h.needsRewrite = true
 		return event, err
 	}
+	h.events, h.eventSizes, h.retainedBytes = retained, sizes, bytes
 	return bounded, nil
-}
-
-func historyBytes(events []protocol.HistoryEvent) int {
-	n := 0
-	for _, event := range events {
-		data, _ := json.Marshal(event)
-		n += len(data) + 1
-	}
-	return n
 }
 
 // Read returns one immutable filtered page. A nil Match means no regex.
@@ -384,8 +397,8 @@ func (h *EventHistory) Read(names []string, since time.Time, kinds []protocol.Ev
 	if tail <= 0 {
 		tail = 50
 	}
-	if tail > maxHistoryEvents {
-		tail = maxHistoryEvents
+	if tail > h.maxEvents {
+		tail = h.maxEvents
 	}
 	nameSet := make(map[string]bool)
 	for _, name := range names {

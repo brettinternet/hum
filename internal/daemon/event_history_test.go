@@ -49,16 +49,20 @@ func TestEventHistoryAppendAndPaging(t *testing.T) {
 
 func TestEventHistoryRetentionAndNameReuse(t *testing.T) {
 	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, "/project")
-	for i := 0; i < maxHistoryEvents+3; i++ {
+	if history.maxEvents != 2000 || history.maxBytes != 1<<20 {
+		t.Fatalf("production limits = %d events, %d bytes", history.maxEvents, history.maxBytes)
+	}
+	history.maxEvents = 20
+	for i := 0; i < history.maxEvents+3; i++ {
 		if _, err := history.Append(protocol.HistoryEvent{Name: "same", Kind: protocol.EventLifecycle, Event: "exit", Detail: strings.Repeat("x", 20)}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	page, err := history.Read(nil, time.Time{}, nil, false, nil, maxHistoryEvents, nil, 0)
+	page, err := history.Read(nil, time.Time{}, nil, false, nil, history.maxEvents, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Events) != maxHistoryEvents || page.Events[0].Cursor != 4 || page.Events[len(page.Events)-1].Cursor != maxHistoryEvents+3 {
+	if len(page.Events) != history.maxEvents || page.Events[0].Cursor != 4 || page.Events[len(page.Events)-1].Cursor != protocol.Cursor(history.maxEvents+3) {
 		t.Fatalf("retention = %d, first=%d", len(page.Events), page.Events[0].Cursor)
 	}
 	zero := protocol.Cursor(0)
@@ -70,6 +74,112 @@ func TestEventHistoryRetentionAndNameReuse(t *testing.T) {
 	}
 	if page, err = history.Read([]string{"same"}, time.Time{}, nil, false, nil, 1, nil, 0); err != nil || len(page.Events) != 1 || page.Events[0].Event != "removal" {
 		t.Fatalf("reuse page=%#v err=%v", page, err)
+	}
+}
+
+func TestEventHistoryAppendCost(t *testing.T) {
+	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, "/project")
+	history.maxEvents, history.maxBytes = 20, 1<<20
+	for i := 0; i < 1000; i++ {
+		if _, err := history.Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "ready"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if history.fullRewrites > 51 || history.markWrites > 32 {
+		t.Fatalf("1000 appends: %d rewrites, %d marks", history.fullRewrites, history.markWrites)
+	}
+	if history.fullRewrites == 0 || history.markWrites == 0 {
+		t.Fatalf("counters not exercised: %d rewrites, %d marks", history.fullRewrites, history.markWrites)
+	}
+	page, err := history.Read(nil, time.Time{}, nil, false, nil, 20, nil, 0)
+	if err != nil || len(page.Events) != 20 || page.Events[0].Cursor != 981 {
+		t.Fatalf("live retention = %#v, err=%v", page, err)
+	}
+	loaded := NewEventHistory(history.dir, protocol.ScopeProject, "/project")
+	loaded.maxEvents, loaded.maxBytes = 20, 1<<20
+	page, err = loaded.Read(nil, time.Time{}, nil, false, nil, 20, nil, 0)
+	if err != nil || len(page.Events) != 20 || page.Events[0].Cursor != 981 || loaded.diskEvents > 40 {
+		t.Fatalf("loaded retention = %#v, disk events=%d, err=%v", page, loaded.diskEvents, err)
+	}
+	if _, err := loaded.Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	if loaded.fullRewrites != 0 {
+		t.Fatalf("reload rewrote before reaching slack: %d", loaded.fullRewrites)
+	}
+}
+
+func TestEventHistoryByteCompactionAndReload(t *testing.T) {
+	dir := t.TempDir()
+	history := NewEventHistory(dir, protocol.ScopeGlobal, "")
+	history.maxEvents, history.maxBytes = 20, 1000
+	for i := 0; i < 12; i++ {
+		if _, err := history.Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "ready", Detail: strings.Repeat("x", 250)}); err != nil {
+			t.Fatal(err)
+		}
+		loaded := NewEventHistory(dir, protocol.ScopeGlobal, "")
+		loaded.maxEvents, loaded.maxBytes = history.maxEvents, history.maxBytes
+		page, err := loaded.Read(nil, time.Time{}, nil, false, nil, 20, nil, 0)
+		if err != nil || len(page.Events) == 0 || page.Events[len(page.Events)-1].Cursor != protocol.Cursor(i+1) || loaded.retainedBytes > history.maxBytes {
+			t.Fatalf("reload after append %d: page=%#v bytes=%d err=%v", i, page, loaded.retainedBytes, err)
+		}
+	}
+	if history.fullRewrites == 0 || history.fullRewrites >= 12 {
+		t.Fatalf("byte compaction rewrites=%d", history.fullRewrites)
+	}
+	data, err := os.ReadFile(history.EventPath())
+	if err != nil || len(data) > 2*history.maxBytes {
+		t.Fatalf("disk bytes=%d err=%v", len(data), err)
+	}
+}
+
+func TestEventHistoryCrashNeverReusesCursor(t *testing.T) {
+	dir := t.TempDir()
+	newHistory := func() *EventHistory { return NewEventHistory(dir, protocol.ScopeProject, "/project") }
+	event := protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch"}
+	first := newHistory()
+	var highest protocol.Cursor
+	for i := 0; i < 3; i++ {
+		appended, err := first.Append(event)
+		if err != nil || appended.Cursor <= highest {
+			t.Fatalf("first block append = %#v, %v; previous=%d", appended, err, highest)
+		}
+		highest = appended.Cursor
+	}
+	if first.markWrites != 1 {
+		t.Fatalf("mark writes=%d; expected one block", first.markWrites)
+	}
+	if cursor, err := first.HighWater(); err != nil || cursor != highest {
+		t.Fatalf("live highwater=%d, err=%v; want %d", cursor, err, highest)
+	}
+	future := highest + 1
+	if _, err := first.Read(nil, time.Time{}, nil, false, nil, 50, &future, 0); !errors.Is(err, ErrHistoryCursorFuture) {
+		t.Fatalf("cursor inside reserved block was accepted: %v", err)
+	}
+	second := newHistory()
+	appended, err := second.Append(event)
+	if err != nil || appended.Cursor <= highest {
+		t.Fatalf("restart reused cursor: %#v, %v; previous=%d", appended, err, highest)
+	}
+	highest = appended.Cursor
+	file, err := os.OpenFile(second.EventPath(), os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.WriteString(`{"cursor":`); err != nil {
+		t.Fatal(err)
+	}
+	if err = file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	third := newHistory()
+	appended, err = third.Append(event)
+	if err != nil || appended.Cursor <= highest {
+		t.Fatalf("torn-tail restart reused cursor: %#v, %v; previous=%d", appended, err, highest)
+	}
+	page, err := newHistory().Read(nil, time.Time{}, nil, false, nil, 50, nil, 0)
+	if err != nil || len(page.Events) != 5 || page.Events[len(page.Events)-1].Cursor != appended.Cursor {
+		t.Fatalf("recovered page=%#v, err=%v", page, err)
 	}
 }
 
@@ -92,7 +202,7 @@ func TestEventHistoryRecoveryAndCursorContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	persisted := NewEventHistory(dir, protocol.ScopeProject, "/project")
-	if page, err = persisted.Read(nil, time.Time{}, nil, false, nil, 50, nil, 0); err != nil || len(page.Events) != 2 || page.Events[1].Cursor != 2 {
+	if page, err = persisted.Read(nil, time.Time{}, nil, false, nil, 50, nil, 0); err != nil || len(page.Events) != 2 || page.Events[1].Cursor <= page.Events[0].Cursor {
 		t.Fatalf("rewritten recovery page=%#v err=%v", page, err)
 	}
 }
@@ -118,7 +228,7 @@ func TestEventHistoryMalformedPayloadAndCursorUnavailable(t *testing.T) {
 		t.Fatalf("diagnostics=%d, want one", calls)
 	}
 	appended, err := recovered.Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "ready"})
-	if err != nil || appended.Cursor != 2 {
+	if err != nil || appended.Cursor <= 1 {
 		t.Fatalf("append after malformed payload = %#v, %v", appended, err)
 	}
 	if err := os.WriteFile(history.CursorPath(), []byte("bad"), 0600); err != nil {
@@ -271,7 +381,7 @@ func TestEventHistoryByteRetentionAndNeverTruncatedZero(t *testing.T) {
 		t.Fatalf("byte retention did not evict oldest events: count=%d first=%d", len(page.Events), page.Events[0].Cursor)
 	}
 	data, err := os.ReadFile(history.EventPath())
-	if err != nil || len(data) > maxHistoryBytes {
+	if err != nil || len(data) > 2*maxHistoryBytes {
 		t.Fatalf("stored bytes=%d err=%v", len(data), err)
 	}
 }
@@ -302,7 +412,7 @@ func TestEventHistoryConcurrentScopesBoundsAndWriteFailure(t *testing.T) {
 		t.Fatalf("concurrent page=%#v err=%v", page, err)
 	}
 	for index, event := range page.Events {
-		if event.Cursor != protocol.Cursor(index+1) {
+		if event.Cursor == 0 || index > 0 && event.Cursor <= page.Events[index-1].Cursor {
 			t.Fatalf("cursor[%d]=%d", index, event.Cursor)
 		}
 	}
