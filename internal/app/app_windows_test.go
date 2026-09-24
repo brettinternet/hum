@@ -78,6 +78,37 @@ func TestWindowsAppStopRejectsSignalAndSupportsTTY(t *testing.T) {
 	}
 }
 
+// TestWindowsTTYRejectsOversizedConsoleBeforeRetaining keeps a size ConPTY
+// cannot apply out of the lease, so it cannot block the next launch.
+func TestWindowsTTYRejectsOversizedConsoleBeforeRetaining(t *testing.T) {
+	root, argv, env := windowsAppFixture(t, "block")
+	s, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	defer s.Shutdown(ctx)
+	started, err := s.Start(StartRequest{Name: "tty", Cwd: root, Argv: argv, Env: env, TTY: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcquireInput(root, "tty", true, TTYSize{Columns: 32768, Rows: 24}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("oversized attach = %v, want invalid request", err)
+	}
+	lease, err := s.AcquireInput(root, "tty", true, TTYSize{Columns: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if err := lease.Resize(started.LaunchCursor, 32768, 24); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("oversized resize = %v, want invalid request", err)
+	}
+	if _, err := s.Restart(ctx, root, "tty"); err != nil {
+		t.Fatalf("restart after rejected resize: %v", err)
+	}
+}
+
 func TestWindowsShutdownDuringLaunchStopsOrphan(t *testing.T) {
 	root, argv, env := windowsAppFixture(t, "block")
 	started := make(chan struct{})

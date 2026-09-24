@@ -121,8 +121,10 @@ func Start(spec Spec) (*Child, error) {
 	if spec.IdleFlush < 0 {
 		return nil, errors.New("process: idle flush must not be negative")
 	}
-	if spec.TTYSize != nil && (spec.TTYSize.Columns == 0 || spec.TTYSize.Rows == 0) {
-		return nil, errors.New("process: tty size must have non-zero columns and rows")
+	if spec.TTYSize != nil {
+		if err := ValidateTTYSize(spec.TTYSize.Columns, spec.TTYSize.Rows); err != nil {
+			return nil, fmt.Errorf("process: %w", err)
+		}
 	}
 
 	argv := cloneStrings(spec.Argv)
@@ -444,13 +446,22 @@ func waitTTYWritable(raw syscall.RawConn) error {
 	return errors.Join(controlErr, pollErr)
 }
 
+// ValidateTTYSize reports whether a terminal size can be applied on this
+// platform.
+func ValidateTTYSize(columns, rows uint16) error {
+	if columns == 0 || rows == 0 {
+		return errors.New("tty size must have non-zero columns and rows")
+	}
+	return nil
+}
+
 // Resize applies a terminal size in character cells.
 func (c *Child) Resize(columns, rows uint16) error {
 	if c == nil || !c.tty {
 		return errors.New("process: child has no tty")
 	}
-	if columns == 0 || rows == 0 {
-		return errors.New("process: tty size must have non-zero columns and rows")
+	if err := ValidateTTYSize(columns, rows); err != nil {
+		return fmt.Errorf("process: %w", err)
 	}
 	c.mu.Lock()
 	master := c.ttyMaster

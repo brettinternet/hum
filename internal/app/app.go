@@ -2049,9 +2049,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		}
 		if req.TTYSize != nil {
 			size := *req.TTYSize
-			if size.Columns == 0 || size.Rows == 0 {
+			if err := validateTTYSize(size); err != nil {
 				s.mu.Unlock()
-				return Process{}, fmt.Errorf("%w: tty size must have non-zero columns and rows", ErrInvalidRequest)
+				return Process{}, err
 			}
 			rec.ttySize = &size
 		}
@@ -2301,8 +2301,8 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 		updatedTTY = update.TTY
 		if update.TTYSize != nil {
 			size := *update.TTYSize
-			if size.Columns == 0 || size.Rows == 0 {
-				return Process{}, fmt.Errorf("%w: tty size must have non-zero columns and rows", ErrInvalidRequest)
+			if err := validateTTYSize(size); err != nil {
+				return Process{}, err
 			}
 			updatedTTYSize = &size
 		}
@@ -2958,8 +2958,8 @@ func (s *Supervisor) PrepareTTYScoped(scope string, req StartRequest) error {
 	}
 	if req.TTYSize != nil {
 		size := *req.TTYSize
-		if size.Columns == 0 || size.Rows == 0 {
-			return fmt.Errorf("%w: tty size must have non-zero columns and rows", ErrInvalidRequest)
+		if err := validateTTYSize(size); err != nil {
+			return err
 		}
 		rec.ttySize = &size
 	}
@@ -3026,9 +3026,9 @@ func (s *Supervisor) acquireInputScoped(scope, rootHint, cwd, name string, reque
 		return nil, &InputConflictError{Name: name}
 	}
 	if size != nil {
-		if size.Columns == 0 || size.Rows == 0 {
+		if err := validateTTYSize(*size); err != nil {
 			s.mu.Unlock()
-			return nil, fmt.Errorf("%w: tty size must have non-zero columns and rows", ErrInvalidRequest)
+			return nil, err
 		}
 		copySize := *size
 		rec.ttySize = &copySize
@@ -3339,9 +3339,18 @@ func inputIncarnationStopped(lease *InputLease, incarnationDone <-chan struct{})
 	return inputChannelClosed(incarnationDone)
 }
 
+// validateTTYSize rejects sizes the platform cannot apply before they are
+// retained for a later launch.
+func validateTTYSize(size TTYSize) error {
+	if err := process.ValidateTTYSize(size.Columns, size.Rows); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	return nil
+}
+
 func (s *Supervisor) resizeInput(ctx context.Context, lease *InputLease, cursor output.Cursor, columns, rows uint16) error {
-	if columns == 0 || rows == 0 {
-		return fmt.Errorf("%w: tty dimensions must be non-zero", ErrInvalidRequest)
+	if err := validateTTYSize(TTYSize{Columns: columns, Rows: rows}); err != nil {
+		return err
 	}
 	if ctx == nil {
 		ctx = context.Background()

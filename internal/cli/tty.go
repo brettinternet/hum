@@ -168,11 +168,10 @@ func localTTYSize(stdinFD int) (int, int, error) {
 }
 
 // Windows has no SIGWINCH. Poll only while this attachment owns the local console.
+// The first tick sends the current size, covering a resize after the attach
+// request, and a stale-cursor rejection is retried against the new incarnation.
 func (i *ttyInput) pollTTYResize() {
-	width, height, err := localTTYSize(i.stdinFD)
-	if err != nil {
-		return
-	}
+	width, height := 0, 0
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -184,9 +183,10 @@ func (i *ttyInput) pollTTYResize() {
 			if err != nil || newWidth <= 0 || newHeight <= 0 || newWidth == width && newHeight == height {
 				continue
 			}
-			width, height = newWidth, newHeight
 			_, cursor := i.session.State()
-			_ = i.session.ResizeAt(context.Background(), cursor, uint16(width), uint16(height))
+			if err := i.session.ResizeAt(context.Background(), cursor, uint16(newWidth), uint16(newHeight)); err == nil || !isInputStale(err) {
+				width, height = newWidth, newHeight
+			}
 		}
 	}
 }

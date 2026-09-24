@@ -132,11 +132,10 @@ func Start(spec Spec) (*Child, error) {
 	if !spec.TTY && spec.TTYSize != nil {
 		return nil, errors.New("process: tty mode is unsupported on Windows")
 	}
-	if spec.TTY && spec.TTYSize != nil && (spec.TTYSize.Columns == 0 || spec.TTYSize.Rows == 0) {
-		return nil, errors.New("process: tty size must have non-zero columns and rows")
-	}
-	if spec.TTY && spec.TTYSize != nil && (spec.TTYSize.Columns > 32767 || spec.TTYSize.Rows > 32767) {
-		return nil, errors.New("process: tty size exceeds Windows console dimensions")
+	if spec.TTY && spec.TTYSize != nil {
+		if err := ValidateTTYSize(spec.TTYSize.Columns, spec.TTYSize.Rows); err != nil {
+			return nil, fmt.Errorf("process: %w", err)
+		}
 	}
 
 	argv := cloneStrings(spec.Argv)
@@ -657,6 +656,17 @@ func (c *Child) WriteContext(ctx context.Context, p []byte) (int, error) {
 	return written, nil
 }
 
+// ValidateTTYSize reports whether a terminal size fits a Windows console.
+func ValidateTTYSize(columns, rows uint16) error {
+	if columns == 0 || rows == 0 {
+		return errors.New("tty size must have non-zero columns and rows")
+	}
+	if columns > 32767 || rows > 32767 {
+		return errors.New("tty size exceeds Windows console dimensions")
+	}
+	return nil
+}
+
 // Resize applies a terminal size in character cells.
 func (c *Child) Resize(columns, rows uint16) error {
 	return c.ResizeContext(context.Background(), columns, rows)
@@ -668,11 +678,8 @@ func (c *Child) ResizeContext(ctx context.Context, columns, rows uint16) error {
 	if c == nil || !c.tty {
 		return errors.New("process: child has no tty")
 	}
-	if columns == 0 || rows == 0 {
-		return errors.New("process: tty size must have non-zero columns and rows")
-	}
-	if columns > 32767 || rows > 32767 {
-		return errors.New("process: tty size exceeds Windows console dimensions")
+	if err := ValidateTTYSize(columns, rows); err != nil {
+		return fmt.Errorf("process: %w", err)
 	}
 	if ctx == nil {
 		ctx = context.Background()
