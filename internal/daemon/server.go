@@ -52,10 +52,14 @@ type Server struct {
 	projectsMu sync.Mutex
 	projects   map[string]struct{}
 
-	eventOpsMu       sync.Mutex
-	eventOps         map[string]eventOperation
-	eventDiagnostics map[string]struct{}
-	eventQueue       chan queuedHistoryEvent
+	eventOpsMu sync.Mutex
+	eventOps   map[string]eventOperation
+	eventQueue chan queuedHistoryEvent
+
+	// One EventHistory per scope keeps cursor reservations and the compaction
+	// state in memory for the daemon's lifetime.
+	historiesMu sync.Mutex
+	histories   map[string]*EventHistory
 
 	serveMu      sync.Mutex
 	serveStarted bool
@@ -145,23 +149,23 @@ func NewServer(cfg Config) (*Server, error) {
 		projects[item.Root] = struct{}{}
 	}
 	server := &Server{
-		owner:            owner,
-		paths:            paths,
-		listener:         listener,
-		supervisor:       supervisor,
-		version:          version,
-		maxLine:          maxLine,
-		log:              log,
-		projects:         projects,
-		eventOps:         make(map[string]eventOperation),
-		eventDiagnostics: make(map[string]struct{}),
-		eventQueue:       make(chan queuedHistoryEvent, 1024),
-		serveDone:        make(chan struct{}),
-		ready:            make(chan struct{}),
-		shutdownDone:     make(chan struct{}),
-		closing:          make(chan struct{}),
-		warnings:         append([]protocol.StartupWarning(nil), warnings...),
-		unresolvedDone:   make(chan struct{}),
+		owner:          owner,
+		paths:          paths,
+		listener:       listener,
+		supervisor:     supervisor,
+		version:        version,
+		maxLine:        maxLine,
+		log:            log,
+		projects:       projects,
+		eventOps:       make(map[string]eventOperation),
+		histories:      make(map[string]*EventHistory),
+		eventQueue:     make(chan queuedHistoryEvent, 1024),
+		serveDone:      make(chan struct{}),
+		ready:          make(chan struct{}),
+		shutdownDone:   make(chan struct{}),
+		closing:        make(chan struct{}),
+		warnings:       append([]protocol.StartupWarning(nil), warnings...),
+		unresolvedDone: make(chan struct{}),
 	}
 	go server.writeHistoryEvents()
 	supervisor.SetLifecycleHook(server.recordLifecycle)
@@ -395,6 +399,7 @@ func (s *Server) shutdown(force bool) error {
 		shutdownErr = errors.Join(shutdownErr, err)
 	}
 	s.flushHistoryEvents()
+	s.releaseHistoryReservations()
 	// Follow handlers must flush the supervisor shutdown error before the
 	// daemon exits and tears down their connections. Closing s.closing starts
 	// the bounded drain so a client that stopped reading cannot block exit.
@@ -663,19 +668,30 @@ func (s *Server) history(scope, root, cwd string) (*EventHistory, error) {
 		root = canonical
 	}
 	history := NewEventHistory(s.paths.Dir, scope, root)
+	s.historiesMu.Lock()
+	defer s.historiesMu.Unlock()
+	if cached := s.histories[history.EventPath()]; cached != nil {
+		return cached, nil
+	}
 	history.SetDiagnostic(func(err error) {
-		key := history.EventPath()
-		s.eventOpsMu.Lock()
-		_, diagnosed := s.eventDiagnostics[key]
-		if !diagnosed {
-			s.eventDiagnostics[key] = struct{}{}
-		}
-		s.eventOpsMu.Unlock()
-		if !diagnosed && s.log != nil {
+		if s.log != nil {
 			s.log.Printf("event history: %v\n", err)
 		}
 	})
+	s.histories[history.EventPath()] = history
 	return history, nil
+}
+
+// releaseHistoryReservations runs after the final history flush and before
+// runtime ownership is released, so no replacement daemon can be appending.
+func (s *Server) releaseHistoryReservations() {
+	s.historiesMu.Lock()
+	defer s.historiesMu.Unlock()
+	for _, history := range s.histories {
+		if err := history.ReleaseReservation(); err != nil && s.log != nil {
+			s.log.Printf("event history: release cursor reservation: %v\n", err)
+		}
+	}
 }
 
 type eventOperation struct {

@@ -850,7 +850,8 @@ Storage:
   compact after 4,000 records or 2 MiB.
 - History survives daemon replacement but not runtime-directory cleanup.
 - Cursor reservations persist before payloads in blocks of 64, so a crash can skip cursors but never
-  reuse them. Unreadable cursor metadata makes only that scope's history unavailable; control
+  reuse them. Clean daemon shutdown releases the unused reservation, so a restart continues without
+  a gap. Unreadable cursor metadata makes only that scope's history unavailable; control
   operations continue.
 - A torn tail keeps its complete prefix. A malformed payload reads as empty and is diagnosed once
   per scope per daemon lifetime.

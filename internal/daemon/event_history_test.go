@@ -183,6 +183,74 @@ func TestEventHistoryCrashNeverReusesCursor(t *testing.T) {
 	}
 }
 
+func TestEventHistoryReaderIgnoresLiveReservation(t *testing.T) {
+	dir := t.TempDir()
+	event := protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch"}
+	writer := NewEventHistory(dir, protocol.ScopeProject, "/project")
+	for i := 0; i < 3; i++ {
+		if _, err := writer.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader := NewEventHistory(dir, protocol.ScopeProject, "/project")
+	page, err := reader.Read(nil, time.Time{}, nil, false, nil, 50, nil, 0)
+	if err != nil || page.NextCursor != 3 {
+		t.Fatalf("daemonless reader next cursor=%d, err=%v; want newest durable 3", page.NextCursor, err)
+	}
+	appended, err := writer.Append(event)
+	if err != nil || appended.Cursor != 4 {
+		t.Fatalf("writer append = %#v, %v", appended, err)
+	}
+	after := page.NextCursor
+	page, err = NewEventHistory(dir, protocol.ScopeProject, "/project").Read(nil, time.Time{}, nil, false, nil, 50, &after, 0)
+	if err != nil || page.Truncated || len(page.Events) != 1 || page.Events[0].Cursor != 4 {
+		t.Fatalf("reader after live append page=%#v, err=%v", page, err)
+	}
+}
+
+func TestEventHistoryServerReusesHistoryAndReleasesReservation(t *testing.T) {
+	root, err := project.CanonicalPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := shortRuntimeDir(t)
+	supervisor, err := app.New(app.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(Config{RuntimeDir: runtimeDir, Supervisor: supervisor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch"}
+	var history *EventHistory
+	for i := 0; i < 3; i++ {
+		if history, err = server.history(protocol.ScopeProject, root, root); err != nil {
+			t.Fatal(err)
+		}
+		appended, appendErr := history.Append(event)
+		if appendErr != nil || appended.Cursor != protocol.Cursor(i+1) {
+			t.Fatalf("server append %d = %#v, %v", i, appended, appendErr)
+		}
+	}
+	if history.markWrites != 1 {
+		t.Fatalf("server history mark writes=%d; want one reservation", history.markWrites)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewEventHistory(runtimeDir, protocol.ScopeProject, root)
+	appended, err := restarted.Append(event)
+	if err != nil || appended.Cursor != 4 {
+		t.Fatalf("append after clean shutdown = %#v, %v; want cursor 4", appended, err)
+	}
+	after := protocol.Cursor(3)
+	page, err := restarted.Read(nil, time.Time{}, nil, false, nil, 50, &after, 0)
+	if err != nil || page.Truncated || len(page.Events) != 1 {
+		t.Fatalf("page after clean restart=%#v, err=%v", page, err)
+	}
+}
+
 func TestEventHistoryRecoveryAndCursorContinuation(t *testing.T) {
 	dir := t.TempDir()
 	history := NewEventHistory(dir, protocol.ScopeProject, "/project")
@@ -262,11 +330,11 @@ func TestEventHistoryRefusesForeignRuntimeDirectory(t *testing.T) {
 func TestEventHistoryLifecycleOperationAttributionAndReadIsolation(t *testing.T) {
 	root := t.TempDir()
 	server := &Server{
-		paths:            NewRuntimePaths(t.TempDir()),
-		maxLine:          defaultWireMaxLine,
-		eventOps:         make(map[string]eventOperation),
-		eventDiagnostics: make(map[string]struct{}),
-		eventQueue:       make(chan queuedHistoryEvent, 32),
+		paths:      NewRuntimePaths(t.TempDir()),
+		maxLine:    defaultWireMaxLine,
+		eventOps:   make(map[string]eventOperation),
+		histories:  make(map[string]*EventHistory),
+		eventQueue: make(chan queuedHistoryEvent, 32),
 	}
 
 	for _, lifecycle := range []string{"launch", "ready", "startup_failure"} {

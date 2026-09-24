@@ -164,9 +164,9 @@ func TestEventsPaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	emptyPage := decodeEventOutput(t, empty)
-	// A daemonless reader starts at the persisted reservation, not the last
-	// assigned cursor in the writer's live instance.
-	if len(emptyPage) != 1 || emptyPage[0]["next_cursor"] != float64(64) || emptyPage[0]["has_more"] != false {
+	// A daemonless reader reports the newest durable event, not the writer's
+	// unused cursor reservation.
+	if len(emptyPage) != 1 || emptyPage[0]["next_cursor"] != float64(5) || emptyPage[0]["has_more"] != false {
 		t.Fatalf("empty filtered page=%#v", emptyPage)
 	}
 	if _, err := fixture.run(t, "--after-cursor", "65"); err == nil {
