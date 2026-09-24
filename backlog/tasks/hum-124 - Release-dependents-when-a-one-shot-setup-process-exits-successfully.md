@@ -4,11 +4,12 @@ title: Release dependents when a one-shot setup process exits successfully
 status: Done
 assignee: []
 created_date: '2026-09-23 21:21'
-updated_date: '2026-09-24 02:49'
+updated_date: '2026-09-24 12:39'
 labels:
   - config
   - process
   - contract
+  - reviewed
 milestone: m-3
 dependencies:
   - HUM-123
@@ -108,6 +109,8 @@ Review: one focused general pass found no remaining item-scoped defects; indepen
 Reopened after post-finalization task ci on main (8cbb604) exposed intermittent built-binary TestOneShotPrerequisite restart returning exited_before_ready (exit status 0). Investigating under loaded full suite; previous isolated and branch ci passes do not prove stable final gate. Retain AC/DoD evidence pending fix and rerun.
 
 Correction 3e6e35b (fix: clear prior stop intent on replacement launch) fast-forward merged into main; Worktrunk worktree removed. Root cause: restart while the prior exit was still persisting marked controlIntent, which leaked into the replacement incarnation and misclassified exit 0 as exited_before_ready. A deterministic TestExitReadinessRestartDuringExitPersistence failed before the fix and now passes (go test ./internal/app -run "^TestExitReadinessRestartDuringExitPersistence$" -count=20; go test -race ./internal/app -run "^TestExitReadinessRestartDuringExitPersistence$" -count=5). go test ./integration -run "^TestOneShotPrerequisite$" -count=10 — PASS. Independent final verifier returned PASS for AC1, AC2, AC3, AC4 on 3e6e35b. GOFLAGS=-p=1 task ci PASS on 3e6e35b, including full Go and race suites, security, smoke. Default parallel task ci sometimes times out in existing TestAttachStreamsBurstWithoutAborting under package-load contention; focused test passes and serial-package full gate passes. No test changed or weakened. No blocker; provider completion commit is next.
+
+Review (ded91ec): up --no-wait now returns after spawn for a one-shot with no selected dependents; a retained completion no longer reruns when its dependent is blocked by another prerequisite (drift, name conflict, recovery, lookup error); a readiness transition recorded before the deadline is no longer reported timed_out when observed late. Each covered by a new TestExitReadiness* subtest that failed before the fix. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

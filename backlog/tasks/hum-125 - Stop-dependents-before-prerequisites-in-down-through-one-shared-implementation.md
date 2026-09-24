@@ -4,11 +4,12 @@ title: Stop dependents before prerequisites in down through one shared implement
 status: Done
 assignee: []
 created_date: '2026-09-23 21:21'
-updated_date: '2026-09-24 03:29'
+updated_date: '2026-09-24 12:39'
 labels:
   - cli
   - mcp
   - process
+  - reviewed
 milestone: m-3
 dependencies: []
 modified_files:
@@ -71,6 +72,8 @@ Existing tests that must keep passing: TestDownStopsProcessesConcurrentlyWithInd
 
 <!-- SECTION:NOTES:BEGIN -->
 Implementation 48d9b30 (merged to main by fast-forward): shared reverse-after stop waves for CLI/MCP, preserving result shapes and independent stop connections. AC#1: go test ./internal/orchestrate -run "^TestDownOrder$" -count=1 -v PASS (chain, diamond, inactive, failure, ad-hoc). AC#2: go test ./internal/cli -run "^TestDownStopsDependentsFirst$" -count=1 -v PASS; go test ./internal/mcp -run "^TestDownStopsDependentsFirst$" -count=1 -v PASS (same waves, lexical results). AC#3: go test ./integration -run "Down" -count=1 -v PASS (built binary lifecycle exit cursors). Independent verifier PASS AC1-AC3; one review finding was test factory concurrent append race, fixed with mutex in internal/mcp/tools_test.go; go test -race ./internal/mcp -run "^(TestRestartPolicyMCP|TestDownStopsDependentsFirst|TestDown)$" -count=1 PASS. task check:staged PASS. task ci PASS on code commit 48d9b30 after an initial unrelated TestAttachStreamsBurstWithoutAborting burst timeout; isolated rerun PASS, full gate rerun PASS including go test -race ./... . Diff limited to declared paths; no test deleted/skipped/weakened or protected gate file modified. Next step: finalize provider record and clean up worktree.
+
+Review: no findings. Wave computation, failure release, per-stop connections, and lexical results verified. Explicit --file down intentionally keeps runtime-only semantics (README, docs/design.md, manifest_test), so it does not parse the selected manifest for ordering. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

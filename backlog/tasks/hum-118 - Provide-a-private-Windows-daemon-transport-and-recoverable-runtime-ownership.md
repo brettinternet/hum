@@ -4,11 +4,12 @@ title: Provide a private Windows daemon transport and recoverable runtime owners
 status: Done
 assignee: []
 created_date: '2026-09-23 20:49'
-updated_date: '2026-09-24 06:40'
+updated_date: '2026-09-24 12:39'
 labels:
   - daemon
   - security
   - architecture
+  - reviewed
 milestone: m-5
 dependencies:
   - HUM-117
@@ -73,6 +74,8 @@ AC3 — go test ./internal/daemon ./internal/config -count=1 exited 0 on macOS; 
 AC4 — GOOS=windows GOARCH=amd64 go vet ./internal/daemon ./internal/config exited 0.
 Review — independent verifier PASS AC1, AC3, AC4; focused recheck PASS AC2 after adding real crash recovery test. No item-scoped defects remain.
 Delivery — commits 79b3f3b, aeed8de, 1672ce6, c84968d, 315d00d fast-forward merged to main. GOFLAGS=-p=1 task ci exited 0 at 315d00d; unbounded-parallel task ci intermittently timed out unrelated TestAttachStreamsBurstWithoutAborting, which passed focused and in serialized full gate. Diff touches only declared modified files; Unix tests retained with !windows tags and Windows-specific coverage added; no protected gate files touched. Next: mark criteria and Done, commit provider evidence, remove owned worktree.
+
+Review (86b26b2): with LOCALAPPDATA and APPDATA both unset, the default runtime became the relative path hum-runtime, so invocations from different directories could start separate daemons; config and daemon now fall back to os.TempDir() (TestWindowsDefaultRuntimeDirIsAbsoluteWithoutAppData, native Windows CI run 35999701233 passed). Declined: same-process retry after a failed bind (daemons retry from a new process) and a stricter concurrent-startup test (LockFileEx serialization is sound). No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -4,10 +4,11 @@ title: Verify Windows acceptance on a native Windows CI runner from a branch pus
 status: Done
 assignee: []
 created_date: '2026-09-23 21:17'
-updated_date: '2026-09-24 04:21'
+updated_date: '2026-09-24 12:39'
 labels:
   - tooling
   - integration
+  - reviewed
 milestone: m-5
 dependencies:
   - HUM-130
@@ -69,6 +70,8 @@ DoD — `task ci` passed on final implementation commit 2902910 (also independen
 Native discovery: run 35953101713 proved internal/skill TestSkillContentHasRequiredFrontmatter fails on Windows checkout CRLF (skill_test.go:24). Removed ./internal/skill from initial WINDOWS_PACKAGES as permitted; HUM-120 owns its test port when expanding to ./..., without weakening or skipping existing tests. No remaining blocker; next step HUM-117 can add its packages to WINDOWS_PACKAGES.
 
 AC2 command correction (shell spelling): `rg -n "windows-latest" .github/workflows/ci.yaml && rg -n "task windows:test" .github/workflows/ci.yaml && rg -n "windows/\*\*" .github/workflows/ci.yaml` exited 0.
+
+Review: no findings. windows:watch filters by HEAD SHA and windows/ branch with a bounded wait; WINDOWS_PACKAGES includes HUM-117/118 packages. Remaining Windows work is already tracked in HUM-119/120/121. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

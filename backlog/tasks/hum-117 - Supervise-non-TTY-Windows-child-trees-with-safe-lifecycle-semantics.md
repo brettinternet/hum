@@ -4,10 +4,11 @@ title: Supervise non-TTY Windows child trees with safe lifecycle semantics
 status: Done
 assignee: []
 created_date: '2026-09-23 20:49'
-updated_date: '2026-09-24 05:42'
+updated_date: '2026-09-24 12:39'
 labels:
   - process
   - architecture
+  - reviewed
 milestone: m-5
 dependencies:
   - HUM-122
@@ -80,6 +81,8 @@ AC#2: rg -n "func TestWindows" internal/process internal/app exited 0, listing p
 AC#3: go test ./internal/process ./internal/signals ./internal/project ./internal/app -count=1 exited 0 on macOS (also independently rerun by verifier); Unix lifecycle, PTY, readiness and discovery tests remain green.
 AC#4: GOOS=windows GOARCH=amd64 go vet ./internal/process ./internal/signals ./internal/project ./internal/app exited 0, including Windows test typecheck.
 DoD: task ci exited 0 on final implementation commit 8d5891f (one preceding unrelated CLI attach-flood timeout, focused CLI tests then a full clean rerun); independent verifier returned PASS for AC1-AC4, no tests deleted/skipped/weakened and no unauthorized protected gate changes. One general review identified orphan cleanup, foreign-job termination, executable resolution, and Windows discovery test issues; each was corrected and revalidated. docs/design.md is the sole modified-file-contract deviation, required to describe immediate Windows owned-tree stop, ignored stop_grace, unsupported signals/TTY, and signal-free exit accurately. No blocker. Next: record completion and commit this provider evidence on main.
+
+Review (86b26b2): a refused Windows owned-tree stop (ownership unproven) left operatorStop/controlIntent set, so the child's later autonomous exit was reported as stopped and restart policy suppressed; stopRecord now withdraws that intent for the same incarnation (TestWindowsRefusedStopKeepsAutonomousExit, native Windows CI run 35999701233 passed). No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
