@@ -289,12 +289,15 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 		t.Fatalf("ad hoc run: %s", run.Stderr)
 	}
 	testutil.WaitForFile(t, adHocMarker+".started", lifecycleTimeout)
-	// The marker is written before the fixture output. Wait for the final
-	// stderr fragment so sequential MCP and CLI status snapshots compare a
-	// stable next_cursor rather than racing output ingestion.
-	outputRaw, outputErr := session.call(t, "wait", explicit, map[string]any{"name": "transient", "after": 0, "match": "stderr:live", "timeout_ms": 3000})
-	if outputErr || !strings.Contains(string(outputRaw), `"outcome":"matched"`) {
-		t.Fatalf("wait for ad hoc fixture output=%s error=%v", outputRaw, outputErr)
+	// The marker is written before the fixture output. Wait for both
+	// idle-flushed partial fragments, the last entries on each stream, so
+	// sequential MCP and CLI status snapshots compare a stable next_cursor
+	// rather than racing output ingestion.
+	for _, fragment := range []string{"stdout:live-partial", "stderr:live-partial"} {
+		outputRaw, outputErr := session.call(t, "wait", explicit, map[string]any{"name": "transient", "after": 0, "match": fragment, "timeout_ms": 3000})
+		if outputErr || !strings.Contains(string(outputRaw), `"outcome":"matched"`) {
+			t.Fatalf("wait for ad hoc fixture output %q=%s error=%v", fragment, outputRaw, outputErr)
+		}
 	}
 	listRaw, isErr := session.callStructured(t, "list", explicit, nil)
 	if isErr {
