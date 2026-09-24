@@ -4,11 +4,12 @@ title: Start and control the native Windows daemon from the CLI
 status: Done
 assignee: []
 created_date: '2026-09-23 20:49'
-updated_date: '2026-09-24 15:35'
+updated_date: '2026-09-24 22:10'
 labels:
   - cli
   - daemon
   - integration
+  - reviewed
 milestone: m-5
 dependencies:
   - HUM-117
@@ -91,6 +92,8 @@ AC#3: go test ./internal/cli ./internal/mcp ./cmd/hum -count=1 exited 0 on macOS
 AC#4: GOOS=windows GOARCH=amd64 go build ./... and GOOS=windows GOARCH=amd64 go vet ./internal/cli ./internal/mcp ./cmd/... exited 0 on merged main before committing; post-merge task ci passed at 50bd13c.
 Modified-file deviations: internal/daemon/transport_windows.go handles absent named pipes for built-binary autostart; internal/daemon/event_history.go and internal/daemon/event_history_windows_test.go handle Windows-incompatible directory fsync. Required support for scoped Windows CLI runtime.
 Review: independent verifier PASS AC1-4 at 7a0fb7b; doctor/interrupt findings corrected and native Windows CI passed at 50bd13c. Targeted verifier PASS DoD #5 at dc470b0; additional native doctor readiness/private-manifest/environment/colors tests passed at 50bd13c. Console-level Ctrl+C delivery remains untested on headless Windows CI; synthetic interrupt through production follow-loop stops and reaps a real child. Integrated as merge commit 50bd13c, and Worktrunk removed the session-owned hum-119 branch/worktree and exact associated Herdr workspace.
+
+Review (c576b2a): on Windows the root context also cancels on Ctrl+C, so attached `hum up` could see the canceled context before its interrupt signal, skip stopInterruptedUpLaunches, and exit with context canceled instead of 130 (or omit the detach notice after startup). The Windows root context now cancels with cli.ErrInterrupted as cause, and the up follow session treats that cause as an interrupt; TestUpAttachedStartupInterrupt covers signal-first and context-first orders. Native Windows CI run 36065198341 passed. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

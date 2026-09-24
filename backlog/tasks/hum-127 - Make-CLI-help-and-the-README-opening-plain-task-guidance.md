@@ -4,10 +4,11 @@ title: Make CLI help and the README opening plain task guidance
 status: Done
 assignee: []
 created_date: '2026-09-23 21:22'
-updated_date: '2026-09-24 20:10'
+updated_date: '2026-09-24 22:10'
 labels:
   - cli
   - docs
+  - reviewed
 milestone: m-4
 dependencies:
   - HUM-130
@@ -82,6 +83,8 @@ Implementation commit 43cf610 (docs(cli): make help and README task-oriented) in
 Integrated 43cf610 by fast-forward merge into main; task ci passed on the final code commit. AC#4 exact command: `sed -n "1,12p" README.md | rg -i "bounded|exact-argv"` printed nothing and exited 1; `rg -c "^## (Install|Quickstart)$" README.md` printed 2. No outstanding blocker; next action: commit completed provider state, then remove the verified session-owned worktree and branch.
 
 Final cleanup completed: verified worktree and branch hum-127-help against creation receipt and `wt list --format=json`; checked idle zsh pane and closed associated Herdr workspace wNJ; `wt remove hum-127-help --foreground --format=json` removed checkout and branch. Provider claim released by Done status. No blocker or resumable step remains.
+
+Review (93189ce): init help now says --force replaces an existing private .hum.yaml; the run example no longer passes a command for a declared name (which is a usage error); signal help says Windows does not support signals. TestHelpContract now rejects docs/ paths anywhere in usage or description, including examples, with a negative fixture. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

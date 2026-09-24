@@ -4,11 +4,12 @@ title: Cut the MCP tools/list payload that every agent session loads
 status: Done
 assignee: []
 created_date: '2026-09-23 21:22'
-updated_date: '2026-09-24 19:07'
+updated_date: '2026-09-24 22:10'
 labels:
   - mcp
   - docs
   - contract
+  - reviewed
 milestone: m-4
 dependencies:
   - HUM-129
@@ -81,6 +82,8 @@ Implemented shorter tool/input descriptions, stripped only output descriptions, 
 Commit 28b00e6 fast-forwarded to main. AC#1: go test ./internal/mcp -run "^TestToolsListBudget$" -count=1 -v passed; in-process budget and description contract passed. AC#2: go test ./internal/mcp ./integration -run "MCP|Tool|Schema|Input" -count=1 passed both packages; input-validation tests retained. AC#3: go build -o /tmp/hum-126-mcp-budget-cli ./cmd/hum; initialize, notifications/initialized, tools/list on stdin returned 13 tools; jq -c .result.tools | wc -c measured 37659 bytes including newline. Independent verifier returned PASS for AC1, AC2, AC3 and found no item-scoped defects. task ci passed on 28b00e6 (second invocation; first encountered known HUM-134 attach burst parallel-load flake). Only declared implementation paths changed; no tests deleted/skipped/weakened and no protected gate files modified. Next: check AC/DoD, commit task record, remove owned worktree.
 
 All AC and DoD checkboxes verified; task marked Done (releasing claim). Remaining delivery: commit this provider record on main, rerun task ci on final commit, then remove owned worktree.
+
+Review (b4d3491): corrected shortened tool descriptions that misstated behavior: start/restart accept retained sessions, timeout_ms overrides ready.timeout (default 30000), wait may target a not-yet-launched name without after, and events max_bytes caps event records rather than the whole response. The plugin skill no longer requires .hum.yaml to be committed. Schema strictness unchanged; TestToolsListBudget passes. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

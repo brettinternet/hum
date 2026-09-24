@@ -4,12 +4,13 @@ title: Add native Windows TTY input and resize with ConPTY
 status: Done
 assignee: []
 created_date: '2026-09-23 20:50'
-updated_date: '2026-09-24 18:52'
+updated_date: '2026-09-24 22:10'
 labels:
   - process
   - cli
   - daemon
   - integration
+  - reviewed
 milestone: m-5
 dependencies:
   - HUM-120
@@ -77,6 +78,8 @@ AC#2: rg -n "func TestWindowsTTY" internal/process internal/cli integration list
 AC#3: go test ./internal/process ./internal/cli ./integration -count=1 exited 0 on macOS at 974804d.
 AC#4: GOOS=windows GOARCH=amd64 go vet ./... exited 0 on macOS at 974804d.
 Delivery: task check:staged and task ci exited 0 on implementation commit 974804d; first task ci hit known HUM-134 burst flake, repeat passed. Independent verifier first found missing AC2 coverage, then returned PASS for AC1-AC4 on 974804d. Diff stays within declared paths; no tests deleted, skipped or weakened; no protected gate file changed. Residual: cancellation mode test calls input.close after synthetic cancellation instead of full command cancellation; CLI defers the same cleanup. No remaining blocker; worktree cleanup pending.
+
+Review (55776af): an out-of-range Windows resize (e.g. 32768 columns) was retained before ConPTY rejected it, so the next launch under the same lease failed; app now validates sizes with platform process.ValidateTTYSize before retaining them (one helper replaces five zero checks; TestWindowsTTYRejectsOversizedConsoleBeforeRetaining). Windows resize polling cached a size before it was applied, losing resizes that happened after the attach request or failed with a stale cursor; it now sends the current size on the first tick and retries stale-cursor rejections. Also fixed a Linux CI race in TestTTYInteractiveSession (aa56958: poll logs after start --no-wait). Declined: replacing the synthetic cancellation console-mode test with a hosted full-command cancellation (already recorded residual; production path defers the same cleanup). Native Windows CI run 36065198341 passed. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

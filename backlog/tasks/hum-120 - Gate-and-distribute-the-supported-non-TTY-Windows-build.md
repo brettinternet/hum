@@ -4,11 +4,12 @@ title: Gate and distribute the supported non-TTY Windows build
 status: Done
 assignee: []
 created_date: '2026-09-23 20:50'
-updated_date: '2026-09-24 17:08'
+updated_date: '2026-09-24 22:10'
 labels:
   - tooling
   - integration
   - docs
+  - reviewed
 milestone: m-5
 dependencies:
   - HUM-119
@@ -87,6 +88,8 @@ AC#2: task windows:package:smoke exited 0; unzip listed only hum.exe, shasum -a 
 AC#3: task ci exited 0 on final implementation commit 6df530b (macOS). First attempt encountered pre-existing HUM-134 TestAttachStreamsBurstWithoutAborting parallel-load timeout; focused go test ./internal/cli -run ^TestAttachStreamsBurstWithoutAborting$ -count=1 and rerun task ci both exited 0. Independent diff review confirmed Unix-only tests moved without deleting, skipping, or weakening checks.
 AC#4: rg -n "Windows|ConPTY|non-TTY|PowerShell" README.md docs/design.md docs/development.md exited 0; rg -n -i "windows support is planned" README.md docs/design.md exited 1. Docs include PowerShell checksum/extraction, PATH, named-pipe security, Job Object stop and unsupported Unix signals/TTY.
 Independent verifier: PASS AC1–AC4; no concrete findings, PowerShell install steps not manually run on Windows. Source commits bdf07db, b6dc13b, 075e74e, 040b1fb, 6ecce2c, 6df530b fast-forward merged to local main at 6df530b; no main push or PR.
+
+Review: README and docs/design.md still called Windows non-TTY only and said --tty/attach/ConPTY were unsupported after HUM-121; the docs rewrite in b3e0b3e/ab96b45 already replaced those statements with the ConPTY behavior. Release zip, checksum, and upload wiring checked; no defects. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
