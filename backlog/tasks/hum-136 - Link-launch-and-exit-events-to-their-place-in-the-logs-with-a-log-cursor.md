@@ -1,9 +1,10 @@
 ---
 id: HUM-136
 title: Link launch and exit events to their place in the logs with a log cursor
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-24 22:20'
+updated_date: '2026-09-24 22:39'
 labels:
   - events
   - output
@@ -82,19 +83,47 @@ Non-goals:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/app -run "^TestLifecycleLogCursor$" -count=1 -v` exits 0. The new test, next to TestEventHistoryLifecycleKinds in internal/app/event_history_test.go and using the fake children there, asserts: the first launch of a fresh session has no LogCursor; the exit LogCursor equals the cursor of the last output entry; after a second Start of the same session, the launch LogCursor equals the cursor of the "NAME launched" marker, and a store Read after that cursor returns only second-incarnation entries; an exit with no output at all has no LogCursor.
-- [ ] #2 AC2 — `go test ./internal/daemon -run "^(TestEventHistoryLifecycleOperationAttributionAndReadIsolation|TestEventHistoryLogCursorRoundTrip)$" -count=1 -v` exits 0. recordLifecycle copies LogCursor into the queued HistoryEvent. The new round-trip test appends events with LogCursor 0, with 812, and without it, reopens the history, and reads back 0, 812, and nil.
-- [ ] #3 AC3 — `go test ./internal/cli -run "^TestEvents" -count=1 -v` and `go test ./internal/mcp -run "^(TestEvents|TestOutputSchemasAcceptStructuredContent)$" -count=1 -v` both exit 0. New assertions: CLI JSON includes log_cursor when set (including 0) and leaves it out otherwise; `hum events --full` prints log_cursor=N on the detail line; default human output is byte-for-byte unchanged; an MCP events result containing log_cursor passes the output-schema check.
-- [ ] #4 AC4 — `go test ./integration -run "^TestEventsLogCursor$" -count=1 -v` exits 0. Against the built binary: `hum run NAME --detach -- /bin/sh -c "echo one; echo two; exit 3"`, wait for the exit, then `hum start NAME` and wait for the second exit. In `hum events NAME --json`, the first launch has no log_cursor; each exit log_cursor equals the cursor of the last entry that `hum logs NAME --json` returns for that incarnation; and `hum logs NAME --after-cursor <second launch log_cursor> --json` returns only the second incarnation lines "one" and "two".
-- [ ] #5 AC5 — `go test ./internal/cli -run "^(TestDocs|TestREADME)" -count=1` exits 0, and `rg -n log_cursor docs/cli-json-v1.md docs/design.md docs/coding-agents.md` prints at least one line from each file. The design.md text includes the caveat that cursors do not carry across `hum remove` or daemon replacement.
+- [x] #1 AC1 — `go test ./internal/app -run "^TestLifecycleLogCursor$" -count=1 -v` exits 0. The new test, next to TestEventHistoryLifecycleKinds in internal/app/event_history_test.go and using the fake children there, asserts: the first launch of a fresh session has no LogCursor; the exit LogCursor equals the cursor of the last output entry; after a second Start of the same session, the launch LogCursor equals the cursor of the "NAME launched" marker, and a store Read after that cursor returns only second-incarnation entries; an exit with no output at all has no LogCursor.
+- [x] #2 AC2 — `go test ./internal/daemon -run "^(TestEventHistoryLifecycleOperationAttributionAndReadIsolation|TestEventHistoryLogCursorRoundTrip)$" -count=1 -v` exits 0. recordLifecycle copies LogCursor into the queued HistoryEvent. The new round-trip test appends events with LogCursor 0, with 812, and without it, reopens the history, and reads back 0, 812, and nil.
+- [x] #3 AC3 — `go test ./internal/cli -run "^TestEvents" -count=1 -v` and `go test ./internal/mcp -run "^(TestEvents|TestOutputSchemasAcceptStructuredContent)$" -count=1 -v` both exit 0. New assertions: CLI JSON includes log_cursor when set (including 0) and leaves it out otherwise; `hum events --full` prints log_cursor=N on the detail line; default human output is byte-for-byte unchanged; an MCP events result containing log_cursor passes the output-schema check.
+- [x] #4 AC4 — `go test ./integration -run "^TestEventsLogCursor$" -count=1 -v` exits 0. Against the built binary: `hum run NAME --detach -- /bin/sh -c "echo one; echo two; exit 3"`, wait for the exit, then `hum start NAME` and wait for the second exit. In `hum events NAME --json`, the first launch has no log_cursor; each exit log_cursor equals the cursor of the last entry that `hum logs NAME --json` returns for that incarnation; and `hum logs NAME --after-cursor <second launch log_cursor> --json` returns only the second incarnation lines "one" and "two".
+- [x] #5 AC5 — `go test ./internal/cli -run "^(TestDocs|TestREADME)" -count=1` exits 0, and `rg -n log_cursor docs/cli-json-v1.md docs/design.md docs/coding-agents.md` prints at least one line from each file. The design.md text includes the caveat that cursors do not carry across `hum remove` or daemon replacement.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Thread optional cursor through lifecycle, history, CLI and MCP schemas without querying store from observers.
+2. Add focused app, daemon, CLI, MCP and built-binary integration coverage for zero/absent/second-incarnation cursors.
+3. Document event-to-logs navigation and session lifetime caveat; run AC commands, independent verification and final CI, then commit and merge.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented optional lifecycle log cursors through daemon history, CLI and MCP, with focused unit/integration tests and documentation. AC1–AC5 commands passed locally before independent verification; final review, commit, and CI remain.
+
+Review: independent verifier initially found an exit/next-Start interleaving; captured exit cursor under supervisor lock and added deterministic regression. Follow-up independent verifier: PASS AC1–AC5 (including AC1 -race); no remaining item-scoped defects.
+AC#1: go test ./internal/app -run "^TestLifecycleLogCursor$" -count=1 -v — PASS; go test -race ./internal/app -run "^TestLifecycleLogCursor$" -count=1 -v — PASS.
+AC#2: go test ./internal/daemon -run "^(TestEventHistoryLifecycleOperationAttributionAndReadIsolation|TestEventHistoryLogCursorRoundTrip)$" -count=1 -v — PASS.
+AC#3: go test ./internal/cli -run "^TestEvents" -count=1 -v and go test ./internal/mcp -run "^(TestEvents|TestOutputSchemasAcceptStructuredContent)$" -count=1 -v — PASS.
+AC#4: go test ./integration -run "^TestEventsLogCursor$" -count=1 -v — PASS against built binary.
+AC#5: go test ./internal/cli -run "^(TestDocs|TestREADME)" -count=1 and rg -n log_cursor docs/cli-json-v1.md docs/design.md docs/coding-agents.md — PASS (all three docs).
+Delivery: task check:staged PASS; task ci PASS on 63443e3 after rebasing onto current main. Implementation commits e2ab61b and 63443e3 fast-forward merged into main; Worktrunk worktree and branch removed. Diff limited to 13 declared files; no tests deleted, skipped or weakened; no protected gate files touched. Next step: none.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Linked launch/exit history to retained log cursors; verified all AC1–AC5 and task ci, reviewed independently, merged to main, and cleaned up the worktree.
+<!-- SECTION:FINAL_SUMMARY:END -->
