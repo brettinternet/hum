@@ -1,0 +1,34 @@
+version: "3"
+
+vars:
+  WINDOWS_PACKAGES: ./internal/config ./internal/orchestrate ./internal/output ./internal/protocol ./internal/skill ./internal/testutil/cmd/hum-fixture
+  HOST_OS:
+    sh: go env GOHOSTOS
+
+tasks:
+  test:
+    desc: Run the packages currently ported to native Windows
+    preconditions:
+      - sh: '[ "{{.HOST_OS}}" = windows ]'
+        msg: A Windows host is required for windows:test
+    cmds:
+      - go test -count=1 {{if .RUN}}-run "{{.RUN}}"{{end}} {{.WINDOWS_PACKAGES}}
+
+  watch:
+    desc: Wait for the Windows-branch CI run matching HEAD and report its result
+    platforms: [darwin, linux]
+    silent: true
+    cmds:
+      - |
+        sha="$(git rev-parse HEAD)"
+        for attempt in 1 2 3 4 5 6; do
+          run_id="$(gh run list --workflow ci.yaml --commit "$sha" --limit 50 --json databaseId,headBranch --jq '[.[] | select(.headBranch | startswith("windows/"))][0].databaseId // empty')"
+          if [ -n "$run_id" ]; then
+            echo "Watching ci.yaml run $run_id for $sha"
+            gh run watch "$run_id" --exit-status
+            exit $?
+          fi
+          if [ "$attempt" -lt 6 ]; then sleep 5; fi
+        done
+        echo "No Windows-branch ci.yaml run appeared for $sha" >&2
+        exit 1

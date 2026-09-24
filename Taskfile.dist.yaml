@@ -6,6 +6,7 @@ includes:
   setup: .taskfiles/setup.yaml
   backlog: .taskfiles/backlog.yaml
   cli: .taskfiles/cli.yaml
+  windows: .taskfiles/windows.yaml
 
 tasks:
   default:

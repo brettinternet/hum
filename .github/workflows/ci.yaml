@@ -3,7 +3,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'windows/**']
   pull_request:
     branches: [main]
 
@@ -53,6 +53,42 @@ jobs:
 
       - name: Run CI
         run: task security check test smoke
+
+  test-windows:
+    name: Go CI (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+        with:
+          install_args: go task
+
+      - name: Resolve Go cache settings
+        id: go-cache
+        run: |
+          "build=$(go env GOCACHE)" >> $env:GITHUB_OUTPUT
+          "modules=$(go env GOMODCACHE)" >> $env:GITHUB_OUTPUT
+          "version=$(go env GOVERSION)" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Go caches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.modules }}
+          key: ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-
+
+      - name: Run Windows tests
+        run: task windows:test
 
   race-linux:
     name: Go race (Linux)
