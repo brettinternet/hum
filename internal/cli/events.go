@@ -136,6 +136,9 @@ func writeEventsJSON(writer io.Writer, events []protocol.HistoryEvent, next prot
 		if event.Signal != "" {
 			value["signal"] = event.Signal
 		}
+		if event.LogCursor != nil {
+			value["log_cursor"] = *event.LogCursor
+		}
 		if err := encoder.Encode(value); err != nil {
 			return err
 		}
@@ -173,6 +176,12 @@ func writeEventsHuman(writer io.Writer, events []protocol.HistoryEvent, full boo
 		if full {
 			if _, err := fmt.Fprintf(writer, "%s %s %s\n", timestamp, name, colors.apply(eventStyle(event), kind)); err != nil {
 				return err
+			}
+			if event.LogCursor != nil {
+				if detail != "" {
+					detail += " "
+				}
+				detail += fmt.Sprintf("log_cursor=%d", *event.LogCursor)
 			}
 			if detail != "" {
 				if _, err := fmt.Fprintln(writer, detail); err != nil {

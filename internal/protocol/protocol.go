@@ -502,6 +502,7 @@ type HistoryEvent struct {
 	Outcome     string    `json:"outcome,omitempty"`
 	ExitCode    *int      `json:"exit_code,omitempty"`
 	Signal      string    `json:"signal,omitempty"`
+	LogCursor   *Cursor   `json:"log_cursor,omitempty"`
 }
 
 // EventRecord is a descriptive alias for HistoryEvent.

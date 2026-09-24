@@ -484,6 +484,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"outcome":      map[string]any{"type": "string"},
 		"exit_code":    map[string]any{"type": "integer"},
 		"signal":       map[string]any{"type": "string"},
+		"log_cursor":   map[string]any{"type": "integer", "minimum": 0},
 	}, "cursor", "time", "kind", "name", "event")
 	eventOutput := objectSchema(map[string]any{
 		"events": map[string]any{"type": []string{"array", "null"}, "items": eventRecord}, "next_cursor": map[string]any{"type": "integer", "minimum": 0},

@@ -64,6 +64,74 @@ func TestEventHistoryLifecycleKinds(t *testing.T) {
 	}
 }
 
+func TestLifecycleLogCursor(t *testing.T) {
+	root := makeProject(t, false)
+	first := newSubscriptionChild(7201, 3, time.Now().UTC(), "one\n")
+	second := newSubscriptionChild(7202, 3, time.Now().UTC(), "two\n")
+	empty := newSubscriptionChild(7203, 0, time.Now().UTC(), "")
+	children := []*subscriptionChild{first, second, empty}
+	var started int
+	s := testSupervisor(t, Options{StartProcess: func(spec process.Spec) (Child, error) {
+		child := children[started]
+		started++
+		return subscriptionStarter(map[string]*subscriptionChild{spec.Argv[len(spec.Argv)-1]: child})(spec)
+	}})
+	events := make(chan LifecycleEvent, 16)
+	s.SetLifecycleHook(func(event LifecycleEvent) { events <- event })
+	await := func(kind string) LifecycleEvent {
+		t.Helper()
+		for {
+			select {
+			case event := <-events:
+				if event.Event == kind {
+					return event
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("timed out waiting for %s", kind)
+			}
+		}
+	}
+	start := func(name string) {
+		t.Helper()
+		if _, err := s.Start(StartRequest{Name: name, Root: root, Cwd: root, Argv: []string{"fake", name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start("api")
+	if event := await("launch"); event.LogCursor != nil {
+		t.Fatalf("first launch cursor = %v, want nil", event.LogCursor)
+	}
+	first.release()
+	if event := await("exit"); event.LogCursor == nil || *event.LogCursor != 0 {
+		t.Fatalf("first exit cursor = %v, want 0", event.LogCursor)
+	}
+	start("api")
+	launch := await("launch")
+	if launch.LogCursor == nil || *launch.LogCursor != 1 {
+		t.Fatalf("second launch cursor = %v, want marker 1", launch.LogCursor)
+	}
+	retained, err := second.store.Read(output.ReadOptions{})
+	if err != nil || len(retained.Entries) != 3 || retained.Entries[1].Cursor != *launch.LogCursor || retained.Entries[1].Text != "api launched\n" {
+		t.Fatalf("launch marker: page=%+v err=%v", retained, err)
+	}
+	page, err := second.store.Read(output.ReadOptions{After: launch.LogCursor})
+	if err != nil || len(page.Entries) != 1 || page.Entries[0].Text != "two\n" || page.Entries[0].Cursor != 2 {
+		t.Fatalf("after launch: page=%+v err=%v", page, err)
+	}
+	second.release()
+	if event := await("exit"); event.LogCursor == nil || *event.LogCursor != 2 {
+		t.Fatalf("second exit cursor = %v, want 2", event.LogCursor)
+	}
+	start("empty")
+	if event := await("launch"); event.LogCursor != nil {
+		t.Fatalf("empty launch cursor = %v", event.LogCursor)
+	}
+	empty.release()
+	if event := await("exit"); event.LogCursor != nil {
+		t.Fatalf("empty exit cursor = %v, want nil", event.LogCursor)
+	}
+}
+
 func TestExitReadinessSupervisorCompletion(t *testing.T) {
 	for _, test := range []struct {
 		name               string

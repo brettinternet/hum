@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"hum/internal/app"
+	"hum/internal/output"
 	"hum/internal/process"
 	"hum/internal/project"
 	"hum/internal/protocol"
@@ -44,6 +45,32 @@ func TestEventHistoryAppendAndPaging(t *testing.T) {
 	}
 	if len(page.Events) != 1 || page.Events[0].Cursor != 2 || !page.HasMore || page.NextCursor != 2 {
 		t.Fatalf("cursor page = %#v, metadata=%#v", page.Events, page)
+	}
+}
+
+func TestEventHistoryLogCursorRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	server := &Server{eventOps: make(map[string]eventOperation), eventQueue: make(chan queuedHistoryEvent, 3)}
+	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, root)
+	zero, last := output.Cursor(0), output.Cursor(812)
+	for _, event := range []app.LifecycleEvent{
+		{Scope: protocol.ScopeProject, Root: root, Cwd: root, Name: "api", Event: "launch", LogCursor: &zero},
+		{Scope: protocol.ScopeProject, Root: root, Cwd: root, Name: "api", Event: "exit", LogCursor: &last},
+		{Scope: protocol.ScopeProject, Root: root, Cwd: root, Name: "api", Event: "exit"},
+	} {
+		server.recordLifecycle(event)
+		queued := <-server.eventQueue
+		if _, err := history.Append(queued.event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded := NewEventHistory(history.dir, protocol.ScopeProject, root)
+	page, err := loaded.Read(nil, time.Time{}, nil, false, nil, 10, nil, 0)
+	if err != nil || len(page.Events) != 3 {
+		t.Fatalf("reloaded history = %+v, err=%v", page, err)
+	}
+	if page.Events[0].LogCursor == nil || *page.Events[0].LogCursor != 0 || page.Events[1].LogCursor == nil || *page.Events[1].LogCursor != 812 || page.Events[2].LogCursor != nil {
+		t.Fatalf("reloaded log cursors = %+v", page.Events)
 	}
 }
 

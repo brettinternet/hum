@@ -2,11 +2,99 @@ package integration
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"hum/internal/testutil"
 )
+
+func TestEventsLogCursor(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := integrationHum(t)
+	runtime := lifecycleNewRuntime(t)
+	t.Cleanup(func() { _ = testutil.Run(t, hum, runtime.cwd, runtime.env, "shutdown", "--stop-processes") })
+	name := "cursor-api"
+	run := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", name, "--detach", "--", "/bin/sh", "-c", "echo one; echo two; exit 3")
+	if run.Code != 0 || run.Err != nil {
+		t.Fatalf("run: %+v", run)
+	}
+	getEvents := func() []eventJSON {
+		return readEvents(t, testutil.Run(t, hum, runtime.cwd, runtime.env, "events", name, "--json"))
+	}
+	awaitExits := func(want int) []eventJSON {
+		t.Helper()
+		var events []eventJSON
+		if !lifecycleWaitCondition(5*time.Second, func() bool {
+			events = getEvents()
+			count := 0
+			for _, event := range events {
+				if event.Kind == "lifecycle" && event.Event == "exit" {
+					count++
+				}
+			}
+			return count >= want
+		}) {
+			t.Fatalf("wanted %d exits, events=%+v", want, events)
+		}
+		return events
+	}
+	checkLogs := func(after *uint64) []logsitEntry {
+		t.Helper()
+		args := []string{"logs", name, "--json"}
+		if after != nil {
+			args = append(args, "--after-cursor", strconv.FormatUint(*after, 10))
+		}
+		result := testutil.Run(t, hum, runtime.cwd, runtime.env, args...)
+		if result.Code != 0 || result.Err != nil {
+			t.Fatalf("logs: %+v", result)
+		}
+		lines := logsitDecodeJSONLines(t, result.Stdout)
+		if len(lines) != 1 {
+			t.Fatalf("logs JSON: %q", result.Stdout)
+		}
+		return lines[0].Event.Entries
+	}
+	first := awaitExits(1)
+	var launches, exits []eventJSON
+	for _, event := range first {
+		if event.Kind == "lifecycle" && event.Event == "launch" {
+			launches = append(launches, event)
+		}
+		if event.Kind == "lifecycle" && event.Event == "exit" {
+			exits = append(exits, event)
+		}
+	}
+	if len(launches) != 1 || launches[0].LogCursor != nil || len(exits) != 1 {
+		t.Fatalf("first incarnation events: %+v", first)
+	}
+	entries := checkLogs(nil)
+	if len(entries) != 2 || entries[0].Text != "one\n" || entries[1].Text != "two\n" || exits[0].LogCursor == nil || *exits[0].LogCursor != entries[1].Cursor {
+		t.Fatalf("first exit=%+v logs=%+v", exits[0], entries)
+	}
+	start := testutil.Run(t, hum, runtime.cwd, runtime.env, "start", name)
+	if start.Code != 0 || start.Err != nil {
+		t.Fatalf("start: %+v", start)
+	}
+	all := awaitExits(2)
+	launches, exits = nil, nil
+	for _, event := range all {
+		if event.Kind == "lifecycle" && event.Event == "launch" {
+			launches = append(launches, event)
+		}
+		if event.Kind == "lifecycle" && event.Event == "exit" {
+			exits = append(exits, event)
+		}
+	}
+	if len(launches) != 2 || launches[1].LogCursor == nil || len(exits) != 2 {
+		t.Fatalf("second incarnation events: %+v", all)
+	}
+	second := checkLogs(launches[1].LogCursor)
+	if len(second) != 2 || second[0].Text != "one\n" || second[1].Text != "two\n" || exits[1].LogCursor == nil || *exits[1].LogCursor != second[1].Cursor {
+		t.Fatalf("second exit=%+v logs=%+v", exits[1], second)
+	}
+}
 
 func TestEventsJSON(t *testing.T) {
 	lifecycleRequireUnix(t)
@@ -58,16 +146,17 @@ func TestEventsJSON(t *testing.T) {
 }
 
 type eventJSON struct {
-	SchemaVersion int    `json:"schema_version"`
-	Cursor        uint64 `json:"cursor"`
-	Type          string `json:"type"`
-	Kind          string `json:"kind"`
-	Event         string `json:"event"`
-	Origin        string `json:"origin"`
-	OperationID   string `json:"operation_id"`
-	NextCursor    uint64 `json:"next_cursor"`
-	Truncated     bool   `json:"truncated"`
-	HasMore       bool   `json:"has_more"`
+	SchemaVersion int     `json:"schema_version"`
+	Cursor        uint64  `json:"cursor"`
+	Type          string  `json:"type"`
+	Kind          string  `json:"kind"`
+	Event         string  `json:"event"`
+	Origin        string  `json:"origin"`
+	OperationID   string  `json:"operation_id"`
+	NextCursor    uint64  `json:"next_cursor"`
+	LogCursor     *uint64 `json:"log_cursor"`
+	Truncated     bool    `json:"truncated"`
+	HasMore       bool    `json:"has_more"`
 }
 
 func eventCursors(events []eventJSON) []uint64 {

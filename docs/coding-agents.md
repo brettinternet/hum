@@ -142,6 +142,19 @@ Find a match with surrounding lines:
 
 To page forward, pass the returned `next` back as `after`.
 
+To jump from a failed exit to its logs, read `events` for the process and find its `launch`
+`log_cursor`; pass that cursor to `logs` as `after` to read its incarnation. The `exit`
+`log_cursor` marks its last output entry (use it to read later output). If the first launch has
+no cursor, omit `after`. For example:
+
+```text
+events {names: ["api"], failed: true} ──▶ events {names: ["api"]} (find preceding launch)
+  ──▶ logs {name: "api", after: <launch log_cursor>}
+```
+
+Log cursors only apply to the same retained session: `hum remove` and daemon replacement discard
+output but not event history. Compare log entry `time` to event `time` if a cursor may be stale.
+
 ## Tips
 
 - Prefer `up` over a series of `start` calls. It handles `after` ordering, readiness, and setup

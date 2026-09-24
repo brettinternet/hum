@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,6 +249,41 @@ func TestEventsColor(t *testing.T) {
 	}
 	if strings.Contains(plain.String(), "\x1b") {
 		t.Fatalf("plain output contains escape: %q", plain.String())
+	}
+}
+
+func TestEventsLogCursor(t *testing.T) {
+	zero, last := protocol.Cursor(0), protocol.Cursor(812)
+	at := time.Unix(0, 0).UTC()
+	events := []protocol.HistoryEvent{
+		{Time: at, Name: "api", Kind: protocol.EventLifecycle, Event: "launch", LogCursor: &zero},
+		{Time: at, Name: "api", Kind: protocol.EventLifecycle, Event: "exit", Detail: "failed", LogCursor: &last},
+		{Time: at, Name: "api", Kind: protocol.EventOperation, Event: "stop"},
+	}
+	var jsonOutput bytes.Buffer
+	if err := writeEventsJSON(&jsonOutput, events, 3, false, false); err != nil {
+		t.Fatal(err)
+	}
+	values := decodeEventOutput(t, jsonOutput.String())
+	if values[0]["log_cursor"] != float64(0) || values[1]["log_cursor"] != float64(812) {
+		t.Fatalf("JSON cursors = %#v", values)
+	}
+	if _, exists := values[2]["log_cursor"]; exists {
+		t.Fatalf("unexpected cursor on operation: %#v", values[2])
+	}
+	var compact, full bytes.Buffer
+	if err := writeEventsHuman(&compact, events, false, colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	stamp := at.Local().Format("15:04:05")
+	if want := fmt.Sprintf("TIME NAME EVENT DETAIL\n%s api launch\n%s api exit failed\n%s api stop\n", stamp, stamp, stamp); compact.String() != want {
+		t.Fatalf("default output = %q, want %q", compact.String(), want)
+	}
+	if err := writeEventsHuman(&full, events, true, colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(full.String(), "\nlog_cursor=0\n") || !strings.Contains(full.String(), "\nfailed log_cursor=812\n") {
+		t.Fatalf("full output = %q", full.String())
 	}
 }
 

@@ -35,6 +35,13 @@ func (c *eventMetadataClient) Stop(ctx context.Context, request protocol.StopReq
 }
 
 func TestEvents(t *testing.T) {
+	t.Run("log cursor passes output schema", func(t *testing.T) {
+		root := t.TempDir()
+		zero := protocol.Cursor(0)
+		client := &eventHistoryClient{fakeClient: &fakeClient{}, response: protocol.NewEventsResponse([]protocol.HistoryEvent{{Cursor: 1, Time: time.Now().UTC(), Kind: protocol.EventLifecycle, Name: "api", Event: "launch", LogCursor: &zero}}, 1, false, false)}
+		server := NewServer(Options{ClientFactory: func(context.Context, bool) (Client, error) { return client, nil }})
+		checkToolResult(t, server, root, "events", nil)
+	})
 	t.Run("bounded tool surface", func(t *testing.T) {
 		var found bool
 		for _, definition := range NewServer(Options{}).toolDefinitions() {

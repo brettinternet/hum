@@ -793,7 +793,7 @@ func (s *Server) recordLifecycle(event app.LifecycleEvent) {
 		}
 	}
 	s.eventOpsMu.Unlock()
-	s.queueHistoryEvent(event.Scope, event.Root, event.Cwd, protocol.HistoryEvent{Time: event.Time, Kind: protocol.EventLifecycle, Name: event.Name, Event: event.Event, Detail: event.Detail, OperationID: operation.id, ExitCode: event.ExitCode, Signal: event.Signal})
+	s.queueHistoryEvent(event.Scope, event.Root, event.Cwd, protocol.HistoryEvent{Time: event.Time, Kind: protocol.EventLifecycle, Name: event.Name, Event: event.Event, Detail: event.Detail, OperationID: operation.id, ExitCode: event.ExitCode, Signal: event.Signal, LogCursor: (*protocol.Cursor)(event.LogCursor)})
 }
 
 func (s *Server) appendHistory(scope, root, cwd, operationID, origin, operation, name, outcome, lifecycle string) {

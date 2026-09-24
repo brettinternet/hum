@@ -122,6 +122,16 @@ record:
 - Each event has `cursor`, `time`, `kind`, `name`, and `event`. Lifecycle events may add exit
   fields and a directly attributable `operation_id`; operation events carry `origin`, `outcome`,
   and `operation_id`.
+- Lifecycle `launch` and `exit` records may include `log_cursor` (an output cursor, distinct from
+  the event `cursor`). For a launch, it points to the entry immediately before that incarnation's
+  output, usually the `NAME launched` marker; it is absent when there is no preceding entry. For an
+  exit, it points to the latest output entry at exit time; it is absent when there is no output.
+  Other events omit it. Cursor 0 is a valid value. Pass a launch `log_cursor` to
+  `hum logs NAME --after-cursor N` (MCP `logs` `after`) to read that incarnation's output; pass an
+  exit `log_cursor` to read output after the exit.
+- Log cursors only apply to the same retained session: `hum remove` or daemon replacement loses
+  output but not event history, and a new session restarts output cursors. Compare returned log
+  entry `time` with event `time` when in doubt.
 - Records are bounded and never truncated to terminal width.
 - `next_cursor` is the last returned cursor when more forward pages remain, otherwise the read's
   fixed high-water mark. `truncated` reports a cursor gap from eviction or discarded data.

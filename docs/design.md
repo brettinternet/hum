@@ -842,7 +842,15 @@ hum events --after-cursor 42 --json
 - JSON emits one record per event, then metadata with `next_cursor`, `truncated`, and `has_more`
   ([format](cli-json-v1.md#event-history-records)).
 - Human output fits the terminal width (80 columns if unknown), elides detail first, and colors only
-  event words under the usual color policy. `--full` prints complete multi-line details.
+  event words under the usual color policy. `--full` prints complete multi-line details and any
+  `log_cursor` on the detail line.
+- Lifecycle `launch` carries an optional `log_cursor` immediately before its incarnation's output;
+  `exit` carries the latest output cursor at exit. Pass either to `hum logs NAME --after-cursor N`
+  (MCP `logs` `after`) to read entries after it. Omitted means no entry exists; 0 is a valid cursor.
+  Other events have no `log_cursor`.
+- Cursors do not carry across `hum remove` or daemon replacement: output is kept in memory and
+  lost, while event history survives and new sessions restart cursors. Compare returned log entry
+  `time` against event `time` when in doubt.
 
 Storage:
 

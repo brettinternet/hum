@@ -1391,15 +1391,16 @@ func (r *record) waitInputOperations() {
 // LifecycleEvent is a bounded, payload-free supervisor transition. Hooks must
 // not inspect child argv, environment, output, or input.
 type LifecycleEvent struct {
-	Name     string
-	Scope    string
-	Root     string
-	Cwd      string
-	Event    string
-	Detail   string
-	Time     time.Time
-	ExitCode *int
-	Signal   string
+	Name      string
+	Scope     string
+	Root      string
+	Cwd       string
+	Event     string
+	Detail    string
+	Time      time.Time
+	ExitCode  *int
+	Signal    string
+	LogCursor *output.Cursor
 }
 
 type Supervisor struct {
@@ -1747,7 +1748,7 @@ func (s *Supervisor) SetLifecycleHook(hook func(LifecycleEvent)) {
 	s.mu.Unlock()
 }
 
-func (s *Supervisor) emitLifecycle(rec *record, event, detail string, at time.Time, result *process.Result) {
+func (s *Supervisor) emitLifecycle(rec *record, event, detail string, at time.Time, result *process.Result, logCursor ...*output.Cursor) {
 	if s == nil || rec == nil || s.lifecycleEvent == nil {
 		return
 	}
@@ -1755,6 +1756,9 @@ func (s *Supervisor) emitLifecycle(rec *record, event, detail string, at time.Ti
 		at = s.now()
 	}
 	value := LifecycleEvent{Name: rec.name, Scope: normalizedScope(rec.scope), Root: rec.root, Cwd: rec.cwd, Event: event, Detail: detail, Time: at}
+	if len(logCursor) != 0 {
+		value.LogCursor = logCursor[0]
+	}
 	if result != nil {
 		code := result.ExitCode
 		value.ExitCode = &code
@@ -2098,8 +2102,10 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 
 	launchCursor := output.Cursor(0)
 	launchBoundary := wasLaunched
+	launchHasEntry := false
 	if next := store.NextCursor(); next != 0 {
 		launchCursor = next - 1
+		launchHasEntry = true
 	}
 	var (
 		markerOnce sync.Once
@@ -2112,6 +2118,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 				marker := fmt.Sprintf("%s launched\n", req.Name)
 				launchCursor, markerErr = store.Append(output.System, s.now(), marker)
 				launchBoundary = markerErr == nil
+				launchHasEntry = launchHasEntry || markerErr == nil
 			}
 			if markerErr == nil && source != "" && pattern != nil {
 				tracker = newReadinessTracker(store, pattern, launchCursor, launchBoundary, func(at time.Time) {
@@ -2175,7 +2182,11 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	}
 	started := rec.snapshotLocked()
 	incarnation := rec.incarnation
-	s.emitLifecycle(rec, "launch", "", startedAt, nil)
+	var eventCursor *output.Cursor
+	if launchHasEntry {
+		eventCursor = &launchCursor
+	}
+	s.emitLifecycle(rec, "launch", "", startedAt, nil, eventCursor)
 	startReadyProbe := rec.readyConfig != nil && (rec.readyConfig.Method == "exec" || rec.readyConfig.Method == "http" || rec.readyConfig.Method == "tcp")
 	s.mu.Unlock()
 	if startReadyProbe {
@@ -2598,7 +2609,12 @@ func (s *Supervisor) reconcile(rec *record) {
 	if !control && terminalProcess.Readiness != nil && terminalProcess.Readiness.State != ReadinessReady {
 		s.emitLifecycle(rec, "startup_failure", "process exited before readiness", result.ExitedAt, &result)
 	}
-	s.emitLifecycle(rec, "exit", "", result.ExitedAt, &result)
+	var eventCursor *output.Cursor
+	if next := store.NextCursor(); next != 0 {
+		cursor := next - 1
+		eventCursor = &cursor
+	}
+	s.emitLifecycle(rec, "exit", "", result.ExitedAt, &result, eventCursor)
 	if input != nil {
 		input.emit(InputEvent{State: InputStopped, LaunchCursor: cursor, TTY: tty})
 	}
