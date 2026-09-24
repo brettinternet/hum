@@ -4,11 +4,12 @@ title: Keep CLI daemon requests cancellable when the daemon stops responding
 status: Done
 assignee: []
 created_date: '2026-09-23 21:29'
-updated_date: '2026-09-23 23:07'
+updated_date: '2026-09-24 06:50'
 labels:
   - cli
   - daemon
   - security
+  - reviewed
 milestone: m-4
 dependencies: []
 modified_files:
@@ -68,6 +69,8 @@ AC#1: go test ./internal/cli -run "^TestUnresponsiveDaemonHonorsTermination$" -c
 AC#2: go test ./internal/cli -run "^TestTerminationStopRequestIsBounded$" -count=1 -v — PASS (independent verifier); tightened timing margin to 400ms and reran focused tests twice, PASS.
 AC#3: go test ./integration -run "^TestAttachedRunForegroundLifecycle$" -count=1 -v — PASS including SIGTERM and SIGHUP (independent verifier and post-fix local run).
 Review: one independent verifier pass returned PASS on AC1–AC3 but flagged unbounded down worker Stop. Corrected in 76f71e7 before final gate; added TestDownStalledStopHonorsTermination in 3f8ca46; focused test passed twice. No second general review. Initial task ci had unrelated timing failure in TestAttachStreamsBurstWithoutAborting; focused rerun passed. task ci passed on final commit 3f8ca46, including race, vet, staticcheck, smoke. Diff limited to declared paths; no tests removed or protected gate files changed. Next step: mark acceptance/DoD, finalize and release claim, remove owned worktree.
+
+Review (e838d39): live CLI requests are no longer time-bounded by CLI grace (remove and shutdown --stop-processes failed when admitted stop_grace exceeded it); only post-cancellation cleanup is bounded. down shares one cleanup deadline (longest active grace) across remaining waves (TestDownTerminationSharesOneCleanupDeadline). Follow, input attach, and signal setup errors now name the request. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

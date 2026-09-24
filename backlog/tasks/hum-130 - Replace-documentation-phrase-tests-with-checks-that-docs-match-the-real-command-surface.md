@@ -6,11 +6,12 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-23 21:53'
-updated_date: '2026-09-23 23:51'
+updated_date: '2026-09-24 06:50'
 labels:
   - docs
   - cli
   - mcp
+  - reviewed
 milestone: m-4
 dependencies: []
 modified_files:
@@ -97,6 +98,8 @@ AC4: git diff --numstat main -- "*_test.go" — +114/-1402 tracked test lines, n
 Modified-file deviation: internal/cli/commands.go is outside the declared modified-file list; new TestDocsCoverEveryTool proved existing MCP --help incorrectly claimed twelve tools and omitted `events`, so the one-line description correction is necessary and explicitly permitted by this item’s stale-reference exception. docs/design.md added missing visible command references; docs/coding-agents.md added missing `events` tool. No protected gate files modified.
 
 Code commit 92cff8f merged by Worktrunk fast-forward to main. task check:staged PASS (format and secret scan); task ci PASS on 92cff8f (govulncheck, gitleaks, vet, staticcheck, Go/Python/install tests, race tests, built-binary smoke). Independent verifier initial pass: AC1/AC3 and scoped DoD #5/#6 PASS; after provider notes were added, resumed verifier explicitly PASS AC1–AC4 and scoped DoD #4. Review outcome: no remaining concrete item-scoped defects. Next step: commit final provider record, rerun task ci on final main commit, clean owned worktree.
+
+Review (ed69df8): TestDocsReferenceRealCommandsAndFlags now resolves the command after root selectors (hum --project DIR up, hum [--project DIR|-C DIR] up), so the design.md CLI synopsis and README selector examples are checked; hyphen-suffixed commands/flags are rejected. Declined: reverse MCP tool check, which would pin a prose sentence. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

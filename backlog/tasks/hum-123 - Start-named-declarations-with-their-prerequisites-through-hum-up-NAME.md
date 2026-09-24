@@ -4,11 +4,12 @@ title: Start named declarations with their prerequisites through hum up NAME
 status: Done
 assignee: []
 created_date: '2026-09-23 21:21'
-updated_date: '2026-09-24 01:27'
+updated_date: '2026-09-24 06:50'
 labels:
   - cli
   - mcp
   - process
+  - reviewed
 milestone: m-3
 dependencies:
   - HUM-131
@@ -92,6 +93,8 @@ HUM-131 moves scheduler-rule assertions into internal/orchestrate first. Follow 
 Implementation 08e062c (merged fast-forward into main): orchestrate selects named prerequisite closure; CLI/MCP up use it; completion and docs updated. AC#1 go test ./internal/orchestrate -run "^TestSelectWithPrerequisites$" -count=1 -v: PASS. AC#2 go test ./internal/cli -run "^TestUpNamedSelectsPrerequisites$" -count=1 -v: PASS. AC#3 go test ./internal/mcp -run "^TestUpNames$" -count=1 -v: PASS. AC#4 go test ./integration -run "^TestUpNamedStack$" -count=1 -v: PASS. AC#5 go test ./internal/cli -run Completion -count=1 -v: PASS, includes up name completion. Focused package suite and git diff --check: PASS. Independent verifier: PASS AC1–AC5, no concrete defects, no test deletion/skip/weakening, diff within modified-file contract. task ci: first run failed intermittently in unrelated TestAttachStreamsBurstWithoutAborting (burst timing); isolated rerun PASS, second full task ci PASS (including race and smoke). task check:staged PASS before implementation commit. Next: finalize task evidence/status, commit provider record, verify final commit, clean owned worktree.
 
 Finalization: Done; all AC/DoD checked. Delivery: code commit 08e062c integrated into main by fast-forward; provider evidence commit follows. Next resumable step: none; verify task ci on the provider commit and remove the owned hum-123 worktree.
+
+Review (808f3c2): MCP up.names capped at maxItems 2000 so uniqueness validation stays bounded; hum up NAME completion offers declarations only. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

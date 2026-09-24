@@ -6,10 +6,11 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-23 21:53'
-updated_date: '2026-09-23 22:45'
+updated_date: '2026-09-24 06:50'
 labels:
   - mcp
   - contract
+  - reviewed
 milestone: m-1
 dependencies: []
 modified_files:
@@ -62,4 +63,6 @@ Implementation (1656b2d, merged to main): Shared readinessMethods now includes m
 AC#1: go test ./internal/mcp -run "^TestOutputSchemasAcceptStructuredContent$" -count=1 -v — PASS; independent verifier PASS. Temporarily reverting the nested readiness enum to match/exec made start/up/list/status fail for http and tcp ("not in enum [match exec]"); restored the fix and reran successfully.
 AC#2: go test ./internal/mcp ./integration -run "MCP|Tool|Schema" -count=1 — PASS; independent verifier PASS.
 Delivery: task check:staged PASS; task ci PASS on 1656b2d (security, check, test, race, smoke). Initial task ci exposed the outdated logs schema expectation and a transient CLI burst timeout; after updating the contract assertion, task ci passed on the amended final commit. Independent verifier review found and confirmed correction of the unknown-type checker gap; final review outcome PASS. Diff limited to internal/mcp/tools.go and internal/mcp/*_test.go; no protected gate files changed. No remaining blocker; next step: select next dependency-ready item.
+
+Review (029ea9a): process argv schema now accepts null for sessions created before their first launch; nested tool error schema allows wire error details (down per-process failures). Both covered in TestOutputSchemasAcceptStructuredContent. No follow-up.
 <!-- SECTION:NOTES:END -->
