@@ -934,12 +934,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 			return true, nil
 		case os.Interrupt:
 			if interruptStopsAttachedRun() {
-				stopCtx, cancel := boundedDaemonCleanup(stopGrace)
-				defer cancel()
-				if err := client.Stop(stopCtx, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: manifest.root}); err != nil && !errors.Is(err, app.ErrNotRunning) {
-					return false, fmt.Errorf("daemon stop request: %w", err)
-				}
-				return false, nil
+				return false, stopInterruptedRun(client, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: manifest.root}, stopGrace)
 			}
 			if !interrupted {
 				interrupted = true
@@ -3800,6 +3795,15 @@ func manifestUpScheduleWithOps(ctx context.Context, cmd *urfavecli.Command, mani
 
 func manifestProgressWaitsForReadiness(definition project.Definition, result manifestLaunchResult) bool {
 	return orchestrate.ProgressWaitsForReadiness(cliOrchestrateDefinition(definition), cliSharedLaunchResult(definition, result, nil))
+}
+
+func stopInterruptedRun(client *daemon.Client, request daemon.StopRequest, grace time.Duration) error {
+	stopCtx, cancel := boundedDaemonCleanup(grace)
+	defer cancel()
+	if err := client.Stop(stopCtx, request); err != nil && !errors.Is(err, app.ErrNotRunning) {
+		return fmt.Errorf("daemon stop request: %w", err)
+	}
+	return nil
 }
 
 func notifyFollowSignals() chan os.Signal {

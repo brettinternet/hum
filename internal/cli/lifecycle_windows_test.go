@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/windows"
 	"hum/internal/config"
 	"hum/internal/daemon"
+	"hum/internal/output"
 	"hum/internal/testutil"
 )
 
@@ -280,6 +281,51 @@ func TestWindowsEnsureDaemonCancellationReapsChild(t *testing.T) {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("canceled daemon left runtime artifact %q: %v", path, err)
 		}
+	}
+}
+
+// TestWindowsRunInterruptStopsChild drives the same follow-loop interrupt
+// callback used by foreground run without requiring a console on CI runners.
+func TestWindowsRunInterruptStopsChild(t *testing.T) {
+	fixture := testutil.BuildFixture(t)
+	root := t.TempDir()
+	server, runtimeDir := stopShutdownTestServer(t, 100*time.Millisecond)
+	marker := filepath.Join(root, "interrupt")
+	started := stopShutdownStartProcess(t, server, root, "interrupt", []string{fixture, "stream", marker})
+	testutil.WaitForFile(t, marker+".started", 10*time.Second)
+	client, err := daemon.DialRuntime(context.Background(), daemon.NewRuntimePaths(runtimeDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	follower, err := client.Follow(context.Background(), daemon.FollowRequest{Name: "interrupt", Cwd: root, UntilExit: true, Stream: "both"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer follower.Close()
+	signals := make(chan os.Signal, 1)
+	signals <- os.Interrupt
+	terminal := errors.New("terminal event observed")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, _, err = followLoop(ctx, follower, signals, func(event output.Event) error {
+		if event.Exit != nil {
+			return terminal
+		}
+		return nil
+	}, func(sig os.Signal) (bool, error) {
+		if sig != os.Interrupt || !interruptStopsAttachedRun() {
+			return false, fmt.Errorf("unexpected interrupt signal %v", sig)
+		}
+		return false, stopInterruptedRun(client, daemon.StopRequest{Name: "interrupt", Cwd: root}, 100*time.Millisecond)
+	})
+	if !errors.Is(err, terminal) {
+		t.Fatalf("foreground interrupt follow = %v, want terminal event", err)
+	}
+	testutil.WaitForProcessGone(t, started.PID, 5*time.Second)
+	process, err := client.Get(context.Background(), daemon.GetRequest{Name: "interrupt", Cwd: root})
+	if err != nil || process.State == "running" {
+		t.Fatalf("interrupt left managed child running: %+v, %v", process, err)
 	}
 }
 
