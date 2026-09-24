@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -223,7 +224,10 @@ func historyWriteAtomic(path string, data []byte) error {
 	if err == nil {
 		err = os.Rename(tmp, path)
 	}
-	if err == nil {
+	if err == nil && runtime.GOOS != "windows" {
+		// Windows denies Sync on directory handles. The file itself was
+		// already flushed before the rename; retain the directory flush on
+		// Unix where it is supported.
 		if dir, openErr := os.Open(filepath.Dir(path)); openErr == nil {
 			err = dir.Sync()
 			_ = dir.Close()

@@ -145,7 +145,7 @@ func TestWindowsBuiltBinaryConcurrentAutostartAndLifecycle(t *testing.T) {
 			t.Fatalf("logs fixture: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
 		}
 		result = testutil.Run(t, hum, projectRoot, env, "signal", "adhoc", "HUP")
-		if result.Code == 0 || !strings.Contains(result.Stderr, "Unix signals are unsupported on Windows") {
+		if result.Code == 0 || !strings.Contains(result.Stderr, "unix signals are unsupported on Windows") {
 			t.Fatalf("Unix signal result: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
 		}
 

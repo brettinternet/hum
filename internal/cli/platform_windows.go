@@ -10,7 +10,7 @@ import (
 
 func validateTTYRequest(tty bool) error {
 	if tty {
-		return errors.New("TTY mode is unsupported on Windows")
+		return newCLIUsageError(errors.New("TTY mode is unsupported on Windows"))
 	}
 	return nil
 }

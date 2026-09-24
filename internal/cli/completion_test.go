@@ -1,3 +1,5 @@
+//go:build !windows
+
 package cli
 
 import (
@@ -7,14 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"hum/internal/daemon"
 	"hum/internal/project"
-	"hum/internal/testutil"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -104,14 +104,6 @@ func TestCompletionScripts(t *testing.T) {
 	}
 }
 
-func completionProcessArgs(t *testing.T) []string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		return []string{testutil.BuildFixture(t), "stream", filepath.Join(t.TempDir(), "completion")}
-	}
-	return []string{"/bin/sh", "-c", "sleep 30"}
-}
-
 func TestNameCompletion(t *testing.T) {
 	testNameCompletion(t)
 }
@@ -128,14 +120,14 @@ processes:
   alpha:
     argv: [echo, alpha]
 `)
-	stopShutdownStartProcess(t, server, projectRoot, "alpha", completionProcessArgs(t))
-	stopShutdownStartProcess(t, server, projectRoot, "runtime", completionProcessArgs(t))
+	stopShutdownStartProcess(t, server, projectRoot, "alpha", []string{"/bin/sh", "-c", "sleep 30"})
+	stopShutdownStartProcess(t, server, projectRoot, "runtime", []string{"/bin/sh", "-c", "sleep 30"})
 
 	otherRoot := filepath.Join(t.TempDir(), "other")
 	if err := os.MkdirAll(otherRoot, 0o700); err != nil {
 		t.Fatalf("create other project: %v", err)
 	}
-	stopShutdownStartProcess(t, server, otherRoot, "foreign", completionProcessArgs(t))
+	stopShutdownStartProcess(t, server, otherRoot, "foreign", []string{"/bin/sh", "-c", "sleep 30"})
 
 	want := "alpha\nruntime\nzeta\n"
 	for _, command := range []string{"run", "start", "up", "status", "logs", "wait", "input", "restart", "stop", "remove", "attach", "signal"} {
@@ -291,7 +283,11 @@ processes:
   alpha:
     argv: [echo, alpha]
 `)
-	mismatchRuntime := testutil.RuntimeDir(t)
+	mismatchRuntime, err := os.MkdirTemp("/tmp", "h-comp-mismatch-")
+	if err != nil {
+		t.Fatalf("create mismatched daemon runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(mismatchRuntime) })
 	mismatch, err := daemon.NewServer(daemon.Config{RuntimeDir: mismatchRuntime, WireVersion: 999})
 	if err != nil {
 		t.Fatalf("create mismatched daemon: %v", err)
