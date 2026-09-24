@@ -312,6 +312,10 @@ func Start(spec Spec) (*Child, error) {
 	}
 	startupInfo := windows.StartupInfo{}
 	if spec.TTY {
+		// Explicitly clear inherited standard handles. Even with handle
+		// inheritance disabled, redirected parent std handles otherwise leak
+		// into the child instead of the ConPTY console handles.
+		startupInfo.Flags = windows.STARTF_USESTDHANDLES
 		// Unlike most attributes, this value is the HPCON pointer itself, not
 		// the address of a handle variable (see Microsoft's ConPTY sample).
 		result, _, callErr := updateProcThreadAttributeProc.Call(

@@ -39,7 +39,7 @@ func windowsAppFixture(t *testing.T, mode string) (string, []string, []string) {
 	return root, []string{binary, "-test.run=TestWindowsAppHelper", "--", mode}, []string{"HUM_APP_WINDOWS_HELPER=1"}
 }
 
-func TestWindowsAppStopRejectsSignalAndTTY(t *testing.T) {
+func TestWindowsAppStopRejectsSignalAndSupportsTTY(t *testing.T) {
 	root, argv, env := windowsAppFixture(t, "block")
 	s, err := New(Options{})
 	if err != nil {
@@ -48,8 +48,12 @@ func TestWindowsAppStopRejectsSignalAndTTY(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	defer s.Shutdown(ctx)
-	if _, err := s.Start(StartRequest{Name: "tty", Cwd: root, Argv: argv, Env: env, TTY: true}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "unsupported") {
-		t.Fatalf("TTY start = %v; want unsupported", err)
+	tty, err := s.Start(StartRequest{Name: "tty", Cwd: root, Argv: argv, Env: env, TTY: true})
+	if err != nil || !tty.TTY || tty.PID <= 0 {
+		t.Fatalf("TTY start = %+v, %v; want running TTY", tty, err)
+	}
+	if err := s.Stop(ctx, root, "tty"); err != nil {
+		t.Fatalf("stop TTY child: %v", err)
 	}
 	started, err := s.Start(StartRequest{Name: "fixture", Cwd: root, Argv: argv, Env: env})
 	if err != nil {

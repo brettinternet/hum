@@ -158,7 +158,7 @@ func TestWindowsDoctorHumanStatusColors(t *testing.T) {
 	}
 }
 
-func TestWindowsDoctorRuntimeManifestAndUnsupportedTTY(t *testing.T) {
+func TestWindowsDoctorRuntimeManifestAndTTY(t *testing.T) {
 	hum := testutil.BuildHum(t)
 	fixture := testutil.BuildFixture(t)
 	root := t.TempDir()
@@ -236,12 +236,13 @@ func TestWindowsDoctorRuntimeManifestAndUnsupportedTTY(t *testing.T) {
 		t.Fatal(err)
 	}
 	tty := testutil.Run(t, hum, root, env, "doctor", "--json")
-	if tty.Code == 0 {
-		t.Fatalf("doctor accepted TTY declaration: %q", tty.Stdout)
+	if tty.Code != 0 {
+		t.Fatalf("doctor rejected supported TTY declaration: code=%d stderr=%q stdout=%q", tty.Code, tty.Stderr, tty.Stdout)
 	}
 	var ttyReport doctorResult
 	if err := json.Unmarshal([]byte(tty.Stdout), &ttyReport); err != nil {
 		t.Fatal(err)
 	}
-	assertCheck(ttyReport, "process.tty", doctorFail)
+	assertCheck(ttyReport, "project.manifest", doctorPass)
+	assertCheck(ttyReport, "process.executable", doctorPass)
 }
