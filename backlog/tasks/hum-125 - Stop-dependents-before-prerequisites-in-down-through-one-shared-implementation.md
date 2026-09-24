@@ -1,10 +1,10 @@
 ---
 id: HUM-125
 title: Stop dependents before prerequisites in down through one shared implementation
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-23 21:21'
-updated_date: '2026-09-23 22:24'
+updated_date: '2026-09-24 03:29'
 labels:
   - cli
   - mcp
@@ -52,17 +52,29 @@ Existing tests that must keep passing: TestDownStopsProcessesConcurrentlyWithInd
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/orchestrate -run "^TestDownOrder$" -count=1 -v` exits 0; for db <- api <- web plus independent worker and one ad-hoc record, the first wave is {adhoc, web, worker}, then api, then db; in a diamond a prerequisite waits for all dependents; inactive records are skipped without delaying later waves; a dependent stop error still lets its prerequisite stop.
-- [ ] #2 AC2 — `go test ./internal/cli -run "^TestDownStopsDependentsFirst$" -count=1 -v` and `go test ./internal/mcp -run "^TestDownStopsDependentsFirst$" -count=1 -v` both exit 0; each records the order of stop requests and the two adapters produce the same wave order and identical lexical result lists.
-- [ ] #3 AC3 — `go test ./integration -run "Down" -count=1 -v` exits 0 and includes a built-binary case where `hum events --kind lifecycle --json` shows web exiting before api is stopped and api exiting before db is stopped.
+- [x] #1 AC1 — `go test ./internal/orchestrate -run "^TestDownOrder$" -count=1 -v` exits 0; for db <- api <- web plus independent worker and one ad-hoc record, the first wave is {adhoc, web, worker}, then api, then db; in a diamond a prerequisite waits for all dependents; inactive records are skipped without delaying later waves; a dependent stop error still lets its prerequisite stop.
+- [x] #2 AC2 — `go test ./internal/cli -run "^TestDownStopsDependentsFirst$" -count=1 -v` and `go test ./internal/mcp -run "^TestDownStopsDependentsFirst$" -count=1 -v` both exit 0; each records the order of stop requests and the two adapters produce the same wave order and identical lexical result lists.
+- [x] #3 AC3 — `go test ./integration -run "Down" -count=1 -v` exits 0 and includes a built-binary case where `hum events --kind lifecycle --json` shows web exiting before api is stopped and api exiting before db is stopped.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation 48d9b30 (merged to main by fast-forward): shared reverse-after stop waves for CLI/MCP, preserving result shapes and independent stop connections. AC#1: go test ./internal/orchestrate -run "^TestDownOrder$" -count=1 -v PASS (chain, diamond, inactive, failure, ad-hoc). AC#2: go test ./internal/cli -run "^TestDownStopsDependentsFirst$" -count=1 -v PASS; go test ./internal/mcp -run "^TestDownStopsDependentsFirst$" -count=1 -v PASS (same waves, lexical results). AC#3: go test ./integration -run "Down" -count=1 -v PASS (built binary lifecycle exit cursors). Independent verifier PASS AC1-AC3; one review finding was test factory concurrent append race, fixed with mutex in internal/mcp/tools_test.go; go test -race ./internal/mcp -run "^(TestRestartPolicyMCP|TestDownStopsDependentsFirst|TestDown)$" -count=1 PASS. task check:staged PASS. task ci PASS on code commit 48d9b30 after an initial unrelated TestAttachStreamsBurstWithoutAborting burst timeout; isolated rerun PASS, full gate rerun PASS including go test -race ./... . Diff limited to declared paths; no test deleted/skipped/weakened or protected gate file modified. Next step: finalize provider record and clean up worktree.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented shared reverse-after down stop waves for CLI and MCP; all three acceptance tests and independent verification passed, task ci passed on 48d9b30, merged to main.
+<!-- SECTION:FINAL_SUMMARY:END -->
