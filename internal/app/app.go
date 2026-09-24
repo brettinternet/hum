@@ -3790,14 +3790,17 @@ func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
 	}
 	rec.operatorStop = true
 	child := rec.child
+	incarnation := rec.incarnation
 	s.mu.Unlock()
 
 	if windowsStop {
 		stopper, ok := child.(interface{ Stop() error })
 		if !ok {
+			s.abandonStop(rec, child, incarnation)
 			return errors.New("windows child has no owned-tree stop capability")
 		}
 		if err := stopper.Stop(); err != nil && !signalMeansDone(err) {
+			s.abandonStop(rec, child, incarnation)
 			return err
 		}
 		_, waitErr := s.waitForDone(ctx, rec, -1)
@@ -3846,6 +3849,19 @@ func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
 		return waitErr
 	}
 	return nil
+}
+
+// abandonStop withdraws operator intent after an owned-tree stop was refused
+// without terminating anything, so the still-running incarnation's eventual
+// exit is reported and its restart policy applies as if no stop was requested.
+func (s *Supervisor) abandonStop(rec *record, child Child, incarnation uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.records[rec.key] != rec || rec.child != child || rec.incarnation != incarnation || rec.terminal {
+		return
+	}
+	rec.operatorStop = false
+	rec.controlIntent = false
 }
 
 func signalMeansDone(err error) bool {

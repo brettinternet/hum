@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -155,5 +156,57 @@ func TestWindowsReadinessProbeExitAndCancellation(t *testing.T) {
 	_, err = runReadinessProbe(ctx, argv, root, env, 1024)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("canceled probe = %v", err)
+	}
+}
+
+type refusedStopChild struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *refusedStopChild) PID() int               { return 4242 }
+func (c *refusedStopChild) PGID() int              { return 4242 }
+func (c *refusedStopChild) Done() <-chan struct{}  { return c.done }
+func (c *refusedStopChild) Signal(os.Signal) error { return errors.New("unsupported") }
+func (c *refusedStopChild) Stop() error            { return errors.New("job ownership cannot be proven") }
+func (c *refusedStopChild) exit()                  { c.once.Do(func() { close(c.done) }) }
+func (c *refusedStopChild) Wait() process.Result {
+	<-c.done
+	return process.Result{ExitCode: 3, ExitedAt: time.Now()}
+}
+
+func TestWindowsRefusedStopKeepsAutonomousExit(t *testing.T) {
+	root, argv, env := windowsAppFixture(t, "block")
+	child := &refusedStopChild{done: make(chan struct{})}
+	s, err := New(Options{StartProcess: func(process.Spec) (Child, error) { return child, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	defer s.Shutdown(ctx)
+	if _, err := s.Start(StartRequest{Name: "refused", Cwd: root, Argv: argv, Env: env}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(ctx, root, "refused"); err == nil || !strings.Contains(err.Error(), "ownership") {
+		t.Fatalf("refused stop = %v; want ownership error", err)
+	}
+	child.exit()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		current, err := s.Get(root, "refused")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.State != StateRunning {
+			if current.State != StateExited || current.ExitCode != 3 {
+				t.Fatalf("autonomous exit after refused stop = %+v; want exited with code 3", current)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child exit was never reconciled: %+v", current)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

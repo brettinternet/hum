@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"hum/internal/app"
+	"hum/internal/config"
 	"hum/internal/process"
 	"hum/internal/protocol"
 )
@@ -27,6 +28,19 @@ func windowsRuntimeDir(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "runtime")
 }
+func TestWindowsDefaultRuntimeDirIsAbsoluteWithoutAppData(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", "")
+	t.Setenv("APPDATA", "")
+	cfg, err := config.New(config.BuildOpts{}, config.Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := defaultRuntimeDir()
+	if !filepath.IsAbs(dir) || cfg.RuntimeDir != dir {
+		t.Fatalf("daemon default %q, config default %q; want one absolute runtime", dir, cfg.RuntimeDir)
+	}
+}
+
 func TestWindowsTransportAndACL(t *testing.T) {
 	dir := windowsRuntimeDir(t)
 	server, err := NewServer(Config{RuntimeDir: dir})
