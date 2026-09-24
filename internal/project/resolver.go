@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strings"
 
-	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 )
 
@@ -431,14 +430,9 @@ func resolveReadOnlyCandidates(ctx context.Context, root string) ([]Definition, 
 const maxReadOnlyDiscoveryFileBytes int64 = 1 << 20
 
 func readDiscoveryDeclaration(path string) ([]byte, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	file, err := openDiscoveryDeclaration(path)
 	if err != nil {
 		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), path)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, errors.New("open declaration file")
 	}
 	defer file.Close()
 	info, err := file.Stat()
@@ -1126,7 +1120,7 @@ func detectComposerWithReader(_ context.Context, root string, readFile discovery
 }
 
 func detectBinDev(_ context.Context, root string) (Definition, bool, error) {
-	path := filepath.Join(root, "bin", "dev")
+	path := filepath.Join(root, "bin", binDevExecutableName)
 	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1139,10 +1133,10 @@ func detectBinDev(_ context.Context, root string) (Definition, bool, error) {
 	if !info.Mode().IsRegular() {
 		return Definition{}, false, configurationError("bin_dev", path, errors.New("bin/dev is not a regular file"))
 	}
-	if info.Mode().Perm()&0o111 == 0 {
+	if !binDevExecutable(info) {
 		return Definition{}, false, nil
 	}
-	return discoveredDefinition(root, "bin_dev", "./bin/dev"), true, nil
+	return discoveredDefinition(root, "bin_dev", "./bin/"+binDevExecutableName), true, nil
 }
 
 func detectMixReadOnly(ctx context.Context, root string) (Definition, bool, error) {

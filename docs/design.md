@@ -463,7 +463,14 @@ session.
   `signal` object containing its canonical name and number, for example
   `{"name":"SIGTERM","number":15}`; the same object is carried by CLI `list`, `status`, `up`,
   and `wait` JSON and human output, and by MCP text and structured content.
-- Non-signal exits omit `signal`.
+- Non-signal exits omit `signal`. On native Windows, non-TTY children are owned by a private
+  Job Object from creation; their result carries the actual exit code and never invents a
+  Unix signal. Stop terminates the entire owned job immediately after checking its root
+  PID and creation-time identity, even if the leader has exited but descendants remain.
+  `stop_grace` does not delay Windows termination: arbitrary Windows applications do not
+  receive SIGTERM. Unix signal requests return an explicit unsupported error, and TTY
+  launches are unsupported until ConPTY support is added. A recorded PID alone cannot
+  authorize stopping a Windows process after ownership is lost.
 - Operator-stopped snapshots remain `stopped` without autonomous exit details, so an operator
   stop is distinct from a signal-terminated child.
 

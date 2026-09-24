@@ -1047,6 +1047,9 @@ func runReadinessProbe(parent context.Context, argv []string, cwd string, env []
 	if len(argv) == 0 {
 		return "probe start: empty argv", errors.New("empty argv")
 	}
+	if windowsProbe {
+		return runWindowsReadinessProbe(parent, argv, cwd, env, maxBytes)
+	}
 	executable := argv[0]
 	if filepath.Base(executable) == executable {
 		pathEnv, hasPath := "", false
@@ -1094,7 +1097,7 @@ func runReadinessProbe(parent context.Context, argv []string, cwd string, env []
 	cmd := exec.Command(executable, argv[1:]...)
 	cmd.Args = append([]string(nil), argv...)
 	cmd.Dir, cmd.Env = cwd, append([]string(nil), env...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureProbe(cmd)
 	var capture limitedProbeBuffer
 	capture.limit = maxBytes
 	cmd.Stdout, cmd.Stderr = &capture, &capture
@@ -1111,7 +1114,7 @@ func runReadinessProbe(parent context.Context, argv []string, cwd string, env []
 			// post-Wait group kill removes descendants without signalling the
 			// supervised process or an unrelated process in the usual PID reuse
 			// case. The once also closes the cancellation/cleanup race.
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			killProbe(pid)
 		})
 	}
 	go func() {
@@ -2149,7 +2152,9 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		if tracker != nil {
 			tracker.close()
 		}
-		_ = child.Signal(syscall.SIGKILL)
+		if err := stopOrphanChild(child); err != nil && !signalMeansDone(err) {
+			return Process{}, err
+		}
 		<-child.Done()
 		_ = child.Wait()
 		if s.closed {
@@ -2452,14 +2457,18 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		_ = child.Signal(syscall.SIGKILL)
+		if err := stopOrphanChild(child); err != nil && !signalMeansDone(err) {
+			return Process{}, err
+		}
 		<-child.Done()
 		_ = child.Wait()
 		return Process{}, ErrSupervisorClosed
 	}
 	if s.records[rec.key] != rec {
 		s.mu.Unlock()
-		_ = child.Signal(syscall.SIGKILL)
+		if err := stopOrphanChild(child); err != nil && !signalMeansDone(err) {
+			return Process{}, err
+		}
 		<-child.Done()
 		_ = child.Wait()
 		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
@@ -3783,6 +3792,17 @@ func (s *Supervisor) stopRecord(ctx context.Context, rec *record) error {
 	child := rec.child
 	s.mu.Unlock()
 
+	if windowsStop {
+		stopper, ok := child.(interface{ Stop() error })
+		if !ok {
+			return errors.New("windows child has no owned-tree stop capability")
+		}
+		if err := stopper.Stop(); err != nil && !signalMeansDone(err) {
+			return err
+		}
+		_, waitErr := s.waitForDone(ctx, rec, -1)
+		return waitErr
+	}
 	termErr := child.Signal(syscall.SIGTERM)
 	if signalMeansDone(termErr) {
 		_, waitErr := s.waitForDone(ctx, rec, -1)

@@ -748,13 +748,13 @@ func TestInitEcosystemSources(t *testing.T) {
 
 	t.Run("executable bin dev", func(t *testing.T) {
 		root := t.TempDir()
-		writeDiscoveryFile(t, root, "bin/dev", "#!/bin/sh\ntouch should-not-run\n", 0o700)
+		writeDiscoveryFile(t, root, "bin/"+binDevExecutableName, "#!/bin/sh\ntouch should-not-run\n", 0o700)
 		installDiscoveryStubs(t, nil)
 		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
-		wantDiscoveredDefinition(t, definitions, root, "bin_dev", "./bin/dev")
+		wantDiscoveredDefinition(t, definitions, root, "bin_dev", "./bin/"+binDevExecutableName)
 	})
 
 	t.Run("confirmed mix phoenix task", func(t *testing.T) {
@@ -813,7 +813,7 @@ func TestInitDiscoveryTemplates(t *testing.T) {
 		writeDiscoveryFile(t, root, "package.json", `{"scripts":{"dev":"echo body"}}`, 0o600)
 		writeDiscoveryFile(t, root, "deno.json", `{"tasks":{"dev":"echo body"}}`, 0o600)
 		writeDiscoveryFile(t, root, "composer.json", `{"scripts":{"dev":"echo body"}}`, 0o600)
-		writeDiscoveryFile(t, root, "bin/dev", "#!/bin/sh\n", 0o700)
+		writeDiscoveryFile(t, root, "bin/"+binDevExecutableName, "#!/bin/sh\n", 0o700)
 		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", 0o600)
 		installDiscoveryStubs(t, map[string]discoveryStub{
 			"mise": {output: []byte(`[{"name":"dev"}]`)},

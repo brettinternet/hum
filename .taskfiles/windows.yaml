@@ -1,7 +1,7 @@
 version: "3"
 
 vars:
-  WINDOWS_PACKAGES: ./internal/config ./internal/orchestrate ./internal/output ./internal/protocol ./internal/testutil/cmd/hum-fixture
+  WINDOWS_PACKAGES: ./internal/config ./internal/orchestrate ./internal/output ./internal/protocol ./internal/testutil/cmd/hum-fixture ./internal/process ./internal/signals ./internal/project ./internal/app
   HOST_OS:
     sh: go env GOHOSTOS
 

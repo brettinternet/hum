@@ -13,6 +13,9 @@ import (
 // signal specification.
 var ErrInvalidSignal = errors.New("invalid signal")
 
+// ErrUnsupportedSignal identifies a Unix signal request on Windows.
+var ErrUnsupportedSignal = errors.New("unix signals are unsupported on Windows")
+
 // Info is the canonical representation of one supported process signal.
 type Info struct {
 	Name   string
@@ -27,19 +30,6 @@ type Signal = Info
 type signalDefinition struct {
 	name   string
 	number syscall.Signal
-}
-
-// The table deliberately contains only the signals that hum promises to
-// expose. In particular, numeric real-time or otherwise unnamed signals are
-// not accepted even when the host kernel supports them.
-var definitions = []signalDefinition{
-	{name: "SIGHUP", number: syscall.SIGHUP},
-	{name: "SIGINT", number: syscall.SIGINT},
-	{name: "SIGQUIT", number: syscall.SIGQUIT},
-	{name: "SIGKILL", number: syscall.SIGKILL},
-	{name: "SIGTERM", number: syscall.SIGTERM},
-	{name: "SIGUSR1", number: syscall.SIGUSR1},
-	{name: "SIGUSR2", number: syscall.SIGUSR2},
 }
 
 var (
@@ -58,6 +48,9 @@ func init() {
 // or a positive decimal number present in the supported named table. The
 // returned name is always canonical and SIG-prefixed.
 func Parse(value string) (Info, error) {
+	if !signalsAvailable {
+		return Info{}, ErrUnsupportedSignal
+	}
 	if value == "" {
 		return Info{}, invalid(value)
 	}

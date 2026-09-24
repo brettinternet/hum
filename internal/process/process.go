@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package process starts and supervises one direct child process.
 package process
 
@@ -501,6 +503,11 @@ func (c *Child) Wait() Result {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.res
+}
+
+// Stop forcibly stops the child and every member of its process group.
+func (c *Child) Stop() error {
+	return c.Signal(syscall.SIGKILL)
 }
 
 // Signal sends sig to every member of the child's process group.

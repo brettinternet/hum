@@ -1,3 +1,5 @@
+//go:build !windows
+
 package process
 
 import (
@@ -990,6 +992,20 @@ func TestExitCodeProcessGroupAndRepeatSafeWait(t *testing.T) {
 	case <-child.Done():
 	default:
 		t.Fatal("Done remained open after Wait")
+	}
+}
+
+func TestStopTerminatesProcessGroup(t *testing.T) {
+	child, err := Start(helperSpec(newStore(t), "signal-exit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Stop(); err != nil {
+		t.Fatalf("stop child: %v", err)
+	}
+	result := child.Wait()
+	if result.Err != nil || result.ExitCode != -1 || result.Signal == nil || result.Signal.Name != "SIGKILL" {
+		t.Fatalf("stop result = %+v, want SIGKILL without an error", result)
 	}
 }
 
