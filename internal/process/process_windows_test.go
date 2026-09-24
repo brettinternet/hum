@@ -362,8 +362,9 @@ func TestWindowsTTYInteractiveInputOutputAndResize(t *testing.T) {
 	if !child.IsTTY() {
 		t.Fatal("interactive child IsTTY() = false")
 	}
-	text := windowsWaitForOutput(t, store, "windows-tty-ready=80x24")
-	if !strings.Contains(text, "windows-tty-stderr-marker") {
+	windowsWaitForOutput(t, store, "windows-tty-ready=80x24")
+	text := windowsWaitForOutput(t, store, "windows-tty-stderr-marker")
+	if !strings.Contains(text, "windows-tty-ready=80x24") {
 		t.Fatalf("merged TTY output = %q, missing stderr marker", text)
 	}
 	input := []byte("hello from windows\r")
