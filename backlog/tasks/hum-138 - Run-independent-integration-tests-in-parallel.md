@@ -1,10 +1,10 @@
 ---
 id: HUM-138
 title: Run independent integration tests in parallel
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-24 22:51'
-updated_date: '2026-09-24 22:58'
+updated_date: '2026-09-24 23:28'
 labels:
   - integration
 dependencies:
@@ -39,18 +39,47 @@ Unrelated failures: if `task ci` or a package run fails in a test this task did 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./integration -count=1` exits 0 and its package time is at most 25s, or at most 45% of the baseline recorded in Implementation Notes (58.8s on 2026-09-24).
-- [ ] #2 AC2 — `go test ./integration -count=5` exits 0.
-- [ ] #3 AC3 — `go test -race ./integration -count=2` exits 0.
-- [ ] #4 AC4 — `task smoke` exits 0.
+- [x] #1 AC1 — `go test ./integration -count=1` exits 0 and its package time is at most 25s, or at most 45% of the baseline recorded in Implementation Notes (58.8s on 2026-09-24).
+- [x] #2 AC2 — `go test ./integration -count=5` exits 0.
+- [x] #3 AC3 — `go test -race ./integration -count=2` exits 0.
+- [x] #4 AC4 — `task smoke` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Baseline and audit integration tests for shared state/platform skips.
+2. Add t.Parallel to isolated top-level tests and independent subtests only.
+3. Run focused speed, repetition, race and smoke gates; correct concrete parallel-load flakes within stop rules.
+4. Independent verifier, final task ci on commit, record evidence and integrate to main.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Baseline on worktree 61415b5: /usr/bin/time -p go test ./integration -count=1 exited 0; package 38.657s, wall 40.32s (2026-09-24). Windows CI task windows:test is not locally verified.
+
+Parallelization: all integration top-level tests (except TestMain) now call t.Parallel after platform skip; independent TestWait and zero-config subtests also parallel. First `go test ./integration -count=1` failed TestShutdown reading an empty grandchild PID marker: fixture had created file but had not written PID. Added condition-based wait for populated positive PID in stopitLaunchTree (no shared timeout changes). Rerun package 8.991s pass; `go test ./integration -count=5` pass 41.702s total; `go test -race ./integration -count=2` pass 18.356s total; `task smoke` pass (integration 4.888s, cmd/hum 0.994s). No serial tests. Windows native tests use per-test runtime dirs, but task windows:test cannot run locally.
+
+AC#1 — `go test ./integration -count=1` exited 0, package 8.991s (<25s; baseline 38.657s); independent verifier reran, 9.605s pass.
+AC#2 — `go test ./integration -count=5` exited 0, package 41.702s total; verifier reran, 52.644s total pass.
+AC#3 — `go test -race ./integration -count=2` exited 0, package 18.356s total; verifier reran, 28.052s total pass.
+AC#4 — `task smoke` exited 0 (integration 4.888s, cmd/hum 0.994s); verifier reran, both packages pass.
+Review: independent verifier PASS all four ACs; no concrete concurrency defects. `git diff --check` pass, 20 integration/*_test.go files, 80 additions and no deletions. Windows integration tests compile, but native Windows task windows:test remains unverified locally. `task check:staged` passed and implementation commit 52f177c. `task ci` on commit 52f177c exited 0, including full tests, race, security, smoke.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Parallelized independent integration tests and their isolated subtests; fixed the PID-marker readiness race. Package time fell from 38.657s to 8.991s. Repeated, race, smoke and task ci passed on 52f177c; independent verifier passed AC1–AC4. Fast-forward merged into main.
+<!-- SECTION:FINAL_SUMMARY:END -->
