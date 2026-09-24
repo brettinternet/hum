@@ -319,6 +319,21 @@ func TestLogsSystemStream(t *testing.T) {
 		}
 	}
 
+	logsitWaitOutput(t, harness, "lifecycle", []string{"--json"}, func(lines []logsitJSONLine) bool {
+		if len(lines) != 1 {
+			return false
+		}
+		stdout, stderr := 0, 0
+		for _, entry := range lines[0].Event.Entries {
+			if entry.Text == "child-stdout\n" {
+				stdout++
+			}
+			if entry.Text == "child-stderr\n" {
+				stderr++
+			}
+		}
+		return stdout == 2 && stderr == 2
+	})
 	omitted := logsitRunLogs(t, harness, "lifecycle", "--json")
 	explicitBoth := logsitRunLogs(t, harness, "lifecycle", "--json", "--stream", "both")
 	omittedLines := logsitDecodeJSONLines(t, omitted.Stdout)

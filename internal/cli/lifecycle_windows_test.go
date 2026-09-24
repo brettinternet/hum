@@ -66,7 +66,8 @@ func TestWindowsBuiltBinaryConcurrentAutostartAndLifecycle(t *testing.T) {
 		for range racers {
 			result := <-results
 			if result.Code != 0 || result.Stderr != "" {
-				t.Fatalf("concurrent run: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
+				log, _ := os.ReadFile(paths.Log)
+				t.Fatalf("concurrent run: code=%d err=%v stdout=%q stderr=%q daemon log=%q", result.Code, result.Err, result.Stdout, result.Stderr, log)
 			}
 		}
 		for _, marker := range markers {
