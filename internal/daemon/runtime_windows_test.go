@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
 
+	"hum/internal/app"
 	"hum/internal/process"
 	"hum/internal/protocol"
 )
@@ -172,6 +174,88 @@ func TestWindowsStaleOwnerRecovery(t *testing.T) {
 		t.Fatal("unrelated process affected")
 	}
 }
+
+// A real owner process is terminated without Close. Its child belongs to the
+// kill-on-close Job Object; a fresh daemon must reconcile its durable record.
+func TestWindowsCrashRecovery(t *testing.T) {
+	dir := windowsRuntimeDir(t)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWindowsCrashOwnerHelper$")
+	cmd.Env = append(os.Environ(), "HUM_WINDOWS_CRASH_OWNER="+dir)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	marker := filepath.Join(dir, "crash-child.pid")
+	var childPID int
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			childPID, err = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
+		if err == nil && childPID > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if childPID <= 0 {
+		t.Fatal("owner did not record its child")
+	}
+	if !processAlive(childPID) {
+		t.Fatal("recorded child was not running before daemon crash")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && processAlive(childPID) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if processAlive(childPID) {
+		t.Fatal("child survived crashed daemon's Job Object")
+	}
+	server, err := NewServer(Config{RuntimeDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	warnings := server.StartupWarnings()
+	if len(warnings) != 1 || warnings[0].Name != "crash-child" || warnings[0].Outcome != "reclaimed" {
+		t.Fatalf("crash recovery warnings: %+v", warnings)
+	}
+	if !processAlive(os.Getpid()) {
+		t.Fatal("unrelated parent affected")
+	}
+}
+func TestWindowsCrashOwnerHelper(t *testing.T) {
+	dir := os.Getenv("HUM_WINDOWS_CRASH_OWNER")
+	if dir == "" || os.Getenv("HUM_WINDOWS_CRASH_CHILD") != "" {
+		return
+	}
+	server, err := NewServer(Config{RuntimeDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := server.Supervisor().Start(app.StartRequest{
+		Scope: app.ScopeGlobal, Name: "crash-child", Cwd: dir, Argv: []string{os.Args[0], "-test.run=^TestWindowsCrashChildHelper$"},
+		Env: append(os.Environ(), "HUM_WINDOWS_CRASH_CHILD=1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "crash-child.pid"), []byte(strconv.Itoa(child.PID)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Second)
+}
+func TestWindowsCrashChildHelper(t *testing.T) {
+	if os.Getenv("HUM_WINDOWS_CRASH_CHILD") == "" {
+		return
+	}
+	time.Sleep(30 * time.Second)
+}
+
 func TestWindowsReusedPIDAndUncertainChild(t *testing.T) {
 	identity, err := process.ProcessStartIdentity(os.Getpid())
 	if err != nil {
