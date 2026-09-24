@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -34,6 +35,7 @@ const (
 	// and later. Assigning the job during process creation prevents a newly
 	// launched process from creating descendants before it is contained.
 	procThreadAttributeJobList = 0x0002000d
+	ttyWriteChunkBytes         = 1024
 )
 
 // Spec describes one child process launch.
@@ -41,8 +43,7 @@ const (
 // Argv is passed directly to CreateProcess without a shell. Env is copied
 // exactly and nil or empty starts the child with no environment variables.
 // IdleFlush controls how long an unterminated output fragment may remain
-// buffered; zero selects a short default. Windows process capture is
-// non-interactive; TTY options are rejected.
+// buffered; zero selects a short default. TTY enables a Windows pseudo console.
 type Spec struct {
 	Dir          string
 	Argv         []string
@@ -96,6 +97,12 @@ type Child struct {
 	idleFlush    time.Duration
 	now          func() time.Time
 
+	tty              bool
+	ttyInput         windows.Handle
+	pseudoConsole    windows.Handle
+	ttyMu            chan struct{}
+	ttyConsoleClosed chan struct{}
+
 	done          chan struct{}
 	leaderDone    chan struct{}
 	groupGone     chan struct{}
@@ -122,8 +129,14 @@ func Start(spec Spec) (*Child, error) {
 	if spec.IdleFlush < 0 {
 		return nil, errors.New("process: idle flush must not be negative")
 	}
-	if spec.TTY || spec.TTYSize != nil {
+	if !spec.TTY && spec.TTYSize != nil {
 		return nil, errors.New("process: tty mode is unsupported on Windows")
+	}
+	if spec.TTY && spec.TTYSize != nil && (spec.TTYSize.Columns == 0 || spec.TTYSize.Rows == 0) {
+		return nil, errors.New("process: tty size must have non-zero columns and rows")
+	}
+	if spec.TTY && spec.TTYSize != nil && (spec.TTYSize.Columns > 32767 || spec.TTYSize.Rows > 32767) {
+		return nil, errors.New("process: tty size exceeds Windows console dimensions")
 	}
 
 	argv := cloneStrings(spec.Argv)
@@ -168,12 +181,44 @@ func Start(spec Spec) (*Child, error) {
 
 	var job, ownedJob, processHandle, threadHandle windows.Handle
 	var stdinHandle, stdoutRead, stdoutWrite, stderrRead, stderrWrite windows.Handle
+	var ttyInputRead, ttyInputWrite, ttyOutputRead, ttyOutputWrite windows.Handle
+	var pseudoConsole windows.Handle
+	var processCreated bool
 	var stdoutFile, stderrFile *os.File
 	defer func() {
-		for _, handle := range []windows.Handle{stdinHandle, stdoutRead, stdoutWrite, stderrRead, stderrWrite, threadHandle, processHandle, job, ownedJob} {
+		if pseudoConsole != 0 {
+			if processCreated {
+				if job != 0 {
+					_ = windows.TerminateJobObject(job, windowsStopExitCode)
+				}
+				if processHandle != 0 {
+					_ = waitForWindowsProcess(processHandle)
+				}
+				if job != 0 {
+					_ = waitForWindowsJobEmpty(job)
+				}
+			}
+			if ttyInputWrite != 0 {
+				_ = windows.CloseHandle(ttyInputWrite)
+				ttyInputWrite = 0
+			}
+			outputHandle := ttyOutputRead
+			if stdoutFile != nil {
+				outputHandle = windows.Handle(stdoutFile.Fd())
+			}
+			closePseudoConsoleDraining(pseudoConsole, outputHandle)
+			pseudoConsole = 0
+		}
+		for _, handle := range []windows.Handle{stdinHandle, stdoutRead, stdoutWrite, stderrRead, stderrWrite, ttyInputRead, ttyInputWrite, ttyOutputRead, ttyOutputWrite, threadHandle, processHandle, job, ownedJob} {
 			if handle != 0 {
 				_ = windows.CloseHandle(handle)
 			}
+		}
+		if stdoutFile != nil {
+			_ = stdoutFile.Close()
+		}
+		if stderrFile != nil {
+			_ = stderrFile.Close()
 		}
 	}()
 
@@ -203,29 +248,53 @@ func Start(spec Spec) (*Child, error) {
 		Length:        uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
 		InheritHandle: 1,
 	}
-	stdinHandle, err = windows.CreateFile(
-		windows.StringToUTF16Ptr("NUL"),
-		windows.GENERIC_READ,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
-		&security,
-		windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL,
-		0,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("process: open null stdin: %w", err)
-	}
-	if err := windows.CreatePipe(&stdoutRead, &stdoutWrite, &security, 0); err != nil {
-		return nil, fmt.Errorf("process: create stdout pipe: %w", err)
-	}
-	if err := windows.SetHandleInformation(stdoutRead, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
-		return nil, fmt.Errorf("process: protect stdout reader: %w", err)
-	}
-	if err := windows.CreatePipe(&stderrRead, &stderrWrite, &security, 0); err != nil {
-		return nil, fmt.Errorf("process: create stderr pipe: %w", err)
-	}
-	if err := windows.SetHandleInformation(stderrRead, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
-		return nil, fmt.Errorf("process: protect stderr reader: %w", err)
+	if spec.TTY {
+		ttyInputRead, ttyInputWrite, err = createPseudoConsolePipe()
+		if err != nil {
+			return nil, fmt.Errorf("process: create tty input pipe: %w", err)
+		}
+		ttyOutputRead, ttyOutputWrite, err = createPseudoConsolePipe()
+		if err != nil {
+			return nil, fmt.Errorf("process: create tty output pipe: %w", err)
+		}
+		size := TTYSize{Columns: 80, Rows: 24}
+		if spec.TTYSize != nil {
+			size = *spec.TTYSize
+		}
+		if err := windows.CreatePseudoConsole(
+			windows.Coord{X: int16(size.Columns), Y: int16(size.Rows)},
+			ttyInputRead,
+			ttyOutputWrite,
+			0,
+			&pseudoConsole,
+		); err != nil {
+			return nil, fmt.Errorf("process: create pseudo console: %w", err)
+		}
+	} else {
+		stdinHandle, err = windows.CreateFile(
+			windows.StringToUTF16Ptr("NUL"),
+			windows.GENERIC_READ,
+			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+			&security,
+			windows.OPEN_EXISTING,
+			windows.FILE_ATTRIBUTE_NORMAL,
+			0,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("process: open null stdin: %w", err)
+		}
+		if err := windows.CreatePipe(&stdoutRead, &stdoutWrite, &security, 0); err != nil {
+			return nil, fmt.Errorf("process: create stdout pipe: %w", err)
+		}
+		if err := windows.SetHandleInformation(stdoutRead, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
+			return nil, fmt.Errorf("process: protect stdout reader: %w", err)
+		}
+		if err := windows.CreatePipe(&stderrRead, &stderrWrite, &security, 0); err != nil {
+			return nil, fmt.Errorf("process: create stderr pipe: %w", err)
+		}
+		if err := windows.SetHandleInformation(stderrRead, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
+			return nil, fmt.Errorf("process: protect stderr reader: %w", err)
+		}
 	}
 
 	attributes, err := windows.NewProcThreadAttributeList(2)
@@ -241,21 +310,36 @@ func Start(spec Spec) (*Child, error) {
 	); err != nil {
 		return nil, fmt.Errorf("process: configure child job ownership: %w", err)
 	}
-	inheritedHandles := []windows.Handle{stdinHandle, stdoutWrite, stderrWrite}
-	if err := attributes.Update(
-		windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-		unsafe.Pointer(&inheritedHandles[0]),
-		unsafe.Sizeof(inheritedHandles[0])*uintptr(len(inheritedHandles)),
-	); err != nil {
-		return nil, fmt.Errorf("process: configure inherited handles: %w", err)
-	}
-	startup := windows.StartupInfoEx{
-		StartupInfo: windows.StartupInfo{
+	startupInfo := windows.StartupInfo{}
+	if spec.TTY {
+		// Unlike most attributes, this value is the HPCON pointer itself, not
+		// the address of a handle variable (see Microsoft's ConPTY sample).
+		result, _, callErr := updateProcThreadAttributeProc.Call(
+			uintptr(unsafe.Pointer(attributes.List())), 0,
+			windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+			uintptr(pseudoConsole), unsafe.Sizeof(pseudoConsole), 0, 0,
+		)
+		if result == 0 {
+			return nil, fmt.Errorf("process: configure pseudo console: %w", callErr)
+		}
+	} else {
+		inheritedHandles := []windows.Handle{stdinHandle, stdoutWrite, stderrWrite}
+		if err := attributes.Update(
+			windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+			unsafe.Pointer(&inheritedHandles[0]),
+			unsafe.Sizeof(inheritedHandles[0])*uintptr(len(inheritedHandles)),
+		); err != nil {
+			return nil, fmt.Errorf("process: configure inherited handles: %w", err)
+		}
+		startupInfo = windows.StartupInfo{
 			Flags:     windows.STARTF_USESTDHANDLES,
 			StdInput:  stdinHandle,
 			StdOutput: stdoutWrite,
 			StdErr:    stderrWrite,
-		},
+		}
+	}
+	startup := windows.StartupInfoEx{
+		StartupInfo:             startupInfo,
 		ProcThreadAttributeList: attributes.List(),
 	}
 	startup.StartupInfo.Cb = uint32(unsafe.Sizeof(startup))
@@ -266,7 +350,7 @@ func Start(spec Spec) (*Child, error) {
 		commandLinePtr,
 		nil,
 		nil,
-		true,
+		!spec.TTY,
 		flags,
 		&envBlock[0],
 		currentDir,
@@ -276,12 +360,19 @@ func Start(spec Spec) (*Child, error) {
 		return nil, fmt.Errorf("process: start %q: %w", argv[0], err)
 	}
 	processHandle, threadHandle = processInfo.Process, processInfo.Thread
-	_ = windows.CloseHandle(stdinHandle)
-	stdinHandle = 0
-	_ = windows.CloseHandle(stdoutWrite)
-	stdoutWrite = 0
-	_ = windows.CloseHandle(stderrWrite)
-	stderrWrite = 0
+	if spec.TTY {
+		_ = windows.CloseHandle(ttyInputRead)
+		ttyInputRead = 0
+		_ = windows.CloseHandle(ttyOutputWrite)
+		ttyOutputWrite = 0
+	}
+	processCreated = true
+	for _, handle := range []*windows.Handle{&stdinHandle, &stdoutWrite, &stderrWrite} {
+		if *handle != 0 {
+			_ = windows.CloseHandle(*handle)
+			*handle = 0
+		}
+	}
 
 	startIdentity, err := processHandleIdentity(processHandle)
 	if err != nil {
@@ -297,16 +388,25 @@ func Start(spec Spec) (*Child, error) {
 	_ = windows.CloseHandle(threadHandle)
 	threadHandle = 0
 
-	stdoutFile = os.NewFile(uintptr(stdoutRead), "process-stdout")
-	stdoutRead = 0
-	stderrFile = os.NewFile(uintptr(stderrRead), "process-stderr")
-	stderrRead = 0
-	if stdoutFile == nil || stderrFile == nil {
+	if spec.TTY {
+		stdoutFile = os.NewFile(uintptr(ttyOutputRead), "process-tty-output")
+		if stdoutFile != nil {
+			ttyOutputRead = 0
+		}
+	} else {
+		stdoutFile = os.NewFile(uintptr(stdoutRead), "process-stdout")
+		stdoutRead = 0
+		stderrFile = os.NewFile(uintptr(stderrRead), "process-stderr")
+		stderrRead = 0
+	}
+	if stdoutFile == nil || (!spec.TTY && stderrFile == nil) {
 		if stdoutFile != nil {
 			_ = stdoutFile.Close()
+			stdoutFile = nil
 		}
 		if stderrFile != nil {
 			_ = stderrFile.Close()
+			stderrFile = nil
 		}
 		_ = windows.TerminateJobObject(job, windowsStopExitCode)
 		_, _ = windows.WaitForSingleObject(processHandle, windows.INFINITE)
@@ -333,16 +433,22 @@ func Start(spec Spec) (*Child, error) {
 		maxLineBytes:    spec.MaxLineBytes,
 		idleFlush:       idleFlush,
 		now:             now,
+		tty:             spec.TTY,
+		ttyInput:        ttyInputWrite,
+		pseudoConsole:   pseudoConsole,
 		done:            make(chan struct{}),
 		leaderDone:      make(chan struct{}),
 		groupGone:       make(chan struct{}),
+	}
+	if spec.TTY {
+		child.ttyMu = make(chan struct{}, 1)
+		child.ttyMu <- struct{}{}
+		child.ttyConsoleClosed = make(chan struct{})
 	}
 	if spec.Started != nil {
 		if err := spec.Started(); err != nil {
 			_ = windows.TerminateJobObject(job, windowsStopExitCode)
 			_, _ = windows.WaitForSingleObject(processHandle, windows.INFINITE)
-			_ = stdoutFile.Close()
-			_ = stderrFile.Close()
 			return nil, fmt.Errorf("process: started callback: %w", err)
 		}
 	}
@@ -352,6 +458,8 @@ func Start(spec Spec) (*Child, error) {
 	job = 0
 	ownedJob = 0
 	processHandle = 0
+	ttyInputWrite = 0
+	pseudoConsole = 0
 	stdoutFile = nil
 	stderrFile = nil
 	return child, nil
@@ -439,38 +547,156 @@ func processGroupAlive(pid int) (bool, error) {
 	}
 }
 
-// IsTTY reports whether the child owns a pseudo-terminal. Windows children are
-// always non-TTY.
+// IsTTY reports whether the child owns a pseudo-terminal.
 func (c *Child) IsTTY() bool {
-	return false
+	return c != nil && c.tty
 }
 
-// Write forwards bytes to the child pseudo-terminal. Windows does not support
-// pseudo-terminal input through this process layer.
+// Write forwards bytes to the child pseudo-terminal.
 func (c *Child) Write(p []byte) (int, error) {
 	return c.WriteContext(context.Background(), p)
 }
 
-// WriteContext is unsupported because Windows process children cannot own a
-// pseudo-terminal through this process layer.
+// WriteContext writes to the pseudo-console input pipe. A locked OS thread lets
+// cancellation interrupt a synchronous pipe write without closing the handle
+// while resize or teardown is using it.
 func (c *Child) WriteContext(ctx context.Context, p []byte) (int, error) {
-	return 0, errors.New("process: child has no tty input")
-}
+	if c == nil || !c.tty {
+		return 0, errors.New("process: child has no tty input")
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-c.groupGone:
+		return 0, os.ErrProcessDone
+	case <-c.ttyMu:
+	}
+	defer func() { c.ttyMu <- struct{}{} }()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if windowsChannelClosed(c.groupGone) || c.ttyInput == 0 {
+		return 0, os.ErrProcessDone
+	}
 
-// Resize reports that Windows process children do not own a pseudo-terminal.
-func (c *Child) Resize(columns, rows uint16) error {
-	return errors.New("process: child has no tty")
-}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	thread, err := windows.OpenThread(windows.THREAD_TERMINATE, false, windows.GetCurrentThreadId())
+	if err != nil {
+		return 0, fmt.Errorf("process: open tty writer thread: %w", err)
+	}
+	defer windows.CloseHandle(thread)
 
-// ResizeContext is unsupported because Windows process children cannot own a
-// pseudo-terminal through this process layer.
-func (c *Child) ResizeContext(ctx context.Context, columns, rows uint16) error {
-	if ctx != nil {
+	writeDone := make(chan struct{})
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		select {
+		case <-ctx.Done():
+		case <-c.groupGone:
+		case <-writeDone:
+			return
+		}
+		cancelTTYWrite(thread, writeDone)
+	}()
+
+	written := 0
+	for written < len(p) {
 		if err := ctx.Err(); err != nil {
-			return err
+			close(writeDone)
+			<-cancelDone
+			return written, err
+		}
+		if windowsChannelClosed(c.groupGone) {
+			close(writeDone)
+			<-cancelDone
+			return written, os.ErrProcessDone
+		}
+		end := min(written+ttyWriteChunkBytes, len(p))
+		var count uint32
+		writeErr := windows.WriteFile(c.ttyInput, p[written:end], &count, nil)
+		written += int(count)
+		if writeErr != nil {
+			close(writeDone)
+			<-cancelDone
+			if err := ctx.Err(); err != nil {
+				return written, err
+			}
+			if windowsChannelClosed(c.groupGone) {
+				return written, os.ErrProcessDone
+			}
+			return written, fmt.Errorf("process: write tty input: %w", writeErr)
+		}
+		if count == 0 {
+			close(writeDone)
+			<-cancelDone
+			return written, io.ErrShortWrite
 		}
 	}
-	return c.Resize(columns, rows)
+	close(writeDone)
+	<-cancelDone
+	if err := ctx.Err(); err != nil {
+		return written, err
+	}
+	if windowsChannelClosed(c.groupGone) {
+		return written, os.ErrProcessDone
+	}
+	return written, nil
+}
+
+// Resize applies a terminal size in character cells.
+func (c *Child) Resize(columns, rows uint16) error {
+	return c.ResizeContext(context.Background(), columns, rows)
+}
+
+// ResizeContext updates the pseudo-console dimensions while serialized with
+// input writes and pseudo-console teardown.
+func (c *Child) ResizeContext(ctx context.Context, columns, rows uint16) error {
+	if c == nil || !c.tty {
+		return errors.New("process: child has no tty")
+	}
+	if columns == 0 || rows == 0 {
+		return errors.New("process: tty size must have non-zero columns and rows")
+	}
+	if columns > 32767 || rows > 32767 {
+		return errors.New("process: tty size exceeds Windows console dimensions")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.groupGone:
+		return os.ErrProcessDone
+	case <-c.ttyMu:
+	}
+	defer func() { c.ttyMu <- struct{}{} }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if windowsChannelClosed(c.groupGone) || c.pseudoConsole == 0 {
+		return os.ErrProcessDone
+	}
+	if err := windows.ResizePseudoConsole(
+		c.pseudoConsole,
+		windows.Coord{X: int16(columns), Y: int16(rows)},
+	); err != nil {
+		return fmt.Errorf("process: resize pseudo console: %w", err)
+	}
+	return ctx.Err()
 }
 
 // LeaderDone is closed as soon as the process-group leader has exited.
@@ -582,6 +808,65 @@ func (c *Child) Stop() error {
 	return nil
 }
 
+func createPseudoConsolePipe() (windows.Handle, windows.Handle, error) {
+	var read, write windows.Handle
+	if err := windows.CreatePipe(&read, &write, nil, 0); err != nil {
+		return 0, 0, err
+	}
+	return read, write, nil
+}
+
+func closePseudoConsoleDraining(console, outputReader windows.Handle) {
+	if console == 0 {
+		return
+	}
+	if outputReader == 0 {
+		windows.ClosePseudoConsole(console)
+		return
+	}
+	consoleClosed := make(chan struct{})
+	drained := make(chan struct{})
+	go func() {
+		drainWindowsPipe(outputReader, consoleClosed)
+		close(drained)
+	}()
+	windows.ClosePseudoConsole(console)
+	close(consoleClosed)
+	<-drained
+}
+
+func drainWindowsPipe(handle windows.Handle, consoleClosed <-chan struct{}) {
+	buffer := make([]byte, 32*1024)
+	for {
+		available, err := peekPipeAvailable(handle)
+		if err != nil {
+			return
+		}
+		if available == 0 {
+			if windowsChannelClosed(consoleClosed) {
+				return
+			}
+			time.Sleep(processGroupPollInterval)
+			continue
+		}
+		readSize := len(buffer)
+		if uint64(available) < uint64(readSize) {
+			readSize = int(available)
+		}
+		var count uint32
+		if err := windows.ReadFile(handle, buffer[:readSize], &count, nil); err != nil {
+			if errors.Is(err, windows.ERROR_NO_DATA) {
+				time.Sleep(processGroupPollInterval)
+				continue
+			}
+			return
+		}
+		if count == 0 {
+			return
+		}
+	}
+}
+
 func processHandleExited(process windows.Handle) (bool, error) {
 	result, err := windows.WaitForSingleObject(process, 0)
 	if err != nil {
@@ -608,9 +893,12 @@ func containsPID(ids []uint32, pid uint32) bool {
 
 func (c *Child) run(stdoutReader, stderrReader *os.File) {
 	stdoutDone := make(chan error, 1)
-	stderrDone := make(chan error, 1)
 	go func() { stdoutDone <- captureWindows(stdoutReader, output.Stdout, c) }()
-	go func() { stderrDone <- captureWindows(stderrReader, output.Stderr, c) }()
+	var stderrDone chan error
+	if stderrReader != nil {
+		stderrDone = make(chan error, 1)
+		go func() { stderrDone <- captureWindows(stderrReader, output.Stderr, c) }()
+	}
 
 	waitErr := waitForWindowsProcess(c.processHandle)
 	exitCode := 1
@@ -629,8 +917,14 @@ func (c *Child) run(stdoutReader, stderrReader *os.File) {
 	}
 	close(c.leaderDone)
 	<-c.groupGone
+	if c.tty {
+		c.closePseudoConsole()
+	}
 	stdoutErr := <-stdoutDone
-	stderrErr := <-stderrDone
+	var stderrErr error
+	if stderrDone != nil {
+		stderrErr = <-stderrDone
+	}
 	c.mu.Lock()
 	at := c.groupEndedAt
 	result := Result{
@@ -661,6 +955,33 @@ func waitForWindowsProcess(process windows.Handle) error {
 	return nil
 }
 
+func waitForWindowsJobEmpty(job windows.Handle) error {
+	for {
+		ids, err := jobProcessIDs(job)
+		if err != nil {
+			return fmt.Errorf("wait for process job: %w", err)
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		time.Sleep(processGroupPollInterval)
+	}
+}
+
+func (c *Child) closePseudoConsole() {
+	<-c.ttyMu
+	defer func() { c.ttyMu <- struct{}{} }()
+	if c.ttyInput != 0 {
+		_ = windows.CloseHandle(c.ttyInput)
+		c.ttyInput = 0
+	}
+	if c.pseudoConsole != 0 {
+		windows.ClosePseudoConsole(c.pseudoConsole)
+		c.pseudoConsole = 0
+	}
+	close(c.ttyConsoleClosed)
+}
+
 func (c *Child) observeJobExit() {
 	ticker := time.NewTicker(processGroupPollInterval)
 	defer ticker.Stop()
@@ -688,9 +1009,33 @@ func (c *Child) markGroupEndedLocked() {
 	close(c.groupGone)
 }
 
-var peekNamedPipeProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("PeekNamedPipe")
+var (
+	peekNamedPipeProc             = windows.NewLazySystemDLL("kernel32.dll").NewProc("PeekNamedPipe")
+	updateProcThreadAttributeProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("UpdateProcThreadAttribute")
+	cancelSynchronousIOProc       = windows.NewLazySystemDLL("kernel32.dll").NewProc("CancelSynchronousIo")
+)
+
+func cancelTTYWrite(thread windows.Handle, writeDone <-chan struct{}) {
+	for {
+		select {
+		case <-writeDone:
+			return
+		default:
+		}
+		_, _, _ = cancelSynchronousIOProc.Call(uintptr(thread))
+		select {
+		case <-writeDone:
+			return
+		case <-time.After(processGroupPollInterval):
+		}
+	}
+}
 
 func captureWindows(reader *os.File, stream output.Stream, c *Child) error {
+	captureEnded := c.groupGone
+	if c.tty {
+		captureEnded = c.ttyConsoleClosed
+	}
 	writer, setupErr := output.NewLineWriter(stream, c.maxLineBytes, c.idleFlush, c.now, c.output.Append)
 	var errs []error
 	if setupErr != nil {
@@ -717,7 +1062,7 @@ func captureWindows(reader *os.File, stream output.Stream, c *Child) error {
 			readErr := windows.ReadFile(handle, buffer[:readSize], &n, nil)
 			if readErr != nil {
 				if errors.Is(readErr, windows.ERROR_NO_DATA) {
-					if windowsChannelClosed(c.groupGone) {
+					if windowsChannelClosed(captureEnded) {
 						now := time.Now()
 						if drainStarted.IsZero() {
 							drainStarted, lastProgress, hardDeadline = now, now, now.Add(captureHardTimeout)
@@ -746,7 +1091,7 @@ func captureWindows(reader *os.File, stream output.Stream, c *Child) error {
 					}
 				}
 				now := time.Now()
-				if drainStarted.IsZero() && windowsChannelClosed(c.groupGone) {
+				if drainStarted.IsZero() && windowsChannelClosed(captureEnded) {
 					drainStarted, lastProgress, hardDeadline = now, now, now.Add(captureHardTimeout)
 				} else if !drainStarted.IsZero() {
 					lastProgress = now
@@ -755,7 +1100,7 @@ func captureWindows(reader *os.File, stream output.Stream, c *Child) error {
 			continue
 		}
 
-		if windowsChannelClosed(c.groupGone) {
+		if windowsChannelClosed(captureEnded) {
 			now := time.Now()
 			if drainStarted.IsZero() {
 				drainStarted, lastProgress, hardDeadline = now, now, now.Add(captureHardTimeout)

@@ -3,6 +3,9 @@
 package process
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +23,9 @@ import (
 )
 
 const (
-	windowsHelperEnv  = "HUM_PROCESS_WINDOWS_HELPER"
-	windowsHelperMode = "HUM_PROCESS_WINDOWS_MODE"
+	windowsHelperEnv   = "HUM_PROCESS_WINDOWS_HELPER"
+	windowsHelperMode  = "HUM_PROCESS_WINDOWS_MODE"
+	windowsHelperReady = "HUM_PROCESS_WINDOWS_READY_FILE"
 )
 
 func TestWindowsProcessHelper(t *testing.T) {
@@ -39,6 +43,18 @@ func TestWindowsProcessHelper(t *testing.T) {
 		}
 		fmt.Fprintf(os.Stdout, "windows-argv:%s\n", encoded)
 	case "block":
+		for {
+			time.Sleep(time.Hour)
+		}
+	case "tty-interactive":
+		runWindowsTTYInteractiveHelper()
+	case "tty-block":
+		if ready := os.Getenv(windowsHelperReady); ready != "" {
+			if err := os.WriteFile(ready, []byte(fmt.Sprint(os.Getpid())), 0600); err != nil {
+				os.Exit(2)
+			}
+		}
+		fmt.Fprintln(os.Stdout, "windows-tty-block-ready")
 		for {
 			time.Sleep(time.Hour)
 		}
@@ -62,6 +78,39 @@ func TestWindowsProcessHelper(t *testing.T) {
 	default:
 		os.Exit(2)
 	}
+}
+
+func runWindowsTTYInteractiveHelper() {
+	initialColumns, initialRows, err := windowsTTYSize()
+	if err != nil {
+		os.Exit(2)
+	}
+	fmt.Fprintf(os.Stdout, "windows-tty-ready=%dx%d\n", initialColumns, initialRows)
+	fmt.Fprintln(os.Stderr, "windows-tty-stderr-marker")
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		os.Exit(3)
+	}
+	fmt.Fprintf(os.Stdout, "windows-tty-input=%q\n", line)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		columns, rows, sizeErr := windowsTTYSize()
+		if sizeErr == nil && (columns != initialColumns || rows != initialRows) {
+			fmt.Fprintf(os.Stdout, "windows-tty-resized=%dx%d\n", columns, rows)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	fmt.Fprintln(os.Stdout, "windows-tty-resize-timeout")
+	os.Exit(4)
+}
+
+func windowsTTYSize() (int16, int16, error) {
+	var info windows.ConsoleScreenBufferInfo
+	if err := windows.GetConsoleScreenBufferInfo(windows.Handle(os.Stdout.Fd()), &info); err != nil {
+		return 0, 0, err
+	}
+	return info.Size.X, info.Size.Y, nil
 }
 
 func TestWindowsStartCapturesExitAndExactArgv(t *testing.T) {
@@ -259,14 +308,31 @@ func TestWindowsStopFailsClosedOnIdentityOrOwnershipMismatch(t *testing.T) {
 	})
 }
 
-func TestWindowsRejectsTTYAndUnixSignals(t *testing.T) {
-	spec := windowsHelperSpec(windowsNewStore(t), "block")
+func TestWindowsTTYAndUnixSignals(t *testing.T) {
+	store := windowsNewStore(t)
+	spec := windowsHelperSpec(store, "tty-block")
 	spec.TTY = true
-	if _, err := Start(spec); err == nil || !strings.Contains(err.Error(), "tty mode is unsupported") {
-		t.Fatalf("Start with TTY = %v, want explicit unsupported error", err)
+	child, err := Start(spec)
+	if err != nil {
+		t.Fatalf("Start with TTY: %v", err)
+	}
+	if !child.IsTTY() {
+		t.Fatal("child IsTTY() = false after TTY start")
+	}
+	windowsWaitForOutput(t, store, "windows-tty-block-ready")
+	for _, sig := range []os.Signal{os.Interrupt, syscall.SIGKILL} {
+		if err := child.Signal(sig); err == nil || !strings.Contains(err.Error(), "unsupported") {
+			t.Errorf("Signal(%v) = %v, want explicit unsupported error", sig, err)
+		}
+	}
+	if err := child.Stop(); err != nil {
+		t.Fatalf("Stop tty child: %v", err)
+	}
+	if result := child.Wait(); result.Err != nil {
+		t.Fatalf("wait after stopping tty child: %+v", result)
 	}
 
-	child, err := Start(windowsHelperSpec(windowsNewStore(t), "block"))
+	child, err = Start(windowsHelperSpec(windowsNewStore(t), "block"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,6 +343,156 @@ func TestWindowsRejectsTTYAndUnixSignals(t *testing.T) {
 	}
 	if err := child.Stop(); err != nil {
 		t.Fatalf("Stop child: %v", err)
+	}
+	if result := child.Wait(); result.Err != nil {
+		t.Fatalf("wait after Stop: %+v", result)
+	}
+}
+
+func TestWindowsTTYInteractiveInputOutputAndResize(t *testing.T) {
+	store := windowsNewStore(t)
+	spec := windowsHelperSpec(store, "tty-interactive")
+	spec.TTY = true
+	spec.TTYSize = &TTYSize{Columns: 80, Rows: 24}
+	child, err := Start(spec)
+	if err != nil {
+		t.Fatalf("start interactive TTY helper: %v", err)
+	}
+	windowsCleanupChild(t, child)
+	if !child.IsTTY() {
+		t.Fatal("interactive child IsTTY() = false")
+	}
+	text := windowsWaitForOutput(t, store, "windows-tty-ready=80x24")
+	if !strings.Contains(text, "windows-tty-stderr-marker") {
+		t.Fatalf("merged TTY output = %q, missing stderr marker", text)
+	}
+	input := []byte("hello from windows\r")
+	if n, err := child.WriteContext(context.Background(), input); err != nil || n != len(input) {
+		t.Fatalf("WriteContext = %d, %v; want %d bytes", n, err, len(input))
+	}
+	text = windowsWaitForOutput(t, store, "windows-tty-input=")
+	if !strings.Contains(text, "hello from windows") {
+		t.Fatalf("TTY input was not received: %q", text)
+	}
+	if err := child.ResizeContext(context.Background(), 91, 33); err != nil {
+		t.Fatalf("resize TTY: %v", err)
+	}
+	text = windowsWaitForOutput(t, store, "windows-tty-resized=91x33")
+	if !strings.Contains(text, "windows-tty-stderr-marker") {
+		t.Fatalf("merged TTY output lost stderr: %q", text)
+	}
+	select {
+	case <-child.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("interactive TTY child did not exit")
+	}
+	if result := child.Wait(); result.Err != nil || result.ExitCode != 0 {
+		t.Fatalf("interactive child result = %+v", result)
+	}
+}
+
+func TestWindowsTTYStartupFailureCleansUpConsole(t *testing.T) {
+	spec := windowsHelperSpec(windowsNewStore(t), "tty-block")
+	spec.TTY = true
+	spec.Dir = filepath.Join(t.TempDir(), "missing-working-directory")
+	if _, err := Start(spec); err == nil {
+		t.Fatal("Start with missing working directory succeeded")
+	}
+}
+
+func TestWindowsTTYStartedFailureCleansUpChild(t *testing.T) {
+	readyPath := filepath.Join(t.TempDir(), "tty-child.pid")
+	spec := windowsHelperSpec(windowsNewStore(t), "tty-block")
+	spec.TTY = true
+	spec.Env = append(spec.Env, windowsHelperReady+"="+readyPath)
+	callbackErr := errors.New("reject started TTY child")
+	spec.Started = func() error {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(readyPath); err == nil {
+				return callbackErr
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return errors.New("TTY child did not write its PID")
+	}
+	if _, err := Start(spec); !errors.Is(err, callbackErr) {
+		t.Fatalf("Start error = %v, want Started callback error", err)
+	}
+	pidBytes, err := os.ReadFile(readyPath)
+	if err != nil {
+		t.Fatalf("read failed child PID: %v", err)
+	}
+	var pid int
+	if _, err := fmt.Sscan(string(pidBytes), &pid); err != nil || pid <= 0 {
+		t.Fatalf("failed child PID = %q, err %v", pidBytes, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for ProcessGroupAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ProcessGroupAlive(pid) {
+		t.Fatalf("child %d remained alive after Started failure", pid)
+	}
+}
+
+func TestWindowsTTYWriteContextCancellation(t *testing.T) {
+	store := windowsNewStore(t)
+	spec := windowsHelperSpec(store, "tty-block")
+	spec.TTY = true
+	child, err := Start(spec)
+	if err != nil {
+		t.Fatalf("start TTY helper: %v", err)
+	}
+	windowsCleanupChild(t, child)
+	windowsWaitForOutput(t, store, "windows-tty-block-ready")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	writeResult := make(chan error, 1)
+	go func() {
+		_, writeErr := child.WriteContext(ctx, bytes.Repeat([]byte{'x'}, 64<<20))
+		writeResult <- writeErr
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-writeResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("WriteContext after cancellation = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled TTY write did not return")
+	}
+	windowsStopAndWait(t, child)
+}
+
+func TestWindowsTTYStopInterruptsWrite(t *testing.T) {
+	store := windowsNewStore(t)
+	spec := windowsHelperSpec(store, "tty-block")
+	spec.TTY = true
+	child, err := Start(spec)
+	if err != nil {
+		t.Fatalf("start TTY helper: %v", err)
+	}
+	windowsCleanupChild(t, child)
+	windowsWaitForOutput(t, store, "windows-tty-block-ready")
+
+	writeResult := make(chan error, 1)
+	go func() {
+		_, writeErr := child.WriteContext(context.Background(), bytes.Repeat([]byte{'x'}, 64<<20))
+		writeResult <- writeErr
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if err := child.Stop(); err != nil {
+		t.Fatalf("stop child while writing: %v", err)
+	}
+	select {
+	case err := <-writeResult:
+		if !errors.Is(err, os.ErrProcessDone) {
+			t.Fatalf("WriteContext after Stop = %v, want os.ErrProcessDone", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("TTY write did not return after Stop")
 	}
 	if result := child.Wait(); result.Err != nil {
 		t.Fatalf("wait after Stop: %+v", result)
@@ -347,6 +563,44 @@ func windowsHelperSpec(store *output.Store, mode string) Spec {
 func windowsHelperEnvironment(mode string, extra ...string) []string {
 	env := []string{windowsHelperEnv + "=1", windowsHelperMode + "=" + mode}
 	return append(env, extra...)
+}
+
+func windowsWaitForOutput(t *testing.T, store *output.Store, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		text := windowsStoreText(t, store)
+		if strings.Contains(text, want) {
+			return text
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for output %q; got %q", want, windowsStoreText(t, store))
+	return ""
+}
+
+func windowsCleanupChild(t *testing.T, child *Child) {
+	t.Helper()
+	t.Cleanup(func() {
+		select {
+		case <-child.Done():
+			return
+		default:
+		}
+		windowsStopAndWait(t, child)
+	})
+}
+
+func windowsStopAndWait(t *testing.T, child *Child) {
+	t.Helper()
+	if err := child.Stop(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Errorf("stop child: %v", err)
+	}
+	select {
+	case <-child.Done():
+	case <-time.After(10 * time.Second):
+		t.Error("timed out waiting for stopped child")
+	}
 }
 
 func windowsNewStore(t *testing.T) *output.Store {

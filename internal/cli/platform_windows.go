@@ -3,19 +3,13 @@
 package cli
 
 import (
-	"errors"
 	"os"
 	"os/signal"
 )
 
-func validateTTYRequest(tty bool) error {
-	if tty {
-		return newCLIUsageError(errors.New("TTY mode is unsupported on Windows"))
-	}
-	return nil
-}
+func validateTTYRequest(bool) error { return nil }
 
-func ttySupported() bool { return false }
+func ttySupported() bool { return true }
 
 func registerFollowSignals(signals chan<- os.Signal) {
 	signal.Notify(signals, os.Interrupt)

@@ -79,7 +79,7 @@ $env:Path += ";$installDir" # add this directory to your user PATH for future sh
 & (Join-Path $installDir 'hum.exe') --version
 ```
 
-Windows supports native non-TTY process supervision through `hum.exe` (for example `run --detach`, `up --detach`, `status`, `logs`, `wait`, `stop`, and `mcp`). `--tty`, interactive input, `attach`, and Unix `signal` are not supported; see [Windows behavior](docs/design.md#scope-and-non-goals). `install.sh` is Unix-only.
+Windows supports native process supervision through `hum.exe`, including interactive `--tty` children hosted by ConPTY. `hum attach` gives one client the input lease; Ctrl+] releases that lease without stopping the child, and Ctrl+C is forwarded to the console application when local input is raw. Ctrl+D is forwarded as a byte, not treated as EOF (Windows console apps generally use Ctrl+Z for EOF). Terminal size is polled while attached, so resize can take up to 200 ms. Unix `signal` remains unsupported; see [Windows behavior](docs/design.md#scope-and-non-goals). `install.sh` is Unix-only.
 
 To build from a checkout, see [development setup](docs/development.md).
 

@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/term"
 
@@ -51,7 +53,7 @@ func ttyInputRequest(name, root string, definition project.Definition, argv []st
 		request.Source = "ad_hoc"
 	}
 	if stdin := os.Stdin; stdin != nil && term.IsTerminal(int(stdin.Fd())) {
-		if width, height, err := term.GetSize(int(stdin.Fd())); err == nil && width > 0 && height > 0 {
+		if width, height, err := localTTYSize(int(stdin.Fd())); err == nil && width > 0 && height > 0 {
 			request.Columns, request.Rows = uint16(width), uint16(height)
 		}
 	}
@@ -124,6 +126,10 @@ func (i *ttyInput) watchSession() {
 }
 
 func (i *ttyInput) resizeLoop() {
+	if runtime.GOOS == "windows" {
+		i.pollTTYResize()
+		return
+	}
 	signals := make(chan os.Signal, 1)
 	registerTTYResizeSignal(signals)
 	defer signal.Stop(signals)
@@ -132,10 +138,53 @@ func (i *ttyInput) resizeLoop() {
 		case <-i.stop:
 			return
 		case <-signals:
-			width, height, err := term.GetSize(i.stdinFD)
+			width, height, err := localTTYSize(i.stdinFD)
 			if err != nil || width <= 0 || height <= 0 {
 				continue
 			}
+			_, cursor := i.session.State()
+			_ = i.session.ResizeAt(context.Background(), cursor, uint16(width), uint16(height))
+		}
+	}
+}
+
+// Windows console dimensions belong to an output screen buffer, not stdin.
+// CONOUT$ also works when CLI output is redirected but stdin is a console.
+func localTTYSize(stdinFD int) (int, int, error) {
+	if runtime.GOOS != "windows" {
+		return term.GetSize(stdinFD)
+	}
+	for _, stream := range []*os.File{os.Stdout, os.Stderr} {
+		if stream != nil && term.IsTerminal(int(stream.Fd())) {
+			return term.GetSize(int(stream.Fd()))
+		}
+	}
+	console, err := os.Open("CONOUT$")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer console.Close()
+	return term.GetSize(int(console.Fd()))
+}
+
+// Windows has no SIGWINCH. Poll only while this attachment owns the local console.
+func (i *ttyInput) pollTTYResize() {
+	width, height, err := localTTYSize(i.stdinFD)
+	if err != nil {
+		return
+	}
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-i.stop:
+			return
+		case <-ticker.C:
+			newWidth, newHeight, err := localTTYSize(i.stdinFD)
+			if err != nil || newWidth <= 0 || newHeight <= 0 || newWidth == width && newHeight == height {
+				continue
+			}
+			width, height = newWidth, newHeight
 			_, cursor := i.session.State()
 			_ = i.session.ResizeAt(context.Background(), cursor, uint16(width), uint16(height))
 		}

@@ -205,15 +205,18 @@ func TestWindowsBuiltBinaryConcurrentAutostartAndLifecycle(t *testing.T) {
 		waitWindowsPathGone(t, paths.PID, 10*time.Second)
 	})
 
-	t.Run("explicit TTY requests are rejected before daemon startup", func(t *testing.T) {
+	t.Run("explicit TTY requests start a supervised child", func(t *testing.T) {
 		runtimeDir := testutil.RuntimeDir(t)
 		env := testutil.RuntimeEnv(runtimeDir)
-		result := testutil.Run(t, hum, projectRoot, env, "run", "tty", "--tty", "--", fixture, "stream", filepath.Join(projectRoot, "tty"))
-		if result.Code == 0 || !strings.Contains(result.Stderr, "TTY mode is unsupported on Windows") {
+		t.Cleanup(func() { _ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes") })
+		result := testutil.Run(t, hum, projectRoot, env, "run", "tty", "--tty", "--detach", "--", fixture, "stream", filepath.Join(projectRoot, "tty"))
+		if result.Code != 0 {
 			t.Fatalf("TTY run result: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
 		}
-		if _, err := os.Stat(daemon.NewRuntimePaths(runtimeDir).PID); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("TTY rejection started a daemon: stat error = %v", err)
+		testutil.WaitForFile(t, filepath.Join(projectRoot, "tty.started"), 10*time.Second)
+		result = testutil.Run(t, hum, projectRoot, env, "status", "tty")
+		if result.Code != 0 || !strings.Contains(result.Stdout, "tty: true") {
+			t.Fatalf("TTY status result: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
 		}
 	})
 }

@@ -470,9 +470,11 @@ session.
   Unix signal. Stop terminates the entire owned job immediately after checking its root
   PID and creation-time identity, even if the leader has exited but descendants remain.
   `stop_grace` does not delay Windows termination: arbitrary Windows applications do not
-  receive SIGTERM. Unix signal requests return an explicit unsupported error, and TTY
-  launches are unsupported until ConPTY support is added. A recorded PID alone cannot
-  authorize stopping a Windows process after ownership is lost.
+  receive SIGTERM. Unix signal requests return an explicit unsupported error. TTY launches
+  use ConPTY with merged output and an exclusive input lease. In local raw console mode,
+  Ctrl+C is sent to the child console, Ctrl+] releases only the local lease, and Ctrl+D is
+  forwarded as a byte rather than interpreted as EOF. Size changes are polled while attached.
+  A recorded PID alone cannot authorize stopping a Windows process after ownership is lost.
 - Operator-stopped snapshots remain `stopped` without autonomous exit details, so an operator
   stop is distinct from a signal-terminated child.
 
