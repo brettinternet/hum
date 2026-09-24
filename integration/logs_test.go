@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -224,10 +225,10 @@ func TestLogFollowers(t *testing.T) {
 	logsitReleaseGate(t, multiGate)
 	for i, follower := range followers {
 		logsitWaitFollowerText(t, follower, `"type":"exit"`)
-		if err := follower.Signal(os.Interrupt); err != nil {
+		if err := logsitInterrupt(follower); err != nil {
 			t.Fatal(err)
 		}
-		if err := follower.Wait(logsitFollowerTimeout); err != nil {
+		if err := logsitWaitFollower(follower); err != nil {
 			t.Fatalf("follower %d wait: %v; stdout=%q stderr=%q", i, err, follower.Stdout(), follower.Stderr())
 		}
 		lines := logsitDecodeJSONLines(t, follower.Stdout())
@@ -263,12 +264,16 @@ func TestLogFollowers(t *testing.T) {
 	if stopped.Code != 0 {
 		t.Fatalf("stop canceled process: code=%d stdout=%q stderr=%q err=%v", stopped.Code, stopped.Stdout, stopped.Stderr, stopped.Err)
 	}
-	testutil.WaitForFile(t, cancelMarker+".terminated", logsitWaitTimeout)
+	if runtime.GOOS == "windows" {
+		testutil.WaitForProcessGone(t, cancelProcess.PID, logsitWaitTimeout)
+	} else {
+		testutil.WaitForFile(t, cancelMarker+".terminated", logsitWaitTimeout)
+	}
 }
 
 func TestLogsSystemStream(t *testing.T) {
 	harness := logsitNewHarness(t)
-	manifest := fmt.Sprintf("version: 1\nprocesses:\n  lifecycle:\n    argv: [%q, %q, %q]\n", "/bin/sh", "-c", "printf 'child-stdout\\n'; printf 'child-stderr\\n' >&2; sleep 30")
+	manifest := fmt.Sprintf("version: 1\nprocesses:\n  lifecycle:\n    argv: %s\n", logsitEchoManifest(t, harness, "child-stdout", "child-stderr"))
 	if err := os.WriteFile(filepath.Join(harness.project, "hum.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -300,10 +305,10 @@ func TestLogsSystemStream(t *testing.T) {
 		}
 	}
 
-	if err := follower.Signal(os.Interrupt); err != nil {
+	if err := logsitInterrupt(follower); err != nil {
 		t.Fatal(err)
 	}
-	if err := follower.Wait(logsitFollowerTimeout); err != nil {
+	if err := logsitWaitFollower(follower); err != nil {
 		t.Fatalf("system follower wait: %v; stdout=%q stderr=%q", err, follower.Stdout(), follower.Stderr())
 	}
 	for _, line := range logsitDecodeJSONLines(t, follower.Stdout()) {
@@ -326,8 +331,8 @@ func TestLogsSystemStream(t *testing.T) {
 func TestLogsFollowMultipleProcesses(t *testing.T) {
 	harness := logsitNewHarness(t)
 	manifest := "version: 1\nprocesses:\n"
-	manifest += fmt.Sprintf("  alpha:\n    argv: [%q, %q, %q]\n", "/bin/sh", "-c", "printf 'alpha-up\\n'; sleep 30")
-	manifest += fmt.Sprintf("  beta:\n    argv: [%q, %q, %q]\n", "/bin/sh", "-c", "printf 'beta-up\\n'; sleep 30")
+	manifest += fmt.Sprintf("  alpha:\n    argv: %s\n", logsitEchoManifest(t, harness, "alpha-up", ""))
+	manifest += fmt.Sprintf("  beta:\n    argv: %s\n", logsitEchoManifest(t, harness, "beta-up", ""))
 	if err := os.WriteFile(filepath.Join(harness.project, "hum.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
@@ -341,7 +346,7 @@ func TestLogsFollowMultipleProcesses(t *testing.T) {
 	logsitWaitFollowerText(t, follower, "[alpha] alpha-up\n")
 	logsitWaitFollowerText(t, follower, "[beta] beta-up\n")
 
-	adhoc := testutil.Run(t, harness.hum, harness.project, harness.env, "run", "ad-hoc", "--detach", "--", "/bin/sh", "-c", "printf 'ad-hoc-output\\n'; sleep 30")
+	adhoc := testutil.Run(t, harness.hum, harness.project, harness.env, append([]string{"run", "ad-hoc", "--detach", "--"}, logsitEchoArgs(t, harness, "ad-hoc-output", "")...)...)
 	if adhoc.Code != 0 {
 		t.Fatalf("ad-hoc run: code=%d stdout=%q stderr=%q err=%v", adhoc.Code, adhoc.Stdout, adhoc.Stderr, adhoc.Err)
 	}
@@ -383,10 +388,10 @@ func TestLogsFollowMultipleProcesses(t *testing.T) {
 		t.Fatalf("fixed no-name aggregate membership included ad-hoc output: %q", output)
 	}
 
-	if err := follower.Signal(os.Interrupt); err != nil {
+	if err := logsitInterrupt(follower); err != nil {
 		t.Fatalf("interrupt aggregate follower: %v", err)
 	}
-	if err := follower.Wait(logsitFollowerTimeout); err != nil {
+	if err := logsitWaitFollower(follower); err != nil {
 		t.Fatalf("aggregate follower wait after interrupt: %v; stdout=%q stderr=%q", err, follower.Stdout(), follower.Stderr())
 	}
 	listed := logsitRunList(t, harness)
@@ -428,10 +433,10 @@ func TestNDJSONFollow(t *testing.T) {
 	logsitWaitOutput(t, harness, "eviction", []string{"--json", "--stream", "both", "--tail", "1"}, func(lines []logsitJSONLine) bool {
 		return len(lines) == 1 && (logsitHasEntryText(lines[0].Event.Entries, "stdout:6999\n") || logsitHasEntryText(lines[0].Event.Entries, "stderr:6999\n"))
 	})
-	if err := follower.Signal(os.Interrupt); err != nil {
+	if err := logsitInterrupt(follower); err != nil {
 		t.Fatal(err)
 	}
-	if err := follower.Wait(logsitFollowerTimeout); err != nil {
+	if err := logsitWaitFollower(follower); err != nil {
 		t.Fatalf("eviction follower wait: %v; stdout=%q stderr=%q", err, follower.Stdout(), follower.Stderr())
 	}
 	lines := logsitDecodeJSONLines(t, follower.Stdout())
@@ -546,6 +551,45 @@ func TestNDJSONFollow(t *testing.T) {
 	if exitEvents != 1 || exitIndex < 0 {
 		t.Fatalf("eviction follow ordering: exitEvents=%d exitIndex=%d lines=%d, want one exit before waiting boundaries", exitEvents, exitIndex, len(lines))
 	}
+}
+
+func logsitEchoArgs(t *testing.T, harness *logsitHarness, stdout, stderr string) []string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		script := fmt.Sprintf("printf '%s\\n'; sleep 30", stdout)
+		if stderr != "" {
+			script = fmt.Sprintf("printf '%s\\n'; printf '%s\\n' >&2; sleep 30", stdout, stderr)
+		}
+		return []string{"/bin/sh", "-c", script}
+	}
+	gate := filepath.Join(harness.project, fmt.Sprintf("echo-%d.release", len(harness.gates)))
+	harness.gates = append(harness.gates, gate)
+	return []string{harness.fixture, "echo-wait", gate, stdout, stderr}
+}
+
+func logsitEchoManifest(t *testing.T, harness *logsitHarness, stdout, stderr string) string {
+	t.Helper()
+	args := logsitEchoArgs(t, harness, stdout, stderr)
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = fmt.Sprintf("%q", arg)
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+func logsitInterrupt(follower *testutil.Process) error {
+	if runtime.GOOS == "windows" {
+		return follower.Kill()
+	}
+	return follower.Signal(os.Interrupt)
+}
+
+func logsitWaitFollower(follower *testutil.Process) error {
+	err := follower.Wait(logsitFollowerTimeout)
+	if runtime.GOOS == "windows" && follower.Exited() {
+		return nil // Windows has no console signal for detaching a subprocess follower.
+	}
+	return err
 }
 
 func logsitNewHarness(t *testing.T) *logsitHarness {

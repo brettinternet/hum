@@ -19,7 +19,7 @@ func TestSkillContentMatchesFileByteForByte(t *testing.T) {
 }
 
 func TestSkillContentHasRequiredFrontmatter(t *testing.T) {
-	lines := strings.Split(Content(), "\n")
+	lines := strings.Split(strings.ReplaceAll(Content(), "\r\n", "\n"), "\n")
 	if len(lines) < 4 || lines[0] != "---" {
 		t.Fatal("SKILL.md must begin with YAML frontmatter")
 	}

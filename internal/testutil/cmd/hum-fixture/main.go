@@ -29,6 +29,8 @@ modes:
   relaunch <marker>
       Increment <marker>, fail the first two launches, then print ready and
       remain alive until SIGTERM.
+  echo-wait <gate> <stdout> <stderr>
+      Emit one line to each stream, then wait for <gate>.
   burst <gate> <count> [exit-gate]
       Emit alternating stdout:NNNN and stderr:NNNN lines, wait for <gate>
       after the first half, then emit the remaining lines. When supplied,
@@ -100,6 +102,17 @@ func run(args []string) (int, error) {
 			return 0, errors.New("relaunch requires exactly one non-empty marker path")
 		}
 		return runRelaunch(args[1])
+	case "echo-wait":
+		if len(args) != 4 || args[1] == "" {
+			return 0, errors.New("echo-wait requires a gate path and two output strings")
+		}
+		if err := writeFile(os.Stdout, args[2]+"\n"); err != nil {
+			return 0, err
+		}
+		if err := writeFile(os.Stderr, args[3]+"\n"); err != nil {
+			return 0, err
+		}
+		return 0, waitForFile(args[1], 0)
 	case "burst":
 		if (len(args) != 3 && len(args) != 4) || args[1] == "" || (len(args) == 4 && args[3] == "") {
 			return 0, errors.New("burst requires a gate path, positive count, and optional exit gate path")

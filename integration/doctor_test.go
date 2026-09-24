@@ -3,9 +3,11 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -37,7 +39,7 @@ func TestDoctorJSONContract(t *testing.T) {
 	runtimeDir := filepath.Join(t.TempDir(), "absent-runtime")
 	env := append(doctorIntegrationEnv(runtimeDir), "PRIVATE_DOCTOR_VALUE=must-not-leak")
 	alternate := filepath.Join(projectRoot, "hum.dev.yaml")
-	if err := os.WriteFile(alternate, []byte("version: 1\nprocesses:\n  selected:\n    argv: [/bin/sh]\n"), 0o600); err != nil {
+	if err := os.WriteFile(alternate, []byte("version: 1\nprocesses:\n  selected:\n    argv: ["+doctorIntegrationExecutable(t)+"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	result := testutil.Run(t, hum, projectRoot, env, "doctor", "--file", alternate, "--json")
@@ -201,10 +203,18 @@ func doctorIntegrationEnv(runtimeDir string) []string {
 	return append(env, "HUM_RUNTIME_DIR="+runtimeDir)
 }
 
+func doctorIntegrationExecutable(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("%q", integrationFixture(t))
+	}
+	return "/bin/sh"
+}
+
 func doctorIntegrationProject(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	manifest := "version: 1\nprocesses:\n  check:\n    argv: [/bin/sh]\n"
+	manifest := "version: 1\nprocesses:\n  check:\n    argv: [" + doctorIntegrationExecutable(t) + "]\n"
 	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
