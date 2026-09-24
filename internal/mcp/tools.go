@@ -295,10 +295,10 @@ func stringProperty(description string) map[string]any {
 var readinessMethods = []string{"match", "exec", "http", "tcp", "exit"}
 
 func (s *Server) toolDefinitions() []toolDefinition {
-	root := stringProperty("Absolute path to an existing project directory; hum resolves its nearest Git root or uses the directory itself.")
+	root := stringProperty("Absolute project directory (nearest Git root).")
 	nameResolved := stringProperty("Explicitly declared project process name.")
-	nameExisting := stringProperty("Name of any existing project runtime record, including an ad_hoc process launched by hum run.")
-	manifest := map[string]any{"type": "string", "minLength": 1, "description": "Optional exact manifest path; relative paths resolve from project_root and absolute paths must remain inside it. Omission selects .hum.yaml, then hum.yaml; files are complete and never merged, and invalid .hum.yaml fails closed. The private file suits repository or global Git ignore rules but is not shared with collaborators or CI."}
+	nameExisting := stringProperty("Existing runtime name, including ad-hoc sessions.")
+	manifest := map[string]any{"type": "string", "minLength": 1, "description": "Manifest path inside project_root; defaults to .hum.yaml, then hum.yaml."}
 	waitProps := map[string]any{
 		"project_root": root,
 		"manifest":     manifest,
@@ -310,19 +310,19 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	restartProps := cloneProperties(waitProps)
 	restartProps["name"] = nameExisting
 	readiness := objectSchema(map[string]any{
-		"method":     map[string]any{"type": "string", "enum": readinessMethods, "description": "Configured startup readiness method."},
+		"method":     map[string]any{"type": "string", "enum": readinessMethods},
 		"target":     map[string]any{"type": "string"},
-		"argv":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Exact direct argv for exec readiness; no shell is used."},
-		"interval":   map[string]any{"type": "integer", "minimum": 0, "description": "Retry interval in nanoseconds; exec defaults to 1 second."},
-		"state":      stringProperty("starting, ready, or running_unverified; readiness gates startup and is not liveness monitoring"),
+		"argv":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"interval":   map[string]any{"type": "integer", "minimum": 0},
+		"state":      map[string]any{"type": "string"},
 		"cursor":     map[string]any{"type": "integer", "minimum": 0},
 		"time":       map[string]any{"type": "string"},
 		"match":      map[string]any{"type": "string"},
-		"diagnostic": map[string]any{"type": "string", "description": "Bounded terminal diagnostic from the last failed exec attempt; probe output is not retained."},
+		"diagnostic": map[string]any{"type": "string"},
 	}, "state")
 	signalInfo := objectSchema(map[string]any{
-		"name":   map[string]any{"type": "string", "description": "Canonical SIG-prefixed signal name."},
-		"number": map[string]any{"type": "integer", "minimum": 1, "description": "Signal number on the current Unix OS."},
+		"name":   map[string]any{"type": "string"},
+		"number": map[string]any{"type": "integer", "minimum": 1},
 	}, "name", "number")
 	exit := objectSchema(map[string]any{
 		"code":   map[string]any{"type": "integer"},
@@ -337,32 +337,32 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"scope": map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}}, "project_root": map[string]any{"type": "string"},
 		"tty": map[string]any{"type": "boolean"}, "pid": map[string]any{"type": "integer"},
 		"pgid": map[string]any{"type": "integer"}, "cwd": map[string]any{"type": "string"},
-		"argv":  map[string]any{"type": []string{"array", "null"}, "items": map[string]any{"type": "string"}, "description": "Null before a session's first launch."},
+		"argv":  map[string]any{"type": []string{"array", "null"}, "items": map[string]any{"type": "string"}},
 		"start": map[string]any{"type": "string"}, "launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 		"next_cursor": map[string]any{"type": "integer", "minimum": 0}, "state": map[string]any{"type": "string"},
 		"exit": exit, "exit_code": map[string]any{"type": "integer"}, "exited_at": map[string]any{"type": "string"},
 		"restart_count":        map[string]any{"type": "integer", "minimum": 0},
-		"followers":            map[string]any{"type": "integer", "minimum": 0, "description": "Live run and logs --follow clients attached to this supervision session."},
+		"followers":            map[string]any{"type": "integer", "minimum": 0},
 		"restart":              map[string]any{"type": "string", "enum": []string{"never", "on-failure"}},
 		"relaunches":           map[string]any{"type": "integer", "minimum": 0, "maximum": 5},
-		"stop_grace":           map[string]any{"type": "integer", "minimum": 0, "description": "Effective SIGTERM-to-SIGKILL grace in nanoseconds."},
+		"stop_grace":           map[string]any{"type": "integer", "minimum": 0},
 		"stop_grace_inherited": map[string]any{"type": "boolean"},
 		"next_launch_at":       map[string]any{"type": "string"},
 		"readiness":            readiness,
 		"warnings":             startupWarningsSchema,
 	}, "name", "source", "scope", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches", "stop_grace", "stop_grace_inherited")
-	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}, "details": map[string]any{"description": "Optional code-specific structured detail."}}, "code", "message")
+	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}, "details": map[string]any{}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
 	restart := objectSchema(map[string]any{
-		"name":                 map[string]any{"type": "string", "description": "The restarted process name."},
-		"outcome":              map[string]any{"type": "string", "description": "restarted, completed, running_unverified, exited_before_ready, timed_out, or error."},
-		"readiness":            map[string]any{"type": "string", "description": "The replacement readiness state observed by this request."},
-		"pid":                  map[string]any{"type": "integer", "description": "The replacement process ID, or zero when no running process remains."},
-		"launch_cursor":        map[string]any{"type": "integer", "minimum": 0, "description": "The output cursor assigned to the replacement launch."},
-		"message":              map[string]any{"type": "string", "description": "Optional detail for a readiness or request failure."},
+		"name":                 map[string]any{"type": "string"},
+		"outcome":              map[string]any{"type": "string"},
+		"readiness":            map[string]any{"type": "string"},
+		"pid":                  map[string]any{"type": "integer"},
+		"launch_cursor":        map[string]any{"type": "integer", "minimum": 0},
+		"message":              map[string]any{"type": "string"},
 		"source":               map[string]any{"type": "string"},
 		"root":                 map[string]any{"type": "string"},
-		"tty":                  map[string]any{"type": "boolean", "description": "Whether the replacement owns a pseudo-terminal."},
+		"tty":                  map[string]any{"type": "boolean"},
 		"pgid":                 map[string]any{"type": "integer"},
 		"cwd":                  map[string]any{"type": "string"},
 		"argv":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
@@ -389,7 +389,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
 	output := objectSchema(map[string]any{"entries": map[string]any{"type": []string{"array", "null"}, "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}, "oldest": map[string]any{"type": "integer", "minimum": 0}, "latest": map[string]any{"type": "integer", "minimum": 0}, "evicted_through": map[string]any{"type": "integer", "minimum": 0}, "truncated": map[string]any{"type": "boolean"}, "more": map[string]any{"type": "boolean"}}, "entries")
-	wait := objectSchema(map[string]any{"op": map[string]any{"type": "string"}, "ok": map[string]any{"type": "boolean"}, "outcome": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "integer", "minimum": 0}, "exit": exit, "process_observed": map[string]any{"type": "boolean", "description": "On timeout, true when a matching runtime record existed initially or at any point during this wait request; false means no process record was observed."}, "message": map[string]any{"type": "string", "description": "Actionable guidance when a timeout observed no process record."}}, "op", "ok", "cursor")
+	wait := objectSchema(map[string]any{"op": map[string]any{"type": "string"}, "ok": map[string]any{"type": "boolean"}, "outcome": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "integer", "minimum": 0}, "exit": exit, "process_observed": map[string]any{"type": "boolean"}, "message": map[string]any{"type": "string"}}, "op", "ok", "cursor")
 	inputText := map[string]any{"type": "string", "minLength": 1, "description": "Exact UTF-8 text bytes; no newline is appended."}
 	inputBase64 := map[string]any{
 		"type": "string", "minLength": 1, "maxLength": 43692,
@@ -416,7 +416,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	signalSchema := objectSchema(map[string]any{
 		"project_root": root,
 		"name":         nameExisting,
-		"signal":       stringProperty("Case-insensitive signal name with an optional SIG prefix, or a positive decimal value present in the supported named signal table."),
+		"signal":       stringProperty("Signal name (optional SIG prefix) or supported positive signal number."),
 	}, "project_root", "name", "signal")
 	removeAll := map[string]any{"type": "boolean", "description": "Remove every runtime supervision session in the selected scope; must be true when name is omitted."}
 	removeSchema := objectSchema(map[string]any{
@@ -439,7 +439,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	upSchema["properties"].(map[string]any)["names"] = map[string]any{
 		"type": "array", "minItems": 1, "maxItems": 2000, "uniqueItems": true,
 		"items":       map[string]any{"type": "string", "minLength": 1},
-		"description": "Optional unique declared process names; each selection includes its transitive after prerequisites. Omission selects every declaration.",
+		"description": "Declared names; includes after prerequisites. Omit for all declarations.",
 	}
 	listSchema := objectSchema(map[string]any{"project_root": root, "manifest": manifest, "all": map[string]any{"type": "boolean", "description": "Include every project scope from project scope; default is false."}}, "project_root")
 	listSchema["allOf"] = append(listSchema["allOf"].([]any), map[string]any{
@@ -455,13 +455,13 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"project_root": root,
 		"name":         nameExisting,
 		"stream":       map[string]any{"type": "string", "enum": []string{string(protocol.StreamStdout), string(protocol.StreamStderr), string(protocol.StreamSystem), string(protocol.StreamBoth)}, "default": protocol.StreamBoth, "description": "Eligible output stream; system contains supervision entries and both includes all streams."},
-		"after":        map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to read from; omitting it selects the newest default window."},
-		"since_ms":     map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Positive duration in milliseconds from the request time; entries at or after the computed cutoff are included."},
-		"tail":         map[string]any{"type": "integer", "minimum": 0, "description": "Return at most this many of the most recent selected entries; omitting it uses the newest default window."},
+		"after":        map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor; omit for newest window."},
+		"since_ms":     map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Recent window in milliseconds from request time."},
+		"tail":         map[string]any{"type": "integer", "minimum": 0, "description": "Most recent selected entries; defaults to newest window."},
 		"match":        map[string]any{"type": "string", "minLength": 1, "description": "Regular expression used to select matching entries."},
 		"context":      map[string]any{"type": "integer", "minimum": 0, "description": "Include up to this many eligible entries before and after each match; requires match."},
 		"max_entries":  map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of whole entries to return after selection and tail."},
-		"max_bytes":    map[string]any{"type": "integer", "minimum": 1, "description": "Maximum total text bytes to return across this window's whole entries."},
+		"max_bytes":    map[string]any{"type": "integer", "minimum": 1, "description": "Maximum text bytes across whole entries."},
 	}, "project_root", "name")
 	logsSchema["dependentRequired"] = map[string]any{"context": []string{"match"}}
 	event := objectSchema(map[string]any{
@@ -490,27 +490,44 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"truncated": map[string]any{"type": "boolean"}, "has_more": map[string]any{"type": "boolean"},
 	}, "events", "next_cursor", "truncated", "has_more")
 	definitions := []toolDefinition{
-		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml, and returns manifest_missing when a declaration is required. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. Retained records remain a fallback when no manifest declares the requested name. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. Exit readiness waits for exit status 0 and reports outcome completed. It never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
-		{Name: "up", Description: "Start every resolved project definition when names is omitted, or start the unique named declarations plus their transitive after prerequisites when names is provided; results cover only that selected subgraph. manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml, and returns manifest_missing when no retained manifest record can be reported. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. Exit readiness reports successful completion, and retained completions are reused until a direct dependent must launch. Independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Only unnamed up reports manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc records. no_wait is rejected before daemon contact when the selected subgraph declares after; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
-		{Name: "down", Description: "Stop every active runtime record in the selected scope and return one result per name in lexical order. Declared processes stop in reverse manifest after order: active dependents finish their stop requests before prerequisites; unrelated, ad-hoc, and undeclared records stop concurrently. A failed dependent stop does not block its prerequisites. Down does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
-		{Name: "list", Description: "Merge selected stopped declarations with all daemon runtime records in the selected project scope, including readiness method, exact exec argv, interval, and bounded terminal diagnostic plus match output, and including ad_hoc records; retained records win by name. manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. A missing default manifest still returns retained records or an empty result. Use all from project scope to inspect every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
-		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record with readiness method, exact exec argv, interval, and bounded terminal diagnostic when configured; match readiness retains match and cursor; exit readiness reports ready for successful completion. This tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
-		{Name: "logs", Description: "Read one immutable bounded cursor-based output snapshot for an existing declared or ad_hoc runtime record. stream selects stdout, stderr, supervision-only system entries, or both; both includes all three streams. match selects entries and context expands each match by eligible entries on both sides; windows merge in cursor order before tail and whole-entry bounds. Context requires match and is unavailable for live following. since_ms uses one request-time cutoff and composes with stream and cursor boundaries. Child output is terminal-control-stripped per entry; system entries, stored bytes, cursors, and limit accounting remain raw.", InputSchema: logsSchema, OutputSchema: output},
-		{Name: "wait", Description: "Wait for output or exit on an existing declared or ad_hoc runtime record; defaults after to the current launch cursor and timeout to 30000 ms. Timeout results include process_observed from the same daemon wait request without an extra round trip; false means no runtime record for NAME was observed and includes actionable guidance.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
-		{Name: "input", Description: "Write one exact, bounded payload to an already-running TTY incarnation at its initial launch cursor with at-most-once behavior; never starts, waits, queues, retries, resends, retains, or explicitly echoes input and fails immediately on ownership conflict.", InputSchema: inputSchema, OutputSchema: inputResult},
-		{Name: "restart", Description: "Restart a selected definition using the current server environment, or an existing retained ad_hoc or removed-definition record using its recorded launch specification. manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml, and returns manifest_missing when neither it nor a retained record declares the name. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. A requested name absent from the selected file uses the existing retained-record fallback. Results expose readiness method, exact argv, interval, and bounded terminal diagnostic while preserving match output. exec uses direct argv without a shell, starts immediately, retries serially after failures, inherits cwd/environment, and never retains probe output; exit readiness waits for exit status 0 and reports outcome completed; readiness gates startup, not liveness. By default it waits for the replacement incarnation to become ready or running_unverified when no matcher exists; no_wait returns after spawn and timeout_ms is a positive per-name readiness limit.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
-		{Name: "stop", Description: "Stop one existing declared or ad_hoc runtime record while preserving its supervision session.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
-		{Name: "remove", Description: "Stop and discard one named runtime supervision session, or every runtime session in the selected scope when all is true. Bulk removal is lexical, never spans scopes, and does not target unlaunched declarations.", InputSchema: removeSchema, OutputSchema: map[string]any{"type": "object", "oneOf": []any{stop, collectionResults(stop)}}},
-		{Name: "signal", Description: "Send one observational signal to a running declared or ad_hoc process group without changing stop intent or automatic relaunch policy. Signal names are case-insensitive with an optional SIG prefix, and positive decimal values are accepted only when they map to the supported named signal table; the result is canonical and reports sent.", InputSchema: signalSchema, OutputSchema: signalResult},
-		{Name: "events", Description: "Read the bounded durable event history with optional names, lifecycle or operation kinds, failure, regex, time, tail, and cursor filters. Pages are finite and never follow; project_root selects project scope and global selects machine scope. No child output or input payload is retained.", InputSchema: event, OutputSchema: eventOutput},
+		{Name: "start", Description: "Start one named project definition without starting its prerequisites. Waits for readiness by default; use up for dependency-aware startup.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
+		{Name: "up", Description: "Start all project definitions, or selected names and their prerequisites. Use for dependency-aware startup; returns per-process results and warnings.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
+		{Name: "down", Description: "Stop active sessions in the selected scope, dependents before prerequisites. Use for project-wide shutdown without removing sessions.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
+		{Name: "list", Description: "List declared and retained sessions in the selected scope. Use all from project scope to inspect sessions across projects.", InputSchema: listSchema, OutputSchema: collectionProcesses},
+		{Name: "status", Description: "Inspect one existing session's state, readiness, and restart details without starting a daemon.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
+		{Name: "logs", Description: "Read bounded output for one session. Use stream, cursor, time, tail, or match filters to inspect recent output without following it.", InputSchema: logsSchema, OutputSchema: output},
+		{Name: "wait", Description: "Wait for matching output or exit from one session. Use after and timeout_ms to bound the wait.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
+		{Name: "input", Description: "Send exact text or base64 bytes once to a running TTY session. Use for a prompt response; no newline is added.", InputSchema: inputSchema, OutputSchema: inputResult},
+		{Name: "restart", Description: "Replace one session, adopting the current definition when present. Use after editing a definition or to rerun a retained session; waits for readiness by default.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
+		{Name: "stop", Description: "Stop one session while preserving its record and output for later restart.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
+		{Name: "remove", Description: "Stop and discard one session or all sessions in a scope. Use to clear retained runtime state and output, not declarations.", InputSchema: removeSchema, OutputSchema: map[string]any{"type": "object", "oneOf": []any{stop, collectionResults(stop)}}},
+		{Name: "signal", Description: "Send a signal to a running process group without changing stop or restart policy. Use for application-specific control.", InputSchema: signalSchema, OutputSchema: signalResult},
+		{Name: "events", Description: "Read bounded lifecycle and operation history. Use filters or after_cursor to inspect failures or page through events.", InputSchema: event, OutputSchema: eventOutput},
 	}
-	const scopeDescription = " Scope is project by default or global for machine-wide ad-hoc retained sessions; project_root is required for project scope and forbidden for global scope."
+	const scopeDescription = " Defaults to project scope; global selects machine-wide sessions."
 	for index := range definitions {
 		if definitions[index].Name != "up" {
 			definitions[index].Description += scopeDescription
 		}
+		// objectSchema adds the input scope description even to nested output
+		// objects; strip it only from outputs without changing their constraints.
+		removeSchemaDescriptions(definitions[index].OutputSchema)
 	}
 	return definitions
+}
+
+func removeSchemaDescriptions(value any) {
+	switch node := value.(type) {
+	case map[string]any:
+		delete(node, "description")
+		for _, child := range node {
+			removeSchemaDescriptions(child)
+		}
+	case []any:
+		for _, child := range node {
+			removeSchemaDescriptions(child)
+		}
+	}
 }
 
 func cloneProperties(src map[string]any) map[string]any {

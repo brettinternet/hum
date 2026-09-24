@@ -114,6 +114,8 @@ SSH authentication and host-key verification must already work without prompts. 
 
 Tool calls accept `scope`: omit it for project scope and provide the absolute `project_root`; use `scope: "global"` without `project_root` for retained global sessions. `up` supports project scope only. Use `list` with `all: true` only from project scope; it includes global records.
 
+MCP `tools/list` descriptions are brief selection guidance; use this guide for argument and result semantics. Output schemas remain closed and include no descriptive prose. A project-scoped `project_root` is an absolute existing directory, resolved to its nearest Git root or the directory itself. A global scope omits `project_root`. Separate worktrees have separate project scopes.
+
 The definition-resolving MCP tools `start`, `up`, `restart`, and `list` optionally accept `manifest`. A relative path is resolved from `project_root`; an absolute path must remain inside it. Explicit selection loads exactly that validated file, while omission uses `.hum.yaml` when present, otherwise `hum.yaml`; a missing default returns `manifest_missing` for declaration-requiring tools. Defaults are complete files with no merging, and an invalid `.hum.yaml` fails closed. The project-root namespace, project-root-relative child cwd, environment inheritance, and stable `manifest:<project-root-relative path>` source remain unchanged. `start` and `restart` fall back to a retained record when the selected file does not declare the requested name; unnamed `up` reports retained manifest records removed from the declarations, and `list` merges selected stopped declarations with retained records, with retained records winning by name. `manifest` is rejected with `invalid_request` for `down`, `status`, `logs`, `wait`, `input`, `stop`, `remove`, and `signal`, and for every global-scope call.
 
 Each tool rejects fields outside its advertised closed input schema before project resolution or daemon contact. MCP `up` accepts an optional `names` array of unique non-empty declared process names; `down` does not accept `name`.
@@ -171,6 +173,14 @@ Each tool rejects fields outside its advertised closed input schema before proje
 - Context requires a non-empty match and is bounded-read-only. On a forward clipped page, reuse
   `next` as `after`; it stops before the first unreturned selected entry, so continuation loses or
   duplicates nothing.
+- `wait` defaults to the current launch cursor and 30 seconds. On timeout, `process_observed`
+  reports whether a matching runtime record existed at any point during this same wait request;
+  false also supplies guidance in `message` without a separate status round trip.
+- In process results, `argv` is null before the first launch, `followers` counts attached run
+  and follow clients, and `stop_grace` is the effective TERM-to-KILL grace in nanoseconds.
+  Restart results report `restarted`, `completed`, `running_unverified`,
+  `exited_before_ready`, `timed_out`, or `error`, with a replacement PID (zero if no process
+  remains), launch cursor, readiness state, and optional failure message.
 - For restart-with-work, use `stop`, run the intermediate command, then `start`: the durable
   session preserves terminal followers.
 - `remove` is different from `stop`: it discards retained runtime state and output but never
