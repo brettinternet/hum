@@ -60,6 +60,9 @@ func TestWindowsDoctorRuntimeManifestAndUnsupportedTTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := checkDoctorRuntimeACL(runtimeDir); err != nil {
+		t.Fatalf("daemon-created directory fails doctor ACL before close: %v", err)
+	}
 	if err := server.Close(); err != nil {
 		t.Fatal(err)
 	}
