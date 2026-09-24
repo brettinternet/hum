@@ -122,22 +122,6 @@ func listenRuntime(path string) (net.Listener, error) {
 	}
 	return listener, nil
 }
-func dialRuntime(ctx context.Context, path string) (net.Conn, error) {
-	// The security descriptor is checked before talking to an endpoint. A pipe
-	// created first by another user may permit us to connect; it is not trusted.
-	if err := checkPrivateACL(path); err != nil {
-		return nil, fmt.Errorf("refusing daemon pipe: %w", err)
-	}
-	conn, err := winio.DialPipeContext(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkPrivateACL(path); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("refusing daemon pipe: %w", err)
-	}
-	return conn, nil
-}
 func endpointExists(path string) bool {
 	_, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
 	// An inaccessible endpoint is owned until proved otherwise, never stale.

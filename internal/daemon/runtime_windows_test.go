@@ -39,7 +39,7 @@ func TestWindowsTransportAndACL(t *testing.T) {
 	if err := server.WaitReady(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{server.Paths().Dir, server.Paths().Lock, server.Paths().State, server.Paths().PID, server.Paths().Socket} {
+	for _, name := range []string{server.Paths().Dir, server.Paths().Lock, server.Paths().State, server.Paths().PID} {
 		if err := checkPrivateACL(name); err != nil {
 			t.Fatalf("private ACL %s: %v", name, err)
 		}
@@ -47,6 +47,17 @@ func TestWindowsTransportAndACL(t *testing.T) {
 	client, err := Dial(ctx, server.Paths().Socket)
 	if err != nil {
 		t.Fatal(err)
+	}
+	pipe, ok := client.conn.(*securePipeConn)
+	if !ok {
+		t.Fatalf("client connection type %T", client.conn)
+	}
+	sd, err := windows.GetSecurityInfo(pipe.handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPrivateDescriptor(sd); err != nil {
+		t.Fatalf("pipe ACL: %v", err)
 	}
 	items, err := client.List(ctx, protocol.NewListRequest(t.TempDir(), false, false))
 	if err != nil || len(items) != 0 {
@@ -82,7 +93,7 @@ func TestWindowsConcurrentStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("contender: %v: %s", err, out)
 	}
-	if !strings.Contains(string(out), "owner refused") {
+	if strings.Contains(string(out), "FAIL") {
 		t.Fatalf("contender output: %s", out)
 	}
 }

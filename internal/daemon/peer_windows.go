@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
 )
 
@@ -40,11 +41,14 @@ func privateSDDL() string {
 // Refuse both foreign owners and any allow ACE for another identity. A
 // protected, current-user-only DACL is required for every trusted artifact.
 func checkPrivateACL(path string) error {
-	want, err := expectedSID()
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
 	}
-	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	return checkPrivateDescriptor(sd)
+}
+func checkPrivateDescriptor(sd *windows.SECURITY_DESCRIPTOR) error {
+	want, err := expectedSID()
 	if err != nil {
 		return err
 	}
@@ -81,11 +85,19 @@ func checkPrivateACL(path string) error {
 	return nil
 }
 
-// The named-pipe endpoint and its enclosing runtime directory both have a
-// checked ACL. Check again at the connection boundary before wire decoding.
+// Client connections verify the descriptor on their connected handle. Server
+// connections are admitted only by the first-instance pipe's explicit,
+// current-user-only ACL (not by a caller-provided path or claimed identity).
 func verifyPeer(conn net.Conn) error {
-	if conn == nil || conn.LocalAddr() == nil {
+	if client, ok := conn.(*securePipeConn); ok {
+		sd, err := windows.GetSecurityInfo(client.handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			return err
+		}
+		return checkPrivateDescriptor(sd)
+	}
+	if _, ok := conn.(winio.PipeConn); !ok {
 		return errors.New("daemon connection is not a named pipe")
 	}
-	return checkPrivateACL(conn.LocalAddr().String())
+	return nil
 }
