@@ -296,14 +296,14 @@ var readinessMethods = []string{"match", "exec", "http", "tcp", "exit"}
 
 func (s *Server) toolDefinitions() []toolDefinition {
 	root := stringProperty("Absolute project directory (nearest Git root).")
-	nameResolved := stringProperty("Explicitly declared project process name.")
+	nameResolved := stringProperty("Declared project process name or retained session name.")
 	nameExisting := stringProperty("Existing runtime name, including ad-hoc sessions.")
 	manifest := map[string]any{"type": "string", "minLength": 1, "description": "Manifest path inside project_root; defaults to .hum.yaml, then hum.yaml."}
 	waitProps := map[string]any{
 		"project_root": root,
 		"manifest":     manifest,
 		"no_wait":      map[string]any{"type": "boolean", "description": "Return after launch instead of waiting for readiness."},
-		"timeout_ms":   map[string]any{"type": "integer", "minimum": 1, "description": "Readiness timeout in milliseconds; defaults to 30000."},
+		"timeout_ms":   map[string]any{"type": "integer", "minimum": 1, "description": "Readiness timeout in milliseconds; overrides ready.timeout, which defaults to 30000."},
 	}
 	startProps := cloneProperties(waitProps)
 	startProps["name"] = nameResolved
@@ -470,7 +470,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"since_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Moving request-time duration window."},
 		"kinds":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{string(protocol.EventLifecycle), string(protocol.EventOperation)}}, "description": "Optional lifecycle or operation kinds."},
 		"failed":   map[string]any{"type": "boolean", "description": "Return failures only."}, "match": map[string]any{"type": "string", "description": "Regex applied to name and detail."},
-		"tail": map[string]any{"type": "integer", "minimum": 1, "maximum": 2000, "description": "Bounded page size."}, "after_cursor": map[string]any{"type": "integer", "minimum": 0, "description": "Strictly-exclusive history cursor."}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum encoded response bytes."},
+		"tail": map[string]any{"type": "integer", "minimum": 1, "maximum": 2000, "description": "Bounded page size."}, "after_cursor": map[string]any{"type": "integer", "minimum": 0, "description": "Strictly-exclusive history cursor."}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum serialized bytes of returned event records, excluding metadata."},
 	})
 	eventRecord := objectSchema(map[string]any{
 		"cursor":       map[string]any{"type": "integer", "minimum": 1},
@@ -490,13 +490,13 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"truncated": map[string]any{"type": "boolean"}, "has_more": map[string]any{"type": "boolean"},
 	}, "events", "next_cursor", "truncated", "has_more")
 	definitions := []toolDefinition{
-		{Name: "start", Description: "Start one named project definition without starting its prerequisites. Waits for readiness by default; use up for dependency-aware startup.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
+		{Name: "start", Description: "Start one declared process or retained session without starting its prerequisites. Waits for readiness by default; use up for dependency-aware startup.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
 		{Name: "up", Description: "Start all project definitions, or selected names and their prerequisites. Use for dependency-aware startup; returns per-process results and warnings.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop active sessions in the selected scope, dependents before prerequisites. Use for project-wide shutdown without removing sessions.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
 		{Name: "list", Description: "List declared and retained sessions in the selected scope. Use all from project scope to inspect sessions across projects.", InputSchema: listSchema, OutputSchema: collectionProcesses},
 		{Name: "status", Description: "Inspect one existing session's state, readiness, and restart details without starting a daemon.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
 		{Name: "logs", Description: "Read bounded output for one session. Use stream, cursor, time, tail, or match filters to inspect recent output without following it.", InputSchema: logsSchema, OutputSchema: output},
-		{Name: "wait", Description: "Wait for matching output or exit from one session. Use after and timeout_ms to bound the wait.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
+		{Name: "wait", Description: "Wait for matching output or exit from one session. Use after and timeout_ms to bound the wait.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": stringProperty("Runtime name; without after, it may not be launched yet."), "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Send exact text or base64 bytes once to a running TTY session. Use for a prompt response; no newline is added.", InputSchema: inputSchema, OutputSchema: inputResult},
 		{Name: "restart", Description: "Replace one session, adopting the current definition when present. Use after editing a definition or to rerun a retained session; waits for readiness by default.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
 		{Name: "stop", Description: "Stop one session while preserving its record and output for later restart.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: stop},
