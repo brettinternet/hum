@@ -76,11 +76,12 @@ func checkDoctorRuntimeACL(path string) error {
 	if owner == nil || !owner.Equals(user.User.Sid) {
 		return errors.New("owner is not the current user")
 	}
-	acl, present, err := sd.DACL()
+	// DACL's second return value is "defaulted", not "present".
+	acl, _, err := sd.DACL()
 	if err != nil {
 		return err
 	}
-	if !present || acl == nil || acl.AceCount == 0 {
+	if acl == nil || acl.AceCount == 0 {
 		return errors.New("missing private DACL")
 	}
 	for index := uint32(0); index < uint32(acl.AceCount); index++ {
