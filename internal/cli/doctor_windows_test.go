@@ -17,7 +17,7 @@ func TestWindowsDoctorRuntimeManifestAndUnsupportedTTY(t *testing.T) {
 	hum := testutil.BuildHum(t)
 	fixture := testutil.BuildFixture(t)
 	root := t.TempDir()
-	runtimeDir := testutil.RuntimeDir(t)
+	runtimeDir := filepath.Join(testutil.RuntimeDir(t), "doctor")
 	env := testutil.RuntimeEnv(runtimeDir)
 	writeWindowsFixtureManifest(t, root, "api", []string{fixture, "inspect"})
 
