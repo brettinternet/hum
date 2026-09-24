@@ -36,6 +36,7 @@ type lifecycleRuntime struct {
 
 func TestDaemonCrashReclaimsOrphans(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	runtime := lifecycleNewRuntime(t)
@@ -96,6 +97,7 @@ func TestDaemonCrashReclaimsOrphans(t *testing.T) {
 
 func TestSignalExitObservation(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	runtime := lifecycleNewRuntime(t)
 	var daemonPID int
@@ -165,6 +167,7 @@ func TestSignalExitObservation(t *testing.T) {
 
 func TestSignalledLeaderWithSurvivingDescendant(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	runtime := lifecycleNewRuntime(t)
@@ -236,6 +239,7 @@ func TestSignalledLeaderWithSurvivingDescendant(t *testing.T) {
 
 func TestForegroundServe(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	runtime := lifecycleNewRuntime(t)
@@ -299,6 +303,7 @@ func TestForegroundServe(t *testing.T) {
 
 func TestDetachedServe(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	runtime := lifecycleNewRuntime(t)
 	daemonPID := 0
@@ -397,6 +402,7 @@ func TestDetachedServe(t *testing.T) {
 
 func TestAutomaticStartup(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 
@@ -561,6 +567,7 @@ func TestAutomaticStartup(t *testing.T) {
 
 func TestVersionMismatch(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 

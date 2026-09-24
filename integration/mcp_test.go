@@ -142,6 +142,7 @@ func (s *mcpTestSession) callStructured(t *testing.T, name, root string, argumen
 
 func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	runtime := lifecycleNewRuntime(t)
@@ -347,6 +348,7 @@ type upParitySummary struct {
 // cannot observe a divergence between the two surfaces.
 func TestUpAdapterParityAcrossSurfaces(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -493,6 +495,7 @@ func upParityStrings(t *testing.T, object map[string]any, key string) []string {
 
 func TestMCPAlternateManifest(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

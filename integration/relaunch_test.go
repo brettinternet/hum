@@ -92,6 +92,7 @@ type relaunchIntegrationList struct {
 
 func TestRelaunchAfterCrash(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	project := t.TempDir()
@@ -206,6 +207,7 @@ processes:
 
 func TestUpPreservesPendingRecovery(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	project, err := filepath.EvalSymlinks(t.TempDir())

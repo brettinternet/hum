@@ -76,6 +76,7 @@ type logsitHarness struct {
 }
 
 func TestLogsMatchContext(t *testing.T) {
+	t.Parallel()
 	harness := logsitNewHarness(t)
 	gate := filepath.Join(harness.project, "match-context.release")
 	harness.gates = append(harness.gates, gate)
@@ -132,6 +133,7 @@ func TestLogsMatchContext(t *testing.T) {
 }
 
 func TestLogFollowers(t *testing.T) {
+	t.Parallel()
 	harness := logsitNewHarness(t)
 
 	filterGate := filepath.Join(harness.project, "filter.release")
@@ -272,6 +274,7 @@ func TestLogFollowers(t *testing.T) {
 }
 
 func TestLogsSystemStream(t *testing.T) {
+	t.Parallel()
 	harness := logsitNewHarness(t)
 	manifest := fmt.Sprintf("version: 1\nprocesses:\n  lifecycle:\n    argv: %s\n", logsitEchoManifest(t, harness, "child-stdout", "child-stderr"))
 	if err := os.WriteFile(filepath.Join(harness.project, "hum.yaml"), []byte(manifest), 0o600); err != nil {
@@ -344,6 +347,7 @@ func TestLogsSystemStream(t *testing.T) {
 }
 
 func TestLogsFollowMultipleProcesses(t *testing.T) {
+	t.Parallel()
 	harness := logsitNewHarness(t)
 	manifest := "version: 1\nprocesses:\n"
 	manifest += fmt.Sprintf("  alpha:\n    argv: %s\n", logsitEchoManifest(t, harness, "alpha-up", ""))
@@ -425,6 +429,7 @@ func TestLogsFollowMultipleProcesses(t *testing.T) {
 }
 
 func TestNDJSONFollow(t *testing.T) {
+	t.Parallel()
 	harness := logsitNewHarness(t)
 	gate := filepath.Join(harness.project, "eviction.release")
 	harness.gates = append(harness.gates, gate)

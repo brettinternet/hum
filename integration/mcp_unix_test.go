@@ -11,6 +11,7 @@ import (
 
 func TestMCPManifestEnvironmentLifecycle(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	runtime := lifecycleNewRuntime(t)
 	runtime.env = append(runtime.env, "VALUE=baseline", "REMOVED=baseline")

@@ -64,6 +64,7 @@ type runitListResponse struct {
 var runitHumanRunPattern = regexp.MustCompile(`^started ([A-Za-z0-9._-]+) \(PID ([0-9]+), cursor ([0-9]+)\)$`)
 
 func TestAttachedRunForegroundLifecycle(t *testing.T) {
+	t.Parallel()
 	t.Run("SIGTERM stops the child even when the output consumer stalls", func(t *testing.T) {
 		scenario := runitNewScenario(t)
 		name := "attached-backpressure"
@@ -348,6 +349,7 @@ func TestAttachedRunForegroundLifecycle(t *testing.T) {
 }
 
 func TestDetachedRun(t *testing.T) {
+	t.Parallel()
 	t.Run("human name pid cursor and listed argv", func(t *testing.T) {
 		scenario := runitNewScenario(t)
 		name := "detached-human"
@@ -410,6 +412,7 @@ func TestDetachedRun(t *testing.T) {
 }
 
 func TestRunRequiresExplicitCommandBoundary(t *testing.T) {
+	t.Parallel()
 	scenario := runitNewScenario(t)
 	name := "command-boundary"
 	runitCleanup(t, scenario, name)
@@ -433,6 +436,7 @@ func TestRunRequiresExplicitCommandBoundary(t *testing.T) {
 }
 
 func TestReconnect(t *testing.T) {
+	t.Parallel()
 	scenario := runitNewScenario(t)
 	name := "reconnect"
 	runitCleanup(t, scenario, name)

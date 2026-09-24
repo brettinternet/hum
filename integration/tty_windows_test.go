@@ -18,6 +18,7 @@ import (
 )
 
 func TestWindowsTTYAttachDetachesAndReattachesWithoutSecondOwner(t *testing.T) {
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	runtimeDir := testutil.RuntimeDir(t)

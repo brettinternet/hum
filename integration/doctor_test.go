@@ -34,6 +34,7 @@ type doctorIntegrationResult struct {
 }
 
 func TestDoctorJSONContract(t *testing.T) {
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot := doctorIntegrationProject(t)
 	runtimeDir := filepath.Join(t.TempDir(), "absent-runtime")
@@ -75,6 +76,7 @@ func TestDoctorJSONContract(t *testing.T) {
 }
 
 func TestDoctorDoesNotStartDaemon(t *testing.T) {
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot := doctorIntegrationProject(t)
 	runtimeDir := filepath.Join(t.TempDir(), "absent-runtime")
@@ -90,6 +92,7 @@ func TestDoctorDoesNotStartDaemon(t *testing.T) {
 
 func TestDoctorExistingDaemon(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	runtimeState := lifecycleNewRuntime(t)
 	manifest := "version: 1\nprocesses:\n  check:\n    argv: [/bin/sh]\n"

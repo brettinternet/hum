@@ -19,6 +19,7 @@ type restartIntegrationResult struct {
 
 func TestRestart(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	harness := logsitNewHarness(t)
 	name := "api"
 	marker := filepath.Join(harness.project, "restart-incarnation")

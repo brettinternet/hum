@@ -12,6 +12,7 @@ import (
 )
 
 func TestWindowsNativeLifecycle(t *testing.T) {
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	runtime := lifecycleNewRuntime(t)

@@ -14,6 +14,7 @@ import (
 
 func TestBoundedLogsStripTerminalControl(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	root := t.TempDir()

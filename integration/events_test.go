@@ -12,6 +12,7 @@ import (
 
 func TestEventsLogCursor(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	runtime := lifecycleNewRuntime(t)
 	t.Cleanup(func() { _ = testutil.Run(t, hum, runtime.cwd, runtime.env, "shutdown", "--stop-processes") })
@@ -98,6 +99,7 @@ func TestEventsLogCursor(t *testing.T) {
 
 func TestEventsJSON(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	runtime := lifecycleNewRuntime(t)
 	t.Cleanup(func() {

@@ -51,6 +51,7 @@ type downWorkflowRun struct {
 
 func TestDownStopsDependentsFirst(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	projectRoot := stopitCanonicalTempDir(t)
@@ -127,6 +128,7 @@ func TestDownStopsDependentsFirst(t *testing.T) {
 }
 
 func TestDownWorkflow(t *testing.T) {
+	t.Parallel()
 	fixture := integrationFixture(t)
 	hum := integrationHum(t)
 	runtimeDir := testutil.RuntimeDir(t)

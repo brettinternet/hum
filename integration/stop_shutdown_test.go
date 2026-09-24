@@ -61,6 +61,7 @@ type stopitTree struct {
 
 func TestStopTree(t *testing.T) {
 	stopitRequireUnix(t)
+	t.Parallel()
 
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
@@ -127,6 +128,7 @@ func TestStopTree(t *testing.T) {
 
 func TestPerProcessStopGrace(t *testing.T) {
 	stopitRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	projectRoot := stopitCanonicalTempDir(t)
@@ -196,6 +198,7 @@ processes:
 
 func TestShutdown(t *testing.T) {
 	stopitRequireUnix(t)
+	t.Parallel()
 
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
@@ -345,6 +348,18 @@ func stopitLaunchTree(t *testing.T, hum, fixture, projectRoot string, env []stri
 
 	startedMarker := marker + ".started"
 	testutil.WaitForFile(t, startedMarker, stopitReadyWait)
+	// The fixture creates PID markers before it finishes writing them. Wait for
+	// the content rather than treating file existence as process readiness.
+	for _, suffix := range []string{".parent.pid", ".child.pid", ".grandchild.pid"} {
+		path := marker + suffix
+		if !stopitWaitForCondition(stopitReadyWait, func() bool {
+			data, err := os.ReadFile(path)
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			return err == nil && parseErr == nil && pid > 0
+		}) {
+			t.Fatalf("PID marker %q did not contain a positive integer within %s", path, stopitReadyWait)
+		}
+	}
 	tree := stopitTree{
 		name:          name,
 		marker:        marker,

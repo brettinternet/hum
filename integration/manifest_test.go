@@ -34,6 +34,7 @@ func freeTCPPort(t *testing.T) int {
 
 func TestManifestHTTPReadiness(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
@@ -70,6 +71,7 @@ processes:
 
 func TestManifestTCPReadiness(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
@@ -106,6 +108,7 @@ processes:
 
 func TestManifestEnvironmentLifecycle(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
@@ -295,6 +298,7 @@ type manifestListResponse struct {
 
 func TestAlternateManifestSelection(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o700); err != nil {
@@ -388,6 +392,7 @@ func TestAlternateManifestSelection(t *testing.T) {
 
 func TestAlternateManifestNoWaitDependencyError(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o700); err != nil {
@@ -408,6 +413,7 @@ func TestAlternateManifestNoWaitDependencyError(t *testing.T) {
 
 func TestExecutableReadiness(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	projectRoot := t.TempDir()
@@ -556,6 +562,7 @@ func yamlQuote(value string) string {
 
 func TestUpReportsManifestRuntimeDrift(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
@@ -658,6 +665,7 @@ type manifestOutputResponse struct {
 
 func TestUpNamedStack(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
@@ -705,6 +713,7 @@ processes:
 
 func TestOneShotPrerequisite(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o700); err != nil {
@@ -868,6 +877,7 @@ processes:
 
 func TestUpOrderedStack(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
@@ -1047,6 +1057,7 @@ processes:
 
 func TestUpStartupProgress(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
@@ -1097,6 +1108,7 @@ processes:
 
 func TestUpReadinessTimeoutDiagnostics(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
@@ -1191,6 +1203,7 @@ func manifestOutputContains(result manifestOutputResponse, text string) bool {
 }
 
 func TestManifestWorkflow(t *testing.T) {
+	t.Parallel()
 	fixture := integrationFixture(t)
 	hum := integrationHum(t)
 	runtimeDir := testutil.RuntimeDir(t)

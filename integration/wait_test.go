@@ -24,10 +24,12 @@ type waitJSONResponse struct {
 
 func TestWait(t *testing.T) {
 	lifecycleRequireUnix(t)
+	t.Parallel()
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 
 	t.Run("buffered and subsequent output matches", func(t *testing.T) {
+		t.Parallel()
 		runtime := lifecycleNewRuntime(t)
 		daemonPID := 0
 		t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
@@ -73,6 +75,7 @@ func TestWait(t *testing.T) {
 	})
 
 	t.Run("exit before regex match returns code three", func(t *testing.T) {
+		t.Parallel()
 		runtime := lifecycleNewRuntime(t)
 		daemonPID := 0
 		t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
@@ -104,6 +107,7 @@ func TestWait(t *testing.T) {
 	})
 
 	t.Run("no-match wait succeeds when process exits", func(t *testing.T) {
+		t.Parallel()
 		runtime := lifecycleNewRuntime(t)
 		daemonPID := 0
 		t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
@@ -138,6 +142,7 @@ func TestWait(t *testing.T) {
 	})
 
 	t.Run("timeout returns consumed cursor", func(t *testing.T) {
+		t.Parallel()
 		runtime := lifecycleNewRuntime(t)
 		daemonPID := 0
 		t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
@@ -170,6 +175,7 @@ func TestWait(t *testing.T) {
 	})
 
 	t.Run("pre-launch wait creates daemon and times out", func(t *testing.T) {
+		t.Parallel()
 		runtime := lifecycleNewRuntime(t)
 		t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, 0) })
 		result := testutil.Run(t, hum, runtime.cwd, runtime.env, "wait", "missing", "--timeout", "100ms", "--json")

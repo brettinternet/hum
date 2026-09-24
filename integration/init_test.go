@@ -15,6 +15,7 @@ import (
 )
 
 func TestInitThenUp(t *testing.T) {
+	t.Parallel()
 	fixture := integrationFixture(t)
 	hum := integrationHum(t)
 	projectRoot := zeroConfigCanonicalTempDir(t)

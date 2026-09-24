@@ -17,6 +17,7 @@ import (
 const zeroConfigWorkflowTimeout = 15 * time.Second
 
 func TestZeroConfigManifestRequired(t *testing.T) {
+	t.Parallel()
 	fixture := integrationFixture(t)
 	hum := integrationHum(t)
 	cases := []struct {
@@ -53,6 +54,7 @@ func TestZeroConfigManifestRequired(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			root := zeroConfigCanonicalTempDir(t)
 			marker := filepath.Join(root, "must-not-run")
 			testCase.setup(t, root, marker)

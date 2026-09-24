@@ -38,6 +38,7 @@ func durableWaitText(t *testing.T, process *testutil.Process, stderr bool, text 
 }
 
 func TestStatusReportsFollowers(t *testing.T) {
+	t.Parallel()
 	hum, runtime := durableSetup(t)
 	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "observed", "--follow")
 	durableWaitText(t, follower, false, "waiting for first launch")
@@ -86,6 +87,7 @@ func TestStatusReportsFollowers(t *testing.T) {
 }
 
 func TestDurableFollowAcrossStopStart(t *testing.T) {
+	t.Parallel()
 	hum, runtime := durableSetup(t)
 	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "web", "--follow")
 	durableWaitText(t, follower, false, "waiting for first launch")
@@ -124,6 +126,7 @@ func TestDurableFollowAcrossStopStart(t *testing.T) {
 }
 
 func TestFollowBeforeFirstLaunch(t *testing.T) {
+	t.Parallel()
 	hum, runtime := durableSetup(t)
 	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "future", "--follow")
 	durableWaitText(t, follower, false, "does not resolve")
@@ -139,6 +142,7 @@ func TestFollowBeforeFirstLaunch(t *testing.T) {
 }
 
 func TestRunRefusesRunningSession(t *testing.T) {
+	t.Parallel()
 	hum, runtime := durableSetup(t)
 	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "join", "--detach", "--", "/bin/sh", "-c", "printf 'joined\\n'; sleep 30")
 	if started.Code != 0 {
@@ -158,6 +162,7 @@ func TestRunRefusesRunningSession(t *testing.T) {
 }
 
 func TestWaitBeforeStart(t *testing.T) {
+	t.Parallel()
 	hum, runtime := durableSetup(t)
 	// The wait timeout only has to outlast the launch it precedes; a bound
 	// tight enough to expire under suite load tests the runner, not wait.
@@ -176,6 +181,7 @@ func TestWaitBeforeStart(t *testing.T) {
 }
 
 func TestRemoveSupervisionSession(t *testing.T) {
+	t.Parallel()
 	hum, runtime := durableSetup(t)
 	if got := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "gone", "--detach", "--", "/bin/sh", "-c", "sleep 30"); got.Code != 0 {
 		t.Fatalf("start: %#v", got)
@@ -192,6 +198,7 @@ func TestRemoveSupervisionSession(t *testing.T) {
 }
 
 func TestUpWithDurableFollowers(t *testing.T) {
+	t.Parallel()
 	hum, runtime := durableSetup(t)
 	manifest := fmt.Sprintf("version: 1\nprocesses:\n  web:\n    argv: [%q, %q, %q]\n", "/bin/sh", "-c", "printf 'up-output\\n'; sleep 30")
 	if err := os.WriteFile(filepath.Join(runtime.cwd, "hum.yaml"), []byte(manifest), 0o600); err != nil {
@@ -238,6 +245,7 @@ func TestUpWithDurableFollowers(t *testing.T) {
 }
 
 func TestFollowerExitsOnDaemonShutdown(t *testing.T) {
+	t.Parallel()
 	hum, runtime := durableSetup(t)
 	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "shutdown-follow", "--follow")
 	durableWaitText(t, follower, false, "waiting")
