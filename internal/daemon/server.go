@@ -58,8 +58,9 @@ type Server struct {
 
 	// One EventHistory per scope keeps cursor reservations and the compaction
 	// state in memory for the daemon's lifetime.
-	historiesMu sync.Mutex
-	histories   map[string]*EventHistory
+	historiesMu     sync.Mutex
+	histories       map[string]*EventHistory
+	historiesClosed bool
 
 	serveMu      sync.Mutex
 	serveStarted bool
@@ -399,7 +400,7 @@ func (s *Server) shutdown(force bool) error {
 		shutdownErr = errors.Join(shutdownErr, err)
 	}
 	s.flushHistoryEvents()
-	s.releaseHistoryReservations()
+	s.closeHistoryWriters()
 	// Follow handlers must flush the supervisor shutdown error before the
 	// daemon exits and tears down their connections. Closing s.closing starts
 	// the bounded drain so a client that stopped reading cannot block exit.
@@ -673,6 +674,10 @@ func (s *Server) history(scope, root, cwd string) (*EventHistory, error) {
 	if cached := s.histories[history.EventPath()]; cached != nil {
 		return cached, nil
 	}
+	if s.historiesClosed {
+		// Shutdown closed every writer; a new scope may only be read.
+		history.writerClosed = true
+	}
 	history.SetDiagnostic(func(err error) {
 		if s.log != nil {
 			s.log.Printf("event history: %v\n", err)
@@ -682,13 +687,15 @@ func (s *Server) history(scope, root, cwd string) (*EventHistory, error) {
 	return history, nil
 }
 
-// releaseHistoryReservations runs after the final history flush and before
-// runtime ownership is released, so no replacement daemon can be appending.
-func (s *Server) releaseHistoryReservations() {
+// closeHistoryWriters runs after the final history flush and before runtime
+// ownership is released, so no replacement daemon can be appending. Events
+// queued by requests that race shutdown after this point are not recorded.
+func (s *Server) closeHistoryWriters() {
 	s.historiesMu.Lock()
 	defer s.historiesMu.Unlock()
+	s.historiesClosed = true
 	for _, history := range s.histories {
-		if err := history.ReleaseReservation(); err != nil && s.log != nil {
+		if err := history.CloseWriter(); err != nil && s.log != nil {
 			s.log.Printf("event history: release cursor reservation: %v\n", err)
 		}
 	}

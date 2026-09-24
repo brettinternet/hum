@@ -70,6 +70,7 @@ type EventHistory struct {
 	needsRewrite               bool
 	unavailable                error
 	diagnosed                  bool
+	writerClosed               bool
 }
 
 var historyLocks sync.Map
@@ -180,15 +181,13 @@ func (h *EventHistory) loadLocked() error {
 		line := scanner.Bytes()
 		var event protocol.HistoryEvent
 		if len(line)+1 > maxHistoryEvent || json.Unmarshal(line, &event) != nil || event.Cursor == 0 || event.Cursor <= previous || event.Cursor > h.floor || event.Kind != protocol.EventLifecycle && event.Kind != protocol.EventOperation || event.Name == "" || event.Event == "" {
-			h.malformed = true
-			h.events, h.eventSizes, h.retainedBytes = nil, nil, 0
+			h.discardMalformedLocked()
 			h.diagnose(errors.New("malformed event history payload"))
 			return nil
 		}
 		previous = event.Cursor
 		if event.Time.IsZero() {
-			h.malformed = true
-			h.events, h.eventSizes, h.retainedBytes = nil, nil, 0
+			h.discardMalformedLocked()
 			h.diagnose(errors.New("malformed event history timestamp"))
 			return nil
 		}
@@ -210,15 +209,17 @@ func (h *EventHistory) loadLocked() error {
 	return nil
 }
 
-// ReleaseReservation persists the exact last assigned cursor so a clean
-// restart continues without a gap. The caller must be the only writer and
-// must not be replaced until this returns.
-func (h *EventHistory) ReleaseReservation() error {
+// CloseWriter rejects later appends and persists the exact last assigned
+// cursor so a clean restart continues without a gap. Reads keep working. The
+// caller must be the only writer and must not be replaced until this returns.
+func (h *EventHistory) CloseWriter() error {
 	if h == nil {
 		return nil
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// A late append must not reserve again after the mark is lowered.
+	h.writerClosed = true
 	// Never lower the mark below cursors an earlier instance may have issued.
 	if !h.loaded || h.unavailable != nil || h.reserved <= h.highwater || h.highwater < h.floor {
 		return nil
@@ -238,6 +239,15 @@ func (h *EventHistory) ReleaseReservation() error {
 // cursorBound is the newest cursor any instance may have issued.
 func (h *EventHistory) cursorBound() protocol.Cursor {
 	return max(h.highwater, h.floor)
+}
+
+// discardMalformedLocked drops an untrusted payload. Any cursor up to the
+// mark may have been discarded, so reads report the gap as truncated.
+func (h *EventHistory) discardMalformedLocked() {
+	h.malformed = true
+	h.events, h.eventSizes, h.retainedBytes = nil, nil, 0
+	h.diskEvents, h.diskBytes = 0, 0
+	h.highwater = h.floor
 }
 
 // trimLocked keeps the visible window bounded while the disk can use its slack.
@@ -338,6 +348,9 @@ func (h *EventHistory) Append(event protocol.HistoryEvent) (protocol.HistoryEven
 	}
 	if err := h.ensureDir(); err != nil {
 		return event, err
+	}
+	if h.writerClosed {
+		return event, ErrHistoryUnavailable
 	}
 	event.Cursor = h.cursorBound() + 1
 	if event.Cursor == 0 {

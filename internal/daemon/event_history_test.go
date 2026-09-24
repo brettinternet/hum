@@ -239,6 +239,10 @@ func TestEventHistoryServerReusesHistoryAndReleasesReservation(t *testing.T) {
 	if err := server.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// A request racing shutdown must not reserve cursors after the release.
+	if _, err := history.Append(event); !errors.Is(err, ErrHistoryUnavailable) {
+		t.Fatalf("append after shutdown = %v, want unavailable", err)
+	}
 	restarted := NewEventHistory(runtimeDir, protocol.ScopeProject, root)
 	appended, err := restarted.Append(event)
 	if err != nil || appended.Cursor != 4 {
@@ -291,7 +295,10 @@ func TestEventHistoryMalformedPayloadAndCursorUnavailable(t *testing.T) {
 	if err != nil || len(page.Events) != 0 {
 		t.Fatalf("malformed page=%#v err=%v", page, err)
 	}
-	_, _ = recovered.Read(nil, time.Time{}, nil, false, nil, 50, nil, 0)
+	zero := protocol.Cursor(0)
+	if page, err = recovered.Read(nil, time.Time{}, nil, false, nil, 50, &zero, 0); err != nil || !page.Truncated {
+		t.Fatalf("discarded payload page=%#v err=%v, want truncated", page, err)
+	}
 	if calls != 1 {
 		t.Fatalf("diagnostics=%d, want one", calls)
 	}
