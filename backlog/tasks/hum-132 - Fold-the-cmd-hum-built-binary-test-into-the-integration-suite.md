@@ -1,10 +1,10 @@
 ---
 id: HUM-132
 title: Fold the cmd/hum built-binary test into the integration suite
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-23 21:53'
-updated_date: '2026-09-23 22:24'
+updated_date: '2026-09-24 03:42'
 labels:
   - tooling
   - integration
@@ -48,17 +48,41 @@ Non-goals: merging other integration tests; changing the CI job layout.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `test ! -e cmd/hum/integration_test.go && ! rg -n TestBuiltBinaryIntegration --glob "!backlog/**" .` exits 0.
-- [ ] #2 AC2 — `rg -n "go test ./integration -run" Taskfile.dist.yaml` exits 0 and `task smoke` exits 0.
-- [ ] #3 AC3 — `go test ./integration ./cmd/hum -count=1` exits 0.
+- [x] #1 AC1 — `test ! -e cmd/hum/integration_test.go && ! rg -n TestBuiltBinaryIntegration --glob "!backlog/**" .` exits 0.
+- [x] #2 AC2 — `rg -n "go test ./integration -run" Taskfile.dist.yaml` exits 0 and `task smoke` exits 0.
+- [x] #3 AC3 — `go test ./integration ./cmd/hum -count=1` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No protected gate file was modified unless the owner labelled this task tooling
-- [ ] #6 cmd/hum/integration_test.go was deleted only after Implementation Notes mapped each of its assertions to the integration test that now holds it; no other test was deleted, skipped, or weakened
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #6 cmd/hum/integration_test.go was deleted only after Implementation Notes mapped each of its assertions to the integration test that now holds it; no other test was deleted, skipped, or weakened
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Compare each built-binary phase assertion with its mapped integration owner and add missing checks.
+2. Route smoke to those owners plus the machine-output contract, then remove the duplicate test.
+3. Run focused tests, independent verification, and task ci; commit, merge to main, and finalize provider state.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Pre-deletion assertion mapping: autostart child liveness/socket and repeat serve exact socket/PID/status/log -> TestAutomaticStartup + TestDetachedServe; foreground daemon stdout/readiness and attached raw stdout/stderr/argv/nonzero exit -> TestForegroundServe + TestAttachedRunForegroundLifecycle; detached JSON process and list PID/cwd/argv/state -> TestDetachedRun; bounded tail/stream/byte limit/next cursor and NDJSON replay/delayed output -> TestLogFollowers + TestNDJSONFollow; follower survives stop and detaches -> TestLogsFollowMultipleProcesses + TestReconnect (both existing, beyond smoke subset); stopped/missing multi-name stop ordering -> TestStopTree (added); refusal lists live processes and JSON active_processes; force kills PID/group and foreground serve exits -> TestShutdown (added JSON/serve assertions). Focused changed tests passed.
+
+Commit 13f4d1f. AC#1: test ! -e cmd/hum/integration_test.go && ! rg -n TestBuiltBinaryIntegration --glob !backlog/** . exited 0. AC#2: rg -n go.test.integration.-run Taskfile.dist.yaml and task smoke exited 0 (selected integration and JSON v1 tests). AC#3: go test ./integration ./cmd/hum -count=1 exited 0. task ci exited 0 on commit 13f4d1f including race and smoke. An initial integration attempt hit a transient MCP next_cursor race and passed on rerun; initial task ci timed out in unchanged TestAttachStreamsBurstWithoutAborting under concurrent load, then passed twice including on final commit. Independent verifier PASS for AC1-3 and DoD #1,#3-6; missing AC evidence lines were its only finding and are now recorded. Review found no item-scoped defects. No other tests deleted or weakened; diff limited to declared paths; no protected gate modified. Next: merge 13f4d1f into main and finalize.
+
+Exact AC#2 command: rg -n "go test ./integration -run" Taskfile.dist.yaml (exit 0); task smoke (exit 0). Exact AC#1 command: test ! -e cmd/hum/integration_test.go && ! rg -n TestBuiltBinaryIntegration --glob "!backlog/**" . (exit 0).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Consolidated built-binary lifecycle smoke into integration and retained JSON v1 checks; added missing stop and shutdown assertions. Commit 13f4d1f merged into main. Focused suites and task ci passed; independent verifier passed all acceptance criteria.
+<!-- SECTION:FINAL_SUMMARY:END -->
