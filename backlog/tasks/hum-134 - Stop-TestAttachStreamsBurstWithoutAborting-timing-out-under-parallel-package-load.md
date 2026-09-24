@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-24 06:53'
-updated_date: '2026-09-24 20:48'
+updated_date: '2026-09-24 20:51'
 labels:
   - cli
   - testing
@@ -60,6 +60,8 @@ Implementation commit 0ca5029 changes only internal/cli/serve_run_test.go. Prior
 AC#1 go test ./internal/cli -run '^TestAttachStreamsBurstWithoutAborting$' -count=20: PASS on 0ca5029; independent verifier reran the exact command and got PASS (3.865s).
 AC#2 task ci: PASS on 0ca5029 for three consecutive default-parallel runs after the unrelated TestShutdown smoke flake; no attach failures. Independent verifier also ran three consecutive task ci gates (one initial, two sequential) and reported PASS for AC2; follow-up runs used cached Go test results.
 Review: one general pass identified a pre-existing hypothetical duplicate-plus-omission gap in the original line-count assertion; no observed trigger, no change to this assertion in this item. The original last-line, exact-count, stderr, and exit assertions remain, and the changed wait fails after five seconds of no progress or immediately on exit. Only declared test file changed; no tests deleted/skipped or protected gate files changed. Branch 0ca5029 fast-forward merged into main; task ci passed on that commit. Next: finalize task state, commit provider record, clean up the owned worktree.
+
+Finalization: provider completion commit 59d3e41 on main; task ci PASS on 59d3e41 (default-parallel go test ./..., race, smoke, security). Worktrunk removed the merged hum-134 worktree and branch and its associated Herdr workspace. No remaining blocker or resumable step; task Done. The earlier Next note was superseded by these completed actions.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
