@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -331,6 +332,17 @@ func TestRuntimeDir(t *testing.T) {
 		cfg, err := New(BuildOpts{}, Input{})
 		if err != nil {
 			t.Fatalf("New: %v", err)
+		}
+		if runtime.GOOS == "windows" {
+			base := os.Getenv("LOCALAPPDATA")
+			if base == "" {
+				base, _ = os.UserConfigDir()
+			}
+			want := filepath.Join(base, "hum-runtime")
+			if cfg.RuntimeDir != want {
+				t.Fatalf("RuntimeDir = %q, want %q", cfg.RuntimeDir, want)
+			}
+			return
 		}
 		wantBase := "hum-" + strconv.Itoa(os.Getuid())
 		want := filepath.Join(os.TempDir(), wantBase)

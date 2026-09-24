@@ -116,7 +116,7 @@ type InputResult struct {
 	LaunchCursor protocol.Cursor
 }
 
-// Dial connects to a socket, verifies that the daemon runs as the current user
+// Dial connects to the private endpoint, verifies that the daemon runs as the current user
 // before sending anything, performs the mandatory hello, and returns the
 // connection even for VersionMismatchError so an idle older daemon can still
 // receive the frozen shutdown request.
@@ -127,8 +127,7 @@ func Dial(ctx context.Context, socket string) (*Client, error) {
 	if socket == "" {
 		socket = NewRuntimePaths("").Socket
 	}
-	dialer := net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "unix", socket)
+	conn, err := dialRuntime(ctx, socket)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +195,7 @@ func StartupBudget(paths RuntimePaths, stopGrace, dialSlack time.Duration) (time
 	return groupBudget + dialSlack, nil
 }
 
-// NewClient wraps an already-connected Unix connection. The caller must call
+// NewClient wraps an already-connected local connection. The caller must call
 // Hello before operations; Dial is preferred when a socket path is available.
 func NewClient(conn net.Conn) *Client { return newClient(conn, "") }
 func newClient(conn net.Conn, socket string) *Client {

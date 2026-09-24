@@ -192,7 +192,7 @@ func (s *Server) monitorUnresolved() {
 		case <-ticker.C:
 			for _, item := range s.supervisor.UnresolvedProcesses() {
 				group := RuntimeGroup{Scope: item.Scope, ProjectRoot: item.Root, Name: item.Name, LeaderPID: item.PID, PGID: item.PGID, StartIdentity: item.StartIdentity}
-				if !runtimeGroupAlive(group.PGID) {
+				if !recordedGroupAlive(group) {
 					// Keep blocking duplicate launches until durable state no longer
 					// claims the unresolved group.
 					if s.owner.removeProcess(item) == nil {
@@ -311,10 +311,10 @@ func (s *Server) WaitReady(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// The probe is deliberately a real Unix connection. Binding a socket is
+	// The probe is deliberately a real transport connection. Binding a socket is
 	// not readiness: the accept loop must take this connection before the
 	// readiness file/channel become visible.
-	probe, err := (&net.Dialer{}).DialContext(ctx, "unix", s.paths.Socket)
+	probe, err := dialRuntime(ctx, s.paths.Socket)
 	if err != nil {
 		return err
 	}

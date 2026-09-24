@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -123,7 +122,7 @@ func resolveRuntimeDir(input Input) string {
 	if input.EnvXDGRuntimeDir != "" {
 		return filepath.Join(input.EnvXDGRuntimeDir, "hum")
 	}
-	return filepath.Join(os.TempDir(), "hum-"+strconv.Itoa(os.Getuid()))
+	return defaultRuntimeDir()
 }
 
 func firstNonEmpty(values ...string) string {
