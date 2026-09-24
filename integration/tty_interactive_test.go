@@ -106,7 +106,12 @@ func TestTTYInteractiveSession(t *testing.T) {
 	if status.Err != nil || !strings.Contains(status.Stdout, `"tty":true`) {
 		t.Fatalf("tty status = %#v", status)
 	}
+	// start --no-wait returns before the child writes, so poll the retained log.
 	logs := testutil.Run(t, hum, root, env, "logs", "dev", "--stream", "stdout")
+	for deadline := time.Now().Add(5 * time.Second); logs.Err == nil && !strings.Contains(logs.Stdout, "red") && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+		logs = testutil.Run(t, hum, root, env, "logs", "dev", "--stream", "stdout")
+	}
 	if logs.Err != nil || !strings.Contains(logs.Stdout, "red") {
 		t.Fatalf("tty logs = %#v", logs)
 	}
