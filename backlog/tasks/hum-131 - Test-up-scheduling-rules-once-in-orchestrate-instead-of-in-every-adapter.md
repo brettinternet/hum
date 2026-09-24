@@ -1,10 +1,10 @@
 ---
 id: HUM-131
 title: Test up scheduling rules once in orchestrate instead of in every adapter
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-23 21:53'
-updated_date: '2026-09-23 21:53'
+updated_date: '2026-09-24 00:46'
 labels:
   - cli
   - mcp
@@ -53,18 +53,46 @@ Non-goals: logs, wait, status, and restart duplicates; integration tests; produc
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/orchestrate -count=1 -cover` exits 0 and reports at least 75.0% of statements (63.1% on 2026-09-23).
-- [ ] #2 AC2 — `go test ./internal/orchestrate ./internal/cli ./internal/mcp -count=1 -coverpkg=./internal/orchestrate,./internal/cli,./internal/mcp -coverprofile=/tmp/hum-up-cover.out && go tool cover -func=/tmp/hum-up-cover.out | tail -1` exits 0 and reports total coverage no more than 0.5 points below the baseline recorded in Implementation Notes (81.5% on 2026-09-23).
-- [ ] #3 AC3 — `go test ./internal/orchestrate ./internal/cli ./internal/mcp ./integration -count=1` exits 0.
-- [ ] #4 AC4 — `git diff --numstat main -- internal/cli/manifest_test.go internal/mcp/tools_test.go` shows a combined net reduction of at least 400 lines.
+- [x] #1 AC1 — `go test ./internal/orchestrate -count=1 -cover` exits 0 and reports at least 75.0% of statements (63.1% on 2026-09-23).
+- [x] #2 AC2 — `go test ./internal/orchestrate ./internal/cli ./internal/mcp -count=1 -coverpkg=./internal/orchestrate,./internal/cli,./internal/mcp -coverprofile=/tmp/hum-up-cover.out && go tool cover -func=/tmp/hum-up-cover.out | tail -1` exits 0 and reports total coverage no more than 0.5 points below the baseline recorded in Implementation Notes (81.5% on 2026-09-23).
+- [x] #3 AC3 — `go test ./internal/orchestrate ./internal/cli ./internal/mcp ./integration -count=1` exits 0.
+- [x] #4 AC4 — `git diff --numstat main -- internal/cli/manifest_test.go internal/mcp/tools_test.go` shows a combined net reduction of at least 400 lines.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No protected gate file was modified unless the owner labelled this task tooling
-- [ ] #6 Only adapter tests in the duplicate table were deleted or shrunk, and Implementation Notes map every removed assertion to the internal/orchestrate test that now owns it
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #6 Only adapter tests in the duplicate table were deleted or shrunk, and Implementation Notes map every removed assertion to the internal/orchestrate test that now owns it
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Record coverage and runtime baselines; classify duplicate assertions against orchestrate ownership.
+2. Add missing orchestrate rule tests, then retain only adapter-surface assertions.
+3. Run focused and CI gates, independent verification, commit and merge, record evidence and complete.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Baseline: go test ./internal/orchestrate -count=1 -cover: PASS 63.1%; /usr/bin/time -p go test ./internal/cli -count=1: PASS real 28.89s; go test ./internal/orchestrate ./internal/cli ./internal/mcp -count=1 -coverpkg=./internal/orchestrate,./internal/cli,./internal/mcp -coverprofile=/tmp/hum-up-cover.out && go tool cover -func=/tmp/hum-up-cover.out | tail -1: PASS total 81.7%.
+
+Implementation commit e214c65 on hum-131. Removed-assertion map: order by after is now TestOrchestrateUp/DAG ordering and TestOrchestrateUpRetainsRulesForAdapters/matched prerequisite; blocked existing state is now TestOrchestrateUpRetainsRulesForAdapters/blocked dependents; manifest drift and drifted gate are now TestEnsureReportsDriftedDefinitionFields, TestReadinessDriftAllMethodPairs, TestOrchestrateUpRetainsRulesForAdapters/drifted prerequisite; removed definitions are now TestOrchestrateUpRetainsRulesForAdapters/removed definitions; crash recovery is now TestOrchestrateUpRetainsRulesForAdapters/crash recovery; executable readiness is now TestExecutableReadiness plus TestEnsureStartsFromMissingProcess and TestReadinessTimeoutAndLaunchOutcome. Kept adapter JSON/human rendering, MCP structuredContent/isError and closed schema, no_wait validation, executable readiness start/up/restart/status/list, recovery exit code, progress rendering, and integration/parity tests. No production, protected gate, or unrelated test files changed. Independent verifier initially found missing human summary assertion; fixed in TestUpAdapterSurfaceRendering; targeted recheck verdict PASS for AC1-AC4 and owner exception. First task ci attempt failed transiently in unrelated TestAttachStreamsBurstWithoutAborting (9475 lines before timeout); focused retry passed and task ci PASS on final e214c65 including race, smoke, security.
+AC#1 go test ./internal/orchestrate -count=1 -cover: PASS, 76.4%, threshold 75%.
+AC#2 go test ./internal/orchestrate ./internal/cli ./internal/mcp -count=1 -coverpkg=./internal/orchestrate,./internal/cli,./internal/mcp -coverprofile=/tmp/hum-up-cover.out and go tool cover -func=/tmp/hum-up-cover.out (total line): PASS, 81.7%, baseline 81.7%.
+AC#3 go test ./internal/orchestrate ./internal/cli ./internal/mcp ./integration -count=1: PASS all four packages after final edit.
+AC#4 git diff --numstat main -- internal/cli/manifest_test.go internal/mcp/tools_test.go: 76+78 additions, 428+389 deletions, net 663 lines removed before merge.
+
+Fast-forward merged e214c65 into main; task ci passed on that implementation commit. Next step: HUM-123 and HUM-122 dependencies may proceed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Consolidated up scheduler rule tests in orchestrate; retained adapter surface contracts. Coverage 76.4% and 81.7%, 663 net adapter test lines removed. Independent verification and task ci passed; merged e214c65 to main.
+<!-- SECTION:FINAL_SUMMARY:END -->
