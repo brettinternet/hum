@@ -1,12 +1,17 @@
 # Hum for Herdr
 
-Browse and operate the Hum processes in the selected Herdr workspace.
+Pick a Hum process in the current Herdr workspace, then follow its logs, attach to it, or control it.
 
-## Prerequisites and installation
+```text
+Hum: Processes…
+  api   running  ──▶ Follow logs · Attach · Stop · Restart · Remove
+  web   stopped  ──▶ View retained logs · Start/attach · Start · Remove
+```
 
-Install Herdr 0.8.0 or newer, Python 3.10 or newer, and a current `hum` binary on the PATH inherited by Herdr. The Hum release must support the version 1 machine-output contract: the plugin checks `hum version --json` before trusting `hum list --json`.
+## Install
 
-Install from GitHub:
+Requires Herdr 0.8.0+, Python 3.10+, and a `hum` that supports [CLI JSON v1](../../docs/cli-json-v1.md)
+on the `PATH` Herdr inherits.
 
 ```sh
 herdr plugin install brettinternet/hum/plugins/herdr --yes
@@ -18,19 +23,28 @@ For local development from this repository:
 herdr plugin link plugins/herdr
 ```
 
-## Actions and panes
+## Actions
 
-Run **Hum: Processes…** in a workspace to choose a process, then choose an operation. Dedicated Follow logs, Start/attach, Start, Stop, Restart, and Remove actions filter the same picker.
+Run **Hum: Processes…**, choose a process, then an action. The dedicated Follow logs, Start/attach,
+Start, Stop, Restart, and Remove actions open the same picker, filtered.
 
-- **Follow logs** opens a read-only split running `hum --project PROJECT logs NAME --follow`.
-- **Attach** opens an interactive tab running the non-starting `hum --project PROJECT attach NAME`.
-- A stopped process says **Start/attach**, never Attach. It runs `hum start` successfully before `hum attach`.
-- **Start**, **Stop**, **Restart**, and **Remove** invoke the corresponding Hum CLI commands and show their output in the picker.
+| Action | Opens | Runs |
+| --- | --- | --- |
+| Follow logs | read-only split | `hum --project PROJECT logs NAME --follow` |
+| Attach (running) | interactive tab | `hum --project PROJECT attach NAME` |
+| Start/attach (stopped) | interactive tab | `hum start`, then `hum attach` |
+| Start, Stop, Restart, Remove | output in the picker | the matching Hum command |
 
-The plugin takes the workspace path from Herdr's invocation context, discovers processes with `hum list --json`, and then preserves the canonical absolute `project_root` reported by Hum. Every later Hum call carries that path with `--project`. Commands are launched as exact argument arrays: project paths and process names are never evaluated by a shell, including names containing spaces or metacharacters.
+The plugin checks `hum version --json`, finds processes with `hum list --json` from the workspace
+path, and passes Hum's canonical `project_root` as `--project` on every later call. Commands run as
+exact argument arrays, so paths and names (even with spaces or shell characters) are never
+interpreted by a shell.
 
-An unavailable Hum binary, unsupported machine-output version, missing workspace, and a project with no declared or retained processes each produce actionable messages in the picker or Herdr plugin log.
+A missing `hum`, an unsupported JSON version, a missing workspace, or a project with no processes
+each show a clear message in the picker or the Herdr plugin log.
 
-## Ownership boundary
+## Who owns what
 
-Herdr owns discovery UI, pane creation, pane labels, focus, and terminal lifecycle. Hum owns supervised processes, retained output, lifecycle state, and the exclusive TTY input lease. The plugin uses only Hum's public CLI; it does not connect to or stabilize Hum's private daemon protocol.
+Herdr owns the picker, panes, labels, focus, and terminal lifecycle. Hum owns the processes, their
+output, lifecycle state, and the single TTY input lease. The plugin uses only Hum's public CLI,
+never its private daemon protocol.

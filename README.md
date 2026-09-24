@@ -56,7 +56,7 @@ $env:Path += ";$installDir" # add this directory to your user PATH for future sh
 & (Join-Path $installDir 'hum.exe') --version
 ```
 
-Everything works except `hum signal`. TTY processes use ConPTY: in `hum attach`, Ctrl+] detaches, Ctrl+C goes to the process, and Ctrl+Z (not Ctrl+D) sends EOF. See [Windows behavior](docs/design.md#scope-and-non-goals).
+Everything works except `hum signal`. TTY processes use ConPTY: in `hum attach`, Ctrl+] detaches, Ctrl+C goes to the process, and Ctrl+D and Ctrl+Z are passed to the process as ordinary keys (many Windows programs treat Ctrl+Z as end of input). See [Windows behavior](docs/design.md#platforms).
 
 </details>
 
@@ -143,7 +143,7 @@ A process listed in `after` waits until this check passes:
 | a TCP port accepts | `ready: {tcp: "127.0.0.1:5432"}` |
 | the process itself exits 0 | `ready: {exit: 0}` |
 
-Checks retry every `interval` (1s) until `timeout` (30s). They run only at startup; Hum does not monitor health. HTTP and TCP targets must use an IP address or `localhost`.
+`exec`, `http`, and `tcp` checks retry every `interval` (1s); every check gives up after `timeout` (30s). They run only at startup; Hum does not monitor health. HTTP and TCP targets must use an IP address or `localhost`.
 
 Use `exit: 0` for setup steps such as migrations:
 
@@ -189,7 +189,7 @@ processes:
 your shell env  →  .env  →  processes.api.env     (later wins)
 ```
 
-Set `environment.inherit: false` to skip your shell env. Hum never expands `$VAR`, `$(...)`, or backticks. Changes apply on `hum restart`. Limits and file syntax: [design](docs/design.md#daemon-and-environments).
+Set `environment.inherit: false` to skip your shell env. Hum never expands `$VAR`, `$(...)`, or backticks. Changes apply on `hum restart`. Limits and file syntax: [design](docs/design.md#environment).
 
 ## Run without a manifest
 

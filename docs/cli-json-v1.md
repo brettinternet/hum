@@ -1,85 +1,144 @@
-# CLI machine output version 1
+# CLI JSON output, version 1
 
-Hum's public CLI machine-output contract is the newline-delimited JSON described here. Every covered top-level object has the required integer field `schema_version: 1`.
+Pass `--json` (or `-j` where supported) and Hum writes JSON objects, one per line. Every top-level
+object has `schema_version: 1`.
 
-This contract is separate from Hum's private daemon protocol and from the MCP tool schemas. Local clients must invoke the CLI rather than connect to the daemon socket or import daemon protocol types. CLI and MCP versions may evolve independently even when fields have the same names.
+```console
+$ hum status hi --json
+{"schema_version":1,"name":"hi","source":"ad_hoc","scope":"project","state":"exited","exit_status":0,"stop_grace":"10s",...}
 
-## Coverage and framing
+$ hum logs api --tail 2 --json
+{"schema_version":1,"op":"output","ok":true,"entries":[{"cursor":1,"stream":"stdout","time":"...","text":"GET /health 200\n"},...],"next":2,"oldest":0,"latest":2}
+```
 
-The contract applies when a command that supports `--json` (or `-j`, where documented) is invoked in JSON mode:
+Check support before relying on this contract. This call never resolves a project, reads a
+manifest, or contacts the daemon:
 
-- `version`; `doctor`; `init`; detached `run`; `list`; `status`; `events`; bounded and followed `logs`; `wait`; `input`; `signal`; `shutdown`
-- `start`, `up`, `down`, `restart`, `stop`, and `remove`
-- terminal errors emitted by any of those commands before or after other machine records
+```console
+$ hum version --json
+{"schema_version":1,"version":"<version>","build_time":"<time>"}
+```
 
-Attached `hum run` is the only exception. It does not support CLI JSON mode: stdout and stderr remain the raw child streams and the command preserves the child's exit status. A `--json` token after the payload separator is only a child argument.
+This contract is separate from MCP tool schemas and from Hum's private daemon protocol. Local
+clients must call the CLI, not the daemon socket or its types. CLI and MCP versions evolve
+independently even where field names match.
 
-Each JSON document is a UTF-8 object followed by `\n`. Commands with one result emit one document. Commands that can report several names or stream events emit NDJSON: one complete object per line, with no surrounding array. Consumers must ignore object-key order. They may process records as they arrive and must not wait for the command to exit before decoding them.
+## Coverage
 
-A command's exit code retains its documented meaning; JSON output does not turn failure into success. A nonzero command may emit a terminal error object or, for a stream, successful records followed by one terminal error record. JSON-mode Hum diagnostics are not duplicated on stderr. Child stderr remains raw only for attached `run`.
+JSON mode covers:
 
-## Common fields
+- `version`, `doctor`, `init`, detached `run`, `list`, `status`, `events`, bounded and followed
+  `logs`, `wait`, `input`, `signal`, `shutdown`
+- `start`, `up`, `down`, `restart`, `stop`, `remove`
+- terminal errors from any of these, before or after other records
 
-`schema_version` is required on every top-level object and NDJSON record and is always the integer `1`. Nested objects do not repeat it.
+Attached `hum run` is the exception: stdout and stderr stay the raw child streams and the command
+returns the child's exit status. A `--json` after the `--` separator is just a child argument.
 
-The following table defines the required top-level fields. Fields not listed as required are optional and are present only when the state or command makes them applicable. Existing command-specific fields retain the meanings documented in [design.md](design.md).
+## Framing
 
-| Output family | Commands | Required top-level fields |
+- Each document is a UTF-8 object followed by `\n`.
+- Single-result commands emit one object. Commands that report several names or stream events emit
+  NDJSON: one object per line, no surrounding array.
+- Key order is not significant. Process records as they arrive; do not wait for exit.
+- Exit codes keep their meaning. A failing command may emit a terminal error object, or, for a
+  stream, earlier records followed by one error record.
+- Hum diagnostics are not repeated on stderr in JSON mode.
+
+## Required fields
+
+`schema_version` is required on every top-level object and is always the integer `1`; nested
+objects do not repeat it. Fields not listed below are optional and appear only when they apply.
+Command-specific meanings are in [design.md](design.md).
+
+| Output | Commands | Required top-level fields |
 | --- | --- | --- |
 | Capability discovery | `version` | `schema_version`, `version`, `build_time` |
 | Diagnostic preflight | `doctor` | `schema_version`, `ok`, `checks`, `summary` |
 | Manifest creation | `init` | `schema_version`, `path`, `outcome`, `next_command`, `candidates` |
-| Aggregate snapshot | `list`, aggregate `status` | `schema_version`, `processes`; `warnings` is optional |
+| Aggregate snapshot | `list`, aggregate `status` | `schema_version`, `processes`; `warnings` optional |
 | Single-process snapshot | named `status` | `schema_version`, `name`, `scope`, `tty`, `pid`, `pgid`, `cwd`, `argv`, `started_at`, `state`, `exit_status`, `restart_count`, `followers`, `restart`, `relaunches`, `stop_grace`, `stop_grace_inherited`, `next_cursor` |
-| Detached launch | detached `run` | `schema_version`, `name`, `pid`, `cursor`; launch metadata is optional where unavailable |
-| Launch/restart lifecycle record | `start`, `up`, `restart` | `schema_version`, `name`, `outcome`, `restart`, `relaunches`; state, process, readiness, dependency, guidance, and error fields depend on the outcome |
-| Stop/remove/down lifecycle record | `stop`, `remove`, `down` | `schema_version`, `name`, `status`; `process` and `message` are optional |
+| Detached launch | detached `run` | `schema_version`, `name`, `pid`, `cursor`; launch metadata optional when unavailable |
+| Launch/restart record | `start`, `up`, `restart` | `schema_version`, `name`, `outcome`, `restart`, `relaunches`; other fields depend on the outcome |
+| Stop/remove/down record | `stop`, `remove`, `down` | `schema_version`, `name`, `status`; `process` and `message` optional |
 | Signal acknowledgement | `signal` | `schema_version`, `name`, `status`, `signal` |
 | Input acknowledgement | `input` | `schema_version`, `name`, `bytes`, `launch_cursor` |
 | Shutdown result | `shutdown` | `schema_version`, `status` |
-| Wait result | `wait` | `schema_version`, `op`, `ok`, `outcome`, `cursor`, `process_observed`; `exit`, `message`, and `error` depend on the outcome |
-| Bounded log result | single-name `logs` | `schema_version`, `op`, `ok`, `entries`; cursor bounds and truncation flags are optional when not applicable |
-| Event history record | `events` | event records: `schema_version`, `type`, `cursor`, `time`, `kind`, `name`, `event`; trailing metadata: `schema_version`, `type`, `next_cursor`, `truncated`, `has_more` |
-| Named log/launch stream record | aggregate or followed `logs`, `start`, `up` | `schema_version`, `op`, `type`; `name` is required for named records, and the fields below depend on `type` |
-| Terminal error before output | any covered command | `schema_version`, `error` |
-| Terminal stream error | streaming command after prior output | `schema_version`, `op`, `type`, `error`; `type` is `error` and `name` is present when the failure belongs to one process |
+| Wait result | `wait` | `schema_version`, `op`, `ok`, `outcome`, `cursor`, `process_observed`; `exit`, `message`, `error` depend on the outcome |
+| Bounded log result | single-name `logs` | `schema_version`, `op`, `ok`, `entries`; cursor bounds and truncation flags optional |
+| Event history | `events` | events: `schema_version`, `type`, `cursor`, `time`, `kind`, `name`, `event`; trailing metadata: `schema_version`, `type`, `next_cursor`, `truncated`, `has_more` |
+| Named stream record | aggregate or followed `logs`, `start`, `up` | `schema_version`, `op`, `type`; `name` for named records; other fields depend on `type` |
+| Error before output | any covered command | `schema_version`, `error` |
+| Stream error after output | streaming commands | `schema_version`, `op`, `type` (`error`), `error`; `name` when the failure belongs to one process |
 
-`hum version --json` emits exactly `{"schema_version":1,"version":"<version>","build_time":"<time>"}`. It does not resolve a project, read a manifest, or contact or start the daemon. Clients should use it to detect version 1 support before relying on this contract.
+## Field notes
 
-`hum doctor --json` emits exactly one newline-terminated object. `checks` is an ordered array whose
-entries require `name`, `status`, and `message`; `details` is optional and never contains environment
-values, a complete environment, or an environment-key inventory. Stable statuses are `PASS`, `WARN`,
-`FAIL`, and `INFO`. `summary` requires integer `pass`, `warn`, `fail`, and `info` counts. `ok` is false
-exactly when at least one check is `FAIL`; warnings and informational results do not change exit 0.
+`doctor`: exactly one object. `checks` is ordered; each entry requires `name`, `status` (`PASS`,
+`WARN`, `FAIL`, or `INFO`), and `message`, with optional `details` that never contain environment
+values, a whole environment, or a list of keys. `summary` has integer `pass`, `warn`, `fail`, and
+`info`. `ok` is false exactly when a check is `FAIL`; warnings keep exit 0.
 
-Readiness fields are additive: `readiness_method` is `match`, `exec`, `http`, `tcp`, or `exit`; native network methods also carry the declared literal `readiness_target`. Exit readiness is configured with `ready: {exit: 0}` and reports a successful exited process with readiness `ready` and launch outcome `completed`, distinct from `exited_before_ready` on nonzero exit, signal, or stop. `ready.http` and `ready.tcp` are startup-only probes with bounded attempts and cancellation; targets never expand environment variables. A process snapshot's `processes` value and a log record's `entries` value are arrays, including when empty. `next` is the last source cursor consumed by a bounded log read; process `next_cursor` is the next cursor that will be assigned. Timestamps use RFC 3339 JSON strings. Durations use the existing integer nanosecond representation unless a field is explicitly documented as a duration string, such as `stop_grace`.
+Readiness: `readiness_method` is `match`, `exec`, `http`, `tcp`, or `exit`. `http` and `tcp` also
+carry the literal `readiness_target`, which never expands variables. `ready: {exit: 0}` reports a
+successful exit as readiness `ready` and outcome `completed`; a nonzero exit, signal, or stop is
+`exited_before_ready`.
 
-Stream `type` values include lifecycle outcomes plus `output`, `exit`, `warning`, and `error`. Output records carry `entries` and cursor metadata. Exit records carry `cursor` and `exit`. Warning records carry `warnings`. Error records carry `error`. Records are emitted in observed stream order; per-process output entries remain in ascending cursor order. Aggregate command result ordering follows the command semantics in [design.md](design.md), including lexical declaration order for `up` and caller selection order for logs.
+Values:
 
-`error` contains required string fields `code` and `message`; command- or daemon-supplied `details` is optional. CLI-classified codes are `usage`, `daemon_unavailable`, `manifest_missing`, `manifest_invalid`, and `internal`. `manifest_missing` names the resolved project root and suggests `hum init` or `hum run NAME -- COMMAND`. Daemon-originated errors retain their existing wire code, but that does not make the private daemon protocol public.
+| Field | Format |
+| --- | --- |
+| `processes`, `entries` | always arrays, even when empty |
+| logs `next` | last source cursor consumed by this read |
+| process `next_cursor` | next cursor to be assigned |
+| timestamps | RFC 3339 strings |
+| durations | integer nanoseconds, unless documented as a duration string (such as `stop_grace`) |
 
-## Compatibility
+Streams: `type` is a lifecycle outcome or `output` (`entries` and cursor metadata), `exit`
+(`cursor`, `exit`), `warning` (`warnings`), or `error` (`error`). Records arrive in observed order;
+each process's entries stay in ascending cursor order. Result order follows [design.md](design.md):
+lexical declaration order for `up`, caller order for `logs`.
 
-Version 1 may add optional object fields and new enum values. Clients must ignore unknown object fields and handle unknown enum values without failing JSON decoding.
+Errors: `error` has string `code` and `message`, and optional `details`. CLI codes are `usage`,
+`daemon_unavailable`, `manifest_missing`, `manifest_invalid`, and `internal`. `manifest_missing`
+names the project root and suggests `hum init` or `hum run NAME -- COMMAND`. Daemon errors keep
+their wire code; that does not make the daemon protocol public.
 
-Within version 1 Hum will not:
-
-- remove or rename a field documented here;
-- change a documented field's JSON type or meaning;
-- make an optional field required for decoding an existing outcome;
-- change JSON versus NDJSON framing or stop newline-terminating records.
-
-A change that violates those rules requires a new `schema_version`. Human-readable output, attached-run raw output, MCP schemas, and the private daemon protocol are outside this compatibility promise.
+```console
+$ hum up --json
+{"schema_version":1,"error":{"code":"manifest_missing","message":"manifest is missing in /tmp/app: run hum --project /tmp/app init to create hum.yaml, or use hum run NAME -- COMMAND"}}
+```
 
 ## Event history records
 
-`hum events --json` emits NDJSON records with `schema_version: 1` and `type: "event"`; each event
-contains structured `cursor`, `time`, `kind`, `name`, and `event` fields, with operation origin,
-outcome, and `operation_id` when applicable. One trailing `type: "metadata"` record contains
-`next_cursor`, `truncated`, and `has_more`. Records are cursor ordered, bounded, and never terminal-
-width truncated. Lifecycle records optionally carry exit fields and directly attributable
-`operation_id`; operation records carry `origin`, `outcome`, and `operation_id`. `next_cursor` is the
-last returned cursor when a forward page remains, otherwise the immutable read high-water mark;
-`truncated` reports a cursor gap caused by eviction or discarded data, and `has_more` reports another
-matching forward event. MCP `events` is independently versioned and bounded; it returns the same
-structured fields and has no follow operation.
+`hum events --json` emits `type: "event"` records in cursor order, then one `type: "metadata"`
+record:
+
+```json
+{"schema_version":1,"type":"event","cursor":65,"time":"...","kind":"operation","name":"hi","event":"run","origin":"cli","outcome":"success","operation_id":"145e..."}
+{"schema_version":1,"type":"event","cursor":129,"time":"...","kind":"lifecycle","name":"hi","event":"exit","exit_code":0,"operation_id":"145e..."}
+{"schema_version":1,"type":"metadata","next_cursor":192,"truncated":false,"has_more":false}
+```
+
+- Each event has `cursor`, `time`, `kind`, `name`, and `event`. Lifecycle events may add exit
+  fields and a directly attributable `operation_id`; operation events carry `origin`, `outcome`,
+  and `operation_id`.
+- Records are bounded and never truncated to terminal width.
+- `next_cursor` is the last returned cursor when more forward pages remain, otherwise the read's
+  fixed high-water mark. `truncated` reports a cursor gap from eviction or discarded data.
+  `has_more` reports another matching forward event.
+- MCP `events` returns the same fields, is versioned separately, and cannot follow.
+
+## Compatibility
+
+Version 1 may add optional fields and new enum values. Clients must ignore unknown fields and
+tolerate unknown enum values.
+
+Within version 1, Hum will not:
+
+- remove or rename a documented field;
+- change a documented field's JSON type or meaning;
+- make an optional field required to decode an existing outcome;
+- change JSON versus NDJSON framing, or stop ending records with a newline.
+
+Breaking any of these requires a new `schema_version`. Human output, attached-run output, MCP
+schemas, and the daemon protocol are outside this promise.
