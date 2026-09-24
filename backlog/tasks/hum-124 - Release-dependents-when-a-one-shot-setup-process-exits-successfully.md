@@ -1,10 +1,10 @@
 ---
 id: HUM-124
 title: Release dependents when a one-shot setup process exits successfully
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-23 21:21'
-updated_date: '2026-09-23 22:25'
+updated_date: '2026-09-24 02:32'
 labels:
   - config
   - process
@@ -73,18 +73,41 @@ Test templates:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/project -run "^TestManifestReadyExit$" -count=1 -v` exits 0; it accepts `ready: {exit: 0}` with and without `timeout`, rejects nonzero, non-integer, `interval`, and combination with another method, and validates `after` on an exit-ready dependency; `go test ./internal/project -run "Schema" -count=1` also exits 0, proving hum.schema.json matches the parser.
-- [ ] #2 AC2 — `go test ./internal/orchestrate -run "^TestExitReadiness" -count=1 -v` exits 0; cases prove exit 0 releases dependents; nonzero exit, signal, and stop skip dependents with `blocked_by`; a retained success whose direct dependents are all running and ready launches nothing; a retained success with a dependent to launch reruns the one-shot first; a drifted completed record reports `definition_drift`; readiness drift covers the exit method in all method pairs.
-- [ ] #3 AC3 — `go test ./integration -run "^TestOneShotPrerequisite$" -count=1 -v` exits 0 against the built binary; with migrate (writes a marker, exits 0) before api (ready match), `hum up --detach --json` exits 0 and the marker exists before api launches; `hum status migrate --json` reports the successful completion; a second `hum up --json` launches nothing; after `hum down`, `hum up` runs migrate again; changing migrate to exit 3 makes `hum up` exit 3 with api skipped.
-- [ ] #4 AC4 — `go test ./internal/cli ./internal/mcp -run "ExitReadiness" -count=1 -v` exits 0; human status and up output plus CLI JSON and MCP results show the completion distinctly from a crash, and `hum restart migrate` reruns it and waits for exit.
+- [x] #1 AC1 — `go test ./internal/project -run "^TestManifestReadyExit$" -count=1 -v` exits 0; it accepts `ready: {exit: 0}` with and without `timeout`, rejects nonzero, non-integer, `interval`, and combination with another method, and validates `after` on an exit-ready dependency; `go test ./internal/project -run "Schema" -count=1` also exits 0, proving hum.schema.json matches the parser.
+- [x] #2 AC2 — `go test ./internal/orchestrate -run "^TestExitReadiness" -count=1 -v` exits 0; cases prove exit 0 releases dependents; nonzero exit, signal, and stop skip dependents with `blocked_by`; a retained success whose direct dependents are all running and ready launches nothing; a retained success with a dependent to launch reruns the one-shot first; a drifted completed record reports `definition_drift`; readiness drift covers the exit method in all method pairs.
+- [x] #3 AC3 — `go test ./integration -run "^TestOneShotPrerequisite$" -count=1 -v` exits 0 against the built binary; with migrate (writes a marker, exits 0) before api (ready match), `hum up --detach --json` exits 0 and the marker exists before api launches; `hum status migrate --json` reports the successful completion; a second `hum up --json` launches nothing; after `hum down`, `hum up` runs migrate again; changing migrate to exit 3 makes `hum up` exit 3 with api skipped.
+- [x] #4 AC4 — `go test ./internal/cli ./internal/mcp -run "ExitReadiness" -count=1 -v` exits 0; human status and up output plus CLI JSON and MCP results show the completion distinctly from a crash, and `hum restart migrate` reruns it and waits for exit.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add exit readiness to manifest/schema and propagate the configuration across protocol, app, orchestration, and adapters. 2. Mark successful completion ready on supervisor exit, make wait/gating and retained-completion up scheduling handle one-shots. 3. Update CLI/MCP rendering and explicit start/restart waiting; add focused unit and built-binary integration tests. 4. Update documented contract and skills; run AC commands, independent verification, task ci, staged checks; commit, merge, finalize provider state.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation e79ccef (feat: support exit-ready setup steps), fast-forward merged into main. Worktree hum-124-exit-readiness removed with Worktrunk.
+AC#1: go test ./internal/project -run "^TestManifestReadyExit$" -count=1 -v — PASS; go test ./internal/project -run "Schema" -count=1 — PASS.
+AC#2: go test ./internal/orchestrate -run "^TestExitReadiness" -count=1 -v — PASS (exit/failure/stop, convergence, drift method pairs).
+AC#3: go test ./integration -run "^TestOneShotPrerequisite$" -count=1 -v — PASS (built binary, marker ordering, retained completion, down/up, failing exit).
+AC#4: go test ./internal/cli ./internal/mcp -run "ExitReadiness" -count=1 -v — PASS (human/JSON/MCP completion and restart).
+Review: one focused general pass found no remaining item-scoped defects; independent verifier returned PASS for AC1–AC4. task ci PASS on e79ccef, including vet/staticcheck, full Go tests/race, integration, security, smoke. Initial ci staticcheck issue fixed; a pre-existing burst attach timeout passed in isolation and ci rerun. task check:staged PASS; diff restricted to modified-file contract; no protected gate file touched; no test deleted, skipped, or weakened. No blocker. Next step: complete provider state and commit it on main.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Exit-ready setup steps now gate dependents on successful completion, converge retained results, and report completion in CLI/MCP. AC1–AC4 and task ci passed on e79ccef; merged to main and removed worktree.
+<!-- SECTION:FINAL_SUMMARY:END -->
