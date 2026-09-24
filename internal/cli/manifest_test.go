@@ -1923,7 +1923,19 @@ processes:
 	}
 }
 
+// TestUpAttachedStartupInterrupt covers both orders in which Ctrl+C can reach
+// attached up: the follower's signal channel first, or (on Windows, where the
+// root context also observes Ctrl+C) the canceled root context first.
 func TestUpAttachedStartupInterrupt(t *testing.T) {
+	t.Run("signal", func(t *testing.T) {
+		testUpAttachedStartupInterrupt(t, func(signals chan<- os.Signal, _ context.CancelCauseFunc) { signals <- os.Interrupt })
+	})
+	t.Run("root context", func(t *testing.T) {
+		testUpAttachedStartupInterrupt(t, func(_ chan<- os.Signal, cancel context.CancelCauseFunc) { cancel(ErrInterrupted) })
+	})
+}
+
+func testUpAttachedStartupInterrupt(t *testing.T, interrupt func(chan<- os.Signal, context.CancelCauseFunc)) {
 	root := stopShutdownTestProject(t)
 	server, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
 	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
@@ -1952,9 +1964,11 @@ processes:
 	var stdout manifestTTYProgressCapture
 	stdout.fd = tty.Fd()
 	var stderr manifestProgressCapture
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	done := make(chan error, 1)
 	go func() {
-		done <- NewRootCommand("test", "test", &stdout, &stderr).Run(context.Background(), []string{"hum", "up"})
+		done <- NewRootCommand("test", "test", &stdout, &stderr).Run(ctx, []string{"hum", "up"})
 	}()
 	if !stdout.waitFor(processLogPrefix(colorPolicy{enabled: true}, "app")+" before-ready\n", 3*time.Second) {
 		t.Fatalf("attached up did not stream before interrupt: stdout=%q stderr=%q", stdout.String(), stderr.String())
@@ -1965,7 +1979,7 @@ processes:
 	case <-time.After(3 * time.Second):
 		t.Fatal("attached up did not register its interrupt handler")
 	}
-	signals <- os.Interrupt
+	interrupt(signals, cancel)
 	select {
 	case err := <-done:
 		if manifestCLIExitCode(err) != 130 {

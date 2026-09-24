@@ -3068,6 +3068,10 @@ func upFollowsOutput(cmd *urfavecli.Command, writer io.Writer) bool {
 	return cmd != nil && !cmd.Bool("detach") && !cmd.Bool("no-wait") && !cmd.Bool("json") && terminalWriter(writer)
 }
 
+// ErrInterrupted is the cancellation cause of a command context canceled by
+// Ctrl+C.
+var ErrInterrupted = errors.New("interrupted")
+
 var notifyUpFollowSignals = func(signals chan<- os.Signal) {
 	signal.Notify(signals, os.Interrupt)
 }
@@ -3147,6 +3151,9 @@ func (s *upLogFollowSession) wait() error {
 	return <-s.done
 }
 
+// interrupted also honors an ErrInterrupted root cancellation: on Windows the
+// root context and the follower both observe Ctrl+C, and the follower may see
+// the canceled context first.
 func (s *upLogFollowSession) interrupted() bool {
 	if s == nil {
 		return false
@@ -3155,7 +3162,7 @@ func (s *upLogFollowSession) interrupted() bool {
 	case <-s.detached:
 		return true
 	default:
-		return false
+		return errors.Is(context.Cause(s.ctx), ErrInterrupted)
 	}
 }
 
