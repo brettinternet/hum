@@ -79,7 +79,15 @@ func secureNewArtifact(path string) error {
 	}
 	// An elevated token may default new file ownership to Administrators. Give
 	// this newly-created artifact the actual user SID before it can be trusted.
-	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION, sid, nil, nil, nil)
+	sd, err := windows.SecurityDescriptorFromString(privateSDDL())
+	if err != nil {
+		return err
+	}
+	acl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, sid, nil, acl, nil)
 }
 func openStartupLock(path string) (*os.File, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
