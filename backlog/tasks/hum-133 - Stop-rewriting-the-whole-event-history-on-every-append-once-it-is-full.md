@@ -4,10 +4,11 @@ title: Stop rewriting the whole event history on every append once it is full
 status: Done
 assignee: []
 created_date: '2026-09-23 21:53'
-updated_date: '2026-09-24 20:22'
+updated_date: '2026-09-24 22:34'
 labels:
   - daemon
   - events
+  - reviewed
 milestone: m-4
 dependencies: []
 modified_files:
@@ -83,6 +84,8 @@ AC#2 — go test ./internal/daemon -run "^TestEventHistoryAppendCost$" -count=1 
 AC#3 — go test ./internal/daemon -run "^TestEventHistoryCrashNeverReusesCursor$" -count=1 -v: PASS; restart in reservation block and after torn tail both yield increasing cursors.
 
 AC#4 — go test ./internal/daemon -count=1: PASS; go test -race ./internal/daemon -run "^TestEventHistory" -count=3: PASS.
+
+Review (2026-09-24): Server.history() built a new EventHistory for every append and read, so in production every append reloaded the file and wrote a fresh mark. Cursors jumped by 64 (1, 65, 129, ...) and paged reads always reported truncated=true. The single-instance tests missed this. Fixed in 7cbc990 and b4aef66: the daemon now caches one EventHistory per scope. Loaded instances keep the persisted mark as a floor for new cursors, separate from the newest durable event, so daemonless readers never report an unused reservation as next_cursor. Clean shutdown closes history writers and lowers the mark to the last assigned cursor, so restarts have no gap. Discarded malformed history still reports truncated. Append no longer copies the retained window. New tests: TestEventHistoryReaderIgnoresLiveReservation and TestEventHistoryServerReusesHistoryAndReleasesReservation, plus a truncated assertion in the malformed test. task ci passed on the fix. Declined reviewer point: a daemonless read accepts a fabricated cursor inside a live reservation; this requires a cursor no reader issued. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

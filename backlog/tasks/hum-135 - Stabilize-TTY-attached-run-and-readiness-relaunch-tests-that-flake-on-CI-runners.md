@@ -6,10 +6,11 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-24 12:39'
-updated_date: '2026-09-24 21:37'
+updated_date: '2026-09-24 22:34'
 labels:
   - cli
   - testing
+  - reviewed
 dependencies: []
 priority: medium
 type: bug
@@ -60,6 +61,8 @@ Implementation commit baf4e68. AC#1: go test -race ./internal/cli -run '^(TestTT
 Integrated baf4e68 by fast-forward into local main. No remote push requested. Next: remove verified session-owned worktree and branch; no implementation blocker.
 
 Worktrunk post-remove removed the verified fix/HUM-135 checkout and branch; implementation is on main at baf4e68. All gates recorded above have completed successfully; earlier pending note is superseded. Claim released by Done status; no next implementation step.
+
+Review (2026-09-24): PTY slave retention is bounded by captureHardTimeout (1s) including the pending-bytes wait; ttyPendingBytes covers the only supported Unix targets (darwin, linux). Re-ran TestTTYCLI -race count=10, TestAttachedRunForegroundLifecycle -race count=5, relaunch isolation count=50 -cpu 1,2, TestTTYShortLivedOutput: all PASS. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

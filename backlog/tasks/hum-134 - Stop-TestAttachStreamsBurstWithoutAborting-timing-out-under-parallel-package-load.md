@@ -6,10 +6,11 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-24 06:53'
-updated_date: '2026-09-24 20:51'
+updated_date: '2026-09-24 22:34'
 labels:
   - cli
   - testing
+  - reviewed
 dependencies: []
 modified_files:
   - internal/cli/serve_run_test.go
@@ -62,6 +63,8 @@ AC#2 task ci: PASS on 0ca5029 for three consecutive default-parallel runs after 
 Review: one general pass identified a pre-existing hypothetical duplicate-plus-omission gap in the original line-count assertion; no observed trigger, no change to this assertion in this item. The original last-line, exact-count, stderr, and exit assertions remain, and the changed wait fails after five seconds of no progress or immediately on exit. Only declared test file changed; no tests deleted/skipped or protected gate files changed. Branch 0ca5029 fast-forward merged into main; task ci passed on that commit. Next: finalize task state, commit provider record, clean up the owned worktree.
 
 Finalization: provider completion commit 59d3e41 on main; task ci PASS on 59d3e41 (default-parallel go test ./..., race, smoke, security). Worktrunk removed the merged hum-134 worktree and branch and its associated Herdr workspace. No remaining blocker or resumable step; task Done. The earlier Next note was superseded by these completed actions.
+
+Review (2026-09-24): progress-based wait is sound and bounded; exact-burst assertions intact. Re-ran AC1 count=20: PASS. No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
