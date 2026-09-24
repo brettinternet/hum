@@ -1,10 +1,10 @@
 ---
 id: HUM-117
 title: Supervise non-TTY Windows child trees with safe lifecycle semantics
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-23 20:49'
-updated_date: '2026-09-23 21:18'
+updated_date: '2026-09-24 05:42'
 labels:
   - process
   - architecture
@@ -54,18 +54,36 @@ Windows verification: after the owner approves, push HEAD to `windows/<task-id>`
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — After the owner-approved `git push origin HEAD:windows/HUM-117`, `task windows:watch` exits 0 on macOS, with WINDOWS_PACKAGES including ./internal/process ./internal/signals ./internal/project ./internal/app. Windows tests in those packages start an exact-argv fixture, observe its real exit code, and prove that a stop terminates the owned descendant tree, not only the leader.
-- [ ] #2 AC2 — On macOS, `rg -n "func TestWindows" internal/process internal/app` lists tests in `*_windows_test.go` files proving that: a reused PID or an identity/ownership mismatch cannot authorize stopping an unrelated process; unsupported Unix signal requests and TTY requests fail with the stable explicit error; and PATH/PATHEXT resolution does not use the ambient PATH. AC1 run executes these tests.
-- [ ] #3 AC3 — On macOS, `go test ./internal/process ./internal/signals ./internal/project ./internal/app -count=1` exits 0; existing Unix process-group, signal, readiness, discovery, and PTY behavior is retained.
-- [ ] #4 AC4 — On macOS, `GOOS=windows GOARCH=amd64 go vet ./internal/process ./internal/signals ./internal/project ./internal/app` exits 0, which also type-checks the Windows test files.
+- [x] #1 AC1 — After the owner-approved `git push origin HEAD:windows/HUM-117`, `task windows:watch` exits 0 on macOS, with WINDOWS_PACKAGES including ./internal/process ./internal/signals ./internal/project ./internal/app. Windows tests in those packages start an exact-argv fixture, observe its real exit code, and prove that a stop terminates the owned descendant tree, not only the leader.
+- [x] #2 AC2 — On macOS, `rg -n "func TestWindows" internal/process internal/app` lists tests in `*_windows_test.go` files proving that: a reused PID or an identity/ownership mismatch cannot authorize stopping an unrelated process; unsupported Unix signal requests and TTY requests fail with the stable explicit error; and PATH/PATHEXT resolution does not use the ambient PATH. AC1 run executes these tests.
+- [x] #3 AC3 — On macOS, `go test ./internal/process ./internal/signals ./internal/project ./internal/app -count=1` exits 0; existing Unix process-group, signal, readiness, discovery, and PTY behavior is retained.
+- [x] #4 AC4 — On macOS, `GOOS=windows GOARCH=amd64 go vet ./internal/process ./internal/signals ./internal/project ./internal/app` exits 0, which also type-checks the Windows test files.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation Notes (2026-09-24):
+Commits 766bec4, ed9faa4, 8d5891f merged by fast-forward into main; Worktrunk checkout/branch removed. Native Windows branch windows/HUM-117 at 8d5891f was owner-approved and pushed solely for CI; no main push or PR.
+AC#1: git push origin HEAD:windows/HUM-117 and task windows:watch exited 0 for CI run 35960366549 at 8d5891f; native Windows task windows:test passed all four new WINDOWS_PACKAGES. Tests start exact argv, capture exit 23, and terminate a surviving descendant via owned Job Object.
+AC#2: rg -n "func TestWindows" internal/process internal/app exited 0, listing process_windows_test.go and app_windows_test.go; run 35960366549 executed mismatch/reused PID protection, unsupported TTY/signals, and isolated PATH/PATHEXT tests.
+AC#3: go test ./internal/process ./internal/signals ./internal/project ./internal/app -count=1 exited 0 on macOS (also independently rerun by verifier); Unix lifecycle, PTY, readiness and discovery tests remain green.
+AC#4: GOOS=windows GOARCH=amd64 go vet ./internal/process ./internal/signals ./internal/project ./internal/app exited 0, including Windows test typecheck.
+DoD: task ci exited 0 on final implementation commit 8d5891f (one preceding unrelated CLI attach-flood timeout, focused CLI tests then a full clean rerun); independent verifier returned PASS for AC1-AC4, no tests deleted/skipped/weakened and no unauthorized protected gate changes. One general review identified orphan cleanup, foreign-job termination, executable resolution, and Windows discovery test issues; each was corrected and revalidated. docs/design.md is the sole modified-file-contract deviation, required to describe immediate Windows owned-tree stop, ignored stop_grace, unsupported signals/TTY, and signal-free exit accurately. No blocker. Next: record completion and commit this provider evidence on main.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Native Windows non-TTY exact-argv processes now run in private Job Objects with PID/creation-time identity checks, tree-wide stop and output capture. Unsupported Unix signals and TTY fail explicitly; Unix behavior remains intact. Native Windows CI, cross-vet, focused tests, and task ci passed. Merged into main at 8d5891f; Worktrunk checkout and branch removed.
+<!-- SECTION:FINAL_SUMMARY:END -->
