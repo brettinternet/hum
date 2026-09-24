@@ -565,8 +565,10 @@ func readinessBeforeDeadline(readiness *Readiness, deadline time.Time) bool {
 	if readiness == nil {
 		return true
 	}
-	if !readiness.Time.IsZero() && readiness.Time.After(deadline) {
-		return false
+	// A recorded readiness time is authoritative, so a delayed observation of
+	// an on-time transition is not a timeout.
+	if !readiness.Time.IsZero() {
+		return !readiness.Time.After(deadline)
 	}
 	return !time.Now().After(deadline)
 }
@@ -1226,6 +1228,13 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 		}
 	}
 
+	gatesDependents := make(map[string]bool, len(filtered))
+	for _, definition := range filtered {
+		for _, dependency := range definition.After {
+			gatesDependents[dependency] = true
+		}
+	}
+
 	retainedExit := make(map[string]Process)
 	hasExitReadiness := false
 	for _, definition := range filtered {
@@ -1244,28 +1253,40 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 				observed[definition.Name] = NormalizeProcess(process)
 			}
 		}
+		// blocks reports a current record that cannot satisfy its dependents'
+		// gate during this invocation, directly or through its own
+		// prerequisites. A dependent behind such a record never launches, so it
+		// must not cause a retained one-shot to rerun.
+		var blocks func(string) bool
+		blocks = func(name string) bool {
+			definition := filtered[byName[name]]
+			for _, prerequisite := range definition.After {
+				if blocks(prerequisite) {
+					return true
+				}
+			}
+			process, ok := observed[name]
+			if !ok {
+				return ops.IsNotFound == nil || !ops.IsNotFound(lookupErrors[name])
+			}
+			if IsActiveState(process.State) {
+				return !DefinitionMatchesProcess(definition, process) || len(DefinitionChangedFields(options.Root, definition, process)) != 0 || definition.TTY && !process.TTY
+			}
+			if DefinitionMatchesProcess(definition, process) && ProcessSupportsDrift(process) && len(DefinitionChangedFields(options.Root, definition, process)) != 0 {
+				return true
+			}
+			_, recovering := RecoveryOutcome(definition, process)
+			return recovering
+		}
 		var willStart func(string, map[string]bool) bool
 		willStart = func(name string, visiting map[string]bool) bool {
-			if visiting[name] {
+			if visiting[name] || blocks(name) {
 				return false
 			}
 			definition := filtered[byName[name]]
 			process, ok := observed[name]
-			if !ok {
-				err := lookupErrors[name]
-				return err != nil && ops.IsNotFound != nil && ops.IsNotFound(err)
-			}
-			if IsActiveState(process.State) {
-				if !DefinitionMatchesProcess(definition, process) || len(DefinitionChangedFields(options.Root, definition, process)) != 0 || definition.TTY && !process.TTY {
-					return false
-				}
-				return false
-			}
-			if DefinitionMatchesProcess(definition, process) && ProcessSupportsDrift(process) && len(DefinitionChangedFields(options.Root, definition, process)) != 0 {
-				return false
-			}
-			if _, recovering := RecoveryOutcome(definition, process); recovering {
-				return false
+			if !ok || IsActiveState(process.State) {
+				return !ok
 			}
 			if successfulExitCompletion(definition, process) {
 				visiting[name] = true
@@ -1414,8 +1435,10 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 
 			waitsForReadiness := ProgressWaitsForReadiness(definition, result)
 			waitProcess := started.Process
+			// A one-shot's completion is its dependents' gate, so it is awaited
+			// even under NoWait; an independent one-shot returns after spawn.
 			exitReadiness := readinessMethod(definition.Ready) == "exit"
-			shouldWait := exitReadiness || !options.NoWait && waitProcess.State == "running"
+			shouldWait := exitReadiness && (!options.NoWait || gatesDependents[definition.Name]) || !options.NoWait && waitProcess.State == "running"
 			if startErr == nil && result.Error == nil && shouldWait && definition.Ready != nil && (result.Outcome == "started" || result.Outcome == "already_running") {
 				timeoutFor := options.TimeoutFor
 				if timeoutFor == nil {
