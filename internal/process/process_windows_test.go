@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"hum/internal/output"
 
@@ -81,6 +83,9 @@ func TestWindowsProcessHelper(t *testing.T) {
 }
 
 func runWindowsTTYInteractiveHelper() {
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt)
+	defer signal.Stop(interrupts)
 	initialColumns, initialRows, err := windowsTTYSize()
 	if err != nil {
 		os.Exit(2)
@@ -97,6 +102,12 @@ func runWindowsTTYInteractiveHelper() {
 		columns, rows, sizeErr := windowsTTYSize()
 		if sizeErr == nil && (columns != initialColumns || rows != initialRows) {
 			fmt.Fprintf(os.Stdout, "windows-tty-resized=%dx%d\n", columns, rows)
+			select {
+			case <-interrupts:
+				fmt.Fprintln(os.Stdout, "windows-tty-ctrl-c-received")
+			case <-time.After(10 * time.Second):
+				os.Exit(5)
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -382,6 +393,10 @@ func TestWindowsTTYInteractiveInputOutputAndResize(t *testing.T) {
 	if !strings.Contains(text, "windows-tty-stderr-marker") {
 		t.Fatalf("merged TTY output lost stderr: %q", text)
 	}
+	if n, err := child.WriteContext(context.Background(), []byte{0x03}); err != nil || n != 1 {
+		t.Fatalf("send Ctrl+C to console app: %d, %v", n, err)
+	}
+	windowsWaitForOutput(t, store, "windows-tty-ctrl-c-received")
 	select {
 	case <-child.Done():
 	case <-time.After(10 * time.Second):
@@ -399,6 +414,35 @@ func TestWindowsTTYStartupFailureCleansUpConsole(t *testing.T) {
 	if _, err := Start(spec); err == nil {
 		t.Fatal("Start with missing working directory succeeded")
 	}
+	// A valid path containing invalid PE bytes fails CreateProcess only after
+	// CreatePseudoConsole has allocated its pipes and console handle.
+	invalid := filepath.Join(t.TempDir(), "invalid.EXE")
+	if err := os.WriteFile(invalid, []byte("not a PE executable"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec.Argv[0] = invalid
+	spec.Dir = t.TempDir()
+	before := windowsTTYHandleCount(t)
+	for range 10 {
+		if _, err := Start(spec); err == nil {
+			t.Fatal("invalid PE started under ConPTY")
+		}
+	}
+	if after := windowsTTYHandleCount(t); after > before+2 {
+		t.Fatalf("ConPTY startup leaked handles: before=%d after=%d", before, after)
+	}
+}
+
+func windowsTTYHandleCount(t *testing.T) uint32 {
+	t.Helper()
+	var count uint32
+	result, _, err := windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessHandleCount").Call(
+		uintptr(windows.CurrentProcess()), uintptr(unsafe.Pointer(&count)),
+	)
+	if result == 0 {
+		t.Fatalf("GetProcessHandleCount: %v", err)
+	}
+	return count
 }
 
 func TestWindowsTTYStartedFailureCleansUpChild(t *testing.T) {
