@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"hum/internal/config"
@@ -84,7 +83,7 @@ func ensureDaemon(ctx context.Context, cfg config.Config) (int, error) {
 	child.Stdin = nil
 	child.Stdout = nil
 	child.Stderr = nil
-	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	configureDetachedDaemon(child)
 	if err := child.Start(); err != nil {
 		return 0, daemonStartupError(paths, fmt.Errorf("start detached daemon: %w", err))
 	}
@@ -110,15 +109,15 @@ func daemonChildEnvironment(cfg config.Config) []string {
 }
 
 func replaceEnv(env []string, name, value string) []string {
-	prefix := name + "="
 	result := make([]string, 0, len(env)+1)
 	for _, item := range env {
-		if strings.HasPrefix(item, prefix) {
+		key, _, ok := strings.Cut(item, "=")
+		if ok && environmentNameEqual(key, name) {
 			continue
 		}
 		result = append(result, item)
 	}
-	return append(result, prefix+value)
+	return append(result, name+"="+value)
 }
 
 func waitForDaemon(ctx context.Context, paths daemon.RuntimePaths, child *exec.Cmd, startupBudget time.Duration) (int, error) {
@@ -240,36 +239,15 @@ func isVersionMismatch(err error) bool {
 	return errors.As(err, &mismatch)
 }
 
-// cancelDetachedChild preserves prompt caller cancellation while allowing the
-// daemon to finish its bounded reconciliation and then observe SIGTERM through
-// its serve context. The launch-time reaper collects the cleanly exiting child.
+// cancelDetachedChild interrupts the detached child when startup is canceled;
+// platform helpers preserve graceful Unix termination or synchronously kill
+// and reap the Windows process. The launch-time reaper owns Wait in both cases.
 func cancelDetachedChild(child *exec.Cmd, reaped *reapedChild) {
-	if child == nil || child.Process == nil || child.Process.Pid <= 0 || reaped.exited() {
-		return
-	}
-	_ = syscall.Kill(-child.Process.Pid, syscall.SIGTERM)
+	cancelDetachedDaemon(child, reaped)
 }
 
 func terminateDetachedChild(child *exec.Cmd, reaped *reapedChild) {
-	if child == nil || child.Process == nil || child.Process.Pid <= 0 {
-		return
-	}
-	// The child was reaped on exit, so its process group may already belong
-	// to an unrelated process; never signal a group whose leader is gone.
-	if reaped.exited() {
-		return
-	}
-	pid := child.Process.Pid
-	// Setsid makes the child both a session leader and process-group leader.
-	// TERM lets a daemon that reached its signal-aware serve path remove its
-	// ownership artifacts. Fall back to KILL if startup itself is wedged.
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	select {
-	case <-reaped.done:
-	case <-time.After(daemonTerminationGrace):
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		<-reaped.done
-	}
+	terminateDetachedDaemon(child, reaped)
 }
 
 func runDaemonClient(ctx context.Context, cfg config.Config) (*daemon.Client, error) {

@@ -296,6 +296,9 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 			},
 			OnUsageError: onUsageError,
 			Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+				if err := validateTTYRequest(true); err != nil {
+					return err
+				}
 				return inputCommand(ctx, cmd, version, buildTime, writer)
 			},
 		},
@@ -688,9 +691,19 @@ func applyRunOptions(cmd *urfavecli.Command, options []string, hasSeparator bool
 }
 
 func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
+	signals := make(chan os.Signal, 4)
+	earlySignals := registerRunSignalsEarly()
+	if earlySignals {
+		registerFollowSignals(signals)
+	}
+	defer signal.Stop(signals)
+
 	name, argv, err := parseRunArgs(cmd)
 	if err != nil {
 		return err
+	}
+	if err := validateTTYRequest(cmd.Bool("tty")); err != nil {
+		return newCLIUsageError(err)
 	}
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
@@ -714,6 +727,11 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	}
 	manifest.selector = selection.selector
 	definition, declared := manifest.byName[name]
+	if declared {
+		if err := validateTTYRequest(definition.TTY); err != nil {
+			return fmt.Errorf("process %q: %w", name, err)
+		}
+	}
 	if (cmd.Bool("tty") || cmd.IsSet("tty")) && len(argv) == 0 {
 		return newCLIUsageError(errors.New("--tty requires an ad-hoc command after --"))
 	}
@@ -734,6 +752,10 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	current, getErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: manifest.root})
 	if getErr == nil && app.IsActiveState(current.State) {
 		return fmt.Errorf("%s is already running; join it with %s or stop it with %s", name, projectCommand(selection.selector, "attach "+name), projectCommand(selection.selector, "stop "+name))
+	}
+	wantTTY := cmd.Bool("tty") || len(argv) == 0 && ((declared && definition.TTY) || (getErr == nil && current.TTY))
+	if err := validateTTYRequest(wantTTY); err != nil {
+		return fmt.Errorf("process %q: %w", name, err)
 	}
 	if len(argv) == 0 && !declared && (getErr != nil || len(current.Argv) == 0) {
 		return newCLIUsageError(errors.New("run " + name + " requires a command after --"))
@@ -804,7 +826,6 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return err
 	}
 	defer follower.Close()
-	wantTTY := cmd.Bool("tty") || len(argv) == 0 && ((declared && definition.TTY) || (getErr == nil && current.TTY))
 	var localInput *ttyInput
 	if wantTTY {
 		inputRequest := ttyInputRequest(name, manifest.root, definition, argv)
@@ -839,10 +860,11 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	// queued and applied to this incarnation once launch completes. The bridge
 	// channel must cover the same window or SIGTERM can be mistaken for an
 	// independent context cancellation and detach the client.
-	signals := notifyFollowSignals()
-	defer signal.Stop(signals)
+	if !earlySignals {
+		registerFollowSignals(signals)
+	}
 	bridgedSignals := make(chan os.Signal, 4)
-	signal.Notify(bridgedSignals, syscall.SIGTERM, syscall.SIGHUP)
+	registerRunBridgeSignals(bridgedSignals)
 	defer signal.Stop(bridgedSignals)
 	launched, err := launch(true)
 	if err != nil {
@@ -911,6 +933,14 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 			notifyDetached()
 			return true, nil
 		case os.Interrupt:
+			if interruptStopsAttachedRun() {
+				stopCtx, cancel := boundedDaemonCleanup(stopGrace)
+				defer cancel()
+				if err := client.Stop(stopCtx, daemon.StopRequest{Name: name, Scope: selection.scope, Cwd: manifest.root}); err != nil && !errors.Is(err, app.ErrNotRunning) {
+					return false, fmt.Errorf("daemon stop request: %w", err)
+				}
+				return false, nil
+			}
 			if !interrupted {
 				interrupted = true
 				if err := client.ControlSignal(ctx, daemon.SignalRequest{Name: name, Scope: selection.scope, Cwd: manifest.root, Signal: "SIGINT", Control: true}); err != nil && !errors.Is(err, app.ErrNotRunning) {
@@ -1210,6 +1240,9 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	if !app.IsActiveState(process.State) {
 		return inputSessionNotRunningError(name, selection.selector)
+	}
+	if err := validateTTYRequest(process.TTY); err != nil {
+		return fmt.Errorf("process %q: %w", name, err)
 	}
 
 	root := process.Root
@@ -2757,6 +2790,13 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 	if err := prepareManifestEnvironments(&manifest, names, os.Environ(), false); err != nil {
 		return err
 	}
+	for _, name := range names {
+		if definition, ok := manifest.byName[name]; ok {
+			if err := validateTTYRequest(definition.TTY); err != nil {
+				return fmt.Errorf("process %q: %w", name, err)
+			}
+		}
+	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
 		return err
@@ -3226,6 +3266,13 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	}
 	if err := prepareManifestEnvironments(&manifest, names, os.Environ(), false); err != nil {
 		return err
+	}
+	for _, name := range names {
+		if definition, ok := manifest.byName[name]; ok {
+			if err := validateTTYRequest(definition.TTY); err != nil {
+				return fmt.Errorf("process %q: %w", name, err)
+			}
+		}
 	}
 	cfg, err := cliConfig(cmd, version, buildTime)
 	if err != nil {
@@ -3757,7 +3804,7 @@ func manifestProgressWaitsForReadiness(definition project.Definition, result man
 
 func notifyFollowSignals() chan os.Signal {
 	signals := make(chan os.Signal, 4)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	registerFollowSignals(signals)
 	return signals
 }
 

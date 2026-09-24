@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
-	"syscall"
 
 	urfavecli "github.com/urfave/cli/v3"
 	appcli "hum/internal/cli"
@@ -23,7 +21,7 @@ var (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP)
+	ctx, stop := signalContext()
 	defer stop()
 
 	if err := run(ctx, os.Args); err != nil {

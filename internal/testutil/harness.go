@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -57,7 +56,7 @@ func BuildFixture(t testing.TB) string {
 func buildBinary(t testing.TB, packagePath, name string) string {
 	t.Helper()
 	root := repositoryRoot(t)
-	output := filepath.Join(t.TempDir(), name)
+	output := filepath.Join(t.TempDir(), name+binarySuffix())
 	cmd := exec.Command("go", "build", "-o", output, packagePath)
 	cmd.Dir = root
 	buildOutput, err := cmd.CombinedOutput()
@@ -87,7 +86,7 @@ func repositoryRoot(t testing.TB) string {
 // RuntimeDir creates a short temporary directory for HUM_RUNTIME_DIR and removes it when the test completes.
 func RuntimeDir(t testing.TB) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "h-")
+	dir, err := os.MkdirTemp(runtimeTempParent(), "h-")
 	if err != nil {
 		t.Fatalf("create runtime directory: %v", err)
 	}
@@ -293,7 +292,7 @@ func (p *Process) Kill() error {
 		return nil
 	}
 	err := p.Cmd.Process.Kill()
-	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+	if errors.Is(err, os.ErrProcessDone) || processAlreadyGone(err) {
 		return nil
 	}
 	return err
@@ -357,14 +356,7 @@ func WaitForText(t testing.TB, path, text string, timeout time.Duration) {
 }
 
 // ProcessAlive reports whether pid currently exists and can be probed.
-func ProcessAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
-}
-
+// Its platform implementation lives beside the group probe.
 // WaitForProcessGone waits until pid no longer exists, failing the test on timeout.
 func WaitForProcessGone(t testing.TB, pid int, timeout time.Duration) {
 	t.Helper()
@@ -387,14 +379,6 @@ func WaitForProcessGroupGone(t testing.TB, pgid int, timeout time.Duration) {
 		return
 	}
 	t.Fatalf("process group %d remained alive after %s", pgid, timeout)
-}
-
-func processGroupAlive(pgid int) bool {
-	if pgid <= 0 {
-		return false
-	}
-	err := syscall.Kill(-pgid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func waitForCondition(timeout time.Duration, condition func() bool) bool {
