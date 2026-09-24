@@ -190,6 +190,15 @@ func TestOutputSchemasAcceptStructuredContent(t *testing.T) {
 	} {
 		checkToolResult(t, server, root, call.name, call.fields)
 	}
+	// A session created by a follower before its first launch has no argv.
+	process.Argv = nil
+	client.processes["api"] = process
+	checkToolResult(t, server, root, "list", nil)
+	checkToolResult(t, server, root, "status", map[string]any{"name": "api"})
+	// Per-process stop failures keep wire error details.
+	client.stopErr = map[string]error{"api": protocol.NewWireError(protocol.ErrorCodeNotFound, "process not found", map[string]any{"name": "api"})}
+	checkToolResult(t, server, root, "down", nil)
+	client.stopErr = nil
 	events := &eventHistoryClient{fakeClient: client, response: protocol.NewEventsResponse([]protocol.HistoryEvent{{Cursor: 1, Time: time.Now(), Kind: protocol.EventOperation, Name: "api", Event: "start"}}, 1, false, false)}
 	server.opts.ClientFactory = func(context.Context, bool) (Client, error) { return events, nil }
 	checkToolResult(t, server, root, "events", nil)

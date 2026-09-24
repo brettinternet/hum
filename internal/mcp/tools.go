@@ -337,7 +337,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"scope": map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}}, "project_root": map[string]any{"type": "string"},
 		"tty": map[string]any{"type": "boolean"}, "pid": map[string]any{"type": "integer"},
 		"pgid": map[string]any{"type": "integer"}, "cwd": map[string]any{"type": "string"},
-		"argv":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"argv":  map[string]any{"type": []string{"array", "null"}, "items": map[string]any{"type": "string"}, "description": "Null before a session's first launch."},
 		"start": map[string]any{"type": "string"}, "launch_cursor": map[string]any{"type": "integer", "minimum": 0},
 		"next_cursor": map[string]any{"type": "integer", "minimum": 0}, "state": map[string]any{"type": "string"},
 		"exit": exit, "exit_code": map[string]any{"type": "integer"}, "exited_at": map[string]any{"type": "string"},
@@ -351,7 +351,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"readiness":            readiness,
 		"warnings":             startupWarningsSchema,
 	}, "name", "source", "scope", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches", "stop_grace", "stop_grace_inherited")
-	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "code", "message")
+	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}, "details": map[string]any{"description": "Optional code-specific structured detail."}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
 	restart := objectSchema(map[string]any{
 		"name":                 map[string]any{"type": "string", "description": "The restarted process name."},
