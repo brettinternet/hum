@@ -1,10 +1,10 @@
 ---
 id: HUM-118
 title: Provide a private Windows daemon transport and recoverable runtime ownership
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-23 20:49'
-updated_date: '2026-09-23 22:24'
+updated_date: '2026-09-24 06:40'
 labels:
   - daemon
   - security
@@ -48,18 +48,35 @@ Windows verification: after the owner approves, push HEAD to `windows/<task-id>`
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — After the owner-approved `git push origin HEAD:windows/HUM-118`, `task windows:watch` exits 0 on macOS, with WINDOWS_PACKAGES including ./internal/daemon ./internal/config. Windows tests show that a real client can round-trip over the private transport and that a second, simultaneous daemon cannot acquire the same runtime.
-- [ ] #2 AC2 — On macOS, `rg -n "func TestWindows" internal/daemon` lists tests in `*_windows_test.go` files that inspect transport and runtime ACLs to confirm access is no broader than intended, and that cover stale-owner and crash recovery, refusal on PID reuse or ownership mismatch, and reconciliation of recorded children without killing unrelated processes. AC1 run executes these tests.
-- [ ] #3 AC3 — On macOS, `go test ./internal/daemon ./internal/config -count=1` exits 0; socket permission, locking, and existing stale-runtime recovery tests still pass.
-- [ ] #4 AC4 — On macOS, `GOOS=windows GOARCH=amd64 go vet ./internal/daemon ./internal/config` exits 0.
+- [x] #1 AC1 — After the owner-approved `git push origin HEAD:windows/HUM-118`, `task windows:watch` exits 0 on macOS, with WINDOWS_PACKAGES including ./internal/daemon ./internal/config. Windows tests show that a real client can round-trip over the private transport and that a second, simultaneous daemon cannot acquire the same runtime.
+- [x] #2 AC2 — On macOS, `rg -n "func TestWindows" internal/daemon` lists tests in `*_windows_test.go` files that inspect transport and runtime ACLs to confirm access is no broader than intended, and that cover stale-owner and crash recovery, refusal on PID reuse or ownership mismatch, and reconciliation of recorded children without killing unrelated processes. AC1 run executes these tests.
+- [x] #3 AC3 — On macOS, `go test ./internal/daemon ./internal/config -count=1` exits 0; socket permission, locking, and existing stale-runtime recovery tests still pass.
+- [x] #4 AC4 — On macOS, `GOOS=windows GOARCH=amd64 go vet ./internal/daemon ./internal/config` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC1 — Approved git push origin HEAD:windows/HUM-118 on 315d00d; task windows:watch exited 0 for CI run 35965044098 (native Windows daemon/config tests passed, client round trip and simultaneous-process contention). WINDOWS_PACKAGES includes ./internal/daemon and ./internal/config.
+AC2 — rg -n "func TestWindows" internal/daemon lists runtime_windows_test.go ACL, preempted pipe, stale owner, real crashed daemon/child Job Object reconciliation, PID reuse, mismatched ownership and unrelated-process safety tests; CI 35965044098 executed them.
+AC3 — go test ./internal/daemon ./internal/config -count=1 exited 0 on macOS; Unix socket, lock, stale-recovery tests retained.
+AC4 — GOOS=windows GOARCH=amd64 go vet ./internal/daemon ./internal/config exited 0.
+Review — independent verifier PASS AC1, AC3, AC4; focused recheck PASS AC2 after adding real crash recovery test. No item-scoped defects remain.
+Delivery — commits 79b3f3b, aeed8de, 1672ce6, c84968d, 315d00d fast-forward merged to main. GOFLAGS=-p=1 task ci exited 0 at 315d00d; unbounded-parallel task ci intermittently timed out unrelated TestAttachStreamsBurstWithoutAborting, which passed focused and in serialized full gate. Diff touches only declared modified files; Unix tests retained with !windows tags and Windows-specific coverage added; no protected gate files touched. Next: mark criteria and Done, commit provider evidence, remove owned worktree.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Private Windows named-pipe daemon transport and recoverable single-owner runtime shipped to main; native Windows CI, macOS regression, cross-vet, and full gate passed. No remaining blocker.
+<!-- SECTION:FINAL_SUMMARY:END -->
