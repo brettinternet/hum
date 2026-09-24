@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -147,10 +148,16 @@ func waitForDaemon(ctx context.Context, paths daemon.RuntimePaths, child *exec.C
 		select {
 		case <-childDone:
 			// Another starter may hold the runtime lock but not yet have
-			// published its pipe. Keep probing within the startup budget;
-			// a single immediate probe loses that race on Windows.
+			// published its pipe on Windows. Unix retains the immediate
+			// failure contract when the detached child exits early.
 			childExited = true
 			childDone = nil
+			if runtime.GOOS != "windows" {
+				if pid, err := probeDaemon(waitCtx, paths); err == nil {
+					return pid, nil
+				}
+				return 0, daemonStartupError(paths, fmt.Errorf("detached daemon exited before readiness: %w", exited.status()))
+			}
 		case <-waitCtx.Done():
 			if err := ctx.Err(); err != nil {
 				cancelDetachedChild(child, exited)
