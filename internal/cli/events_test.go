@@ -164,10 +164,12 @@ func TestEventsPaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	emptyPage := decodeEventOutput(t, empty)
-	if len(emptyPage) != 1 || emptyPage[0]["next_cursor"] != float64(5) || emptyPage[0]["has_more"] != false {
+	// A daemonless reader starts at the persisted reservation, not the last
+	// assigned cursor in the writer's live instance.
+	if len(emptyPage) != 1 || emptyPage[0]["next_cursor"] != float64(64) || emptyPage[0]["has_more"] != false {
 		t.Fatalf("empty filtered page=%#v", emptyPage)
 	}
-	if _, err := fixture.run(t, "--after-cursor", "6"); err == nil {
+	if _, err := fixture.run(t, "--after-cursor", "65"); err == nil {
 		t.Fatal("future cursor unexpectedly succeeded")
 	}
 	limited, err := fixture.run(t, "--after-cursor", "0", "--limit-bytes", "250", "--json")
@@ -273,7 +275,7 @@ func TestEventsJSON(t *testing.T) {
 
 	fixture := newEventCommandFixture(t)
 	fixture.append(t, protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch"})
-	errorOutput, err := fixture.run(t, "--after-cursor", "2", "--json")
+	errorOutput, err := fixture.run(t, "--after-cursor", "65", "--json")
 	if err == nil {
 		t.Fatal("future cursor JSON request unexpectedly succeeded")
 	}
