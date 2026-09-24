@@ -242,7 +242,7 @@ func TestWindowsStopFailsClosedOnIdentityOrOwnershipMismatch(t *testing.T) {
 			<-child.Done()
 		})
 		child.jobHandle = wrongJob
-		if err := child.Stop(); err == nil || !strings.Contains(err.Error(), "not a member") {
+		if err := child.Stop(); err == nil || !strings.Contains(err.Error(), "ownership mismatch") {
 			t.Fatalf("Stop with mismatched job = %v, want fail-closed ownership error", err)
 		}
 		if !ProcessGroupAlive(child.PID()) {

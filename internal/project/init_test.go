@@ -548,8 +548,12 @@ func TestInitManifestForceReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("replacement manifest mode = %04o, want 0600", got)
+	wantMode := os.FileMode(0o600)
+	if runtime.GOOS == "windows" {
+		wantMode = 0o666 // Windows os.Stat does not report ACL bits.
+	}
+	if got := info.Mode().Perm(); got != wantMode {
+		t.Fatalf("replacement manifest mode = %04o, want %04o", got, wantMode)
 	}
 	recreated, err := os.ReadFile(temporaryPath)
 	if err != nil {

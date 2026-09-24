@@ -67,8 +67,9 @@ func TestWindowsAppStopRejectsSignalAndTTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if finished.Exit == nil || finished.Exit.Signal != nil {
-		t.Fatalf("Windows exit invents Unix signal: %+v", finished.Exit)
+	// An operator-stopped snapshot intentionally suppresses exit details.
+	if finished.State != StateStopped || finished.Exit != nil {
+		t.Fatalf("operator stop snapshot = %+v", finished)
 	}
 }
 
