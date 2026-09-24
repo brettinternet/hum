@@ -1284,6 +1284,9 @@ func (s *Supervisor) transitionRunningLocked(rec *record, child Child, startedAt
 	}
 	rec.launchBoundary = launchBoundary
 	rec.state, rec.result, rec.terminalAt, rec.terminal = StateRunning, process.Result{}, time.Time{}, false
+	// Stop/restart intent belongs to the prior incarnation, even when its
+	// exit was still being persisted as the replacement was requested.
+	rec.controlIntent = false
 	rec.done = make(chan struct{})
 	rec.incarnation++
 	s.processObservations[rec.key]++

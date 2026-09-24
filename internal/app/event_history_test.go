@@ -160,6 +160,81 @@ func TestExitReadinessSupervisorCompletion(t *testing.T) {
 	}
 }
 
+func TestExitReadinessRestartDuringExitPersistence(t *testing.T) {
+	root := makeProject(t, false)
+	first := newSubscriptionChild(7110, 0, time.Now().UTC(), "")
+	second := newSubscriptionChild(7111, 0, time.Now().UTC().Add(time.Second), "")
+	persisting := make(chan struct{})
+	allowPersist := make(chan struct{})
+	var calls int
+	s := testSupervisor(t, Options{
+		StartProcess: func(spec process.Spec) (Child, error) {
+			calls++
+			if calls == 1 {
+				first.store = spec.Output
+				return first, nil
+			}
+			second.store = spec.Output
+			return second, nil
+		},
+		PersistExit: func(Process) error {
+			if calls == 1 {
+				close(persisting)
+				<-allowPersist
+			}
+			return nil
+		},
+	})
+	if _, err := s.Start(StartRequest{Name: "migrate", Root: root, Cwd: root, Source: "manifest", Argv: []string{"fake"}, Ready: &ReadinessConfig{Method: "exit"}}); err != nil {
+		t.Fatal(err)
+	}
+	first.release()
+	<-persisting
+	restarted := make(chan error, 1)
+	go func() {
+		_, err := s.Restart(context.Background(), root, "migrate")
+		restarted <- err
+	}()
+	// Wait for stopRecord to mark the persisting exit as controlled.
+	rec, err := s.lookupScoped(ScopeProject, root, "migrate", "")
+	if err != nil {
+		close(allowPersist)
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	controlled := false
+	for time.Now().Before(deadline) {
+		s.mu.RLock()
+		controlled = rec.controlIntent && rec.persisting
+		s.mu.RUnlock()
+		if controlled {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !controlled {
+		close(allowPersist)
+		t.Fatal("restart did not mark the persisting exit as controlled")
+	}
+	close(allowPersist)
+	if err := <-restarted; err != nil {
+		t.Fatal(err)
+	}
+	second.release()
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current, err := s.Get(root, "migrate")
+		if err == nil && current.State == StateExited {
+			if current.Readiness == nil || current.Readiness.State != ReadinessReady {
+				t.Fatalf("replacement exit readiness = %#v, want ready", current.Readiness)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("replacement did not exit")
+}
+
 func TestEventHistoryAutomaticRelaunchKinds(t *testing.T) {
 	launches := make([]relaunchTestLaunch, maxAutomaticRelaunches+1)
 	launches[0].code = 1
