@@ -79,7 +79,7 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 			Usage:       "initialize the project manifest",
 			UsageText:   "hum init [--force] [--json]",
 			ArgsUsage:   "",
-			Description: "Create a hum.yaml file for this project, using a discovered command or a template. Use --force to replace an existing file.\n\nExamples:\n  hum init",
+			Description: "Create hum.yaml for this project from a discovered command or a template. If a private .hum.yaml already exists, --force replaces that file instead.\n\nExamples:\n  hum init",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "force", DefaultText: "false", Usage: "atomically replace an existing regular project manifest"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write stable JSON; default is human-readable output"},
@@ -108,7 +108,7 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 			ArgsUsage:     "NAME [-- COMMAND [ARGS...]]",
 			StopOnNthArg:  &runStopOnNthArg,
 			ShellComplete: completeProcessNames,
-			Description:   "Run a named process from the project file or a command after --. Use --detach to leave it running after this command returns.\n\nExamples:\n  hum run api -- bun run api",
+			Description:   "Run a process declared in the project file, or give an undeclared name a command after --. Use --detach to leave it running after this command returns.\n\nExamples:\n  hum run api\n  hum run scratch -- bun run scratch.ts",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "return without attaching; default is attached"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON for detached runs; default is raw attached output"},
@@ -324,7 +324,7 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 			ArgsUsage:     "NAME SIGNAL",
 			StopOnNthArg:  &signalStopOnNthArg,
 			ShellComplete: completeProcessNames,
-			Description:   "Send an operating-system signal to a running process. Use it to request a reload or interrupt without using Hum's stop command.\n\nExamples:\n  hum signal api HUP\n  hum signal api 1 --json",
+			Description:   "Send a Unix signal to a running process, for example to request a reload without using Hum's stop command. Windows does not support signals.\n\nExamples:\n  hum signal api HUP\n  hum signal api 1 --json",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
 			},

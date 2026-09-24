@@ -70,8 +70,13 @@ func TestHelpContract(t *testing.T) {
 			if !strings.HasSuffix(plainProse, ".") && !strings.HasSuffix(plainProse, "!") && !strings.HasSuffix(plainProse, "?") {
 				t.Errorf("plain description does not end in a sentence: %q", plainProse)
 			}
-			if helpWireIdentifierRE.MatchString(prose) || strings.Contains(strings.ToLower(prose), "docs/") {
-				t.Errorf("description contains a wire identifier or docs/ path: %q", prose)
+			if helpWireIdentifierRE.MatchString(prose) {
+				t.Errorf("description contains a wire identifier: %q", prose)
+			}
+			// Installed binaries do not ship docs/, so no displayed help text,
+			// examples included, may point there.
+			if helpMentionsDocsPath(command.Usage, command.Description) {
+				t.Errorf("usage or description contains a docs/ path: %q %q", command.Usage, command.Description)
 			}
 
 			examples := helpExamples(command.Description)
@@ -96,6 +101,10 @@ func TestHelpContract(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	if !helpMentionsDocsPath("print the version", "Print the version.\n\nExamples:\n  hum version # see docs/design.md") {
+		t.Fatal("docs/ path in an example was not detected")
 	}
 
 	fixtureRoot := &urfavecli.Command{
@@ -265,4 +274,13 @@ func helpFlagBlock(help, name string) string {
 		block = block[:end+1]
 	}
 	return block
+}
+
+func helpMentionsDocsPath(texts ...string) bool {
+	for _, text := range texts {
+		if strings.Contains(strings.ToLower(text), "docs/") {
+			return true
+		}
+	}
+	return false
 }
