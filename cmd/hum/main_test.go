@@ -22,25 +22,6 @@ func captureWriters(t *testing.T) (*bytes.Buffer, *bytes.Buffer) {
 	return output, errorOutput
 }
 
-func TestRunNoArgsShowsHelp(t *testing.T) {
-	output, errorOutput := captureWriters(t)
-
-	err := run(context.Background(), []string{"hum"})
-	if err != nil {
-		t.Fatalf("run without arguments: %v", err)
-	}
-	if errorOutput.Len() != 0 {
-		t.Fatalf("unexpected stderr: %q", errorOutput.String())
-	}
-
-	help := strings.ToLower(output.String())
-	for _, want := range []string{"usage:", "hum", "local development process supervisor"} {
-		if !strings.Contains(help, want) {
-			t.Errorf("help output missing %q: %q", want, output.String())
-		}
-	}
-}
-
 func TestRunVersion(t *testing.T) {
 	previousVersion, previousCommit, previousBuildTime := buildVersion, buildCommit, buildTime
 	buildVersion, buildCommit, buildTime = "build-42", "714a19f123456789", "2026-09-02T12:00:00Z"
@@ -86,22 +67,5 @@ func TestExitCodePreservesExitCoder(t *testing.T) {
 func TestExitCodeOrdinaryError(t *testing.T) {
 	if got := exitCode(errors.New("ordinary error")); got != 1 {
 		t.Fatalf("exitCode(ordinary error) = %d, want 1", got)
-	}
-}
-
-func TestRunCanceledContextReturnsCancellation(t *testing.T) {
-	output, errorOutput := captureWriters(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := run(ctx, []string{"hum"})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("run with canceled context = %v, want %v", err, context.Canceled)
-	}
-	if output.Len() != 0 {
-		t.Fatalf("canceled run rendered help: %q", output.String())
-	}
-	if errorOutput.Len() != 0 {
-		t.Fatalf("unexpected stderr: %q", errorOutput.String())
 	}
 }

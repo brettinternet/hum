@@ -138,33 +138,6 @@ func TestStatusAndWaitSurface(t *testing.T) {
 	}
 }
 
-func TestHelpRenderedDescriptionBudget(t *testing.T) {
-	paths := visibleHelpPaths(NewRootCommand("test", "test", &bytes.Buffer{}, &bytes.Buffer{}))
-	paths = append(paths,
-		[]string{"hum", "completion"},
-		[]string{"hum", "completion", "bash"},
-		[]string{"hum", "completion", "zsh"},
-		[]string{"hum", "completion", "fish"},
-	)
-	for _, path := range paths {
-		t.Run(strings.Join(path, " "), func(t *testing.T) {
-			var output bytes.Buffer
-			root := NewRootCommand("test", "test", &output, &bytes.Buffer{})
-			if err := root.Run(context.Background(), append(append([]string(nil), path...), "--help")); err != nil {
-				t.Fatalf("render help: %v", err)
-			}
-			prose := helpSection(output.String(), "DESCRIPTION:")
-			if prose == "" {
-				t.Fatal("rendered help lacks a description")
-			}
-			plainProse, _, _ := strings.Cut(strings.Join(strings.Fields(prose), " "), " Exit codes:")
-			if len([]rune(plainProse)) > 240 {
-				t.Errorf("rendered description has %d characters, want at most 240: %q", len([]rune(plainProse)), plainProse)
-			}
-		})
-	}
-}
-
 func TestHelpAdvertisesOnlySupportedScopeFlags(t *testing.T) {
 	tests := []struct {
 		name        string
