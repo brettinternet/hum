@@ -1,10 +1,10 @@
 ---
 id: HUM-119
 title: Start and control the native Windows daemon from the CLI
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-23 20:49'
-updated_date: '2026-09-24 15:18'
+updated_date: '2026-09-24 15:35'
 labels:
   - cli
   - daemon
@@ -65,7 +65,7 @@ Windows verification: after the owner approves, push HEAD to `windows/<task-id>`
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
+- [x] #1 task ci passes on the final commit
 - [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
 - [x] #3 An independent verifier pass returned PASS for every acceptance criterion
 - [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
@@ -85,10 +85,16 @@ Windows verification: after the owner approves, push HEAD to `windows/<task-id>`
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-AC#1: git push https://github.com/brettinternet/hum.git HEAD:windows/HUM-119 at 47eca25; task windows:watch exited 0 (run 36018910860). Go CI (Windows) task windows:test ran ./internal/cli ./internal/mcp ./cmd/hum ./cmd/hum-man; TestWindowsBuiltBinaryConcurrentAutostartAndLifecycle covers built-binary autostart, run, status, logs, wait, stop, shutdown.
-AC#2: rg -n "func TestWindows" internal/cli cmd/hum lists native tests for concurrent autostart, daemon cancellation/reaping, unsupported TTY and Unix-signal errors, doctor readiness/manifest, and foreground interrupt cleanup; run 36018910860 passed.
-AC#3: go test ./internal/cli ./internal/mcp ./cmd/hum -count=1 exited 0 on macOS; GOFLAGS=-p=1 task ci passed at 47eca25 with Unix detach, Ctrl+C, HUP, doctor and interactive coverage intact.
-AC#4: GOOS=windows GOARCH=amd64 go build ./... and GOOS=windows GOARCH=amd64 go vet ./internal/cli ./internal/mcp ./cmd/... exited 0 on macOS.
+AC#1: git push https://github.com/brettinternet/hum.git HEAD:windows/HUM-119 at merged main commit 50bd13c; task windows:watch exited 0 (run 36020813832). Go CI (Windows) task windows:test ran ./internal/cli ./internal/mcp ./cmd/hum ./cmd/hum-man; TestWindowsBuiltBinaryConcurrentAutostartAndLifecycle covers built-binary autostart, run, status, logs, wait, stop, shutdown.
+AC#2: rg -n "func TestWindows" internal/cli cmd/hum lists native tests for concurrent autostart, daemon cancellation/reaping, unsupported TTY and Unix-signal errors, doctor readiness/manifest, and foreground interrupt cleanup; native Windows run 36020813832 passed.
+AC#3: go test ./internal/cli ./internal/mcp ./cmd/hum -count=1 exited 0 on macOS; GOFLAGS=-p=1 task ci passed at merged main commit 50bd13c with Unix detach, Ctrl+C, HUP, doctor and interactive coverage intact.
+AC#4: GOOS=windows GOARCH=amd64 go build ./... and GOOS=windows GOARCH=amd64 go vet ./internal/cli ./internal/mcp ./cmd/... exited 0 on merged main before committing; post-merge task ci passed at 50bd13c.
 Modified-file deviations: internal/daemon/transport_windows.go handles absent named pipes for built-binary autostart; internal/daemon/event_history.go and internal/daemon/event_history_windows_test.go handle Windows-incompatible directory fsync. Required support for scoped Windows CLI runtime.
-Review: independent verifier PASS AC1-4 at 7a0fb7b; its doctor/interrupt findings corrected in b056b9f and dc470b0. Targeted verifier PASS DoD #5 at dc470b0; additional native doctor readiness/private-manifest/environment/colors tests passed in run 36018910860. Console-level Ctrl+C delivery remains untested on headless Windows CI; synthetic interrupt through production follow-loop stops and reaps real child. Main integration and worktree cleanup remain.
+Review: independent verifier PASS AC1-4 at 7a0fb7b; doctor/interrupt findings corrected and native Windows CI passed at 50bd13c. Targeted verifier PASS DoD #5 at dc470b0; additional native doctor readiness/private-manifest/environment/colors tests passed at 50bd13c. Console-level Ctrl+C delivery remains untested on headless Windows CI; synthetic interrupt through production follow-loop stops and reaps a real child. Integrated as merge commit 50bd13c, and Worktrunk removed the session-owned hum-119 branch/worktree and exact associated Herdr workspace.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Windows native CLI daemon lifecycle is implemented and merged to main at 50bd13c. Local task ci and native Windows CI run 36020813832 pass. AC1-4 and DoD1-6 verified; owned worktree and branch removed. Headless CI exercises Ctrl+C cleanup by injecting os.Interrupt into the production follow loop, not by generating a console Ctrl+C event.
+<!-- SECTION:FINAL_SUMMARY:END -->
