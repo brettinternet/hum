@@ -1,10 +1,10 @@
 ---
 id: HUM-133
 title: Stop rewriting the whole event history on every append once it is full
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-23 21:53'
-updated_date: '2026-09-23 22:24'
+updated_date: '2026-09-24 20:22'
 labels:
   - daemon
   - events
@@ -49,18 +49,44 @@ Non-goals: dropping the per-event payload fsync or weakening durability in any o
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/daemon -run "^TestEventHistory" -count=1 -v` exits 0, and TestEventHistoryRetentionAndNameReuse reports under 2s on macOS (30.7s on 2026-09-23).
-- [ ] #2 AC2 — `go test ./internal/daemon -run "^TestEventHistoryAppendCost$" -count=1 -v` exits 0; with limits of 20 events, 1,000 appends perform at most 51 full rewrites and at most 32 cursor-mark writes, read from the test counters.
-- [ ] #3 AC3 — `go test ./internal/daemon -run "^TestEventHistoryCrashNeverReusesCursor$" -count=1 -v` exits 0; it reopens the directory with a new EventHistory after appends inside a reserved block and after a torn final line, and proves every new cursor is greater than every cursor returned before.
-- [ ] #4 AC4 — `go test ./internal/daemon -count=1` exits 0 and `go test -race ./internal/daemon -run "^TestEventHistory" -count=3` exits 0.
+- [x] #1 AC1 — `go test ./internal/daemon -run "^TestEventHistory" -count=1 -v` exits 0, and TestEventHistoryRetentionAndNameReuse reports under 2s on macOS (30.7s on 2026-09-23).
+- [x] #2 AC2 — `go test ./internal/daemon -run "^TestEventHistoryAppendCost$" -count=1 -v` exits 0; with limits of 20 events, 1,000 appends perform at most 51 full rewrites and at most 32 cursor-mark writes, read from the test counters.
+- [x] #3 AC3 — `go test ./internal/daemon -run "^TestEventHistoryCrashNeverReusesCursor$" -count=1 -v` exits 0; it reopens the directory with a new EventHistory after appends inside a reserved block and after a torn final line, and proves every new cursor is greater than every cursor returned before.
+- [x] #4 AC4 — `go test ./internal/daemon -count=1` exits 0 and `go test -race ./internal/daemon -run "^TestEventHistory" -count=3` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Track retained and on-disk counts/bytes, compact only past doubled limits or corruption, and reserve cursor blocks ahead of payloads. 2. Add small-limit cost, restart/crash, reload/slack, and default-limit tests; update design documentation. 3. Run focused tests, independent verification, final-commit task ci; merge to main and remove the verified worktree.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Commits 3d5d1fb and eb944e9 fast-forwarded into main; verified worktree hum-133-event-history removed with Worktrunk. Review: one independent verifier PASS for AC1–AC4, no concrete defects. Initial task ci failed because CLI event tests expected exact pre-reservation cursor values and two intermittent load-sensitive tests (TestAttachStreamsBurstWithoutAborting, TestWaitDaemonBridge); adapted CLI assertions to reservation semantics, focused CLI events passed, then task ci passed on final commit eb944e9 (default Go tests, race, security, staticcheck, installer, smoke). Scope deviation: internal/cli/events_test.go needed to reflect reserved high-water on a freshly opened daemonless reader; no protected gate files changed. Existing checks were adapted to the new contract (20-event fixture retains newest 20; disk <= doubled slack; cursor sequence monotonic across restarts), not skipped or deleted. Next step: none.
+
+AC#1 — go test ./internal/daemon -run "^TestEventHistory" -count=1 -v: PASS; TestEventHistoryRetentionAndNameReuse 0.13s locally, independent verifier 0.30s macOS (<2s).
+
+AC#2 — go test ./internal/daemon -run "^TestEventHistoryAppendCost$" -count=1 -v: PASS; 1000 appends with 20-event limit satisfy <=51 rewrites and <=32 mark writes, asserted from counters.
+
+AC#3 — go test ./internal/daemon -run "^TestEventHistoryCrashNeverReusesCursor$" -count=1 -v: PASS; restart in reservation block and after torn tail both yield increasing cursors.
+
+AC#4 — go test ./internal/daemon -count=1: PASS; go test -race ./internal/daemon -run "^TestEventHistory" -count=3: PASS.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Compacted event history with slack and reserved cursor blocks; verified four acceptance criteria, independent verifier PASS, and task ci on eb944e9. Merged to main and removed worktree.
+<!-- SECTION:FINAL_SUMMARY:END -->
