@@ -1634,10 +1634,28 @@ func TestAttachStreamsBurstWithoutAborting(t *testing.T) {
 	if err := os.WriteFile(marker+".release", []byte("release"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := cliServeRunWaitForCondition(func() bool {
-		return strings.Contains(attached.stdout(), fmt.Sprintf("flood:%05d\n", floodLines-1))
-	}); err != nil {
-		t.Fatalf("flood attach did not stream the whole burst: %v; exited=%v lines=%d stderr=%q", err, attached.exited(), strings.Count(attached.stdout(), "flood:"), attached.stderr())
+	// Under parallel package load the burst can take more than five seconds;
+	// only stall if no new lines arrive for that long. The fixture emits a
+	// finite burst, so progress cannot keep this wait alive indefinitely.
+	lastLine := fmt.Sprintf("flood:%05d\n", floodLines-1)
+	lines := 0
+	lastProgress := time.Now()
+	for {
+		output := attached.stdout()
+		if strings.Contains(output, lastLine) {
+			break
+		}
+		if attached.exited() {
+			t.Fatalf("flood attach exited before streaming the whole burst: lines=%d stderr=%q", strings.Count(output, "flood:"), attached.stderr())
+		}
+		if count := strings.Count(output, "flood:"); count > lines {
+			lines = count
+			lastProgress = time.Now()
+		}
+		if time.Since(lastProgress) >= 5*time.Second {
+			t.Fatalf("flood attach stopped making progress: lines=%d of %d stderr=%q", lines, floodLines, attached.stderr())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if attached.exited() {
 		t.Fatalf("flood attach exited during the burst: stderr=%q", attached.stderr())
