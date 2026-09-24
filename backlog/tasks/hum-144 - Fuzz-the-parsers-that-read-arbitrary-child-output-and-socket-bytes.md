@@ -4,7 +4,7 @@ title: Fuzz the parsers that read arbitrary child output and socket bytes
 status: To Do
 assignee: []
 created_date: '2026-09-24 22:54'
-updated_date: '2026-09-24 22:55'
+updated_date: '2026-09-24 22:58'
 labels:
   - output
   - protocol
@@ -30,6 +30,10 @@ Targets and properties. Assert only what the documented contract guarantees; rea
 Put each target in the existing test file of its package, or in a `fuzz_test.go` beside it. If fuzzing finds a real defect, keep the failing input under the generated testdata/fuzz directory, stop, and create a separate bug task with the input and the observed behavior. Do not relax the property to make it pass.
 
 Non-goals: fuzzing manifest YAML or MCP JSON; changing production code; adding fuzzing to CI beyond the seed corpus.
+
+Stop rules: fuzz each target for 60s only. A property failure means stop and report it: either the property misreads the documented contract (fix the property and cite the doc line) or the code has a defect (create a bug task). Do not iterate on production code here.
+
+Unrelated failures: if `task ci` or a package run fails in a test this task did not touch, rerun that package once. If the rerun passes, record both runs in Implementation Notes and continue; if it fails again, stop and report it. Do not fix unrelated tests in this task.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

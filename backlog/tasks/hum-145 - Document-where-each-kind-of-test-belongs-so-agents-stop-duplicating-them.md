@@ -4,6 +4,7 @@ title: Document where each kind of test belongs so agents stop duplicating them
 status: To Do
 assignee: []
 created_date: '2026-09-24 22:55'
+updated_date: '2026-09-24 22:58'
 labels:
   - docs
 dependencies:
@@ -38,6 +39,8 @@ Also add one line to AGENTS.md under Tooling: "Before adding a test, follow the 
 Check every named helper and test against the tree when you write the section. This task depends on HUM-138, HUM-140, and HUM-142 so that the parallel, smoke, and helper statements are true. If HUM-144 has not merged, write rule 7 without the task reference.
 
 Non-goals: code or test changes; a separate testing document.
+
+Unrelated failures: if `task ci` or a package run fails in a test this task did not touch, rerun that package once. If the rerun passes, record both runs in Implementation Notes and continue; if it fails again, stop and report it. Do not fix unrelated tests in this task.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

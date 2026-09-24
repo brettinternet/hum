@@ -4,6 +4,7 @@ title: Stop task smoke from re-running tests that task test already ran
 status: To Do
 assignee: []
 created_date: '2026-09-24 22:52'
+updated_date: '2026-09-24 22:59'
 labels:
   - tooling
 dependencies: []
@@ -30,11 +31,13 @@ Change:
 3. Do not change ci.yaml. It still runs `task test smoke`.
 
 Non-goals: dropping `task test` from `task ci` in favour of race alone; changing the CI job layout; changing any test.
+
+Unrelated failures: if `task ci` or a package run fails in a test this task did not touch, rerun that package once. If the rerun passes, record both runs in Implementation Notes and continue; if it fails again, stop and report it. Do not fix unrelated tests in this task.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `rg -n "go test" Taskfile.dist.yaml` shows no line inside the smoke task (lines from `smoke:` to the next top-level task), and `task smoke` exits 0.
+- [ ] #1 AC1 — `awk '/^  smoke:/{f=1;next} /^  [a-z][a-z:]*:$/{f=0} f' Taskfile.dist.yaml | rg -q "go test"` exits 1 (smoke contains no go test line), and `task smoke` exits 0.
 - [ ] #2 AC2 — `rg -n "smoke step" docs/development.md` exits 0 and the matched paragraph no longer says smoke runs integration tests.
 - [ ] #3 AC3 — `task ci` exits 0.
 <!-- AC:END -->

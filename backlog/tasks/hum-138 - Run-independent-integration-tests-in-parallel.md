@@ -4,10 +4,11 @@ title: Run independent integration tests in parallel
 status: To Do
 assignee: []
 created_date: '2026-09-24 22:51'
-updated_date: '2026-09-24 22:51'
+updated_date: '2026-09-24 22:58'
 labels:
   - integration
-dependencies: []
+dependencies:
+  - HUM-137
 modified_files:
   - integration/*_test.go
 priority: high
@@ -30,6 +31,10 @@ Procedure:
 5. The Windows CI job (`task windows:test`) runs this package too. Keep any Windows-only test parallel-safe on the same terms. It cannot be run locally, so note that it is unverified locally.
 
 Non-goals: parallelizing other packages (internal/daemon is a separate task); consolidating helpers (separate task); changing assertions.
+
+Stop rules: give each test that flakes under parallel load at most two fix attempts (a missing readiness wait or a fixed sleep). If it still flakes, leave it serial with `// Not parallel: flakes under parallel load: <symptom>` and move on. Do not raise shared timeout constants. If more than three tests end up serial, or AC1 is still missed after that, stop and report which tests set the critical path, their durations, and the core count of the machine, instead of iterating further.
+
+Unrelated failures: if `task ci` or a package run fails in a test this task did not touch, rerun that package once. If the rerun passes, record both runs in Implementation Notes and continue; if it fails again, stop and report it. Do not fix unrelated tests in this task.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

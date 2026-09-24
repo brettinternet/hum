@@ -4,12 +4,13 @@ title: Replace per-file polling helpers with shared testutil helpers
 status: To Do
 assignee: []
 created_date: '2026-09-24 22:53'
-updated_date: '2026-09-24 22:53'
+updated_date: '2026-09-24 22:58'
 labels:
   - integration
   - cli
 dependencies:
   - HUM-138
+  - HUM-139
 modified_files:
   - internal/testutil/harness.go
   - integration/*_test.go
@@ -44,6 +45,10 @@ Procedure:
 5. Do not rename test functions or change assertions.
 
 Non-goals: renaming existing prefixes on non-generic helpers; splitting large test files; changing timeouts.
+
+Stop rules: this is a mechanical refactor. If a copy differs in behavior from the shared helper (a different poll interval that the test relies on, or a non-fatal return used from a goroutine), keep it and list it in Implementation Notes. Do not change the shared helper to fit one caller.
+
+Unrelated failures: if `task ci` or a package run fails in a test this task did not touch, rerun that package once. If the rerun passes, record both runs in Implementation Notes and continue; if it fails again, stop and report it. Do not fix unrelated tests in this task.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -4,6 +4,7 @@ title: Remove fixed timeouts that dominate the three slowest tests
 status: To Do
 assignee: []
 created_date: '2026-09-24 22:51'
+updated_date: '2026-09-24 22:59'
 labels:
   - integration
   - daemon
@@ -38,12 +39,16 @@ Procedure:
 Owner exception (2026-09-24): step 3 may reduce the iteration count and step 2 may shorten the stop grace. Neither counts as weakening as long as every assertion listed above remains.
 
 Non-goals: other slow tests (for example internal/cli TestAttachedRunInterruptLifecycle and TestEnsureDaemonWaitsForSequentialRecovery, whose waits are semantic); parallelizing packages (separate tasks); changing production defaults.
+
+Stop rules: each of the three changes is independent. If one cannot meet its AC without changing an assertion, land the other two, leave that test unchanged, and report why.
+
+Unrelated failures: if `task ci` or a package run fails in a test this task did not touch, rerun that package once. If the rerun passes, record both runs in Implementation Notes and continue; if it fails again, stop and report it. Do not fix unrelated tests in this task.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 AC1 — `go test ./integration -run "^TestSignalledLeaderWithSurvivingDescendant$" -count=1 -v` exits 0 and reports the test at 3.0s or less (10.24s baseline).
-- [ ] #2 AC2 — `go test ./internal/daemon -run "^TestEventHistoryAppendCost$" -count=1 -v` exits 0 and reports the test at 2.5s or less (8.71s baseline).
+- [ ] #2 AC2 — `go test ./internal/daemon -run "^TestEventHistoryAppendCost$" -count=1 -v` exits 0 and reports the test at 3.0s or less (8.71s baseline); the test appends at most 200 events.
 - [ ] #3 AC3 — `go test ./internal/daemon -run "^TestLaunchPersistenceFailureStopsChild$" -count=1 -v` exits 0 and reports the test at 1.5s or less (5.16s baseline).
 - [ ] #4 AC4 — `go test ./internal/app ./internal/daemon ./integration -count=1` exits 0.
 <!-- AC:END -->

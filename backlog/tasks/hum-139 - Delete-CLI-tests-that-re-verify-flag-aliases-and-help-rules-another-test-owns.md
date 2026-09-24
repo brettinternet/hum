@@ -4,7 +4,7 @@ title: Delete CLI tests that re-verify flag aliases and help rules another test 
 status: To Do
 assignee: []
 created_date: '2026-09-24 22:51'
-updated_date: '2026-09-24 22:52'
+updated_date: '2026-09-24 22:58'
 labels:
   - cli
 dependencies: []
@@ -41,6 +41,10 @@ Procedure:
 3. Delete the listed files and functions. Delete helpers that become unused; `go vet ./internal/cli ./cmd/hum` reports none.
 
 Non-goals: other surface tests (TestDocsReferenceRealCommandsAndFlags, TestDocsCoverEveryCommand, man, completion, machine-output v1 in both packages, skill tests), which are structural checks HUM-130 chose to keep; changing production code.
+
+Pre-check (2026-09-24): `go test ./internal/cli -count=1 -cover -skip '^(TestFlagAliasParityLifecycleCommands|TestFlagAliasParityReadCommands|TestHelpRenderedDescriptionBudget)$'` reported 79.7%, the same as the baseline, so AC4 should need no new tests. Stop rules: if an assertion has no owner and cannot be moved as a single parse-level or stub-daemon check, keep the original test and report it.
+
+Unrelated failures: if `task ci` or a package run fails in a test this task did not touch, rerun that package once. If the rerun passes, record both runs in Implementation Notes and continue; if it fails again, stop and report it. Do not fix unrelated tests in this task.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

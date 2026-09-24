@@ -4,7 +4,7 @@ title: Run independent internal/daemon tests in parallel
 status: To Do
 assignee: []
 created_date: '2026-09-24 22:52'
-updated_date: '2026-09-24 22:52'
+updated_date: '2026-09-24 22:58'
 labels:
   - daemon
 dependencies:
@@ -30,6 +30,10 @@ Procedure:
 4. Tests that depend on elapsed time, such as TestCloseCompletesWithStalledFollower (daemon_test.go:2135, which sleeps 1s to fill a socket), stay correct under load because their sleeps create a condition rather than race one. If one flakes, fix its synchronization rather than making it serial.
 
 Non-goals: parallelizing internal/app or internal/cli; changing assertions or production code.
+
+Stop rules: give each test that flakes under parallel load at most two fix attempts (a missing readiness wait or a fixed sleep). If it still flakes, leave it serial with `// Not parallel: flakes under parallel load: <symptom>` and move on. Do not raise shared timeout constants. If more than three tests end up serial, or AC1 is still missed after that, stop and report which tests set the critical path, their durations, and the core count of the machine, instead of iterating further.
+
+Unrelated failures: if `task ci` or a package run fails in a test this task did not touch, rerun that package once. If the rerun passes, record both runs in Implementation Notes and continue; if it fails again, stop and report it. Do not fix unrelated tests in this task.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

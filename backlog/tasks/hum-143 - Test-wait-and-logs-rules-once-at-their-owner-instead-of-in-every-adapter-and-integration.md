@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-24 22:54'
-updated_date: '2026-09-24 22:54'
+updated_date: '2026-09-24 22:58'
 labels:
   - cli
   - mcp
@@ -48,13 +48,17 @@ Procedure:
 3. Shrink the duplicates to their surface assertions.
 
 Non-goals: status, restart, readiness, stop grace, signal, and events tests; production code; other integration tests.
+
+Stop rules: default to keeping. If an assertion cannot be clearly classified as rule or surface, or its owner test is not obvious within the files named in the table, keep it and list it in Implementation Notes. Work only on the three table rows. Do not look for more duplicates.
+
+Unrelated failures: if `task ci` or a package run fails in a test this task did not touch, rerun that package once. If the rerun passes, record both runs in Implementation Notes and continue; if it fails again, stop and report it. Do not fix unrelated tests in this task.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 AC1 — `go test ./internal/app ./internal/output ./internal/daemon ./internal/cli ./internal/mcp ./integration -count=1` exits 0.
 - [ ] #2 AC2 — the coverage command in procedure step 1 reports total coverage no more than 0.5 points below the baseline recorded in Implementation Notes.
-- [ ] #3 AC3 — `git diff --numstat main -- integration/wait_test.go integration/terminal_control_test.go internal/cli/list_logs_test.go internal/mcp/tools_test.go` shows a combined net reduction of at least 120 lines.
+- [ ] #3 AC3 — `git diff --numstat main -- integration/wait_test.go integration/terminal_control_test.go internal/cli/list_logs_test.go internal/mcp/tools_test.go` shows a combined net reduction of at least 80 lines.
 <!-- AC:END -->
 
 ## Definition of Done
