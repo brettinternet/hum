@@ -4,10 +4,11 @@ title: Fold the cmd/hum built-binary test into the integration suite
 status: Done
 assignee: []
 created_date: '2026-09-23 21:53'
-updated_date: '2026-09-24 03:42'
+updated_date: '2026-09-24 12:42'
 labels:
   - tooling
   - integration
+  - reviewed
 milestone: m-4
 dependencies: []
 modified_files:
@@ -79,6 +80,8 @@ Pre-deletion assertion mapping: autostart child liveness/socket and repeat serve
 Commit 13f4d1f. AC#1: test ! -e cmd/hum/integration_test.go && ! rg -n TestBuiltBinaryIntegration --glob !backlog/** . exited 0. AC#2: rg -n go.test.integration.-run Taskfile.dist.yaml and task smoke exited 0 (selected integration and JSON v1 tests). AC#3: go test ./integration ./cmd/hum -count=1 exited 0. task ci exited 0 on commit 13f4d1f including race and smoke. An initial integration attempt hit a transient MCP next_cursor race and passed on rerun; initial task ci timed out in unchanged TestAttachStreamsBurstWithoutAborting under concurrent load, then passed twice including on final commit. Independent verifier PASS for AC1-3 and DoD #1,#3-6; missing AC evidence lines were its only finding and are now recorded. Review found no item-scoped defects. No other tests deleted or weakened; diff limited to declared paths; no protected gate modified. Next: merge 13f4d1f into main and finalize.
 
 Exact AC#2 command: rg -n "go test ./integration -run" Taskfile.dist.yaml (exit 0); task smoke (exit 0). Exact AC#1 command: test ! -e cmd/hum/integration_test.go && ! rg -n TestBuiltBinaryIntegration --glob "!backlog/**" . (exit 0).
+
+Review: coverage map and smoke verified on main (task smoke passes). Fixed the MCP next_cursor flake noted during implementation: TestMCPResolvedAndAdHocLifecycle waited only for the first stderr line, so idle-flushed partial fragments could advance next_cursor between MCP and CLI snapshots; it now waits for both partials (09d44ea, 15x pass). Other noted flake tracked by HUM-134. No further follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
