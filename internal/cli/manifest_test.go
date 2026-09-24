@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -622,7 +623,7 @@ func TestUpEmptyManifestValidatesInput(t *testing.T) {
 		args    []string
 		wantErr string
 	}{
-		{name: "arguments", ctx: context.Background(), args: []string{"up", "worker"}, wantErr: "up accepts no positional arguments"},
+		{name: "arguments", ctx: context.Background(), args: []string{"up", "worker"}, wantErr: "unknown process names: worker"},
 		{name: "malformed timeout", ctx: context.Background(), args: []string{"up", "--timeout", "invalid"}, wantErr: "timeout must be a valid duration"},
 		{name: "non-positive timeout", ctx: context.Background(), args: []string{"up", "--timeout", "0s"}, wantErr: "timeout must be positive"},
 		{name: "sub-millisecond timeout", ctx: context.Background(), args: []string{"up", "--timeout", "1us"}, wantErr: "timeout must be at least 1ms"},
@@ -1559,6 +1560,95 @@ processes:
 		if !strings.Contains(full, detail) {
 			t.Errorf("full up table missing readiness detail %q: %q", detail, full)
 		}
+	}
+}
+
+func TestUpNamedSelectsPrerequisites(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	runtimeParent := t.TempDir()
+	missingRuntime := filepath.Join(runtimeParent, "not-created")
+	t.Setenv("HUM_RUNTIME_DIR", missingRuntime)
+	timeline := filepath.Join(root, "timeline")
+	writeManifestCLITestFile(t, root, fmt.Sprintf(`version: 1
+processes:
+  db:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: db-ready}
+  api:
+    argv: [/bin/sh, -c, %s]
+    after: [db]
+    ready: {match: api-ready}
+  web:
+    argv: [/bin/sh, -c, %s]
+    after: [api]
+    ready: {match: web-ready}
+  worker:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: worker-ready}
+`, strconv.Quote(fmt.Sprintf("printf 'db\\n' >> %q; printf db-ready; sleep 30", timeline)), strconv.Quote(fmt.Sprintf("printf 'api\\n' >> %q; printf api-ready; sleep 30", timeline)), strconv.Quote("printf web-ready; sleep 30"), strconv.Quote("printf worker-ready; sleep 30")))
+
+	stdout, stderr, err := stopShutdownRun(t, "up", "nope", "--json")
+	if initCLIExitCode(err) != 1 || stderr != "" {
+		t.Fatalf("unknown named up: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	unknown := decodeJSONErrorObject(t, stdout)
+	if unknown.Code != string(jsonErrorUsage) || !strings.Contains(unknown.Message, "nope") {
+		t.Fatalf("unknown named up JSON error=%#v", unknown)
+	}
+	if _, err := os.Stat(missingRuntime); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unknown name created or contacted daemon runtime: %v", err)
+	}
+
+	server, runtimeDir := stopShutdownTestServer(t, 2*time.Second)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	t.Cleanup(func() {
+		for _, name := range []string{"api", "db", "web", "worker"} {
+			_, _, _ = stopShutdownRun(t, "stop", name)
+		}
+		_, _, _ = stopShutdownRun(t, "shutdown", "--stop-processes")
+	})
+
+	stdout, stderr, err = stopShutdownRun(t, "up", "api", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("named up api: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	results := manifestCLILaunchResults(t, stdout)
+	if len(results) != 2 || results[0].Name != "api" || results[1].Name != "db" || results[0].Outcome != "started" || results[1].Outcome != "started" {
+		t.Fatalf("named up results=%#v, want only api and db started", results)
+	}
+	active := stopShutdownListActive(t, server, root)
+	activeNames := make([]string, 0, len(active))
+	for _, process := range active {
+		activeNames = append(activeNames, process.Name)
+	}
+	sort.Strings(activeNames)
+	if !reflect.DeepEqual(activeNames, []string{"api", "db"}) {
+		t.Fatalf("named up active processes=%#v, want only api and db", active)
+	}
+	contents, err := os.ReadFile(timeline)
+	if err != nil || string(contents) != "db\napi\n" {
+		t.Fatalf("named up launch order=%q err=%v, want db then api", contents, err)
+	}
+
+	stdout, stderr, err = stopShutdownRun(t, "up", "api", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("repeated named up api: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	results = manifestCLILaunchResults(t, stdout)
+	if len(results) != 2 || results[0].Outcome != "already_running" || results[1].Outcome != "already_running" {
+		t.Fatalf("repeated named up results=%#v, want api and db already_running", results)
+	}
+
+	if _, _, err := stopShutdownRun(t, "stop", "api", "db"); err != nil {
+		t.Fatalf("stop selected processes before unnamed up: %v", err)
+	}
+	stdout, stderr, err = stopShutdownRun(t, "up", "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("unnamed up: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	results = manifestCLILaunchResults(t, stdout)
+	if len(results) != 4 || !reflect.DeepEqual([]string{results[0].Name, results[1].Name, results[2].Name, results[3].Name}, []string{"api", "db", "web", "worker"}) {
+		t.Fatalf("unnamed up results=%#v, want all four declarations", results)
 	}
 }
 

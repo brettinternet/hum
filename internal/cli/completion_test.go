@@ -128,7 +128,7 @@ processes:
 	stopShutdownStartProcess(t, server, otherRoot, "foreign", []string{"/bin/sh", "-c", "sleep 30"})
 
 	want := "alpha\nruntime\nzeta\n"
-	for _, command := range []string{"run", "start", "status", "logs", "wait", "input", "restart", "stop", "remove", "attach", "signal"} {
+	for _, command := range []string{"run", "start", "up", "status", "logs", "wait", "input", "restart", "stop", "remove", "attach", "signal"} {
 		t.Run(command, func(t *testing.T) {
 			stdout, stderr, err := runCompletionForTest(t, command, "--generate-shell-completion")
 			if err != nil {
@@ -140,9 +140,14 @@ processes:
 		})
 	}
 
+	stdout, stderr, err := runNamePositionCompletionForTest(t, "up", "--generate-shell-completion")
+	if err != nil || stdout != want || stderr != "" {
+		t.Fatalf("up NAME-position completion = err %v stdout %q stderr %q, want %q and no stderr", err, stdout, stderr, want)
+	}
+
 	// signal takes a signal name second, so only its first positional
 	// completes process names.
-	stdout, stderr, err := runCompletionForTest(t, "signal", "alpha", "--generate-shell-completion")
+	stdout, stderr, err = runCompletionForTest(t, "signal", "alpha", "--generate-shell-completion")
 	if err != nil {
 		t.Fatalf("completed signal name: %v", err)
 	}

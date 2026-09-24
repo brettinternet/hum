@@ -586,6 +586,81 @@ func TestOrchestrateUpRetainsRulesForAdapters(t *testing.T) {
 	})
 }
 
+func TestSelectWithPrerequisites(t *testing.T) {
+	nameOf := func(definitions []Definition) []string {
+		names := make([]string, len(definitions))
+		for index, definition := range definitions {
+			names[index] = definition.Name
+		}
+		return names
+	}
+
+	t.Run("chain preserves declaration order", func(t *testing.T) {
+		definitions := []Definition{
+			{Name: "db"},
+			{Name: "api", After: []string{"db"}},
+			{Name: "web", After: []string{"api"}},
+			{Name: "worker"},
+		}
+		selected, err := SelectWithPrerequisites(definitions, []string{"web"})
+		if err != nil || !reflect.DeepEqual(nameOf(selected), []string{"db", "api", "web"}) {
+			t.Fatalf("selected=%v err=%v, want [db api web]", nameOf(selected), err)
+		}
+	})
+
+	t.Run("diamond deduplicates shared prerequisite", func(t *testing.T) {
+		definitions := []Definition{
+			{Name: "base"},
+			{Name: "left", After: []string{"base"}},
+			{Name: "right", After: []string{"base"}},
+			{Name: "top", After: []string{"left", "right"}},
+			{Name: "unused"},
+		}
+		selected, err := SelectWithPrerequisites(definitions, []string{"top"})
+		if err != nil || !reflect.DeepEqual(nameOf(selected), []string{"base", "left", "right", "top"}) {
+			t.Fatalf("selected=%v err=%v, want [base left right top]", nameOf(selected), err)
+		}
+	})
+
+	t.Run("multiple names share prerequisites", func(t *testing.T) {
+		definitions := []Definition{
+			{Name: "base"},
+			{Name: "one", After: []string{"base"}},
+			{Name: "two", After: []string{"base"}},
+			{Name: "unused"},
+		}
+		selected, err := SelectWithPrerequisites(definitions, []string{"two", "one"})
+		if err != nil || !reflect.DeepEqual(nameOf(selected), []string{"base", "one", "two"}) {
+			t.Fatalf("selected=%v err=%v, want [base one two]", nameOf(selected), err)
+		}
+	})
+
+	t.Run("definition without after selects itself", func(t *testing.T) {
+		definitions := []Definition{{Name: "db"}, {Name: "api", After: []string{"db"}}}
+		selected, err := SelectWithPrerequisites(definitions, []string{"db"})
+		if err != nil || !reflect.DeepEqual(nameOf(selected), []string{"db"}) {
+			t.Fatalf("selected=%v err=%v, want [db]", nameOf(selected), err)
+		}
+	})
+
+	t.Run("all unknown names are reported together", func(t *testing.T) {
+		_, err := SelectWithPrerequisites([]Definition{{Name: "db"}}, []string{"missing-z", "missing-a", "missing-z"})
+		if err == nil || !strings.Contains(err.Error(), "missing-a") || !strings.Contains(err.Error(), "missing-z") {
+			t.Fatalf("unknown-name error=%v, want both unknown names", err)
+		}
+	})
+
+	t.Run("scheduler rejects an omitted prerequisite", func(t *testing.T) {
+		_, err := OrchestrateUp(context.Background(), UpOptions{
+			Definitions: []Definition{{Name: "db"}, {Name: "api", After: []string{"db"}}},
+			Names:       []string{"api"},
+		}, UpOperations{})
+		if err == nil || !strings.Contains(err.Error(), `"api"`) || !strings.Contains(err.Error(), `"db"`) {
+			t.Fatalf("missing-prerequisite error=%v, want api and db", err)
+		}
+	})
+}
+
 func TestEnsureStartsFromMissingProcess(t *testing.T) {
 	root := t.TempDir()
 	grace := time.Second

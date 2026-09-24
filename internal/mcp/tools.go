@@ -436,6 +436,11 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	upSchema["required"] = []string{"project_root"}
 	delete(upSchema, "allOf")
 	upSchema["properties"].(map[string]any)["scope"] = map[string]any{"type": "string", "const": protocol.ScopeProject, "default": protocol.ScopeProject, "description": "Process namespace; up supports project scope only."}
+	upSchema["properties"].(map[string]any)["names"] = map[string]any{
+		"type": "array", "minItems": 1, "uniqueItems": true,
+		"items":       map[string]any{"type": "string", "minLength": 1},
+		"description": "Optional unique declared process names; each selection includes its transitive after prerequisites. Omission selects every declaration.",
+	}
 	listSchema := objectSchema(map[string]any{"project_root": root, "manifest": manifest, "all": map[string]any{"type": "boolean", "description": "Include every project scope from project scope; default is false."}}, "project_root")
 	listSchema["allOf"] = append(listSchema["allOf"].([]any), map[string]any{
 		"not": map[string]any{
@@ -486,7 +491,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}, "events", "next_cursor", "truncated", "has_more")
 	definitions := []toolDefinition{
 		{Name: "start", Description: "Start one explicitly named resolved project definition through the hum daemon; manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml, and returns manifest_missing when a declaration is required. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. Retained records remain a fallback when no manifest declares the requested name. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. It never pulls in after prerequisites and waits for that definition's configured readiness by default. A running or recovery-capable manifest record whose argv, cwd, readiness matcher, tty, or restart policy changed returns definition_drift with sorted changed_fields and hum restart NAME guidance; only restart applies a changed definition. Manifest restart: on-failure uses bounded crash relaunches.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
-		{Name: "up", Description: "Start every selected project definition through the hum daemon in declared after dependency order; manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml, and returns manifest_missing when no retained manifest record can be reported. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. Independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Manifest-sourced running, pending-recovery, or exhausted records absent from the selected declarations are returned as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc records; removed records require an explicit stop or remove. no_wait is rejected before daemon contact when after is declared; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
+		{Name: "up", Description: "Start every resolved project definition when names is omitted, or start the unique named declarations plus their transitive after prerequisites when names is provided; results cover only that selected subgraph. manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml, and returns manifest_missing when no retained manifest record can be reported. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. Readiness results expose method, exact argv, interval, and bounded terminal diagnostic; exec uses direct argv without a shell, starts immediately, retries serially, inherits cwd/environment, and never retains probe output. Independent roots launch concurrently and each prerequisite must be observed ready before its dependent launches. Skips report sorted direct blocked_by names plus any retained existing_state and process snapshot without lifecycle mutation. A changed running or recovery-capable manifest record returns definition_drift with sorted changed_fields and hum restart NAME guidance. Only unnamed up reports manifest-sourced running, pending-recovery, or exhausted records absent from the current declarations as lexical removed_definition warnings with hum stop NAME or hum remove NAME guidance; these warnings do not change aggregate status and never include ad_hoc records. no_wait is rejected before daemon contact when the selected subgraph declares after; readiness timeouts begin per launch. During bounded on-failure recovery, an exited declaration returns recovery_pending or recovery_exhausted without a start request or waiting for an automatic successor. Use targeted start or restart to cancel recovery and launch immediately. Manifest restart: on-failure uses bounded crash relaunches. up supports project scope only and requires project_root.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop every running runtime record in the selected scope and return one result per name; does not shut down the daemon.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
 		{Name: "list", Description: "Merge selected stopped declarations with all daemon runtime records in the selected project scope, including readiness method, exact exec argv, interval, and bounded terminal diagnostic plus match output, and including ad_hoc records; retained records win by name. manifest optionally selects one exact file (relative to project_root or absolute inside it), while omission uses .hum.yaml when present, otherwise hum.yaml. Precedence is --file > .hum.yaml > hum.yaml; each file is complete, never merged, and invalid .hum.yaml fails closed. A missing default manifest still returns retained records or an empty result. Use all from project scope to inspect every project scope. Project scope is automatic from the directory, separate worktrees remain separate, and snapshots include scope project and canonical project_root.", InputSchema: listSchema, OutputSchema: collectionProcesses},
 		{Name: "status", Description: "Return one existing declared or ad_hoc runtime record with readiness method, exact exec argv, interval, and bounded terminal diagnostic when configured; match readiness retains match and cursor. This tool never creates a daemon. Snapshots include restart, relaunches, and pending next_launch_at.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
@@ -927,6 +932,39 @@ func validateToolInputFields(definition toolDefinition, raw json.RawMessage) err
 			if _, ok := value.(bool); !ok {
 				return invalid(fmt.Sprintf("field %q must be a boolean", field))
 			}
+		case "array":
+			items, ok := value.([]any)
+			if !ok {
+				return invalid(fmt.Sprintf("field %q must be an array", field))
+			}
+			if minimum, ok := schemaInteger(property["minItems"]); ok && int64(len(items)) < minimum {
+				return invalid(fmt.Sprintf("field %q must contain at least %d item(s)", field, minimum))
+			}
+			if maximum, ok := schemaInteger(property["maxItems"]); ok && int64(len(items)) > maximum {
+				return invalid(fmt.Sprintf("field %q must contain at most %d item(s)", field, maximum))
+			}
+			itemSchema, _ := property["items"].(map[string]any)
+			for index, item := range items {
+				if itemSchema["type"] == "string" {
+					text, ok := item.(string)
+					if !ok {
+						return invalid(fmt.Sprintf("field %q item %d must be a string", field, index+1))
+					}
+					if minimum, ok := schemaInteger(itemSchema["minLength"]); ok && int64(len([]rune(text))) < minimum {
+						return invalid(fmt.Sprintf("field %q item %d is too short", field, index+1))
+					}
+					if values, ok := itemSchema["enum"].([]string); ok && !containsString(values, text) {
+						return invalid(fmt.Sprintf("field %q item %d has an unsupported value", field, index+1))
+					}
+				}
+				if property["uniqueItems"] == true {
+					for previous := 0; previous < index; previous++ {
+						if reflect.DeepEqual(item, items[previous]) {
+							return invalid(fmt.Sprintf("field %q must not contain duplicate items", field))
+						}
+					}
+				}
+			}
 		case "integer":
 			number, ok := value.(json.Number)
 			if !ok {
@@ -1310,8 +1348,27 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		return nil, &ToolError{Code: "invalid_request", Message: "timeout_ms must be positive"}
 	}
 	definitions := append([]Definition(nil), resolution.Definitions...)
+	var selectedNames []string
+	if input.Names != nil {
+		sharedDefinitions := make([]orchestrate.Definition, 0, len(definitions))
+		byName := make(map[string]Definition, len(definitions))
+		for _, definition := range definitions {
+			sharedDefinitions = append(sharedDefinitions, mcpDefinition(definition))
+			byName[definition.Name] = definition
+		}
+		selected, err := orchestrate.SelectWithPrerequisites(sharedDefinitions, input.Names)
+		if err != nil {
+			return nil, &ToolError{Code: "invalid_request", Message: err.Error()}
+		}
+		definitions = make([]Definition, 0, len(selected))
+		selectedNames = make([]string, 0, len(selected))
+		for _, definition := range selected {
+			definitions = append(definitions, byName[definition.Name])
+			selectedNames = append(selectedNames, definition.Name)
+		}
+	}
 	if input.NoWait && definitionsHaveAfter(definitions) {
-		return nil, &ToolError{Code: "invalid_request", Message: "up no_wait is not allowed when definitions declare after dependencies"}
+		return nil, &ToolError{Code: "invalid_request", Message: "up no_wait is not allowed when the selected definitions declare after dependencies"}
 	}
 	if len(definitions) == 0 {
 		client, err := s.client(ctx, false)
@@ -1337,7 +1394,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		}
 		return results, nil
 	}
-	prepared, prepErr := s.prepareEnvironments(resolution)
+	prepared, prepErr := s.prepareEnvironments(resolution, selectedNames...)
 	if prepErr != nil {
 		return nil, mapError(prepErr)
 	}
@@ -1353,7 +1410,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		sharedDefinitions = append(sharedDefinitions, mcpDefinition(definition))
 	}
 	sharedResults, err := orchestrate.OrchestrateUp(ctx, orchestrate.UpOptions{
-		Root: resolution.Root, Definitions: sharedDefinitions, NoWait: input.NoWait,
+		Root: resolution.Root, Definitions: sharedDefinitions, Names: selectedNames, NoWait: input.NoWait,
 		TimeoutFor: func(definition orchestrate.Definition) (time.Duration, error) {
 			return mcpTimeoutDuration(input.TimeoutMS, definition)
 		},

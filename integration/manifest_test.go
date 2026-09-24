@@ -656,6 +656,53 @@ type manifestOutputResponse struct {
 	Truncated      bool                  `json:"truncated,omitempty"`
 }
 
+func TestUpNamedStack(t *testing.T) {
+	lifecycleRequireUnix(t)
+	hum := integrationHum(t)
+	projectRoot := t.TempDir()
+	runtimeDir := testutil.RuntimeDir(t)
+	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
+	manifest := fmt.Sprintf(`version: 1
+processes:
+  db:
+    argv: [/bin/sh, -c, %s]
+    ready: {match: db-ready}
+  api:
+    argv: [/bin/sh, -c, %s]
+    after: [db]
+    ready: {match: api-ready}
+  web:
+    argv: [/bin/sh, -c, %s]
+    after: [api]
+    ready: {match: web-ready}
+`, strconv.Quote("printf db-ready; sleep 30"), strconv.Quote("printf api-ready; sleep 30"), strconv.Quote("printf web-ready; sleep 30"))
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes") })
+
+	up := testutil.Run(t, hum, projectRoot, env, "up", "api", "--detach")
+	if up.Code != 0 || up.Err != nil {
+		t.Fatalf("named up = code %d err=%v stdout=%q stderr=%q", up.Code, up.Err, up.Stdout, up.Stderr)
+	}
+
+	status := testutil.Run(t, hum, projectRoot, env, "status", "--json")
+	if status.Code != 0 || status.Err != nil || status.Stderr != "" {
+		t.Fatalf("status --json = code %d err=%v stdout=%q stderr=%q", status.Code, status.Err, status.Stdout, status.Stderr)
+	}
+	var snapshot manifestListResponse
+	if err := json.Unmarshal([]byte(status.Stdout), &snapshot); err != nil {
+		t.Fatalf("decode status --json %q: %v", status.Stdout, err)
+	}
+	states := make(map[string]string, len(snapshot.Processes))
+	for _, process := range snapshot.Processes {
+		states[process.Name] = process.State
+	}
+	if len(states) != 3 || states["db"] != "running" || states["api"] != "running" || states["web"] != "stopped" {
+		t.Fatalf("status after named up = %#v, want db and api running and web stopped", states)
+	}
+}
+
 func TestUpOrderedStack(t *testing.T) {
 	lifecycleRequireUnix(t)
 	hum := integrationHum(t)

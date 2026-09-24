@@ -389,8 +389,11 @@ Human `hum up` has an attached interactive mode and bounded startup progress.
 - `wait` uses 0 for a match or an unfiltered exit, 1 for a request or usage error, 2 for
   timeout, and 3 when `--match` sees process exit first.
 - Interactive plain `up` follows aggregate output after successful startup. `--detach` waits for
-  readiness and returns, while `--no-wait` returns after spawn only for dependency-free manifests;
-  when any `after` is declared, `--no-wait` is rejected before daemon creation/contact.
+  readiness and returns, while `--no-wait` returns after spawn only when the selected subgraph has
+  no `after` dependencies; otherwise it is rejected before daemon creation/contact.
+- `up NAME...` selects the named resolved definitions and their transitive `after` prerequisites,
+  starts only that subgraph, and returns only its results. The selection preserves declaration order;
+  final results remain lexical. With no names, `up` retains its all-definitions behavior.
 - `start NAME...` remains explicitly named and concurrent but never adds or waits for transitive
   prerequisites.
 - `down` remains concurrent rather than reverse ordered.

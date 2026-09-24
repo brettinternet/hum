@@ -953,6 +953,62 @@ func copyReadinessConfig(config *ReadinessConfig) *ReadinessConfig {
 	return &copy
 }
 
+// SelectWithPrerequisites returns the requested definitions and their
+// transitive after prerequisites in declaration order.
+func SelectWithPrerequisites(definitions []Definition, names []string) ([]Definition, error) {
+	byName := make(map[string]Definition, len(definitions))
+	for _, definition := range definitions {
+		byName[definition.Name] = definition
+	}
+
+	unknown := make(map[string]struct{})
+	for _, name := range names {
+		if _, ok := byName[name]; !ok {
+			unknown[name] = struct{}{}
+		}
+	}
+	if len(unknown) != 0 {
+		unknownNames := make([]string, 0, len(unknown))
+		for name := range unknown {
+			unknownNames = append(unknownNames, name)
+		}
+		sort.Strings(unknownNames)
+		return nil, fmt.Errorf("unknown process names: %s", strings.Join(unknownNames, ", "))
+	}
+
+	selected := make(map[string]struct{}, len(names))
+	var include func(string) error
+	include = func(name string) error {
+		if _, ok := selected[name]; ok {
+			return nil
+		}
+		definition := byName[name]
+		selected[name] = struct{}{}
+		for _, dependency := range definition.After {
+			if _, ok := byName[dependency]; !ok {
+				return fmt.Errorf("definition %q requires undeclared prerequisite %q", name, dependency)
+			}
+			if err := include(dependency); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, name := range names {
+		if err := include(name); err != nil {
+			return nil, err
+		}
+	}
+
+	selectedDefinitions := make([]Definition, 0, len(selected))
+	for _, definition := range definitions {
+		if _, ok := selected[definition.Name]; ok {
+			selectedDefinitions = append(selectedDefinitions, copyDefinition(definition))
+		}
+	}
+	return selectedDefinitions, nil
+}
+
 // OrchestrateUp executes the shared concurrent DAG scheduler and returns
 // lexical results regardless of temporal launch completion order.
 func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]Result, error) {
@@ -974,7 +1030,7 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Name < filtered[j].Name })
 	if len(filtered) == 0 {
-		if ops.List == nil {
+		if ops.List == nil || options.Names != nil {
 			return []Result{}, nil
 		}
 		processes, err := ops.List(ctx)
@@ -990,6 +1046,13 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 	for index, definition := range filtered {
 		byName[definition.Name] = index
 		results[index].Name = definition.Name
+	}
+	for _, definition := range filtered {
+		for _, dependency := range definition.After {
+			if _, ok := byName[dependency]; !ok {
+				return nil, fmt.Errorf("definition %q requires prerequisite %q, but it is not included in up", definition.Name, dependency)
+			}
+		}
 	}
 	var mu sync.Mutex
 	cond := sync.NewCond(&mu)
@@ -1128,7 +1191,7 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 	}
 	workers.Wait()
 
-	if ops.List != nil {
+	if ops.List != nil && options.Names == nil {
 		processes, err := ops.List(ctx)
 		if err != nil {
 			return nil, err

@@ -111,12 +111,12 @@ parser remains authoritative.
 | You want a broad manager for project services, configured in layered `pitchfork.toml`. | You want a narrow process API for tools and coding agents to start, observe, wait on, and type into processes. |
 | Shell commands, templating such as `{{ daemons.redis.port }}`, and service orchestration fit your setup. | You need exact argv without a shell string. |
 | You need port assignment, a reverse proxy with stable per-worktree hostnames, boot start, cron, `cd` autostart, file-watch restarts, health checks, retries, or lifecycle hooks. | You want each worktree isolated by its canonical Git root, without namespace configuration. |
-| You need oneshot setup tasks to finish successfully before dependents start, or `pitchfork start api` to start dependencies. | You need retained logs with stable cursors, `--match`, context, and byte bounds. `hum wait --match` waits for matching output or exit. |
+| You need oneshot setup tasks to finish successfully before dependents start. | You need `hum up NAME...` to start selected declarations with their transitive `after` prerequisites. |
 | You want a TUI or web UI, or SQLite log history with search. | You need one-shot TTY input through `hum input` or MCP, with a single input owner. |
 | Five MCP tools for status, start, stop, restart, and recent logs are enough. | You need 13 MCP tools with closed schemas, including `wait`, `input`, `signal`, and `events`, plus versioned CLI JSON and read-only `hum doctor`. |
 | You need builds for macOS, Linux, and Windows. | macOS and Linux are supported today; native Windows support is planned. |
 
-Hum does not yet run one-shot setup tasks before dependents, and `hum up` currently starts every declared process. The planned `hum up NAME...` will start the named processes together with their prerequisites. Hum has no UI of its own; Herdr supplies panes.
+Hum does not yet run one-shot setup tasks before dependents. `hum up` starts every declared process, while `hum up NAME...` starts only the named declarations and their transitive `after` prerequisites. Hum has no UI of its own; Herdr supplies panes.
 
 The tools can coexist. Hum reads a private `.hum.yaml` before `hum.yaml`, and `.hum.yaml` suits Git ignore rules. You can use Hum in a repository that commits `pitchfork.toml` without adding shared Hum configuration. Teammates can keep using pitchfork.
 
@@ -164,10 +164,12 @@ processes:
       match: "Local:"
 ```
 
-`hum up` starts in dependency order and follows output. Once startup completes, Ctrl+C detaches
-and `hum down` stops; the daemon owns the processes, so closing the follower never kills them.
-Ctrl+C during startup aborts instead and stops what that `hum up` launched.
-Use `hum up --detach` to wait and return, or `hum up --full` for full readiness details.
+`hum up` starts every declaration in dependency order; `hum up NAME...` starts only those declarations
+and their transitive `after` prerequisites, reporting results for that subgraph. Both follow output.
+Once startup completes, Ctrl+C detaches and `hum down` stops; the daemon owns the processes, so closing
+the follower never kills them. Ctrl+C during startup aborts instead and stops what that `hum up` launched.
+Use `hum up api --detach` to start one process with its prerequisites and wait for readiness, or
+`hum up --detach` for the full manifest. `--full` shows full readiness details.
 
 For checks that do not emit a reliable startup message, use an executable probe. Exit status 0 marks the process ready. For example, check PostgreSQL inside Docker Compose:
 
@@ -217,7 +219,8 @@ hum down
 
 `hum status` shows a compact project overview. `hum status NAME` adds readiness and diagnostics.
 
-`hum start NAME` does not start dependencies. `ready.exec` runs exact argv without a shell, inherits
+`hum start NAME` does not start dependencies; named `hum up` does. `hum up --no-wait` is rejected
+only when the selected subgraph declares `after`. `ready.exec` runs exact argv without a shell, inherits
 cwd/env, and retries every second by default; `ready.http` and `ready.tcp` run in-process with the
 same retry policy. All readiness methods gate startup, not liveness. `hum down` stops project
 processes concurrently. See [design and command semantics](docs/design.md).

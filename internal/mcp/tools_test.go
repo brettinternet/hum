@@ -1362,6 +1362,92 @@ func TestStartUp(t *testing.T) {
 	}
 }
 
+func TestUpNames(t *testing.T) {
+	definitions := []Definition{
+		{Name: "db", Source: "hum.yaml", Argv: []string{"db"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "db-ready"}},
+		{Name: "api", Source: "hum.yaml", Argv: []string{"api"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "api-ready"}, After: []string{"db"}},
+		{Name: "web", Source: "hum.yaml", Argv: []string{"web"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "web-ready"}, After: []string{"api"}},
+		{Name: "worker", Source: "hum.yaml", Argv: []string{"worker"}, Cwd: ".", Ready: &protocol.ReadinessConfig{Match: "worker-ready"}},
+	}
+	client := &fakeClient{processes: map[string]protocol.Process{
+		"worker": {Name: "worker", Source: "hum.yaml", State: protocol.StateRunning},
+	}}
+	server, root, ensures := newTestServer(t, definitions, client)
+
+	var upDefinition toolDefinition
+	for _, definition := range server.toolDefinitions() {
+		if definition.Name == "up" {
+			upDefinition = definition
+			break
+		}
+	}
+	namesSchema := upDefinition.InputSchema["properties"].(map[string]any)["names"].(map[string]any)
+	if upDefinition.InputSchema["additionalProperties"] != false || namesSchema["type"] != "array" || namesSchema["minItems"] != 1 || namesSchema["uniqueItems"] != true || namesSchema["items"].(map[string]any)["minLength"] != 1 {
+		t.Fatalf("up names schema=%#v", namesSchema)
+	}
+
+	value, err := server.callTool(context.Background(), "up", args(root, "names", []string{"api"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := value.([]launchResult)
+	if len(results) != 2 || results[0].Name != "api" || results[1].Name != "db" {
+		t.Fatalf("named up results=%#v, want only api and db", results)
+	}
+	if len(client.starts) != 2 || client.starts[0].Name != "db" || client.starts[1].Name != "api" {
+		t.Fatalf("named up start order=%#v, want db then api", client.starts)
+	}
+	for _, result := range results {
+		if result.Outcome != "started" {
+			t.Fatalf("named up result=%#v, want started", result)
+		}
+	}
+	if len(client.lists) != 0 {
+		t.Fatalf("named up listed the full project and could report unselected records: %#v", client.lists)
+	}
+
+	repeated, err := server.callTool(context.Background(), "up", args(root, "names", []string{"api"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeatedResults := repeated.([]launchResult)
+	if len(repeatedResults) != 2 || repeatedResults[0].Outcome != "already_running" || repeatedResults[1].Outcome != "already_running" || len(client.starts) != 2 {
+		t.Fatalf("repeated named up results=%#v starts=%#v", repeatedResults, client.starts)
+	}
+
+	beforeStarts := len(client.starts)
+	for _, invalid := range []struct {
+		name string
+		args json.RawMessage
+	}{
+		{name: "empty", args: args(root, "names", []any{})},
+		{name: "duplicate", args: args(root, "names", []any{"api", "api"})},
+		{name: "non-string", args: args(root, "names", []any{"api", 1})},
+	} {
+		if _, err := server.callTool(context.Background(), "up", invalid.args); err == nil || mapError(err).Code != "invalid_request" {
+			t.Fatalf("%s names error=%v, want invalid_request", invalid.name, err)
+		}
+	}
+	if len(*ensures) != 2 || len(client.starts) != beforeStarts || len(client.lists) != 0 {
+		t.Fatalf("invalid names contacted daemon: ensures=%v starts=%#v lists=%#v", *ensures, client.starts, client.lists)
+	}
+
+	unknown, err := server.callTool(context.Background(), "up", args(root, "names", []string{"missing-z", "missing-a"}))
+	if err == nil || mapError(err).Code != "invalid_request" || !strings.Contains(err.Error(), "missing-a") || !strings.Contains(err.Error(), "missing-z") {
+		t.Fatalf("unknown names result=%#v error=%v", unknown, err)
+	}
+	if len(*ensures) != 2 || len(client.starts) != beforeStarts {
+		t.Fatalf("unknown names contacted daemon: ensures=%v starts=%#v", *ensures, client.starts)
+	}
+
+	noWaitClient := &fakeClient{}
+	noWaitServer, noWaitRoot, noWaitEnsures := newTestServer(t, definitions, noWaitClient)
+	noWait, err := noWaitServer.callTool(context.Background(), "up", args(noWaitRoot, "names", []string{"worker"}, "no_wait", true))
+	if err != nil || len(noWait.([]launchResult)) != 1 || noWait.([]launchResult)[0].Name != "worker" || len(noWaitClient.starts) != 1 || noWaitClient.starts[0].Name != "worker" || len(*noWaitEnsures) != 1 {
+		t.Fatalf("dependency-free named no_wait=%#v ensures=%v starts=%#v err=%v", noWait, *noWaitEnsures, noWaitClient.starts, err)
+	}
+}
+
 func TestUpRejectsNoWaitWithDependencies(t *testing.T) {
 	client := &fakeClient{}
 	definitions := []Definition{

@@ -139,11 +139,12 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 			},
 		},
 		{
-			Name:        "up",
-			Usage:       "ensure manifest processes are running",
-			UsageText:   "hum up [--detach] [--no-wait] [--timeout DURATION] [--full] [--json]",
-			ArgsUsage:   "",
-			Description: "Launch independent roots concurrently, gate dependents on readiness, and continue after failures; --full expands the NAME, RESULT, STATE, and PID summary; see docs/design.md. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C aborts startup, stopping what it launched.\n\nExamples:\n  hum up",
+			Name:          "up",
+			Usage:         "ensure manifest processes are running",
+			UsageText:     "hum up [NAME...] [--detach] [--no-wait] [--timeout DURATION] [--full] [--json]",
+			ArgsUsage:     "[NAME...]",
+			ShellComplete: completeProcessNames,
+			Description:   "No names starts all definitions; named selection starts definitions and transitive after prerequisites. --full expands readiness details. Exit codes: 0 success; exit 1 for request error or definition drift; exit 2 for readiness timeout; exit 3 for early exit or recovery not running; exit 130 when Ctrl+C aborts startup, stopping what it launched.\n\nExamples:\n  hum up\n  hum up api --detach",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "detach", Aliases: []string{"d"}, DefaultText: "false", Usage: "wait for readiness and return instead of following process output"},
 				&urfavecli.BoolFlag{Name: "no-wait", DefaultText: "false", Usage: "return after spawn without following output; default waits for readiness"},
@@ -2965,9 +2966,7 @@ func startCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 
 func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
 	followSince := time.Now()
-	if err := requireNoArgs(cmd, "up"); err != nil {
-		return err
-	}
+	requestedNames := cmd.Args().Slice()
 	selection, err := selectedProjectDirectory(cmd)
 	if err != nil {
 		return err
@@ -3000,12 +2999,26 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 		}
 	}
 	names := make([]string, 0, len(manifest.defs))
-	for _, definition := range manifest.defs {
-		names = append(names, definition.Name)
+	if len(requestedNames) == 0 {
+		for _, definition := range manifest.defs {
+			names = append(names, definition.Name)
+		}
+	} else {
+		sharedDefinitions := make([]orchestrate.Definition, 0, len(manifest.defs))
+		for _, definition := range manifest.defs {
+			sharedDefinitions = append(sharedDefinitions, cliOrchestrateDefinition(definition))
+		}
+		selectedDefinitions, selectErr := orchestrate.SelectWithPrerequisites(sharedDefinitions, requestedNames)
+		if selectErr != nil {
+			return newCLIUsageError(selectErr)
+		}
+		for _, definition := range selectedDefinitions {
+			names = append(names, definition.Name)
+		}
 	}
 	manifest.selector = selection.selector
-	if cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
-		return newCLIUsageError(fmt.Errorf("hum up --no-wait is not allowed when %s declares after dependencies", manifestDisplayName(manifest)))
+	if cmd.Bool("no-wait") && manifestNamesHaveAfter(manifest, names) {
+		return newCLIUsageError(fmt.Errorf("hum up --no-wait is not allowed when the selected subgraph in %s declares after dependencies", manifestDisplayName(manifest)))
 	}
 	return manifestLaunchCommandWithStateMode(ctx, cmd, version, buildTime, writer, manifest, names, true, true, errWriter, noCandidateErr, followSince)
 }
@@ -3206,14 +3219,14 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	if manifest.selector == "" {
 		manifest.selector = selection.selector
 	}
-	if ordered && cmd.Bool("no-wait") && manifestHasAfter(manifest.defs) {
-		return newCLIUsageError(fmt.Errorf("hum up --no-wait is not allowed when %s declares after dependencies", manifestDisplayName(manifest)))
+	if ordered && cmd.Bool("no-wait") && manifestNamesHaveAfter(manifest, names) {
+		return newCLIUsageError(fmt.Errorf("hum up --no-wait is not allowed when the selected subgraph in %s declares after dependencies", manifestDisplayName(manifest)))
 	}
 	timeoutOverride, err := manifestTimeoutOverride(cmd)
 	if err != nil {
 		return newCLIUsageError(err)
 	}
-	if err := prepareManifestEnvironments(&manifest, names, os.Environ(), ordered); err != nil {
+	if err := prepareManifestEnvironments(&manifest, names, os.Environ(), false); err != nil {
 		return err
 	}
 	cfg, err := cliConfig(cmd, version, buildTime)
@@ -3282,7 +3295,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	launched := &upLaunchRecorder{}
 	if ordered {
 		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, timeoutOverride, preserveRecovery, progress, launched)
-		if err == nil {
+		if err == nil && cmd.Args().Len() == 0 {
 			var removed []manifestLaunchResult
 			removed, err = removedManifestResults(ctx, client, manifest)
 			results = append(results, removed...)
@@ -3505,9 +3518,9 @@ func stopInterruptedUpLaunches(client *daemon.Client, manifest manifestState, la
 	return err
 }
 
-func manifestHasAfter(definitions []project.Definition) bool {
-	for _, definition := range definitions {
-		if len(definition.After) != 0 {
+func manifestNamesHaveAfter(manifest manifestState, names []string) bool {
+	for _, name := range names {
+		if definition, ok := manifest.byName[name]; ok && len(definition.After) != 0 {
 			return true
 		}
 	}

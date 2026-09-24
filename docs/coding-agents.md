@@ -114,14 +114,17 @@ SSH authentication and host-key verification must already work without prompts. 
 
 Tool calls accept `scope`: omit it for project scope and provide the absolute `project_root`; use `scope: "global"` without `project_root` for retained global sessions. `up` supports project scope only. Use `list` with `all: true` only from project scope; it includes global records.
 
-The definition-resolving MCP tools `start`, `up`, `restart`, and `list` optionally accept `manifest`. A relative path is resolved from `project_root`; an absolute path must remain inside it. Explicit selection loads exactly that validated file, while omission uses `.hum.yaml` when present, otherwise `hum.yaml`; a missing default returns `manifest_missing` for declaration-requiring tools. Defaults are complete files with no merging, and an invalid `.hum.yaml` fails closed. The project-root namespace, project-root-relative child cwd, environment inheritance, and stable `manifest:<project-root-relative path>` source remain unchanged. `start` and `restart` fall back to a retained record when the selected file does not declare the requested name; `up` reports retained manifest records removed from the selected declarations, and `list` merges selected stopped declarations with retained records, with retained records winning by name. `manifest` is rejected with `invalid_request` for `down`, `status`, `logs`, `wait`, `input`, `stop`, `remove`, and `signal`, and for every global-scope call.
+The definition-resolving MCP tools `start`, `up`, `restart`, and `list` optionally accept `manifest`. A relative path is resolved from `project_root`; an absolute path must remain inside it. Explicit selection loads exactly that validated file, while omission uses `.hum.yaml` when present, otherwise `hum.yaml`; a missing default returns `manifest_missing` for declaration-requiring tools. Defaults are complete files with no merging, and an invalid `.hum.yaml` fails closed. The project-root namespace, project-root-relative child cwd, environment inheritance, and stable `manifest:<project-root-relative path>` source remain unchanged. `start` and `restart` fall back to a retained record when the selected file does not declare the requested name; unnamed `up` reports retained manifest records removed from the declarations, and `list` merges selected stopped declarations with retained records, with retained records winning by name. `manifest` is rejected with `invalid_request` for `down`, `status`, `logs`, `wait`, `input`, `stop`, `remove`, and `signal`, and for every global-scope call.
 
-Each tool rejects fields outside its advertised closed input schema before project resolution or daemon contact. Aggregate `up` and `down` do not accept `name`.
+Each tool rejects fields outside its advertised closed input schema before project resolution or daemon contact. MCP `up` accepts an optional `names` array of unique non-empty declared process names; `down` does not accept `name`.
 
 - Prefer `up` over sequencing `start` calls when `hum.yaml` declares `after`: independent roots
   launch concurrently, each dependency waits for readiness, and each process timeout starts at
   its launch or first running observation; final results are lexical.
 - `up` reports `skipped` with sorted direct `blocked_by` names when a prerequisite fails.
+- CLI `hum up NAME...` and MCP `up` with `names` select only those declarations and their
+  transitive `after` prerequisites, and return results only for that subgraph. Omit names to retain
+  full-manifest `up` behavior.
 - A skip may include read-only `existing_state` and process snapshot data; it still means no
   launch occurred and still blocks dependents.
 - A changed running or recovery-capable manifest record returns `definition_drift` with sorted
@@ -134,12 +137,12 @@ Each tool rejects fields outside its advertised closed input schema before proje
   run serially with the configured interval (1s by default), using the launched cwd and environment.
   Only one bounded last-attempt diagnostic is exposed on terminal results; probe output is never
   retained. Readiness gates startup and `after`, not liveness monitoring.
-- A removed manifest-sourced running or recovery-capable record returns `removed_definition`
-  with `hum stop NAME` or `hum remove NAME` guidance; it is lexical and does not change
-  aggregate status, and ad-hoc/discovered records are excluded; removed records require an
-  explicit stop or remove.
-- CLI `up --no-wait` and MCP `no_wait: true` are rejected before daemon contact for such a
-  manifest.
+- Unnamed `up` reports removed manifest-sourced running or recovery-capable records as
+  `removed_definition` with `hum stop NAME` or `hum remove NAME` guidance; these lexical warnings
+  do not change aggregate status, exclude ad-hoc/discovered records, and require explicit stop or
+  remove. Named `up` reports only its selected subgraph.
+- CLI `up --no-wait` and MCP `no_wait: true` are rejected before daemon contact only when the
+  selected subgraph declares `after` dependencies.
 - `start` remains explicitly named and never pulls in prerequisites.
 - If an `on-failure` prerequisite is recovering, rerun `up` after it is ready rather than
   expecting the same invocation to follow its successor.

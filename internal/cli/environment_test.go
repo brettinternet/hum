@@ -38,7 +38,7 @@ func TestManifestEnvironmentPreflightContract(t *testing.T) {
 		}
 	})
 
-	t.Run("dependency closure", func(t *testing.T) {
+	t.Run("preflight uses the selected subgraph", func(t *testing.T) {
 		root := t.TempDir()
 		large := strings.Repeat("x", 4<<20)
 		manifest := manifestState{root: root, defs: []project.Definition{
@@ -48,8 +48,8 @@ func TestManifestEnvironmentPreflightContract(t *testing.T) {
 		if err := prepareManifestEnvironments(&manifest, []string{"api"}, []string{"PATH=/bin"}, false); err != nil {
 			t.Fatalf("targeted preflight loaded dependency: %v", err)
 		}
-		if err := prepareManifestEnvironments(&manifest, []string{"api"}, []string{"PATH=/bin"}, true); err == nil || !strings.Contains(err.Error(), "4 MiB") {
-			t.Fatalf("up dependency preflight error=%v", err)
+		if err := prepareManifestEnvironments(&manifest, []string{"dependency", "api"}, []string{"PATH=/bin"}, false); err == nil || !strings.Contains(err.Error(), "4 MiB") {
+			t.Fatalf("selected dependency preflight error=%v", err)
 		}
 	})
 

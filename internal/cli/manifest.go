@@ -92,31 +92,25 @@ func prepareManifestEnvironments(manifest *manifestState, names []string, baseli
 		return nil
 	}
 	manifest.baseline = append([]string(nil), baseline...)
+	if includeDependencies && len(names) != 0 {
+		sharedDefinitions := make([]orchestrate.Definition, 0, len(manifest.defs))
+		for _, definition := range manifest.defs {
+			sharedDefinitions = append(sharedDefinitions, cliOrchestrateDefinition(definition))
+		}
+		selectedDefinitions, err := orchestrate.SelectWithPrerequisites(sharedDefinitions, names)
+		if err != nil {
+			return err
+		}
+		names = make([]string, 0, len(selectedDefinitions))
+		for _, definition := range selectedDefinitions {
+			names = append(names, definition.Name)
+		}
+	}
 	selected := manifest.defs
 	if len(names) != 0 {
-		byName := make(map[string]project.Definition, len(manifest.defs))
-		for _, definition := range manifest.defs {
-			byName[definition.Name] = definition
-		}
 		wanted := make(map[string]bool, len(names))
-		var include func(string)
-		include = func(name string) {
-			if wanted[name] {
-				return
-			}
-			definition, ok := byName[name]
-			if !ok {
-				return
-			}
-			wanted[name] = true
-			if includeDependencies {
-				for _, dependency := range definition.After {
-					include(dependency)
-				}
-			}
-		}
 		for _, name := range names {
-			include(name)
+			wanted[name] = true
 		}
 		selected = make([]project.Definition, 0, len(wanted))
 		for _, definition := range manifest.defs {
