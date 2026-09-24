@@ -1534,6 +1534,10 @@ func TestUpNames(t *testing.T) {
 	}
 
 	beforeStarts := len(client.starts)
+	tooManyNames := make([]any, 2001)
+	for index := range tooManyNames {
+		tooManyNames[index] = fmt.Sprintf("name-%d", index)
+	}
 	for _, invalid := range []struct {
 		name string
 		args json.RawMessage
@@ -1545,6 +1549,9 @@ func TestUpNames(t *testing.T) {
 		if _, err := server.callTool(context.Background(), "up", invalid.args); err == nil || mapError(err).Code != "invalid_request" {
 			t.Fatalf("%s names error=%v, want invalid_request", invalid.name, err)
 		}
+	}
+	if _, err := server.callTool(context.Background(), "up", args(root, "names", tooManyNames)); err == nil || !strings.Contains(err.Error(), "at most 2000") {
+		t.Fatalf("oversized names error=%v, want maxItems rejection", err)
 	}
 	if len(*ensures) != 2 || len(client.starts) != beforeStarts || len(client.lists) != 0 {
 		t.Fatalf("invalid names contacted daemon: ensures=%v starts=%#v lists=%#v", *ensures, client.starts, client.lists)

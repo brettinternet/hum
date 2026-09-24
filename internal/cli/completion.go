@@ -338,6 +338,10 @@ func completionProcessNames(ctx context.Context, command *urfavecli.Command) []s
 			return nil
 		}
 	}
+	// Named up accepts declarations only, never runtime-only sessions.
+	if command.Name == "up" {
+		return completionManifestNames(manifest)
+	}
 
 	cfg, err := cliConfig(command, "", "")
 	if err != nil {

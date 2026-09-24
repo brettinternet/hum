@@ -128,21 +128,27 @@ processes:
 	stopShutdownStartProcess(t, server, otherRoot, "foreign", []string{"/bin/sh", "-c", "sleep 30"})
 
 	want := "alpha\nruntime\nzeta\n"
+	// Named up accepts declarations only, so it omits the runtime-only session.
+	wantUp := "alpha\nzeta\n"
 	for _, command := range []string{"run", "start", "up", "status", "logs", "wait", "input", "restart", "stop", "remove", "attach", "signal"} {
 		t.Run(command, func(t *testing.T) {
+			wantNames := want
+			if command == "up" {
+				wantNames = wantUp
+			}
 			stdout, stderr, err := runCompletionForTest(t, command, "--generate-shell-completion")
 			if err != nil {
 				t.Fatalf("%s completion: %v", command, err)
 			}
-			if stdout != want || stderr != "" {
-				t.Fatalf("%s completion = stdout %q stderr %q, want %q and no stderr", command, stdout, stderr, want)
+			if stdout != wantNames || stderr != "" {
+				t.Fatalf("%s completion = stdout %q stderr %q, want %q and no stderr", command, stdout, stderr, wantNames)
 			}
 		})
 	}
 
 	stdout, stderr, err := runNamePositionCompletionForTest(t, "up", "--generate-shell-completion")
-	if err != nil || stdout != want || stderr != "" {
-		t.Fatalf("up NAME-position completion = err %v stdout %q stderr %q, want %q and no stderr", err, stdout, stderr, want)
+	if err != nil || stdout != wantUp || stderr != "" {
+		t.Fatalf("up NAME-position completion = err %v stdout %q stderr %q, want %q and no stderr", err, stdout, stderr, wantUp)
 	}
 
 	// signal takes a signal name second, so only its first positional

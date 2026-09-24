@@ -437,7 +437,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	delete(upSchema, "allOf")
 	upSchema["properties"].(map[string]any)["scope"] = map[string]any{"type": "string", "const": protocol.ScopeProject, "default": protocol.ScopeProject, "description": "Process namespace; up supports project scope only."}
 	upSchema["properties"].(map[string]any)["names"] = map[string]any{
-		"type": "array", "minItems": 1, "uniqueItems": true,
+		"type": "array", "minItems": 1, "maxItems": 2000, "uniqueItems": true,
 		"items":       map[string]any{"type": "string", "minLength": 1},
 		"description": "Optional unique declared process names; each selection includes its transitive after prerequisites. Omission selects every declaration.",
 	}
