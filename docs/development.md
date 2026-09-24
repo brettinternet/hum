@@ -44,11 +44,12 @@ Use the smallest check that covers your change.
 | `task changelog` | preview or regenerate `CHANGELOG.md` |
 | `task ci` | the full gate: security, checks, tests, race tests, and release smoke tests |
 
-The `task ci` smoke step builds the binary and `hum(1)` manual, then runs the integration lifecycle
-and CLI JSON v1 contract tests against the built binary. GitHub Actions runs the same gates on Linux
-and macOS, with race tests in parallel, a Go build and module cache keyed by OS, Go version, and
-`go.sum`, and `GOFLAGS=-count=1` so test results are never reused. `task stress` is not part of
-`task ci`; it runs daily on Linux and macOS (`.github/workflows/stress.yaml`) and on manual dispatch.
+The `task ci` smoke step builds the binary and `hum(1)` manual page, checks the manual page, and
+runs the built binary once with `--version`. Integration and CLI JSON v1 contract tests run in
+`task test`. GitHub Actions runs the same gates on Linux and macOS, with race tests in parallel,
+a Go build and module cache keyed by OS, Go version, and `go.sum`, and `GOFLAGS=-count=1` so test
+results are never reused. `task stress` is not part of `task ci`; it runs daily on Linux and macOS
+(`.github/workflows/stress.yaml`) and on manual dispatch.
 
 ## Toolchain
 

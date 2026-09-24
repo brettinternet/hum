@@ -87,11 +87,10 @@ tasks:
     cmd: mise exec go -- go test -race -count=5 -shuffle=on -failfast ./integration ./internal/cli ./internal/daemon ./internal/app ./internal/mcp
 
   smoke:
-    desc: Build release outputs and run built-binary smoke coverage
+    desc: Build release outputs and run the built binary
     deps:
       - task: cli:build
       - task: cli:man
     cmds:
       - test -s dist/hum.1
-      - mise exec go -- go test ./integration -run '^(TestAutomaticStartup|TestDetachedServe|TestForegroundServe|TestAttachedRunForegroundLifecycle|TestDetachedRun|TestNDJSONFollow|TestStopTree|TestShutdown)$' -count=1
-      - mise exec go -- go test ./cmd/hum -run '^TestBuiltCLIMachineOutputV1$' -count=1
+      - bin/hum --version
