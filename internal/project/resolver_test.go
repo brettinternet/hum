@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -957,8 +958,16 @@ func TestPrivateManifest(t *testing.T) {
 	t.Run("UnreadablePrivateNoFallback", func(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "hum.yaml", manifest("shared", "shared"), 0o600)
-		path := writeDiscoveryFile(t, root, ".hum.yaml", manifest("private", "private"), 0)
-		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+		if runtime.GOOS == "windows" {
+			// Chmod cannot deny reads on Windows; a non-file private path
+			// still proves resolution must not fall back to hum.yaml.
+			if err := os.Mkdir(filepath.Join(root, ".hum.yaml"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			path := writeDiscoveryFile(t, root, ".hum.yaml", manifest("private", "private"), 0)
+			t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+		}
 		invalid(t, root)
 	})
 	t.Run("SymlinkPrivateNoFallback", func(t *testing.T) {

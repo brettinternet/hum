@@ -83,12 +83,13 @@ type Result struct {
 // Child is one started process and the private Job Object that owns its
 // descendants.
 type Child struct {
-	pid            int
-	pgid           int
-	startIdentity  string
-	processHandle  windows.Handle
-	jobHandle      windows.Handle
-	ownedJobHandle windows.Handle // retained proof independent of the operational handle
+	pid             int
+	pgid            int
+	startIdentity   string
+	processHandle   windows.Handle
+	jobHandle       windows.Handle
+	launchJobHandle windows.Handle // original handle value; detect substitution
+	ownedJobHandle  windows.Handle // retained ownership handle used for all job operations
 
 	output       *output.Store
 	maxLineBytes int
@@ -321,19 +322,20 @@ func Start(spec Spec) (*Child, error) {
 		idleFlush = defaultIdleFlush
 	}
 	child := &Child{
-		pid:            int(processInfo.ProcessId),
-		pgid:           int(processInfo.ProcessId),
-		startIdentity:  startIdentity,
-		processHandle:  processHandle,
-		jobHandle:      job,
-		ownedJobHandle: ownedJob,
-		output:         spec.Output,
-		maxLineBytes:   spec.MaxLineBytes,
-		idleFlush:      idleFlush,
-		now:            now,
-		done:           make(chan struct{}),
-		leaderDone:     make(chan struct{}),
-		groupGone:      make(chan struct{}),
+		pid:             int(processInfo.ProcessId),
+		pgid:            int(processInfo.ProcessId),
+		startIdentity:   startIdentity,
+		processHandle:   processHandle,
+		jobHandle:       job,
+		launchJobHandle: job,
+		ownedJobHandle:  ownedJob,
+		output:          spec.Output,
+		maxLineBytes:    spec.MaxLineBytes,
+		idleFlush:       idleFlush,
+		now:             now,
+		done:            make(chan struct{}),
+		leaderDone:      make(chan struct{}),
+		groupGone:       make(chan struct{}),
 	}
 	if spec.Started != nil {
 		if err := spec.Started(); err != nil {
@@ -486,10 +488,10 @@ func (c *Child) HasSurvivingDescendants() bool {
 	case <-c.leaderDone:
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.groupEnded || c.jobHandle == 0 {
+		if c.groupEnded || c.ownedJobHandle == 0 {
 			return false
 		}
-		ids, err := jobProcessIDs(c.jobHandle)
+		ids, err := jobProcessIDs(c.ownedJobHandle)
 		return err != nil || len(ids) != 0
 	default:
 		return false
@@ -538,7 +540,7 @@ func (c *Child) Stop() error {
 	if c.processHandle == 0 || c.jobHandle == 0 || c.ownedJobHandle == 0 || c.startIdentity == "" || c.pid <= 0 {
 		return errors.New("process: incomplete Windows ownership proof")
 	}
-	if !sameWindowsObject(c.jobHandle, c.ownedJobHandle) {
+	if c.jobHandle != c.launchJobHandle {
 		return errors.New("process: job ownership mismatch")
 	}
 	pid, err := windows.GetProcessId(c.processHandle)
@@ -555,7 +557,7 @@ func (c *Child) Stop() error {
 	if identity != c.startIdentity {
 		return errors.New("process: root creation identity mismatch")
 	}
-	ids, err := jobProcessIDs(c.jobHandle)
+	ids, err := jobProcessIDs(c.ownedJobHandle)
 	if err != nil {
 		return fmt.Errorf("process: verify job ownership: %w", err)
 	}
@@ -573,22 +575,11 @@ func (c *Child) Stop() error {
 	if !rootExited && !containsPID(ids, pid) {
 		return errors.New("process: root is not a member of its owned job")
 	}
-	if err := windows.TerminateJobObject(c.jobHandle, windowsStopExitCode); err != nil {
+	if err := windows.TerminateJobObject(c.ownedJobHandle, windowsStopExitCode); err != nil {
 		return fmt.Errorf("process: terminate owned job: %w", err)
 	}
 	c.stopRequested = true
 	return nil
-}
-
-// CompareObjectHandles checks kernel object identity, not numeric handle
-// equality; a substituted live job must never receive the stop request.
-func sameWindowsObject(a, b windows.Handle) bool {
-	proc := windows.NewLazySystemDLL("kernel32.dll").NewProc("CompareObjectHandles")
-	if err := proc.Find(); err != nil {
-		return false
-	}
-	result, _, _ := proc.Call(uintptr(a), uintptr(b))
-	return result != 0
 }
 
 func processHandleExited(process windows.Handle) (bool, error) {
@@ -675,7 +666,7 @@ func (c *Child) observeJobExit() {
 	defer ticker.Stop()
 	for {
 		c.mu.Lock()
-		job := c.jobHandle
+		job := c.ownedJobHandle
 		c.mu.Unlock()
 		ids, err := jobProcessIDs(job)
 		if err == nil && len(ids) == 0 {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,10 @@ func TestManifestEnvironmentContract(t *testing.T) {
 		}
 	})
 
+	absoluteEnvPath := "/tmp/private.env"
+	if runtime.GOOS == "windows" {
+		absoluteEnvPath = "C:/tmp/private.env"
+	}
 	invalid := []struct {
 		name string
 		body string
@@ -65,7 +70,7 @@ func TestManifestEnvironmentContract(t *testing.T) {
 		{name: "inherit integer", body: "environment: {inherit: 1}\nprocesses: {}\n"},
 		{name: "files scalar", body: "environment: {files: .env}\nprocesses: {}\n"},
 		{name: "empty file", body: "environment: {files: ['']}\nprocesses: {}\n"},
-		{name: "absolute file", body: "environment: {files: [/tmp/private.env]}\nprocesses: {}\n"},
+		{name: "absolute file", body: "environment: {files: [" + absoluteEnvPath + "]}\nprocesses: {}\n"},
 		{name: "root file", body: "environment: {files: [.]}\nprocesses: {}\n"},
 		{name: "escaping file", body: "environment: {files: [../private.env]}\nprocesses: {}\n"},
 		{name: "too many files", body: "environment: {files: [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q]}\nprocesses: {}\n"},
@@ -384,6 +389,10 @@ func TestLoadDefinitionsAcceptsYAMLFlowSyntax(t *testing.T) {
 }
 
 func TestLoadDefinitionsStrictRejections(t *testing.T) {
+	absoluteCwd := "/tmp"
+	if runtime.GOOS == "windows" {
+		absoluteCwd = "C:/tmp"
+	}
 	cases := []struct {
 		name      string
 		manifest  string
@@ -514,7 +523,7 @@ func TestLoadDefinitionsStrictRejections(t *testing.T) {
 		},
 		{
 			name:      "invalid absolute cwd",
-			manifest:  "version: 1\nprocesses:\n  web:\n    argv: [go]\n    cwd: /tmp\n",
+			manifest:  "version: 1\nprocesses:\n  web:\n    argv: [go]\n    cwd: " + absoluteCwd + "\n",
 			entry:     "web",
 			wantError: "relative",
 		},

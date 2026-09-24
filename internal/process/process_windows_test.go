@@ -120,8 +120,14 @@ func TestWindowsStopTerminatesDescendantsAfterLeaderExit(t *testing.T) {
 		select {
 		case <-child.Done():
 		default:
-			_ = child.Stop()
-			<-child.Done()
+			if err := child.Stop(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Errorf("cleanup stop: %v", err)
+			}
+			select {
+			case <-child.Done():
+			case <-time.After(10 * time.Second):
+				t.Error("cleanup timed out waiting for child")
+			}
 		}
 	}()
 	select {
