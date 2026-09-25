@@ -2,6 +2,26 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.16.0](https://github.com/brettinternet/hum/compare/v0.15.0...v0.16.0) - 2026-09-25
+
+### Added
+
+- Resolve nearest project manifest
+
+### Fixed
+
+- **cli:** Dedupe TTY detach cancel; document Ctrl-\] ending attach
+- **cli:** Align TTY attach output and detach on escape
+
+### Changed
+
+- **project:** Take explicit manifest search root
+
+### Documentation
+
+- Show per-worktree ports with Git and Worktrunk
+- Add runnable examples
+
 ## [v0.15.0](https://github.com/brettinternet/hum/compare/v0.14.1...v0.15.0) - 2026-09-25
 
 ### Added
