@@ -42,10 +42,20 @@ func FuzzLineWriter(f *testing.F) {
 		chunkSize := int(chunkByte%64) + 1
 		maxLineBytes := int(limitByte%64) + 1
 		var rebuilt bytes.Buffer
+		partial := false
 		writer, err := NewLineWriter(Stdout, maxLineBytes, 0, nil, func(_ Stream, _ time.Time, text string) (Cursor, error) {
 			if len(text) == 0 || len(text) > maxLineBytes {
 				t.Fatalf("entry length %d, bound %d", len(text), maxLineBytes)
 			}
+			// An entry ends at its only LF or at the byte bound; with idle
+			// disabled, only Close emits a shorter unterminated partial line.
+			if newline := strings.IndexByte(text, '\n'); newline >= 0 && newline != len(text)-1 {
+				t.Fatalf("entry %q has LF before its end", text)
+			}
+			if partial {
+				t.Fatalf("entry %q follows a partial-line entry", text)
+			}
+			partial = text[len(text)-1] != '\n' && len(text) < maxLineBytes
 			rebuilt.WriteString(text)
 			return 0, nil
 		})
