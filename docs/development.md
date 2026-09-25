@@ -51,6 +51,45 @@ a Go build and module cache keyed by OS, Go version, and `go.sum`, and `GOFLAGS=
 results are never reused. `task stress` is not part of `task ci`; it runs daily on Linux and macOS
 (`.github/workflows/stress.yaml`) and on manual dispatch.
 
+## Tests
+
+Test a rule once where it is computed, with fakes. `internal/orchestrate/orchestrate_test.go`
+uses `TestOrchestrateUp` with `UpOperations` and `EnsureOperations` fakes for `up`/`down`
+scheduling. `internal/app/app_test.go` owns supervisor, wait, and readiness semantics;
+`internal/output/ring_test.go` and `internal/output/terminal_control_test.go` own ring,
+match, and terminal-control rules; `internal/protocol/protocol_test.go` owns wire shapes.
+
+Adapter tests in `internal/cli` and `internal/mcp` cover only argument and flag
+validation, request forwarding, human and JSON rendering, MCP `structuredContent`
+and `isError`, and exit codes. Use a stub daemon or fake client, not real children:
+`waitCLIStubDaemon` in `internal/cli/wait_test.go`, `manifestCLIRecoveryStubDaemon` in
+`internal/cli/manifest_test.go`, and `newTestServer`/`fakeClient` in
+`internal/mcp/tools_test.go`.
+
+`integration/` runs the built binary: add one test per user-visible behavior to prove
+wiring, not every rule variant. Every integration test calls `t.Parallel()` and builds
+its own runtime with `lifecycleNewRuntime` (`integration/lifecycle_test.go`) or
+`testutil.RuntimeDir` (`internal/testutil/harness.go`).
+
+Generic waits and process helpers belong in `internal/testutil/harness.go`:
+`WaitForFile`, `WaitForOutput`, `WaitUntil`, `WaitForPathGone`,
+`WaitForProcessGroupGone`, `Run`, and `Start`. Add there rather than copying a
+file-local helper; do not prefix helpers with task IDs. Poll for a condition, never
+sleep a fixed time unless elapsed time is the behavior under test. Shorten unrelated
+stop grace or other timeouts with `HUM_STOP_GRACE` (`integration/stop_shutdown_test.go`)
+or `app.Options` (`internal/app/app.go`).
+
+Assert performance guarantees with counters, not wall-clock time (see
+`TestEventHistoryAppendCost` in `internal/daemon/event_history_test.go`). Put timing
+measurements in benchmarks such as `BenchmarkAppend` in `internal/output/bench_test.go`.
+Code that parses bytes hum does not control gets a fuzz target as well as example tests (see
+`internal/output/fuzz_test.go` and `internal/protocol/fuzz_test.go`).
+
+Use structural doc and help checks such as `TestHelpContract`,
+`TestDocsReferenceRealCommandsAndFlags`, and `TestDocsCoverEveryCommand` in
+`internal/cli`, and `TestDocsCoverEveryTool` in `internal/mcp/docs_test.go`.
+Do not assert help or documentation wording with phrase or prose checks.
+
 ## Toolchain
 
 | Tool | Version |
