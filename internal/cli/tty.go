@@ -33,6 +33,7 @@ type ttyInput struct {
 	restored bool
 	restore  func()
 	stop     chan struct{}
+	chord    chan struct{}
 	stopOnce sync.Once
 	done     chan struct{}
 }
@@ -89,7 +90,7 @@ func newTTYInput(session *daemon.InputSession, errOut io.Writer) (*ttyInput, err
 	if session == nil {
 		return nil, errors.New("nil tty input session")
 	}
-	input := &ttyInput{session: session, stdin: os.Stdin, stdinFD: -1, errOut: errOut, stop: make(chan struct{}), done: make(chan struct{})}
+	input := &ttyInput{session: session, stdin: os.Stdin, stdinFD: -1, errOut: errOut, stop: make(chan struct{}), chord: make(chan struct{}), done: make(chan struct{})}
 	if input.stdin == nil {
 		return input, nil
 	}
@@ -103,6 +104,15 @@ func newTTYInput(session *daemon.InputSession, errOut io.Writer) (*ttyInput, err
 		input.restore = func() { _ = term.Restore(input.stdinFD, state) }
 	}
 	return input, nil
+}
+
+func writeTTYAttachedNotice(w io.Writer, raw bool) error {
+	ending := "\n"
+	if raw && terminalWriter(w) {
+		ending = "\r\n"
+	}
+	_, err := io.WriteString(w, "tty input attached; press Ctrl-] to detach input"+ending)
+	return err
 }
 
 func (i *ttyInput) start() {
@@ -211,21 +221,15 @@ func (i *ttyInput) forward() {
 				}
 				continue
 			}
-			for {
-				index := -1
-				for position, value := range payload {
-					if value == 0x1d {
-						index = position
-						break
-					}
-				}
-				if index < 0 {
-					i.forwardChunk(payload)
-					break
-				}
-				i.forwardChunk(payload[:index])
+			forward, detach := ttyInputBeforeDetach(payload)
+			i.forwardChunk(forward)
+			if detach {
 				// Ctrl+] is consumed locally and detaches only this input owner.
 				i.detach()
+				close(i.chord)
+				if i.terminal && terminalWriter(i.errOut) {
+					_, _ = io.WriteString(i.errOut, "\n")
+				}
 				return
 			}
 		}
@@ -241,6 +245,15 @@ func (i *ttyInput) forward() {
 		default:
 		}
 	}
+}
+
+func ttyInputBeforeDetach(payload []byte) ([]byte, bool) {
+	for index, value := range payload {
+		if value == 0x1d {
+			return payload[:index], true
+		}
+	}
+	return payload, false
 }
 
 func (i *ttyInput) forwardChunk(payload []byte) {

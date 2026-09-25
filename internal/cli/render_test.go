@@ -14,6 +14,7 @@ import (
 	"hum/internal/app"
 	"hum/internal/output"
 	"hum/internal/project"
+	"hum/internal/protocol"
 )
 
 func unsetRenderTestEnv(t *testing.T, key string) {
@@ -69,6 +70,55 @@ func stripRenderANSI(value string) string {
 		}
 	}
 	return result.String()
+}
+
+func TestLogsCursorAfterPartialLine(t *testing.T) {
+	cursor := output.Cursor(12)
+	result := output.ReadResult{Entries: []output.Entry{{Stream: output.Stdout, Text: "name? "}}, Next: &cursor}
+	var human, trailer bytes.Buffer
+	if err := writeBoundedLogs(&human, &trailer, result, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := human.String()+trailer.String(), "name? \nnext cursor: 12\n"; got != want {
+		t.Fatalf("human output = %q, want %q", got, want)
+	}
+	var machine bytes.Buffer
+	if err := writeBoundedLogs(&machine, &trailer, result, true); err != nil {
+		t.Fatal(err)
+	}
+	var response protocol.OutputResponse
+	if err := json.Unmarshal(machine.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if got := machine.String(); !strings.Contains(got, `"text":"name? "`) || !strings.Contains(got, `"next":12`) || strings.Contains(got, `"name? \\n"`) {
+		t.Fatalf("raw JSON changed: %s", got)
+	}
+}
+
+func TestTTYAttachDisplay(t *testing.T) {
+	tty := renderTestTTY(t)
+	stdout := &renderTestTTYWriter{fd: tty.Fd()}
+	stderr := &renderTestTTYWriter{fd: tty.Fd()}
+	out, errOut := attachedDisplayWriters(stdout, stderr, true)
+	for _, text := range []string{"name? ", "hello, Bob\nname? ", "hello, Ada\r", "\nname? "} {
+		if err := writeAttachedEntry(out, errOut, output.Entry{Stream: output.Stdout, Text: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := stdout.String(), "name? hello, Bob\r\nname? hello, Ada\r\nname? "; got != want {
+		t.Fatalf("TTY display = %q, want %q", got, want)
+	}
+	if err := writeAttachedEntry(out, errOut, output.Entry{Stream: output.Stderr, Text: "warning\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := stderr.String(); got != "warning\r\n" {
+		t.Fatalf("TTY stderr = %q", got)
+	}
+	var redirected bytes.Buffer
+	plain, _ := attachedDisplayWriters(&redirected, &redirected, true)
+	if err := writeAttachedEntry(plain, &redirected, output.Entry{Text: "raw\n"}); err != nil || redirected.String() != "raw\n" {
+		t.Fatalf("redirected output = %q, err %v", redirected.String(), err)
+	}
 }
 
 func TestColorPolicy(t *testing.T) {
