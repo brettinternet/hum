@@ -422,23 +422,21 @@ func TestWindowsTTYStartupFailureCleansUpConsole(t *testing.T) {
 	}
 	spec.Argv[0] = invalid
 	spec.Dir = t.TempDir()
-	// Warm up kernel32's lazy procedure bindings and the Go runtime's
-	// console machinery before measuring repeated failed launches.
-	if _, err := Start(spec); err == nil {
-		t.Fatal("invalid PE started under ConPTY")
-	}
-	before := windowsTTYHandleCount(t)
-	counts := make([]uint32, 0, 10)
+	// Warm up Windows' process/console machinery before checking for growth:
+	// the first few failed launches may initialize handles that stay open.
 	for range 10 {
 		if _, err := Start(spec); err == nil {
 			t.Fatal("invalid PE started under ConPTY")
-		} else if len(counts) == 0 {
-			t.Logf("invalid PE launch error: %v", err)
 		}
-		counts = append(counts, windowsTTYHandleCount(t))
+	}
+	before := windowsTTYHandleCount(t)
+	for range 10 {
+		if _, err := Start(spec); err == nil {
+			t.Fatal("invalid PE started under ConPTY")
+		}
 	}
 	if after := windowsTTYHandleCount(t); after > before+2 {
-		t.Fatalf("ConPTY startup leaked handles: before=%d after=%d counts=%v", before, after, counts)
+		t.Fatalf("ConPTY startup leaked handles: before=%d after=%d", before, after)
 	}
 }
 
