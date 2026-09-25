@@ -4,9 +4,10 @@ title: Document where each kind of test belongs so agents stop duplicating them
 status: Done
 assignee: []
 created_date: '2026-09-24 22:55'
-updated_date: '2026-09-25 01:22'
+updated_date: '2026-09-25 18:52'
 labels:
   - docs
+  - reviewed
 dependencies:
   - HUM-138
   - HUM-140

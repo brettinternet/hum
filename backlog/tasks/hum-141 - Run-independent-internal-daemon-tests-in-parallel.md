@@ -4,9 +4,10 @@ title: Run independent internal/daemon tests in parallel
 status: Done
 assignee: []
 created_date: '2026-09-24 22:52'
-updated_date: '2026-09-25 00:20'
+updated_date: '2026-09-25 18:52'
 labels:
   - daemon
+  - reviewed
 dependencies:
   - HUM-137
 modified_files:

@@ -4,10 +4,11 @@ title: Fuzz the parsers that read arbitrary child output and socket bytes
 status: Done
 assignee: []
 created_date: '2026-09-24 22:54'
-updated_date: '2026-09-25 01:15'
+updated_date: '2026-09-25 18:52'
 labels:
   - output
   - protocol
+  - reviewed
 dependencies: []
 modified_files:
   - internal/output/*_test.go
