@@ -17,6 +17,7 @@ import (
 	"hum/internal/app"
 	"hum/internal/config"
 	"hum/internal/daemon"
+	"hum/internal/testutil"
 )
 
 func TestStop(t *testing.T) {
@@ -102,7 +103,7 @@ func TestExplicitZeroStopGrace(t *testing.T) {
 	managed := stopShutdownStartProcess(t, server, projectRoot, "zero-grace", []string{
 		"/bin/sh", "-c", `trap '' TERM; printf ready > "$1"; while :; do sleep 1; done`, "hum-test", readyPath,
 	})
-	stopShutdownWaitForFile(t, readyPath, 3*time.Second)
+	testutil.WaitForFile(t, readyPath, 3*time.Second)
 
 	startedAt := time.Now()
 	stdout, stderr, err := stopShutdownRun(t, "stop", "zero-grace")
@@ -112,7 +113,7 @@ func TestExplicitZeroStopGrace(t *testing.T) {
 	if elapsed := time.Since(startedAt); elapsed >= 3*time.Second {
 		t.Fatalf("zero-grace stop took %s, want immediate escalation", elapsed)
 	}
-	stopShutdownWaitForProcessGroupGone(t, managed.PGID, time.Second)
+	testutil.WaitForProcessGroupGone(t, managed.PGID, time.Second)
 }
 
 func TestRemove(t *testing.T) {
@@ -243,7 +244,7 @@ trap 'exit 0' TERM
 while :; do sleep 1; done
 `
 		managed := stopShutdownStartProcess(t, server, projectRoot, "tree", []string{"/bin/sh", "-c", script, "hum-test", childPIDPath, termPath, releasePath, donePath})
-		stopShutdownWaitForFile(t, childPIDPath, 3*time.Second)
+		testutil.WaitForFile(t, childPIDPath, 3*time.Second)
 
 		commandDone := make(chan error, 1)
 		go func() {
@@ -251,7 +252,7 @@ while :; do sleep 1; done
 			commandDone <- NewRootCommand("test", "test", &stdout, &stderr).Run(context.Background(), []string{"hum", "shutdown", "--stop-processes"})
 		}()
 
-		stopShutdownWaitForFile(t, termPath, 3*time.Second)
+		testutil.WaitForFile(t, termPath, 3*time.Second)
 		select {
 		case err := <-commandDone:
 			t.Fatalf("forced shutdown returned before graceful child release: %v", err)
@@ -269,7 +270,7 @@ while :; do sleep 1; done
 		if err := os.WriteFile(releasePath, []byte("release"), 0o600); err != nil {
 			t.Fatalf("release graceful child: %v", err)
 		}
-		stopShutdownWaitForFile(t, donePath, 3*time.Second)
+		testutil.WaitForFile(t, donePath, 3*time.Second)
 		select {
 		case err := <-commandDone:
 			if err != nil {
@@ -279,10 +280,10 @@ while :; do sleep 1; done
 			t.Fatal("shutdown --stop-processes did not wait for process tree completion")
 		}
 
-		stopShutdownWaitForPathGone(t, server.Paths().Socket, 3*time.Second)
-		stopShutdownWaitForPathGone(t, server.Paths().PID, 3*time.Second)
-		stopShutdownWaitForPathGone(t, server.Paths().Ready, 3*time.Second)
-		stopShutdownWaitForProcessGroupGone(t, managed.PGID, 3*time.Second)
+		testutil.WaitForPathGone(t, server.Paths().Socket, 3*time.Second)
+		testutil.WaitForPathGone(t, server.Paths().PID, 3*time.Second)
+		testutil.WaitForPathGone(t, server.Paths().Ready, 3*time.Second)
+		testutil.WaitForProcessGroupGone(t, managed.PGID, 3*time.Second)
 	})
 }
 
@@ -451,50 +452,10 @@ func stopShutdownNormalizeStatus(status string) string {
 	return status
 }
 
-func stopShutdownWaitForFile(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %q", path)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-func stopShutdownWaitForPathGone(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		_, err := os.Stat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %q to disappear (err=%v)", path, err)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 func stopShutdownProcessGroupAlive(pgid int) bool {
 	if pgid <= 0 {
 		return false
 	}
 	err := syscall.Kill(-pgid, 0)
 	return err == nil || !errors.Is(err, syscall.ESRCH)
-}
-
-func stopShutdownWaitForProcessGroupGone(t *testing.T, pgid int, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for stopShutdownProcessGroupAlive(pgid) {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for process group %d to disappear", pgid)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
 }

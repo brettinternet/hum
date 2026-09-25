@@ -21,27 +21,11 @@ func durableSetup(t *testing.T) (string, lifecycleRuntime) {
 	return hum, runtime
 }
 
-func durableWaitText(t *testing.T, process *testutil.Process, stderr bool, text string) {
-	t.Helper()
-	deadline := time.Now().Add(lifecycleTimeout)
-	for time.Now().Before(deadline) {
-		value := process.Stdout()
-		if stderr {
-			value = process.Stderr()
-		}
-		if strings.Contains(value, text) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("process output did not contain %q: stdout=%q stderr=%q", text, process.Stdout(), process.Stderr())
-}
-
 func TestStatusReportsFollowers(t *testing.T) {
 	t.Parallel()
 	hum, runtime := durableSetup(t)
 	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "observed", "--follow")
-	durableWaitText(t, follower, false, "waiting for first launch")
+	testutil.WaitForOutput(t, follower, false, "waiting for first launch", lifecycleTimeout)
 
 	waitFollowers := func(want int) {
 		t.Helper()
@@ -90,7 +74,7 @@ func TestDurableFollowAcrossStopStart(t *testing.T) {
 	t.Parallel()
 	hum, runtime := durableSetup(t)
 	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "web", "--follow")
-	durableWaitText(t, follower, false, "waiting for first launch")
+	testutil.WaitForOutput(t, follower, false, "waiting for first launch", lifecycleTimeout)
 	unresolvedRun := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "web")
 	if unresolvedRun.Code != 1 || !strings.Contains(unresolvedRun.Stderr, "run web requires a command after --") {
 		t.Fatalf("unresolved foreground run = %#v", unresolvedRun)
@@ -99,11 +83,11 @@ func TestDurableFollowAcrossStopStart(t *testing.T) {
 	if started.Code != 0 {
 		t.Fatalf("start: %#v", started)
 	}
-	durableWaitText(t, follower, false, "web-output")
+	testutil.WaitForOutput(t, follower, false, "web-output", lifecycleTimeout)
 	if stopped := testutil.Run(t, hum, runtime.cwd, runtime.env, "stop", "web"); stopped.Code != 0 {
 		t.Fatalf("stop: %#v", stopped)
 	}
-	durableWaitText(t, follower, false, "waiting for next launch")
+	testutil.WaitForOutput(t, follower, false, "waiting for next launch", lifecycleTimeout)
 	if err := os.WriteFile(filepath.Join(runtime.cwd, "intermediate-work"), []byte("done"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -129,12 +113,12 @@ func TestFollowBeforeFirstLaunch(t *testing.T) {
 	t.Parallel()
 	hum, runtime := durableSetup(t)
 	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "future", "--follow")
-	durableWaitText(t, follower, false, "does not resolve")
+	testutil.WaitForOutput(t, follower, false, "does not resolve", lifecycleTimeout)
 	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "future", "--detach", "--", "/bin/sh", "-c", "printf 'future-ready\\n'; sleep 30")
 	if started.Code != 0 {
 		t.Fatalf("start: %#v", started)
 	}
-	durableWaitText(t, follower, false, "future-ready")
+	testutil.WaitForOutput(t, follower, false, "future-ready", lifecycleTimeout)
 	if removed := testutil.Run(t, hum, runtime.cwd, runtime.env, "remove", "future"); removed.Code != 0 {
 		t.Fatalf("remove: %#v", removed)
 	}
@@ -205,23 +189,23 @@ func TestUpWithDurableFollowers(t *testing.T) {
 		t.Fatal(err)
 	}
 	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "web", "--follow")
-	durableWaitText(t, follower, false, "waiting for first launch")
+	testutil.WaitForOutput(t, follower, false, "waiting for first launch", lifecycleTimeout)
 	if strings.Contains(follower.Stdout(), "does not resolve") {
 		t.Fatalf("declared follower misreported resolution: %q", follower.Stdout())
 	}
 	if got := testutil.Run(t, hum, runtime.cwd, runtime.env, "up", "--no-wait"); got.Code != 0 {
 		t.Fatalf("up: %#v", got)
 	}
-	durableWaitText(t, follower, false, "up-output")
+	testutil.WaitForOutput(t, follower, false, "up-output", lifecycleTimeout)
 	if got := testutil.Run(t, hum, runtime.cwd, runtime.env, "run", "adhoc", "--detach", "--", "/bin/sh", "-c", "printf 'adhoc-output\\n'; sleep 30"); got.Code != 0 {
 		t.Fatalf("ad hoc start: %#v", got)
 	}
 	adhocFollower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "adhoc", "--follow")
-	durableWaitText(t, adhocFollower, false, "adhoc-output")
+	testutil.WaitForOutput(t, adhocFollower, false, "adhoc-output", lifecycleTimeout)
 	if got := testutil.Run(t, hum, runtime.cwd, runtime.env, "down"); got.Code != 0 {
 		t.Fatalf("down: %#v", got)
 	}
-	durableWaitText(t, adhocFollower, false, "waiting for next launch")
+	testutil.WaitForOutput(t, adhocFollower, false, "waiting for next launch", lifecycleTimeout)
 	if got := testutil.Run(t, hum, runtime.cwd, runtime.env, "up", "--no-wait"); got.Code != 0 {
 		t.Fatalf("second up: %#v", got)
 	}
@@ -248,7 +232,7 @@ func TestFollowerExitsOnDaemonShutdown(t *testing.T) {
 	t.Parallel()
 	hum, runtime := durableSetup(t)
 	follower := testutil.Start(t, hum, runtime.cwd, runtime.env, "logs", "shutdown-follow", "--follow")
-	durableWaitText(t, follower, false, "waiting")
+	testutil.WaitForOutput(t, follower, false, "waiting", lifecycleTimeout)
 	shutdown := testutil.Run(t, hum, runtime.cwd, runtime.env, "shutdown", "--stop-processes")
 	if shutdown.Code != 0 {
 		t.Fatalf("shutdown: %#v", shutdown)

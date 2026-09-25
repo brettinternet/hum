@@ -35,7 +35,7 @@ func TestRestart(t *testing.T) {
 	})
 
 	follower := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", name, "--follow", "--json", "--stream", "both")
-	logsitWaitFollowerText(t, follower, "heartbeat-")
+	testutil.WaitForOutput(t, follower, false, "heartbeat-", logsitWaitTimeout)
 	if follower.Exited() {
 		t.Fatal("follower exited before restart")
 	}
@@ -52,8 +52,8 @@ func TestRestart(t *testing.T) {
 		t.Fatalf("restart result = %#v, first PID=%d pre cursor=%d", result, first.PID, preRestartCursor)
 	}
 
-	logsitWaitFollowerText(t, follower, "restarted")
-	logsitWaitFollowerText(t, follower, "new-launch")
+	testutil.WaitForOutput(t, follower, false, "restarted", logsitWaitTimeout)
+	testutil.WaitForOutput(t, follower, false, "new-launch", logsitWaitTimeout)
 	followed := follower.Stdout()
 	markerIndex := strings.Index(followed, "restarted")
 	newIndex := strings.Index(followed, "new-launch")

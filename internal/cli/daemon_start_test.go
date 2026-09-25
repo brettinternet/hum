@@ -18,6 +18,7 @@ import (
 	"hum/internal/config"
 	"hum/internal/daemon"
 	"hum/internal/process"
+	"hum/internal/testutil"
 )
 
 func TestEnsureDaemonWaitsForSequentialRecovery(t *testing.T) {
@@ -87,7 +88,7 @@ func TestEnsureDaemonCancellationReapsChild(t *testing.T) {
 		result <- err
 	}()
 
-	waitCLIPath(t, termMarker, 3*time.Second)
+	testutil.WaitForFile(t, termMarker, 3*time.Second)
 	cancel()
 	select {
 	case err := <-result:
@@ -106,7 +107,7 @@ func TestEnsureDaemonCancellationReapsChild(t *testing.T) {
 		t.Fatal("reconciled stale group was not reaped")
 	}
 	for _, path := range []string{paths.Socket, paths.PID, paths.Ready, paths.State} {
-		waitCLIPathAbsent(t, path, 3*time.Second)
+		testutil.WaitForPathGone(t, path, 3*time.Second)
 	}
 }
 
@@ -135,7 +136,7 @@ func startCLIStaleGroup(t *testing.T, name, termMarker string) (daemon.RuntimeGr
 		case <-time.After(3 * time.Second):
 		}
 	})
-	waitCLIPath(t, readyMarker, 3*time.Second)
+	testutil.WaitForFile(t, readyMarker, 3*time.Second)
 	identity, err := process.ProcessStartIdentity(cmd.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
@@ -173,30 +174,6 @@ func writeCLIStaleState(t *testing.T, runtimeDir string, groups []daemon.Runtime
 		t.Fatal(err)
 	}
 	return paths
-}
-
-func waitCLIPathAbsent(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for removal of %s", path)
-}
-
-func waitCLIPath(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", path)
 }
 
 func TestEnsureDaemonFailsFastWhenChildExitsEarly(t *testing.T) {

@@ -202,7 +202,7 @@ func TestWindowsBuiltBinaryConcurrentAutostartAndLifecycle(t *testing.T) {
 			t.Fatalf("shutdown: code=%d err=%v stdout=%q stderr=%q", result.Code, result.Err, result.Stdout, result.Stderr)
 		}
 		testutil.WaitForProcessGone(t, pid, 10*time.Second)
-		waitWindowsPathGone(t, paths.PID, 10*time.Second)
+		testutil.WaitForPathGone(t, paths.PID, 10*time.Second)
 	})
 
 	t.Run("explicit TTY requests start a supervised child", func(t *testing.T) {
@@ -353,16 +353,4 @@ func writeWindowsFixtureManifest(t *testing.T, root, name string, argv []string)
 	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte(contents), 0o600); err != nil {
 		t.Fatalf("write fixture manifest: %v", err)
 	}
-}
-
-func waitWindowsPathGone(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("runtime artifact %q remained after %s", path, timeout)
 }

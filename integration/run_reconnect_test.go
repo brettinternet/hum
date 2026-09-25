@@ -25,7 +25,6 @@ import (
 
 const (
 	runitWaitTimeout = 5 * time.Second
-	runitPollPeriod  = 10 * time.Millisecond
 )
 
 type runitScenario struct {
@@ -168,14 +167,14 @@ func TestAttachedRunForegroundLifecycle(t *testing.T) {
 		client := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, runArgs...)
 
 		testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
-		runitWaitForOutput(t, client, false, "stdout:live with spaces \r\n")
-		runitWaitForOutput(t, client, true, "stderr:live with spaces \r\n")
+		testutil.WaitForOutput(t, client, false, "stdout:live with spaces \r\n", runitWaitTimeout)
+		testutil.WaitForOutput(t, client, true, "stderr:live with spaces \r\n", runitWaitTimeout)
 
 		if err := client.Signal(os.Interrupt); err != nil {
 			t.Fatalf("send Ctrl-C: %v", err)
 		}
-		runitWaitForOutput(t, client, false, "fixture:sigint-1\n")
-		runitWaitForOutput(t, client, true, "interrupt sent to attached-signals; press Ctrl+C again to stop")
+		testutil.WaitForOutput(t, client, false, "fixture:sigint-1\n", runitWaitTimeout)
+		testutil.WaitForOutput(t, client, true, "interrupt sent to attached-signals; press Ctrl+C again to stop", runitWaitTimeout)
 		if client.Exited() {
 			t.Fatal("first Ctrl-C detached foreground run")
 		}
@@ -197,8 +196,8 @@ func TestAttachedRunForegroundLifecycle(t *testing.T) {
 		client := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, runArgs...)
 
 		testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
-		runitWaitForOutput(t, client, false, "stdout:live with spaces \r\n")
-		runitWaitForOutput(t, client, true, "stderr:live with spaces \r\n")
+		testutil.WaitForOutput(t, client, false, "stdout:live with spaces \r\n", runitWaitTimeout)
+		testutil.WaitForOutput(t, client, true, "stderr:live with spaces \r\n", runitWaitTimeout)
 		managed := runitListProcess(t, scenario, name)
 		if !testutil.ProcessAlive(managed.PID) {
 			t.Fatalf("managed process %q is not alive before detach (PID %d)", name, managed.PID)
@@ -226,7 +225,7 @@ func TestAttachedRunForegroundLifecycle(t *testing.T) {
 		testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
 		// The fixture writes .started before emitting stdout; wait for the
 		// attached stream before detaching so retained output is observable.
-		runitWaitForOutput(t, client, false, "stdout:live")
+		testutil.WaitForOutput(t, client, false, "stdout:live", runitWaitTimeout)
 		if err := client.Signal(syscall.SIGHUP); err != nil {
 			t.Fatal(err)
 		}
@@ -274,7 +273,7 @@ func TestAttachedRunForegroundLifecycle(t *testing.T) {
 		marker := filepath.Join(t.TempDir(), "transport-loss")
 		client := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, "run", "transported", "--", scenario.fixture, "stream", marker)
 		testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
-		runitWaitForOutput(t, client, false, "stdout:live")
+		testutil.WaitForOutput(t, client, false, "stdout:live", runitWaitTimeout)
 
 		// Losing the daemon must not look like the child having finished: a bare
 		// exit 0 with no notice is indistinguishable from success.
@@ -316,7 +315,7 @@ func TestAttachedRunForegroundLifecycle(t *testing.T) {
 		}
 		testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
 		observer := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, "attach", "survivor")
-		runitWaitForOutput(t, observer, false, "stdout:live")
+		testutil.WaitForOutput(t, observer, false, "stdout:live", runitWaitTimeout)
 		if err := observer.Signal(os.Interrupt); err != nil {
 			t.Fatal(err)
 		}
@@ -445,8 +444,8 @@ func TestReconnect(t *testing.T) {
 	client := testutil.Start(t, scenario.hum, scenario.cwd, scenario.env, runArgs...)
 
 	testutil.WaitForFile(t, marker+".started", runitWaitTimeout)
-	runitWaitForOutput(t, client, false, "stdout:live with spaces \r\n")
-	runitWaitForOutput(t, client, true, "stderr:live with spaces \r\n")
+	testutil.WaitForOutput(t, client, false, "stdout:live with spaces \r\n", runitWaitTimeout)
+	testutil.WaitForOutput(t, client, true, "stderr:live with spaces \r\n", runitWaitTimeout)
 	managed := runitListProcess(t, scenario, name)
 	if !testutil.ProcessAlive(managed.PID) {
 		t.Fatalf("managed process is not alive before attached-client loss (PID %d)", managed.PID)
@@ -463,10 +462,10 @@ func TestReconnect(t *testing.T) {
 
 	observerHum := integrationHum(t)
 	observer := testutil.Start(t, observerHum, scenario.cwd, scenario.env, "logs", name, "--follow")
-	runitWaitForOutput(t, observer, false, "stdout:live with spaces \r\n")
-	runitWaitForOutput(t, observer, false, "stderr:live with spaces \r\n")
+	testutil.WaitForOutput(t, observer, false, "stdout:live with spaces \r\n", runitWaitTimeout)
+	testutil.WaitForOutput(t, observer, false, "stderr:live with spaces \r\n", runitWaitTimeout)
 	runitStopProcess(t, scenario, name, marker, managed.PID)
-	runitWaitForOutput(t, observer, false, "waiting for next launch")
+	testutil.WaitForOutput(t, observer, false, "waiting for next launch", runitWaitTimeout)
 	if err := observer.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
@@ -621,43 +620,4 @@ func runitReadPID(path string) int {
 		return 0
 	}
 	return pid
-}
-
-func runitWaitForOutput(t *testing.T, process *testutil.Process, stderr bool, text string) {
-	t.Helper()
-	read := func() string {
-		if stderr {
-			return process.Stderr()
-		}
-		return process.Stdout()
-	}
-	contains := func() bool { return strings.Contains(read(), text) }
-	if contains() {
-		return
-	}
-	timer := time.NewTimer(runitWaitTimeout)
-	defer timer.Stop()
-	ticker := time.NewTicker(runitPollPeriod)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if contains() {
-				return
-			}
-			if process.Exited() {
-				stream := "stdout"
-				if stderr {
-					stream = "stderr"
-				}
-				t.Fatalf("process exited before %s contained %q: %q", stream, text, read())
-			}
-		case <-timer.C:
-			stream := "stdout"
-			if stderr {
-				stream = "stderr"
-			}
-			t.Fatalf("timed out waiting for %s text %q: %q", stream, text, read())
-		}
-	}
 }

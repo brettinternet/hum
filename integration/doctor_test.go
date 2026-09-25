@@ -128,7 +128,7 @@ func TestDoctorExistingDaemon(t *testing.T) {
 	if shutdown.Code != 0 || shutdown.Err != nil {
 		t.Fatalf("shutdown daemon: code=%d err=%v", shutdown.Code, shutdown.Err)
 	}
-	lifecycleWaitPathGone(t, runtimeState.paths.Socket, lifecycleTimeout)
+	testutil.WaitForPathGone(t, runtimeState.paths.Socket, lifecycleTimeout)
 	daemonPID = 0
 	address := &net.UnixAddr{Name: runtimeState.paths.Socket, Net: "unix"}
 	listener, err := net.ListenUnix("unix", address)

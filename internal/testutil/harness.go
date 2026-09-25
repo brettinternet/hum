@@ -343,6 +343,54 @@ func WaitForFile(t testing.TB, path string, timeout time.Duration) {
 	t.Fatalf("timed out waiting for file %q after %s", path, timeout)
 }
 
+// WaitForPathGone waits until path no longer exists, failing the test if it does not.
+func WaitForPathGone(t testing.TB, path string, timeout time.Duration) {
+	t.Helper()
+	var lastErr error
+	if waitForCondition(timeout, func() bool {
+		_, lastErr = os.Stat(path)
+		return errors.Is(lastErr, os.ErrNotExist)
+	}) {
+		return
+	}
+	t.Fatalf("timed out waiting for path %q to disappear after %s (last stat error: %v)", path, timeout, lastErr)
+}
+
+// WaitForOutput waits until text appears in a running process's selected output stream.
+func WaitForOutput(t testing.TB, p *Process, stderr bool, text string, timeout time.Duration) {
+	t.Helper()
+	stream := "stdout"
+	read := func() string {
+		if stderr {
+			stream = "stderr"
+			return p.Stderr()
+		}
+		return p.Stdout()
+	}
+	exited := false
+	if waitForCondition(timeout, func() bool {
+		if strings.Contains(read(), text) {
+			return true
+		}
+		exited = p.Exited()
+		return exited
+	}) {
+		output := read()
+		if strings.Contains(output, text) {
+			return
+		}
+		if exited {
+			t.Fatalf("process exited before %s contained %q: %q", stream, text, output)
+		}
+	}
+	t.Fatalf("timed out waiting for process %s text %q after %s: %q", stream, text, timeout, read())
+}
+
+// WaitUntil polls condition until it becomes true or timeout elapses.
+func WaitUntil(timeout time.Duration, condition func() bool) bool {
+	return waitForCondition(timeout, condition)
+}
+
 // WaitForText waits until text appears in path, failing the test if it does not.
 func WaitForText(t testing.TB, path, text string, timeout time.Duration) {
 	t.Helper()

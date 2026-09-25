@@ -132,7 +132,7 @@ processes:
 	if !strings.Contains(up.Stdout, `"outcome":"exited_before_ready"`) {
 		t.Fatalf("first up result = %q, want exited_before_ready", up.Stdout)
 	}
-	logsitWaitFollowerText(t, follower, "waiting for next launch")
+	testutil.WaitForOutput(t, follower, false, "waiting for next launch", logsitWaitTimeout)
 
 	pending := relaunchIntegrationWaitStatus(t, hum, project, env, "crash", func(status relaunchIntegrationStatus) bool {
 		return status.State == "exited" && status.Restart == "on-failure" && status.Relaunches == 0 && status.NextLaunchAt != nil
@@ -185,7 +185,7 @@ processes:
 	if !found {
 		t.Fatalf("list omitted crash process: %#v", list)
 	}
-	logsitWaitFollowerText(t, follower, "launch-3")
+	testutil.WaitForOutput(t, follower, false, "launch-3", logsitWaitTimeout)
 	if follower.Exited() {
 		t.Fatalf("durable follower exited after automatic relaunch: stdout=%q stderr=%q", follower.Stdout(), follower.Stderr())
 	}

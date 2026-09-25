@@ -219,14 +219,14 @@ func TestLogFollowers(t *testing.T) {
 		testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "multi", "--follow", "--json", "--stream", "both", "--limit-bytes", "4096"),
 	}
 	for i, follower := range followers {
-		logsitWaitFollowerText(t, follower, `"type":"output"`)
+		testutil.WaitForOutput(t, follower, false, `"type":"output"`, logsitWaitTimeout)
 		if follower.Exited() {
 			t.Fatalf("follower %d exited before the release gate", i)
 		}
 	}
 	logsitReleaseGate(t, multiGate)
 	for i, follower := range followers {
-		logsitWaitFollowerText(t, follower, `"type":"exit"`)
+		testutil.WaitForOutput(t, follower, false, `"type":"exit"`, logsitWaitTimeout)
 		if err := logsitInterrupt(follower); err != nil {
 			t.Fatal(err)
 		}
@@ -241,7 +241,7 @@ func TestLogFollowers(t *testing.T) {
 	logsitStartDetached(t, harness, "cancel", harness.fixture, "stream", cancelMarker)
 	testutil.WaitForFile(t, cancelMarker+".started", logsitWaitTimeout)
 	canceled := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "cancel", "--follow", "--json")
-	logsitWaitFollowerText(t, canceled, `"type":"output"`)
+	testutil.WaitForOutput(t, canceled, false, `"type":"output"`, logsitWaitTimeout)
 	if err := canceled.Kill(); err != nil {
 		t.Fatalf("kill canceled follower: %v", err)
 	}
@@ -282,12 +282,12 @@ func TestLogsSystemStream(t *testing.T) {
 	}
 
 	follower := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "lifecycle", "--follow", "--json", "--stream", "system")
-	logsitWaitFollowerText(t, follower, "waiting for first launch")
+	testutil.WaitForOutput(t, follower, false, "waiting for first launch", logsitWaitTimeout)
 	started := testutil.Run(t, harness.hum, harness.project, harness.env, "start", "lifecycle", "--no-wait")
 	if started.Code != 0 {
 		t.Fatalf("start: code=%d stdout=%q stderr=%q err=%v", started.Code, started.Stdout, started.Stderr, started.Err)
 	}
-	logsitWaitFollowerText(t, follower, `lifecycle launched\n`)
+	testutil.WaitForOutput(t, follower, false, `lifecycle launched\n`, logsitWaitTimeout)
 	logsitWaitOutput(t, harness, "lifecycle", []string{"--json"}, func(lines []logsitJSONLine) bool {
 		return len(lines) == 1 && logsitHasEntryText(lines[0].Event.Entries, "child-stdout\n") && logsitHasEntryText(lines[0].Event.Entries, "child-stderr\n")
 	})
@@ -295,7 +295,7 @@ func TestLogsSystemStream(t *testing.T) {
 	if restarted.Code != 0 {
 		t.Fatalf("restart: code=%d stdout=%q stderr=%q err=%v", restarted.Code, restarted.Stdout, restarted.Stderr, restarted.Err)
 	}
-	logsitWaitFollowerText(t, follower, `lifecycle restarted\n`)
+	testutil.WaitForOutput(t, follower, false, `lifecycle restarted\n`, logsitWaitTimeout)
 
 	bounded := logsitRunLogs(t, harness, "lifecycle", "--json", "--stream", "system")
 	lines := logsitDecodeJSONLines(t, bounded.Stdout)
@@ -357,13 +357,13 @@ func TestLogsFollowMultipleProcesses(t *testing.T) {
 	}
 
 	follower := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "--follow")
-	logsitWaitFollowerText(t, follower, "[alpha] alpha waiting for first launch\n")
-	logsitWaitFollowerText(t, follower, "[beta] beta waiting for first launch\n")
+	testutil.WaitForOutput(t, follower, false, "[alpha] alpha waiting for first launch\n", logsitWaitTimeout)
+	testutil.WaitForOutput(t, follower, false, "[beta] beta waiting for first launch\n", logsitWaitTimeout)
 	if started := testutil.Run(t, harness.hum, harness.project, harness.env, "up", "--no-wait"); started.Code != 0 {
 		t.Fatalf("up: code=%d stdout=%q stderr=%q err=%v", started.Code, started.Stdout, started.Stderr, started.Err)
 	}
-	logsitWaitFollowerText(t, follower, "[alpha] alpha-up\n")
-	logsitWaitFollowerText(t, follower, "[beta] beta-up\n")
+	testutil.WaitForOutput(t, follower, false, "[alpha] alpha-up\n", logsitWaitTimeout)
+	testutil.WaitForOutput(t, follower, false, "[beta] beta-up\n", logsitWaitTimeout)
 
 	adhoc := testutil.Run(t, harness.hum, harness.project, harness.env, append([]string{"run", "ad-hoc", "--detach", "--"}, logsitEchoArgs(t, harness, "ad-hoc-output", "")...)...)
 	if adhoc.Code != 0 {
@@ -382,8 +382,8 @@ func TestLogsFollowMultipleProcesses(t *testing.T) {
 	if down := testutil.Run(t, harness.hum, harness.project, harness.env, "down"); down.Code != 0 {
 		t.Fatalf("down: code=%d stdout=%q stderr=%q err=%v", down.Code, down.Stdout, down.Stderr, down.Err)
 	}
-	logsitWaitFollowerText(t, follower, "[alpha] alpha waiting for next launch\n")
-	logsitWaitFollowerText(t, follower, "[beta] beta waiting for next launch\n")
+	testutil.WaitForOutput(t, follower, false, "[alpha] alpha waiting for next launch\n", logsitWaitTimeout)
+	testutil.WaitForOutput(t, follower, false, "[beta] beta waiting for next launch\n", logsitWaitTimeout)
 	if output := follower.Stdout(); strings.Contains(output, "[ad-hoc]") {
 		t.Fatalf("no-name aggregate included ad-hoc output after down: %q", output)
 	}
@@ -444,9 +444,9 @@ func TestNDJSONFollow(t *testing.T) {
 		return len(lines) == 1 && (logsitHasEntryText(lines[0].Event.Entries, "stdout:3499\n") || logsitHasEntryText(lines[0].Event.Entries, "stderr:3499\n"))
 	})
 	follower := testutil.Start(t, harness.hum, harness.project, harness.env, "logs", "eviction", "--follow", "--json", "--after-cursor", "0", "--stream", "both", "--limit-bytes", "4096")
-	logsitWaitFollowerText(t, follower, `"type":"eviction"`)
+	testutil.WaitForOutput(t, follower, false, `"type":"eviction"`, logsitWaitTimeout)
 	logsitReleaseGate(t, gate)
-	logsitWaitFollowerText(t, follower, `"type":"exit"`)
+	testutil.WaitForOutput(t, follower, false, `"type":"exit"`, logsitWaitTimeout)
 	// Eviction keeps the newest entries. Which of the two final lines wins the
 	// last ingestion race between the stdout and stderr pipes is not
 	// deterministic, so accept either.
@@ -686,27 +686,6 @@ func logsitWaitOutput(t *testing.T, harness *logsitHarness, name string, args []
 		select {
 		case <-deadline.C:
 			t.Fatalf("timed out waiting for %s logs %v; last=%q", name, args, result.Stdout)
-		case <-ticker.C:
-		}
-	}
-}
-
-func logsitWaitFollowerText(t *testing.T, process *testutil.Process, text string) {
-	t.Helper()
-	deadline := time.NewTimer(logsitWaitTimeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(logsitPollInterval)
-	defer ticker.Stop()
-	for {
-		if strings.Contains(process.Stdout(), text) {
-			return
-		}
-		if process.Exited() {
-			t.Fatalf("follower exited before %q: stdout=%q stderr=%q", text, process.Stdout(), process.Stderr())
-		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("timed out waiting for follower text %q: stdout=%q stderr=%q", text, process.Stdout(), process.Stderr())
 		case <-ticker.C:
 		}
 	}

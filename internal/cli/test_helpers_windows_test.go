@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 	"strconv"
@@ -206,35 +205,6 @@ func stopShutdownNormalizeStatus(status string) string {
 	status = strings.ReplaceAll(status, "-", "_")
 	status = strings.ReplaceAll(status, " ", "_")
 	return status
-}
-
-func stopShutdownWaitForFile(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %q", path)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-func stopShutdownWaitForPathGone(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		_, err := os.Stat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %q to disappear (err=%v)", path, err)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
 }
 
 type stopShutdownJSONResult struct {

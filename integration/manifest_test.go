@@ -1082,9 +1082,9 @@ processes:
 	})
 
 	up := testutil.Start(t, hum, projectRoot, env, "up", "--timeout", "3s")
-	manifestIntegrationWaitForText(t, up, "hum up: fast: started; waiting for readiness", manifestWorkflowTimeout)
-	manifestIntegrationWaitForText(t, up, "hum up: slow: started; waiting for readiness", manifestWorkflowTimeout)
-	manifestIntegrationWaitForText(t, up, "hum up: fast: ready", manifestWorkflowTimeout)
+	testutil.WaitForOutput(t, up, true, "hum up: fast: started; waiting for readiness", manifestWorkflowTimeout)
+	testutil.WaitForOutput(t, up, true, "hum up: slow: started; waiting for readiness", manifestWorkflowTimeout)
+	testutil.WaitForOutput(t, up, true, "hum up: fast: ready", manifestWorkflowTimeout)
 	if up.Exited() {
 		t.Fatalf("up exited before slow readiness timeout: stdout=%q stderr=%q", up.Stdout(), up.Stderr())
 	}
@@ -1179,18 +1179,6 @@ processes:
 	if !manifestOutputContains(earlyOutput, "early-child-output") {
 		t.Fatalf("early retained logs = %#v, missing child diagnostic", earlyOutput)
 	}
-}
-
-func manifestIntegrationWaitForText(t *testing.T, process *testutil.Process, text string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if strings.Contains(process.Stderr(), text) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %q: stdout=%q stderr=%q", text, process.Stdout(), process.Stderr())
 }
 
 func manifestOutputContains(result manifestOutputResponse, text string) bool {

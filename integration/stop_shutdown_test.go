@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	stopitPollInterval = 10 * time.Millisecond
 	stopitReadyWait    = 8 * time.Second
 	stopitShutdownWait = 10 * time.Second
 	stopitCleanupWait  = 2 * time.Second
@@ -307,9 +306,9 @@ func TestShutdown(t *testing.T) {
 		testutil.WaitForProcessGone(t, tree.grandchildPID, stopitShutdownWait)
 		testutil.WaitForProcessGroupGone(t, tree.pgid, stopitShutdownWait)
 	}
-	stopitWaitForPathGone(t, paths.socket, stopitShutdownWait)
-	stopitWaitForPathGone(t, paths.pid, stopitShutdownWait)
-	stopitWaitForPathGone(t, paths.ready, stopitShutdownWait)
+	testutil.WaitForPathGone(t, paths.socket, stopitShutdownWait)
+	testutil.WaitForPathGone(t, paths.pid, stopitShutdownWait)
+	testutil.WaitForPathGone(t, paths.ready, stopitShutdownWait)
 	testutil.WaitForProcessGone(t, daemonPID, stopitShutdownWait)
 	if err := serve.Wait(stopitShutdownWait); err != nil || serve.Stdout() != "" {
 		t.Fatalf("foreground serve after forced shutdown: err=%v stdout=%q stderr=%q", err, serve.Stdout(), serve.Stderr())
@@ -352,7 +351,7 @@ func stopitLaunchTree(t *testing.T, hum, fixture, projectRoot string, env []stri
 	// the content rather than treating file existence as process readiness.
 	for _, suffix := range []string{".parent.pid", ".child.pid", ".grandchild.pid"} {
 		path := marker + suffix
-		if !stopitWaitForCondition(stopitReadyWait, func() bool {
+		if !testutil.WaitUntil(stopitReadyWait, func() bool {
 			data, err := os.ReadFile(path)
 			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
 			return err == nil && parseErr == nil && pid > 0
@@ -485,41 +484,6 @@ func stopitRequirePath(t *testing.T, path string) {
 	}
 }
 
-func stopitWaitForPathGone(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	if stopitWaitForCondition(timeout, func() bool {
-		_, err := os.Stat(path)
-		return errors.Is(err, os.ErrNotExist)
-	}) {
-		return
-	}
-	_, err := os.Stat(path)
-	t.Fatalf("runtime artifact %q remained after %s (err=%v)", path, timeout, err)
-}
-
-func stopitWaitForCondition(timeout time.Duration, condition func() bool) bool {
-	if condition() {
-		return true
-	}
-	if timeout <= 0 {
-		return false
-	}
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	poll := time.NewTicker(stopitPollInterval)
-	defer poll.Stop()
-	for {
-		select {
-		case <-poll.C:
-			if condition() {
-				return true
-			}
-		case <-deadline.C:
-			return condition()
-		}
-	}
-}
-
 func stopitProcessGroupAlive(pgid int) bool {
 	if pgid <= 0 {
 		return false
@@ -547,7 +511,7 @@ func stopitCleanupGroups(groups []int) {
 }
 
 func stopitWaitForGroupsGone(groups []int, timeout time.Duration, ownGroup int) {
-	stopitWaitForCondition(timeout, func() bool {
+	testutil.WaitUntil(timeout, func() bool {
 		for _, pgid := range groups {
 			if pgid > 1 && pgid != ownGroup && stopitProcessGroupAlive(pgid) {
 				return false

@@ -31,6 +31,7 @@ import (
 	"hum/internal/process"
 	"hum/internal/project"
 	"hum/internal/protocol"
+	"hum/internal/testutil"
 )
 
 const (
@@ -2326,20 +2327,10 @@ func cliServeRunWaitForTextIn(text func() string, want string) error {
 }
 
 func cliServeRunWaitForCondition(condition func() bool) error {
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if condition() {
-			return nil
-		}
-		select {
-		case <-ticker.C:
-		case <-deadline.C:
-			return errors.New("condition did not become true before timeout")
-		}
+	if testutil.WaitUntil(5*time.Second, condition) {
+		return nil
 	}
+	return errors.New("condition did not become true before timeout")
 }
 
 func cliServeRunEqualStrings(left, right []string) bool {

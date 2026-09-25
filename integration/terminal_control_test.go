@@ -98,11 +98,11 @@ func TestBoundedLogsStripTerminalControl(t *testing.T) {
 	}
 
 	follower := testutil.Start(t, hum, root, env, "logs", "terminal", "--follow")
-	terminalWaitForProcessText(t, follower, "\x1b[31minitial\x1b[0m\r\n", 3*time.Second)
+	testutil.WaitForOutput(t, follower, false, "\x1b[31minitial\x1b[0m\r\n", 3*time.Second)
 	if err := os.WriteFile(gate, []byte("release\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	terminalWaitForProcessText(t, follower, "\x1b[32mlive\x1b[0m\r\n", 3*time.Second)
+	testutil.WaitForOutput(t, follower, false, "\x1b[32mlive\x1b[0m\r\n", 3*time.Second)
 	if err := follower.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("interrupt raw follow: %v", err)
 	}
@@ -113,19 +113,4 @@ func TestBoundedLogsStripTerminalControl(t *testing.T) {
 	if !strings.Contains(followOutput, "\x1b[31minitial\x1b[0m\r\n") || !strings.Contains(followOutput, "\x1b[32mlive\x1b[0m\r\n") {
 		t.Fatalf("raw follow output = %q, want initial replay and later raw event", followOutput)
 	}
-}
-
-func terminalWaitForProcessText(t *testing.T, process *testutil.Process, text string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if strings.Contains(process.Stdout(), text) {
-			return
-		}
-		if process.Exited() {
-			t.Fatalf("process exited before %q: stdout=%q stderr=%q", text, process.Stdout(), process.Stderr())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for process text %q: stdout=%q stderr=%q", text, process.Stdout(), process.Stderr())
 }

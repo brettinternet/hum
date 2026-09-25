@@ -194,7 +194,7 @@ func TestSignalledLeaderWithSurvivingDescendant(t *testing.T) {
 	testutil.WaitForFile(t, marker+".child.term", lifecycleTimeout)
 
 	var status protocol.Process
-	if !lifecycleWaitCondition(lifecycleTimeout, func() bool {
+	if !testutil.WaitUntil(lifecycleTimeout, func() bool {
 		result := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "descendant-state", "--json")
 		if result.Code != 0 || json.Unmarshal([]byte(strings.TrimSpace(result.Stdout)), &status) != nil {
 			return false
@@ -226,7 +226,7 @@ func TestSignalledLeaderWithSurvivingDescendant(t *testing.T) {
 	if stopped.Code != 0 || stopped.Err != nil || !strings.Contains(stopped.Stdout, `"status":"stopped"`) {
 		t.Fatalf("stop surviving descendant group: code=%d err=%v stdout=%q stderr=%q", stopped.Code, stopped.Err, stopped.Stdout, stopped.Stderr)
 	}
-	if !lifecycleWaitCondition(lifecycleTimeout, func() bool {
+	if !testutil.WaitUntil(lifecycleTimeout, func() bool {
 		result := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "descendant-state", "--json")
 		if result.Code != 0 || json.Unmarshal([]byte(strings.TrimSpace(result.Stdout)), &status) != nil {
 			return false
@@ -263,7 +263,7 @@ func TestForegroundServe(t *testing.T) {
 		t.Fatalf("foreground readiness probe output: stdout=%q stderr=%q", list.Stdout, list.Stderr)
 	}
 	testutil.WaitForFile(t, runtime.paths.Ready, lifecycleTimeout)
-	lifecycleWaitForStderr(t, serve, "hum serve: listening on ", lifecycleTimeout)
+	testutil.WaitForOutput(t, serve, true, "hum serve: listening on ", lifecycleTimeout)
 	if serve.Stdout() != "" {
 		t.Fatalf("foreground serve leaked stdout: %q", serve.Stdout())
 	}
@@ -290,9 +290,9 @@ func TestForegroundServe(t *testing.T) {
 	}
 	testutil.WaitForFile(t, marker+".terminated", lifecycleTimeout)
 	testutil.WaitForProcessGone(t, foregroundPID, lifecycleTimeout)
-	lifecycleWaitPathGone(t, runtime.paths.Socket, lifecycleTimeout)
-	lifecycleWaitPathGone(t, runtime.paths.PID, lifecycleTimeout)
-	lifecycleWaitPathGone(t, runtime.paths.Ready, lifecycleTimeout)
+	testutil.WaitForPathGone(t, runtime.paths.Socket, lifecycleTimeout)
+	testutil.WaitForPathGone(t, runtime.paths.PID, lifecycleTimeout)
+	testutil.WaitForPathGone(t, runtime.paths.Ready, lifecycleTimeout)
 	if serve.Stdout() != "" {
 		t.Fatalf("foreground diagnostics leaked to stdout after shutdown: %q", serve.Stdout())
 	}
@@ -348,9 +348,9 @@ func TestDetachedServe(t *testing.T) {
 		t.Fatalf("detached daemon shutdown: code=%d err=%v stdout=%q stderr=%q", shutdown.Code, shutdown.Err, shutdown.Stdout, shutdown.Stderr)
 	}
 	testutil.WaitForProcessGone(t, daemonPID, lifecycleTimeout)
-	lifecycleWaitPathGone(t, runtime.paths.Socket, lifecycleTimeout)
-	lifecycleWaitPathGone(t, runtime.paths.PID, lifecycleTimeout)
-	lifecycleWaitPathGone(t, runtime.paths.Ready, lifecycleTimeout)
+	testutil.WaitForPathGone(t, runtime.paths.Socket, lifecycleTimeout)
+	testutil.WaitForPathGone(t, runtime.paths.PID, lifecycleTimeout)
+	testutil.WaitForPathGone(t, runtime.paths.Ready, lifecycleTimeout)
 	daemonPID = 0
 
 	// A stale PID, readiness marker, and non-socket file at the socket path must
@@ -385,9 +385,9 @@ func TestDetachedServe(t *testing.T) {
 		t.Fatalf("shutdown after stale recovery: code=%d err=%v stdout=%q stderr=%q", shutdown.Code, shutdown.Err, shutdown.Stdout, shutdown.Stderr)
 	}
 	testutil.WaitForProcessGone(t, daemonPID, lifecycleTimeout)
-	lifecycleWaitPathGone(t, runtime.paths.Socket, lifecycleTimeout)
-	lifecycleWaitPathGone(t, runtime.paths.PID, lifecycleTimeout)
-	lifecycleWaitPathGone(t, runtime.paths.Ready, lifecycleTimeout)
+	testutil.WaitForPathGone(t, runtime.paths.Socket, lifecycleTimeout)
+	testutil.WaitForPathGone(t, runtime.paths.PID, lifecycleTimeout)
+	testutil.WaitForPathGone(t, runtime.paths.Ready, lifecycleTimeout)
 	daemonPID = 0
 
 	badRuntime := filepath.Join(t.TempDir(), "runtime-file")
@@ -511,7 +511,7 @@ func TestAutomaticStartup(t *testing.T) {
 			t.Fatalf("shutdown concurrent daemon: code=%d err=%v stdout=%q stderr=%q", shutdown.Code, shutdown.Err, shutdown.Stdout, shutdown.Stderr)
 		}
 		testutil.WaitForProcessGone(t, daemonPID, lifecycleTimeout)
-		lifecycleWaitPathGone(t, runtime.paths.Socket, lifecycleTimeout)
+		testutil.WaitForPathGone(t, runtime.paths.Socket, lifecycleTimeout)
 		daemonPID = 0
 	})
 
@@ -551,7 +551,7 @@ func TestAutomaticStartup(t *testing.T) {
 			t.Fatalf("shutdown after automatic stale recovery: code=%d err=%v stdout=%q stderr=%q", shutdown.Code, shutdown.Err, shutdown.Stdout, shutdown.Stderr)
 		}
 		testutil.WaitForProcessGone(t, daemonPID, lifecycleTimeout)
-		lifecycleWaitPathGone(t, runtime.paths.Socket, lifecycleTimeout)
+		testutil.WaitForPathGone(t, runtime.paths.Socket, lifecycleTimeout)
 		daemonPID = 0
 
 		badRuntime := filepath.Join(t.TempDir(), "runtime-file")
@@ -649,14 +649,6 @@ func lifecycleNewRuntime(t *testing.T) lifecycleRuntime {
 	return lifecycleRuntime{dir: dir, cwd: cwd, env: testutil.RuntimeEnv(dir), paths: daemon.NewRuntimePaths(dir)}
 }
 
-func lifecycleWaitForStderr(t *testing.T, process *testutil.Process, text string, timeout time.Duration) {
-	t.Helper()
-	if lifecycleWaitCondition(timeout, func() bool { return strings.Contains(process.Stderr(), text) }) {
-		return
-	}
-	t.Fatalf("timed out waiting for process stderr %q; got %q", text, process.Stderr())
-}
-
 func lifecycleParseListeningPID(t *testing.T, stderr, socket string) int {
 	t.Helper()
 	prefix := fmt.Sprintf("hum serve: listening on %s (PID ", socket)
@@ -746,46 +738,12 @@ func lifecycleCleanupDaemon(t *testing.T, hum string, runtime lifecycleRuntime, 
 		pid = lifecycleReadPIDNoFatal(runtime.paths.PID)
 	}
 	if pid > 0 {
-		lifecycleWaitCondition(lifecycleTimeout, func() bool { return !testutil.ProcessAlive(pid) })
+		testutil.WaitUntil(lifecycleTimeout, func() bool { return !testutil.ProcessAlive(pid) })
 	}
-	lifecycleWaitCondition(lifecycleTimeout, func() bool {
+	testutil.WaitUntil(lifecycleTimeout, func() bool {
 		_, err := os.Stat(runtime.paths.Socket)
 		return errors.Is(err, os.ErrNotExist)
 	})
-}
-
-func lifecycleWaitPathGone(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	if lifecycleWaitCondition(timeout, func() bool {
-		_, err := os.Stat(path)
-		return errors.Is(err, os.ErrNotExist)
-	}) {
-		return
-	}
-	t.Fatalf("path %s remained after %s", path, timeout)
-}
-
-func lifecycleWaitCondition(timeout time.Duration, condition func() bool) bool {
-	if condition() {
-		return true
-	}
-	if timeout <= 0 {
-		return false
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	ticker := time.NewTicker(lifecyclePollInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if condition() {
-				return true
-			}
-		case <-timer.C:
-			return condition()
-		}
-	}
 }
 
 func lifecycleStartMismatchedServer(t *testing.T, runtimeDir string) (*daemon.Server, chan error) {

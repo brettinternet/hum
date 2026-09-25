@@ -27,7 +27,7 @@ func TestEventsLogCursor(t *testing.T) {
 	awaitExits := func(want int) []eventJSON {
 		t.Helper()
 		var events []eventJSON
-		if !lifecycleWaitCondition(5*time.Second, func() bool {
+		if !testutil.WaitUntil(5*time.Second, func() bool {
 			events = getEvents()
 			count := 0
 			for _, event := range events {
