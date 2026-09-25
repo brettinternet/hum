@@ -128,7 +128,7 @@ func LoadDefinitionsFile(root, filename, display, source string) ([]Definition, 
 // loadDefinitions parses the effective default manifest and reports whether
 // one was present. The private filename is authoritative when it exists.
 func loadDefinitions(root string) ([]Definition, bool, error) {
-	selection, present, err := DefaultManifestSelection(root)
+	selection, present, err := DefaultManifestSelection(root, root)
 	if err != nil {
 		return nil, present, err
 	}

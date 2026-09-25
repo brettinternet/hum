@@ -335,7 +335,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "mise.toml", "[tasks.dev]\nrun = \"echo body\"\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -348,7 +348,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 	t.Run("task", func(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "Taskfile.yml", "version: '3'\ntasks:\n  dev:\n    cmds: [echo body]\n", 0o600)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -358,7 +358,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 	t.Run("task alias", func(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "Taskfile.yml", "version: '3'\ntasks:\n  start:\n    aliases: [dev]\n", 0o600)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -370,7 +370,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		calls := installDiscoveryStubs(t, map[string]discoveryStub{
 			"task": {output: []byte("Taskfile not found\n"), err: discoveryExitError(100)},
 		})
-		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		var noCandidate *NoCandidateError
 		if !errors.As(err, &noCandidate) {
 			t.Fatalf("error = %v, want NoCandidateError", err)
@@ -384,7 +384,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "justfile", "dev:\n\techo body\n", 0o600)
 		calls := installDiscoveryStubs(t, map[string]discoveryStub{"just": {output: []byte(`{"recipes":{"dev":{"private":false,"body":["echo body"]}}}`)}})
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -399,7 +399,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		writeDiscoveryFile(t, root, "justfile", "[private]\ndev:\n\techo body\n", 0o600)
 		calls := installDiscoveryStubs(t, map[string]discoveryStub{"just": {output: []byte(`{"recipes":{"dev":{"private":true,"body":["echo body"]}}}`)}})
 
-		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err == nil {
 			t.Fatal("private Just dev recipe unexpectedly produced a candidate")
 		}
@@ -423,7 +423,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		writeDiscoveryFile(t, root, "justfile", "dev:\n\techo body\n", 0o600)
 		calls := installDiscoveryStubs(t, map[string]discoveryStub{"just": {output: []byte(`{"recipes":{"dev":{"private":"false","body":["echo body"]}}}`)}})
 
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatalf("read-only detection error = %v", err)
 		}
@@ -437,7 +437,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "Makefile", "dev: deps\n\t@touch should-not-run\npattern%:\n\t@touch should-not-run\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -454,7 +454,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "Makefile", "dev::\n\t@touch should-not-run\npattern%:\n\t@touch should-not-run\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -473,7 +473,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		writeDiscoveryFile(t, root, "Makefile", makefile, 0o600)
 		calls := installDiscoveryStubs(t, nil)
 
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -493,7 +493,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		writeDiscoveryFile(t, root, "Makefile", "other:\n\tdefine dev:\n\t@touch should-not-run\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
 
-		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err == nil {
 			t.Fatal("recipe-only directive text unexpectedly produced a candidate")
 		}
@@ -520,7 +520,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		writeDiscoveryFile(t, root, "GNUmakefile", "dev:\n\t@touch should-not-run\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
 
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -540,7 +540,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 			writeDiscoveryFile(t, root, lower, "dev:\n\t@touch lower-should-not-run\n", 0o600)
 			calls := installDiscoveryStubs(t, nil)
 
-			_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+			_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 			if err == nil {
 				t.Fatal("ResolveDefinitions unexpectedly succeeded from a lower-priority Makefile")
 			}
@@ -571,7 +571,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 			writeDiscoveryFile(t, root, "Makefile", fmt.Sprintf("%s dev: fragment.mk\n", directive), 0o600)
 			calls := installDiscoveryStubs(t, nil)
 
-			_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+			_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 			if err == nil {
 				t.Fatalf("%s directive was treated as a dev target", directive)
 			}
@@ -616,7 +616,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 				writeDiscoveryFile(t, root, "Makefile", test.declaration, 0o600)
 				calls := installDiscoveryStubs(t, nil)
 
-				_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+				_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 				if err == nil {
 					t.Fatalf("%s directive was treated as a dev target", test.name)
 				}
@@ -650,7 +650,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 				root := t.TempDir()
 				writeDiscoveryFile(t, root, "Makefile", test.declaration, 0o600)
 				installDiscoveryStubs(t, nil)
-				_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+				_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 				var noCandidate *NoCandidateError
 				if !errors.As(err, &noCandidate) {
 					t.Fatalf("error = %v, want NoCandidateError", err)
@@ -662,7 +662,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 	t.Run("unavailable runners are skipped", func(t *testing.T) {
 		root := t.TempDir()
 		installDiscoveryStubs(t, nil)
-		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		var noCandidate *NoCandidateError
 		if !errors.As(err, &noCandidate) {
 			t.Fatalf("error = %v, want NoCandidateError", err)
@@ -673,7 +673,7 @@ func TestInitTaskRunnerSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "Taskfile.yml", "tasks: [not-a-map]\n", 0o600)
 		calls := installDiscoveryStubs(t, map[string]discoveryStub{"task": {output: []byte("should not run")}})
-		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		var configuration *ConfigurationError
 		if !errors.As(err, &configuration) {
 			t.Fatalf("error = %v, want ConfigurationError", err)
@@ -693,7 +693,7 @@ func TestInitEcosystemSources(t *testing.T) {
 		writeDiscoveryFile(t, root, "package.json", `{"packageManager":"bun@1.2.3","scripts":{"dev":"echo body"}}`, 0o600)
 		writeDiscoveryFile(t, root, "package-lock.json", "{}", 0o600)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -720,7 +720,7 @@ func TestInitEcosystemSources(t *testing.T) {
 				writeDiscoveryFile(t, root, test.lockfile, "lock", 0o600)
 			}
 			installDiscoveryStubs(t, nil)
-			definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+			definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -734,7 +734,7 @@ func TestInitEcosystemSources(t *testing.T) {
 		writeDiscoveryFile(t, root, "pnpm-lock.yaml", "lock", 0o600)
 		writeDiscoveryFile(t, root, "yarn.lock", "lock", 0o600)
 		installDiscoveryStubs(t, nil)
-		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		var configuration *ConfigurationError
 		if !errors.As(err, &configuration) || !strings.Contains(err.Error(), "pnpm") || !strings.Contains(err.Error(), "yarn") {
 			t.Fatalf("error = %v, want typed lockfile conflict", err)
@@ -757,7 +757,7 @@ func TestInitEcosystemSources(t *testing.T) {
 				writeDiscoveryFile(t, root, test.filename, test.contents, 0o600)
 				installDiscoveryStubs(t, nil)
 
-				_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+				_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 				var configuration *ConfigurationError
 				if err == nil || !errors.As(err, &configuration) {
 					t.Fatalf("error = %v, want ConfigurationError", err)
@@ -779,7 +779,7 @@ func TestInitEcosystemSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "deno.jsonc", "{\n // no task body is read\n \"tasks\": {\"dev\": \"echo body\",},\n}\n", 0o600)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -790,7 +790,7 @@ func TestInitEcosystemSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "deno.jsonc", "{\n  \"tasks\": {\n    /* block comment with slash / and star * before closing */\n    \"dev\": \"echo body\",\n  },\n}\n", 0o600)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -801,7 +801,7 @@ func TestInitEcosystemSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "deno.jsonc", "{\n  \"version\": 1/* split */2,\n  \"tasks\": {\"dev\": \"echo body\"}\n}\n", 0o600)
 		installDiscoveryStubs(t, nil)
-		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		var configuration *ConfigurationError
 		if !errors.As(err, &configuration) {
 			t.Fatalf("error = %v, want ConfigurationError", err)
@@ -812,7 +812,7 @@ func TestInitEcosystemSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "composer.json", `{"scripts":{"dev":["echo body"]}}`, 0o600)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -823,7 +823,7 @@ func TestInitEcosystemSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "bin/"+binDevExecutableName, "#!/bin/sh\ntouch should-not-run\n", 0o700)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -834,7 +834,7 @@ func TestInitEcosystemSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -848,7 +848,7 @@ func TestInitEcosystemSources(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "mix.exs", "defmodule App.MixProject do\n  # \\x1b[32mphx.server\\x1b[0m output is not consulted\n  defp deps, do: [{:phoenix, \"~> 1.7\"}]\nend\n", 0o600)
 		calls := installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -867,7 +867,7 @@ func TestInitEcosystemSources(t *testing.T) {
 			root := t.TempDir()
 			writeDiscoveryFile(t, root, "mix.exs", contents, 0o600)
 			installDiscoveryStubs(t, nil)
-			_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+			_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 			var noCandidate *NoCandidateError
 			if !errors.As(err, &noCandidate) {
 				t.Fatalf("ResolveDefinitions(%q) error = %v, want NoCandidateError", contents, err)
@@ -894,7 +894,7 @@ func TestInitDiscoveryTemplates(t *testing.T) {
 			"just": {output: []byte(`{"recipes":{"dev":{"private":false}}}`)},
 		})
 
-		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		var ambiguity *AmbiguityError
 		if !errors.As(err, &ambiguity) {
 			t.Fatalf("error = %v, want AmbiguityError", err)
@@ -913,7 +913,7 @@ func TestInitDiscoveryTemplates(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "deno.json", `{"tasks":{"dev":"echo body"}}`, 0o600)
 		installDiscoveryStubs(t, nil)
-		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		definitions, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -923,7 +923,7 @@ func TestInitDiscoveryTemplates(t *testing.T) {
 	t.Run("no candidate is actionable", func(t *testing.T) {
 		root := t.TempDir()
 		installDiscoveryStubs(t, nil)
-		_, err := ResolveDefinitionsReadOnly(context.Background(), root)
+		_, err := ResolveDefinitionsReadOnly(context.Background(), root, root)
 		if !errors.Is(err, ErrNoCandidate) {
 			t.Fatalf("error = %v, want NoCandidateError", err)
 		}
@@ -945,8 +945,8 @@ func TestPrivateManifest(t *testing.T) {
 			name string
 			load func() ([]Definition, error)
 		}{
-			{"ResolveDefinitionsContext", func() ([]Definition, error) { return ResolveDefinitionsContext(context.Background(), root) }},
-			{"ResolveDefinitionsReadOnly", func() ([]Definition, error) { return ResolveDefinitionsReadOnly(context.Background(), root) }},
+			{"ResolveDefinitionsContext", func() ([]Definition, error) { return ResolveDefinitionsContext(context.Background(), root, root) }},
+			{"ResolveDefinitionsReadOnly", func() ([]Definition, error) { return ResolveDefinitionsReadOnly(context.Background(), root, root) }},
 			{"LoadDefinitions", func() ([]Definition, error) { return LoadDefinitions(root) }},
 		} {
 			t.Run(resolve.name, func(t *testing.T) {
@@ -967,8 +967,8 @@ func TestPrivateManifest(t *testing.T) {
 			name string
 			load func() ([]Definition, error)
 		}{
-			{"ResolveDefinitionsContext", func() ([]Definition, error) { return ResolveDefinitionsContext(context.Background(), root) }},
-			{"ResolveDefinitionsReadOnly", func() ([]Definition, error) { return ResolveDefinitionsReadOnly(context.Background(), root) }},
+			{"ResolveDefinitionsContext", func() ([]Definition, error) { return ResolveDefinitionsContext(context.Background(), root, root) }},
+			{"ResolveDefinitionsReadOnly", func() ([]Definition, error) { return ResolveDefinitionsReadOnly(context.Background(), root, root) }},
 			{"LoadDefinitions", func() ([]Definition, error) { return LoadDefinitions(root) }},
 		} {
 			t.Run(resolve.name, func(t *testing.T) {
@@ -999,7 +999,7 @@ func TestPrivateManifest(t *testing.T) {
 		if err := os.Symlink(root, alias); err != nil {
 			t.Fatal(err)
 		}
-		definitions, err := ResolveDefinitionsContext(context.Background(), alias)
+		definitions, err := ResolveDefinitionsContext(context.Background(), alias, alias)
 		if err != nil || len(definitions) != 1 || definitions[0].Environment == nil {
 			t.Fatalf("definitions=%#v err=%v", definitions, err)
 		}
@@ -1016,7 +1016,7 @@ func TestPrivateManifest(t *testing.T) {
 		root := t.TempDir()
 		writeDiscoveryFile(t, root, "hum.yaml", manifest("shared", "shared"), 0o600)
 		writeDiscoveryFile(t, root, ".hum.yaml", manifest("private", "private"), 0o600)
-		defs, err := ResolveDefinitionsContext(context.Background(), root)
+		defs, err := ResolveDefinitionsContext(context.Background(), root, root)
 		if err != nil || len(defs) != 1 || defs[0].Name != "private" {
 			t.Fatalf("definitions=%#v err=%v, want private only", defs, err)
 		}
@@ -1081,7 +1081,7 @@ func TestPrivateManifest(t *testing.T) {
 func TestResolveDefinitionsManifestOnlyDoesNotDiscover(t *testing.T) {
 	root := t.TempDir()
 	writeDiscoveryFile(t, root, "package.json", `{"scripts":{"dev":"sleep 30"}}`, 0o600)
-	_, err := ResolveDefinitionsContext(context.Background(), root)
+	_, err := ResolveDefinitionsContext(context.Background(), root, root)
 	if !errors.Is(err, ErrManifestMissing) {
 		t.Fatalf("runtime resolution error = %v, want manifest missing", err)
 	}
@@ -1109,7 +1109,8 @@ func TestIntrospectionErrorExposesItsCause(t *testing.T) {
 func TestResolveDefinitionsManifestCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := ResolveDefinitionsContext(ctx, t.TempDir())
+	root := t.TempDir()
+	_, err := ResolveDefinitionsContext(ctx, root, root)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("resolution error = %v, want context.Canceled", err)
 	}

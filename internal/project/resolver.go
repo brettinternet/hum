@@ -275,14 +275,7 @@ func ResolveManifestPath(invocationDir, projectRoot, filename string) (ManifestS
 // directory, a private .hum.yaml is authoritative over hum.yaml. The selected
 // file is validated using the same containment and regular-file checks as an
 // explicit --file selection.
-func DefaultManifestSelection(start string, projectRoots ...string) (ManifestSelection, bool, error) {
-	root := start
-	if len(projectRoots) > 1 {
-		return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: errors.New("manifest search accepts one project root")}
-	}
-	if len(projectRoots) == 1 {
-		root = projectRoots[0]
-	}
+func DefaultManifestSelection(start, root string) (ManifestSelection, bool, error) {
 	start, err := absoluteClean(start)
 	if err != nil {
 		return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
@@ -346,16 +339,9 @@ func ResolveDefinitions(root string) ([]Definition, error) {
 // ResolveDefinitionsContext resolves the effective default manifest by
 // searching from start up to root. An absent default manifest is actionable
 // instead of triggering conventional discovery.
-func ResolveDefinitionsContext(ctx context.Context, start string, projectRoots ...string) ([]Definition, error) {
+func ResolveDefinitionsContext(ctx context.Context, start, root string) ([]Definition, error) {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	root := start
-	if len(projectRoots) > 1 {
-		return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: errors.New("manifest search accepts one project root")}
-	}
-	if len(projectRoots) == 1 {
-		root = projectRoots[0]
 	}
 	start, err := absoluteClean(start)
 	if err != nil {
@@ -412,16 +398,9 @@ func ResolveExplicitDefinitionsReadOnly(selection ManifestSelection) ([]Definiti
 // ResolveDefinitionsReadOnly resolves the effective default manifest and
 // conservative conventional init candidates without running project-owned
 // commands. It is intended for observational diagnostics and initialization.
-func ResolveDefinitionsReadOnly(ctx context.Context, start string, projectRoots ...string) ([]Definition, error) {
+func ResolveDefinitionsReadOnly(ctx context.Context, start, root string) ([]Definition, error) {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	root := start
-	if len(projectRoots) > 1 {
-		return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: errors.New("manifest search accepts one project root")}
-	}
-	if len(projectRoots) == 1 {
-		root = projectRoots[0]
 	}
 	start, err := absoluteClean(start)
 	if err != nil {
