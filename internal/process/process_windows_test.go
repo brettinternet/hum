@@ -428,19 +428,17 @@ func TestWindowsTTYStartupFailureCleansUpConsole(t *testing.T) {
 		t.Fatal("invalid PE started under ConPTY")
 	}
 	before := windowsTTYHandleCount(t)
+	counts := make([]uint32, 0, 10)
 	for range 10 {
 		if _, err := Start(spec); err == nil {
 			t.Fatal("invalid PE started under ConPTY")
+		} else if len(counts) == 0 {
+			t.Logf("invalid PE launch error: %v", err)
 		}
-	}
-	// ConPTY can release its remaining handles after ClosePseudoConsole returns.
-	// Require the count to settle rather than sampling immediately after launch.
-	deadline := time.Now().Add(5 * time.Second)
-	for windowsTTYHandleCount(t) > before+2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+		counts = append(counts, windowsTTYHandleCount(t))
 	}
 	if after := windowsTTYHandleCount(t); after > before+2 {
-		t.Fatalf("ConPTY startup leaked handles: before=%d after=%d", before, after)
+		t.Fatalf("ConPTY startup leaked handles: before=%d after=%d counts=%v", before, after, counts)
 	}
 }
 
