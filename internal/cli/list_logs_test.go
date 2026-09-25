@@ -645,23 +645,30 @@ func TestLogsMatchContext(t *testing.T) {
 
 	hum006ListLogsStartDaemon(t, validationRuntime, 1<<16)
 	project := hum006ListLogsProject(t, "match-context-project")
-	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "alpha", "--detach", "--", "/bin/sh", "-c", "printf 'before\\nERROR\\nafter\\n'"); err != nil {
-		t.Fatalf("start alpha: %v (stdout=%q stderr=%q)", err, stdout, stderr)
+	for _, name := range []string{"alpha", "beta"} {
+		if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", name, "--detach", "--", "/bin/sh", "-c", "printf 'before\\nERROR\\nafter\\n'"); err != nil {
+			t.Fatalf("start %s: %v (stdout=%q stderr=%q)", name, err, stdout, stderr)
+		}
+		hum006ListLogsWaitForText(t, project, name, "after\n")
 	}
-	hum006ListLogsWaitForText(t, project, "alpha", "after\n")
 
-	// A single request verifies that the CLI forwards match and context;
-	// ring_test.go owns the shape and bounds of the resulting window.
-	single, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "alpha", "--json", "--match", "ERROR", "--context", "1")
-	if err != nil {
-		t.Fatalf("single match context: %v (stderr=%q)", err, stderr)
-	}
-	objects := hum006ListLogsDecodeJSONLines(t, single)
-	if len(objects) != 1 {
-		t.Fatalf("single match context objects = %d, want 1: %q", len(objects), single)
-	}
-	if got := hum006ListLogsEntryTexts(t, hum006ListLogsEntries(t, objects[0])); !hum006ListLogsEqualStrings(got, []string{"before\n", "ERROR\n", "after\n"}) {
-		t.Fatalf("CLI match/context forwarding entries = %#v", got)
+	// One request per read path verifies that the CLI forwards match and
+	// context; ring_test.go owns the shape and bounds of the resulting window.
+	for _, names := range [][]string{{"alpha"}, {"alpha", "beta"}} {
+		args := append(append([]string{"logs"}, names...), "--json", "--match", "ERROR", "--context", "1")
+		raw, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), args...)
+		if err != nil {
+			t.Fatalf("%v match context: %v (stderr=%q)", names, err, stderr)
+		}
+		objects := hum006ListLogsDecodeJSONLines(t, raw)
+		if len(objects) != len(names) {
+			t.Fatalf("%v match context objects = %d, want %d: %q", names, len(objects), len(names), raw)
+		}
+		for _, object := range objects {
+			if got := hum006ListLogsEntryTexts(t, hum006ListLogsEntries(t, object)); !hum006ListLogsEqualStrings(got, []string{"before\n", "ERROR\n", "after\n"}) {
+				t.Fatalf("%v CLI match/context forwarding entries = %#v", names, got)
+			}
+		}
 	}
 }
 
