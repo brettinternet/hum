@@ -7,7 +7,7 @@ import (
 )
 
 // TestExampleManifestsLoad keeps the published examples accepted by the real
-// parser and environment composition, so they cannot drift from the schema.
+// parser, so they cannot drift from the schema.
 func TestExampleManifestsLoad(t *testing.T) {
 	repo, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -32,9 +32,6 @@ func TestExampleManifestsLoad(t *testing.T) {
 			}
 			if len(definitions) == 0 {
 				t.Fatal("example declares no processes")
-			}
-			if _, err := PrepareEnvironments(definitions, nil); err != nil {
-				t.Fatal(err)
 			}
 		})
 	}

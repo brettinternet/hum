@@ -1,0 +1,4 @@
+# Copy to .config/wt.toml. Each new worktree gets a stable port hashed from its
+# branch name (10000-19999).
+[pre-start]
+port = "echo PORT={{ branch | hash_port }} > .env.local"
