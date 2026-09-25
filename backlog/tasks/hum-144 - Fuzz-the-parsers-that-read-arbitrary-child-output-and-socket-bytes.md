@@ -1,10 +1,10 @@
 ---
 id: HUM-144
 title: Fuzz the parsers that read arbitrary child output and socket bytes
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-24 22:54'
-updated_date: '2026-09-24 22:58'
+updated_date: '2026-09-25 01:15'
 labels:
   - output
   - protocol
@@ -38,18 +38,31 @@ Unrelated failures: if `task ci` or a package run fails in a test this task did 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/output ./internal/protocol -run "^Fuzz" -count=1 -v` exits 0 and lists FuzzStripTerminalControl, a LineWriter fuzz target, and a Decoder fuzz target.
-- [ ] #2 AC2 — `go test ./internal/output -run "^$" -fuzz "^FuzzStripTerminalControl$" -fuzztime 60s` exits 0.
-- [ ] #3 AC3 — the LineWriter target run with `go test ./internal/output -run "^$" -fuzz "^<name>$" -fuzztime 60s` exits 0.
-- [ ] #4 AC4 — the Decoder target run with `go test ./internal/protocol -run "^$" -fuzz "^<name>$" -fuzztime 60s` exits 0.
+- [x] #1 AC1 — `go test ./internal/output ./internal/protocol -run "^Fuzz" -count=1 -v` exits 0 and lists FuzzStripTerminalControl, a LineWriter fuzz target, and a Decoder fuzz target.
+- [x] #2 AC2 — `go test ./internal/output -run "^$" -fuzz "^FuzzStripTerminalControl$" -fuzztime 60s` exits 0.
+- [x] #3 AC3 — the LineWriter target run with `go test ./internal/output -run "^$" -fuzz "^<name>$" -fuzztime 60s` exits 0.
+- [x] #4 AC4 — the Decoder target run with `go test ./internal/protocol -run "^$" -fuzz "^<name>$" -fuzztime 60s` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Worktree .worktrees/hum-144-fuzz, branch hum-144-fuzz, commit 7e99a7e (test: fuzz output and protocol decoders). Decoder continues after malformed and oversized lines: codec.go decodeRaw consumes each physical line; TestTypedErrorsAndBoundedNDJSON asserts recovery after oversized line. LineWriter retains LF in emitted entries, bounded by maxLineBytes; Close flushes partial lines. Fuzz inputs include terminal-control cases, arbitrary byte chunks, and malformed/unknown/oversized NDJSON. No production or existing test files changed.
+AC1 — go test ./internal/output ./internal/protocol -run "^Fuzz" -count=1 -v: PASS; lists FuzzStripTerminalControl, FuzzLineWriter, FuzzDecoder and all seeds pass.
+AC2 — go test ./internal/output -run "^$" -fuzz "^FuzzStripTerminalControl$" -fuzztime 60s: PASS (19,947,986 executions).
+AC3 — go test ./internal/output -run "^$" -fuzz "^FuzzLineWriter$" -fuzztime 60s: PASS (3,256,155 executions).
+AC4 — go test ./internal/protocol -run "^$" -fuzz "^FuzzDecoder$" -fuzztime 60s: PASS (6,429,479 executions).
+Gate: task check:staged PASS before commit. First task ci on 7e99a7e failed in untouched internal/daemon/TestFollowAcrossOrdinaryStartReplacement (context deadline exceeded); mandatory standalone go test ./internal/daemon -count=1 rerun PASS (5.738s). Second task ci PASS on 7e99a7e, including race and smoke. Independent verification pending.
+
+Independent verifier on 7e99a7e: AC1 PASS, AC2 PASS, AC3 PASS, AC4 PASS (each command rerun); task ci PASS independently; reviewed contract properties, scoped diff, no weakened tests, no protected gate files. Its overall FAIL for DoD #2 was based on the stale worktree-local Backlog.md copy, not the authoritative primary checkout. Primary checkout reread before merge confirmed all four AC evidence lines above; task state remains on main per backlog-md workflow. Main fast-forwarded to 7e99a7e; no production changes.
+<!-- SECTION:NOTES:END -->
