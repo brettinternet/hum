@@ -1,10 +1,10 @@
 ---
 id: HUM-145
 title: Document where each kind of test belongs so agents stop duplicating them
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-24 22:55'
-updated_date: '2026-09-24 22:58'
+updated_date: '2026-09-25 01:22'
 labels:
   - docs
 dependencies:
@@ -45,18 +45,35 @@ Unrelated failures: if `task ci` or a package run fails in a test this task did 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `rg -n "^## Tests$" docs/development.md` exits 0, and the section between it and the next `## ` heading is at most 45 lines (`awk "/^## Tests$/{f=1;next} /^## /{f=0} f" docs/development.md | wc -l` prints at most 45).
-- [ ] #2 AC2 — every Go identifier the section names exists: for each name, `rg -n "func (\([^)]*\) )?<name>\b|type <name>\b" internal integration` exits 0. Implementation Notes list each name and its result.
-- [ ] #3 AC3 — `rg -n "docs/development.md#tests" AGENTS.md` exits 0.
-- [ ] #4 AC4 — `go test ./internal/cli -run "^(TestDocsReferenceRealCommandsAndFlags|TestDocsCoverEveryCommand)$" -count=1` exits 0.
+- [x] #1 AC1 — `rg -n "^## Tests$" docs/development.md` exits 0, and the section between it and the next `## ` heading is at most 45 lines (`awk "/^## Tests$/{f=1;next} /^## /{f=0} f" docs/development.md | wc -l` prints at most 45).
+- [x] #2 AC2 — every Go identifier the section names exists: for each name, `rg -n "func (\([^)]*\) )?<name>\b|type <name>\b" internal integration` exits 0. Implementation Notes list each name and its result.
+- [x] #3 AC3 — `rg -n "docs/development.md#tests" AGENTS.md` exits 0.
+- [x] #4 AC4 — `go test ./internal/cli -run "^(TestDocsReferenceRealCommandsAndFlags|TestDocsCoverEveryCommand)$" -count=1` exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in 54b9bdc (docs: describe test placement rules), fast-forward merged to main; Worktrunk worktree hum-145-test-guidance and branch removed. Review: one independent verifier pass, PASS for AC1-AC4 and scope; no item-scoped defects. No remaining blocker; next step: none.
+AC1 — rg -n "^## Tests$" docs/development.md: PASS, line 54; awk "/^## Tests$/{f=1;next} /^## /{f=0} f" docs/development.md | wc -l: 38 (PASS, <=45).
+AC2 — for each name, rg -n "func (\([^)]*\) )?<name>\b|type <name>\b" internal integration: PASS for TestOrchestrateUp, UpOperations, EnsureOperations, waitCLIStubDaemon, manifestCLIRecoveryStubDaemon, newTestServer, fakeClient, lifecycleNewRuntime, RuntimeDir, WaitForFile, WaitForOutput, WaitUntil, WaitForPathGone, WaitForProcessGroupGone, Run, Start, Options, TestEventHistoryAppendCost, BenchmarkAppend, TestHelpContract, TestDocsReferenceRealCommandsAndFlags, TestDocsCoverEveryCommand, TestDocsCoverEveryTool (each individually PASS). Independent verifier also confirmed each.
+AC3 — rg -n "docs/development.md#tests" AGENTS.md: PASS, line 10.
+AC4 — go test ./internal/cli -run "^(TestDocsReferenceRealCommandsAndFlags|TestDocsCoverEveryCommand)$" -count=1: PASS (0.310s).
+Validation — task check:staged PASS; git diff --check PASS. First task ci on 54b9bdc failed untouched integration/TestDownStopsDependentsFirst during go test -race ./... (daemon not alive after down). Per unrelated-failure rule, go test -race ./integration -count=1 rerun once: PASS (10.186s); second task ci on unchanged commit 54b9bdc: PASS, including race and smoke. Only AGENTS.md and docs/development.md changed; no test or protected gate file modified.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Documented test placement and linked it from AGENTS.md; all criteria independently verified, task ci passed on 54b9bdc, merged to main, worktree cleaned.
+<!-- SECTION:FINAL_SUMMARY:END -->
