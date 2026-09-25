@@ -2,6 +2,70 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.15.0](https://github.com/brettinternet/hum/compare/v0.14.1...v0.15.0) - 2026-09-25
+
+### Added
+
+- Link lifecycle events to log cursors
+- **tty:** Support Windows ConPTY sessions
+- **windows:** Package native CLI and exercise all packages
+- **windows:** Integrate native daemon CLI lifecycle
+- **cli:** Support native Windows daemon lifecycle
+- **daemon:** Add private Windows runtime transport
+- Supervise non-TTY Windows child trees
+- Stop dependents before prerequisites in down
+- Support exit-ready setup steps
+- Start named up prerequisites
+- Include commit in version output
+
+### Fixed
+
+- Snapshot exit cursor before next launch
+- **daemon:** Close history writers at shutdown and report discarded history as truncated
+- **daemon:** Reuse per-scope event history and release cursor reservations
+- **tty:** Reject unusable Windows sizes before retaining and resend lost resizes
+- **cli:** Treat Windows root Ctrl+C cancellation as up interrupt
+- Retain short-lived TTY output and synchronize lifecycle tests
+- **tty:** Route Windows standard handles into ConPTY
+- **cli:** Retain Unix fail-fast daemon startup
+- **cli:** Await racing daemon after child exits
+- **windows:** Accept explicit private doctor ACL
+- **cli:** Unblock absent Windows pipe and port native fixtures
+- **windows:** Keep autonomous exit after refused stop and absolute runtime fallback
+- **orchestrate:** Honor no-wait for independent one-shots and skip needless reruns
+- Cap MCP up names and complete only declarations for up
+- **cli:** Share down cleanup deadline and stop bounding live requests
+- **mcp:** Accept unlaunched argv and error details in output schemas
+- **daemon:** Verify connected Windows pipe handle
+- **daemon:** Restrict Windows artifact ACLs
+- **daemon:** Assign Windows artifact ownership to user
+- Retain verified Windows job ownership
+- Clear prior stop intent on replacement launch
+- **cli:** Bound daemon requests on termination
+- **mcp:** Accept emitted readiness snapshots in output schemas
+- Strip UTF-8 encoded C1 terminal controls
+- Bound every manifest read
+- Refuse runtime directories and daemon peers owned by other users
+
+### Performance
+
+- **daemon:** Compact event history with slack
+- **mcp:** Reduce tools list payload
+
+### Documentation
+
+- Describe test placement rules
+- **cli:** Correct init, run, and signal help and check docs paths in examples
+- **mcp:** Correct start, wait, timeout, and events tool descriptions
+- **readme:** Note cursor-paged log history
+- Simplify guides and design reference
+- **readme:** Show examples and simplify language
+- **cli:** Make help and README task-oriented
+- **windows:** Explain native release and verify lifecycle on CI
+- Draft process runtime leases
+- Clarify process resource limits
+- Record boot activation draft
+
 ## [v0.14.0](https://github.com/brettinternet/hum/compare/v0.13.0...v0.14.0) - 2026-09-15
 
 ### Added
