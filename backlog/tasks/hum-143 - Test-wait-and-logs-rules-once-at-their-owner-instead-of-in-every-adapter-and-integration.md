@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-24 22:54'
-updated_date: '2026-09-24 22:58'
+updated_date: '2026-09-25 01:00'
 labels:
   - cli
   - mcp
@@ -58,7 +58,7 @@ Unrelated failures: if `task ci` or a package run fails in a test this task did 
 <!-- AC:BEGIN -->
 - [ ] #1 AC1 — `go test ./internal/app ./internal/output ./internal/daemon ./internal/cli ./internal/mcp ./integration -count=1` exits 0.
 - [ ] #2 AC2 — the coverage command in procedure step 1 reports total coverage no more than 0.5 points below the baseline recorded in Implementation Notes.
-- [ ] #3 AC3 — `git diff --numstat main -- integration/wait_test.go integration/terminal_control_test.go internal/cli/list_logs_test.go internal/mcp/tools_test.go` shows a combined net reduction of at least 80 lines.
+- [x] #3 AC3 — `git diff --numstat main -- integration/wait_test.go integration/terminal_control_test.go internal/cli/list_logs_test.go internal/mcp/tools_test.go` shows a combined net reduction of at least 80 lines.
 <!-- AC:END -->
 
 ## Definition of Done
@@ -70,3 +70,23 @@ Unrelated failures: if `task ci` or a package run fails in a test this task did 
 - [ ] #5 Only tests in the description table were deleted or shrunk, and Implementation Notes map every removed assertion to the owner test that now holds it
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Map each removable rule assertion to its owner tests and retain adapter and binary-surface assertions.
+2. Shrink only the named duplicate tests, adding owner assertions if needed.
+3. Run focused acceptance checks, independent verification, and task ci; commit, merge, and finalize the task.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Baseline in hum-143-tests at main 280fed4: go test ./integration ./internal/cli ./internal/mcp -count=1 PASS (integration 9.782s, cli 26.213s, mcp 8.238s; wall real 28.36s). Coverage: go test ./internal/app ./internal/output ./internal/daemon ./internal/cli ./internal/mcp -count=1 -coverpkg=./internal/app,./internal/output,./internal/daemon,./internal/cli,./internal/mcp -coverprofile=/tmp/hum-wait-cover.out && go tool cover -func=/tmp/hum-wait-cover.out | tail -1 PASS total 81.3% (wall real 34.73s).
+
+Assertion map before deletion (all within the three table rows): integration/wait_test.go no-match exit/liveness and cursor advance -> internal/app/TestWaitExitWakeupWithAndWithoutMatch, TestWaitExplicitCursorReplaysTerminalIncarnationExit; human/JSON and success code -> internal/cli/TestWaitCLIOutputsAndExitCodes. Timed-out outcome, consumed cursor and no stderr/code 2 -> internal/app/TestWaitPreLaunchTimeoutCursorCancellationAndConcurrentWaiters and internal/cli/TestWaitCLIOutputsAndExitCodes; unrelated stop cleanup belongs to integration lifecycle, no wait rule lost. Pre-launch timeout -> internal/app/TestWaitPreLaunchWithoutLaunchTimesOut, internal/cli/TestWaitCLIPreLaunchSessionTimesOut; early-start match -> integration/TestWaitBeforeStart; daemon ready/autostart -> integration/TestAutomaticStartup (both attached and detached assert Ready). integration/wait_test.go retained buffered/follower and exit-code-3 built-binary paths; internal/daemon/TestWaitDaemonBridge retains wait bridge. internal/cli/list_logs_test.go single/aggregate/zero-context entry-window assertions -> internal/output/TestReadMatchContext (before/after, zero context, stream) and TestReadMatchContextBounds (paging); built-binary multi-page path remains integration/TestLogsMatchContext. CLI validation/no contact remains; one single-process match/context request path remains to prove forwarding. internal/mcp/tools_test.go fake output equality is adapter passthrough, not an owner rule; schema, request fields and invalid requests stay (simplify only fake window entries). integration/terminal_control_test.go JSON and MCP bounded entry/control assertions -> internal/cli/TestLogsStripTerminalControl (human/JSON) and internal/mcp/TestLogsStripTerminalControl (output passthrough and metadata) plus internal/output/TestStripTerminalControl (actual stripping and raw ring entries); retain human bounded binary path and raw follow replay/live. MCP list check only served the removed MCP bounded branch; integration list wiring is covered elsewhere.
+
+Unrelated package failure: first AC1 run failed internal/daemon TestWaitDaemonBridge/exit_before_match (timed_out instead of exited); as instructed reran go test ./internal/daemon -count=1 once, PASS (6.119s). No unrelated test modified; continuing.
+
+AC3 — git diff --numstat main -- integration/wait_test.go integration/terminal_control_test.go internal/cli/list_logs_test.go internal/mcp/tools_test.go: 11 insertions, 167 deletions, net reduction 156 lines (PASS, >=80). Focused: go test ./internal/cli ./internal/mcp ./integration -run "^(TestLogsMatchContext|TestWait|TestBoundedLogsStripTerminalControl|TestLogsStripTerminalControl)$" -count=1 PASS; git diff --check PASS; task check:staged PASS. Worktree commit 597ea83 (test: consolidate wait and logs coverage), branch hum-143-tests, path .worktrees/hum-143-tests; not merged. AC1 blocked: go test ./internal/app ./internal/output ./internal/daemon ./internal/cli ./internal/mcp ./integration -count=1 failed twice in untouched internal/daemon/TestWaitDaemonBridge/exit_before_match (timed_out instead of exited); second run also failed untouched TestFollowAcrossOrdinaryStartReplacement (context deadline exceeded). Mandatory standalone go test ./internal/daemon -count=1 rerun after first failure passed. Per unrelated-failure stop rule no more tests run; AC2 coverage-after, task ci, and independent verifier remain pending. Next: diagnose/load-isolate daemon timing failure outside this task or obtain an explicit exception to stop rule, then rerun AC1/AC2 and task ci on commit 597ea83, get independent verifier PASS, merge to main, finalize item and clean up worktree. Do not merge without acceptance.
+<!-- SECTION:NOTES:END -->
