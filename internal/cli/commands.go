@@ -2522,15 +2522,10 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	for _, name := range activeNames {
 		cleanupGrace = max(cleanupGrace, stopGraceForName(processes, name, cfg.StopGrace))
 	}
-	var cleanupOnce sync.Once
-	var cleanupCtx context.Context
-	cancelCleanup := context.CancelFunc(func() {})
-	defer func() { cancelCleanup() }()
+	cleanup := downCleanupContext{grace: cleanupGrace}
+	defer cleanup.close()
 	stopErrorsByName := orchestrate.OrchestrateDown(ctx, definitions, activeNames, declaredActiveNames, func(ctx context.Context, name string) error {
-		if ctx.Err() != nil {
-			cleanupOnce.Do(func() { cleanupCtx, cancelCleanup = boundedDaemonCleanup(cleanupGrace) })
-			ctx = cleanupCtx
-		}
+		ctx = cleanup.forStop(ctx)
 		worker, stopErr := daemonClient(ctx, cfg)
 		if worker != nil {
 			defer worker.Close()
@@ -3485,6 +3480,28 @@ func (r *upLaunchRecorder) launched() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// downCleanupContext gives every post-signal stop wave the same deadline.
+type downCleanupContext struct {
+	grace  time.Duration
+	once   sync.Once
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func (c *downCleanupContext) forStop(ctx context.Context) context.Context {
+	if ctx.Err() == nil {
+		return ctx
+	}
+	c.once.Do(func() { c.ctx, c.cancel = boundedDaemonCleanup(c.grace) })
+	return c.ctx
+}
+
+func (c *downCleanupContext) close() {
+	if c.cancel != nil {
+		c.cancel()
+	}
 }
 
 // daemonCleanupSlack covers transport and daemon bookkeeping after stop grace.

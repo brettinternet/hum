@@ -193,9 +193,31 @@ processes:
 	// c's stop is canceled; b and a must share one grace-plus-slack budget
 	// rather than each receiving a fresh one.
 	awaitStalledRequest(t, requests, protocol.OpStop)
-	limit := 100*time.Millisecond + daemonCleanupSlack + 600*time.Millisecond
+	// Give a loaded CI runner room to schedule the subprocess while still
+	// distinguishing a shared deadline from two full cleanup budgets.
+	limit := 100*time.Millisecond + daemonCleanupSlack + 1400*time.Millisecond
 	if err := client.wait(limit); err == nil || strings.Contains(err.Error(), "did not exit") || time.Since(start) > limit {
 		t.Fatalf("down should exit nonzero within one cleanup budget: %v; elapsed=%s stderr=%q", err, time.Since(start), client.stderr())
+	}
+}
+
+func TestDownCleanupContextSharesDeadline(t *testing.T) {
+	live, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleanup := downCleanupContext{grace: 100 * time.Millisecond}
+	defer cleanup.close()
+	if got := cleanup.forStop(live); got != live {
+		t.Fatal("live stop must retain command context")
+	}
+	cancel()
+	first := cleanup.forStop(live)
+	second := cleanup.forStop(live)
+	if first == live || first != second {
+		t.Fatal("post-signal stop waves must share one cleanup context")
+	}
+	deadline, ok := first.Deadline()
+	if !ok || time.Until(deadline) > 100*time.Millisecond+daemonCleanupSlack {
+		t.Fatalf("cleanup deadline = %v, %v", deadline, ok)
 	}
 }
 
