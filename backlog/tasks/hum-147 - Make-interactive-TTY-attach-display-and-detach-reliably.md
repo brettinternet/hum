@@ -4,6 +4,7 @@ title: Make interactive TTY attach display and detach reliably
 status: To Do
 assignee: []
 created_date: '2026-09-25 20:53'
+updated_date: '2026-09-25 20:57'
 labels:
   - cli
   - tty
@@ -33,6 +34,7 @@ Outcome: the interactive greeter renders at the correct column in an attached te
 - [ ] #2 AC2 — go test ./integration -run "^TestTTYInteractiveSession$" -count=1 -v exits 0. Extend this existing PTY test to assert successive greeter-style replies start at column zero and Ctrl-] exits attachment without stopping the supervised child; no skipped or weakened assertions.
 - [ ] #3 AC3 — from examples/interactive, hum -F ./hum.yaml up -d followed by hum attach greeter allows Bob plus Enter to display hello, Bob followed by a fresh name? aligned at column zero; Ctrl-] in Herdr returns to the shell while hum -F ./hum.yaml status greeter still reports running. If Herdr intercepts Ctrl-] before the CLI receives it, record the observed bytes/behavior and document a working detach path; do not claim an unverified CLI fix.
 - [ ] #4 AC4 — from examples/interactive, hum -F ./hum.yaml logs greeter --stream stdout omits greeter launched and hum -F ./hum.yaml logs greeter --stream system shows the launch event; both commands exit 0. examples/interactive/README.md explains the distinction from child stdin and the input/attach commands. Retained JSON output remains raw (no display-only CR insertion).
+- [ ] #5 AC5 — go test ./internal/cli -run "^TestLogsCursorAfterPartialLine$" -count=1 -v exits 0 and prints RUN/PASS. Add a human-rendering test where the last child entry is an unterminated name? prompt: next cursor: N appears on a separate line as CLI metadata, not as apparent child output; --json retains the original prompt bytes and the same cursor N. From examples/interactive, hum -F ./hum.yaml logs greeter --tail 1 prints the prompt and next cursor on distinct lines.
 <!-- AC:END -->
 
 ## Definition of Done
