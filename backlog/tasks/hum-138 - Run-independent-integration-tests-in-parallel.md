@@ -4,9 +4,10 @@ title: Run independent integration tests in parallel
 status: Done
 assignee: []
 created_date: '2026-09-24 22:51'
-updated_date: '2026-09-24 23:28'
+updated_date: '2026-09-25 18:30'
 labels:
   - integration
+  - reviewed
 dependencies:
   - HUM-137
 modified_files:

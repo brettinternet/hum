@@ -4,13 +4,14 @@ title: Link launch and exit events to their place in the logs with a log cursor
 status: Done
 assignee: []
 created_date: '2026-09-24 22:20'
-updated_date: '2026-09-24 22:39'
+updated_date: '2026-09-25 18:30'
 labels:
   - events
   - output
   - json
   - mcp
   - contract
+  - reviewed
 dependencies: []
 modified_files:
   - internal/protocol/protocol.go

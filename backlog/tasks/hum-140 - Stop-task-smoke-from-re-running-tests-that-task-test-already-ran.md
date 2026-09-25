@@ -4,9 +4,10 @@ title: Stop task smoke from re-running tests that task test already ran
 status: Done
 assignee: []
 created_date: '2026-09-24 22:52'
-updated_date: '2026-09-24 23:49'
+updated_date: '2026-09-25 18:30'
 labels:
   - tooling
+  - reviewed
 dependencies: []
 modified_files:
   - Taskfile.dist.yaml

@@ -4,10 +4,11 @@ title: Remove fixed timeouts that dominate the three slowest tests
 status: Done
 assignee: []
 created_date: '2026-09-24 22:51'
-updated_date: '2026-09-24 23:12'
+updated_date: '2026-09-25 18:30'
 labels:
   - integration
   - daemon
+  - reviewed
 dependencies: []
 modified_files:
   - integration/lifecycle_test.go

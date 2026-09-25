@@ -4,9 +4,10 @@ title: Delete CLI tests that re-verify flag aliases and help rules another test 
 status: Done
 assignee: []
 created_date: '2026-09-24 22:51'
-updated_date: '2026-09-24 23:38'
+updated_date: '2026-09-25 18:30'
 labels:
   - cli
+  - reviewed
 dependencies: []
 modified_files:
   - internal/cli/flag_alias_lifecycle_parity_test.go
