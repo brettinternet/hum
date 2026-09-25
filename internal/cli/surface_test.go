@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -341,6 +342,16 @@ func TestDocsReferenceRealCommandsAndFlags(t *testing.T) {
 		{name: "README.md", content: readDocsSurfaceFile(t, "../../README.md")},
 		{name: "docs/design.md", content: readDocsSurfaceFile(t, "../../docs/design.md")},
 		{name: "docs/coding-agents.md", content: readDocsSurfaceFile(t, "../../docs/coding-agents.md")},
+	}
+	exampleDocs, err := filepath.Glob("../../examples/*/README.md")
+	if err != nil || len(exampleDocs) == 0 {
+		t.Fatalf("example READMEs = %v, %v", exampleDocs, err)
+	}
+	for _, path := range append([]string{"../../examples/README.md"}, exampleDocs...) {
+		documents = append(documents, struct {
+			name    string
+			content string
+		}{name: strings.TrimPrefix(path, "../../"), content: readDocsSurfaceFile(t, path)})
 	}
 	inline := regexp.MustCompile("`([^`\\n]+)`")
 	// A trailing hyphen stays in the captured flag so `--detach-` is rejected.

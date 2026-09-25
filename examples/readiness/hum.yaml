@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
+version: 1
+processes:
+  logs:
+    argv: [sh, -c, "sleep 1; echo ready; exec sleep 3600"]
+    ready: {match: ready} # a log line matches this regular expression
+  http:
+    argv: [python3, -m, http.server, "8801", --bind, 127.0.0.1]
+    ready: {http: "http://127.0.0.1:8801/"} # GET returns 2xx
+  tcp:
+    argv: [python3, -m, http.server, "8802", --bind, 127.0.0.1]
+    ready: {tcp: "127.0.0.1:8802"} # the port accepts a connection
+  exec:
+    argv: [python3, -m, http.server, "8803", --bind, 127.0.0.1]
+    ready:
+      exec: [curl, -fso, /dev/null, "http://127.0.0.1:8803/"] # this command exits 0
+      interval: 500ms # retry delay for exec, http, and tcp (default 1s)
+      timeout: 10s # give up after this long (default 30s)

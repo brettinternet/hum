@@ -105,7 +105,7 @@ db stopped
 
 Without `--detach`, `hum up` follows the logs. Ctrl+C stops following; the processes keep running.
 
-`hum init` writes a starter `hum.yaml`. Editors with SchemaStore check it against [`hum.schema.json`](hum.schema.json). See [`hum.example.yaml`](hum.example.yaml) for every option.
+`hum init` writes a starter `hum.yaml`. Editors with SchemaStore check it against [`hum.schema.json`](hum.schema.json). See [`hum.example.yaml`](hum.example.yaml) for every option and [`examples/`](examples/) for small runnable setups.
 
 ## Everyday commands
 

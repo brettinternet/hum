@@ -1,0 +1,6 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
+version: 1
+processes:
+  clock:
+    # argv runs directly. sh is used here only to loop.
+    argv: [sh, -c, "while :; do date; sleep 1; done"]

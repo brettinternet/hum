@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
+version: 1
+environment:
+  files: [ports.env] # relative to this file; must exist
+processes:
+  web:
+    # Hum never expands $PORT; sh does.
+    argv: [sh, -c, 'exec python3 -m http.server "$PORT" --bind 127.0.0.1']

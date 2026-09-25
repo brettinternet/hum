@@ -10,24 +10,34 @@ processes:
     # argv runs directly, without shell parsing.
     argv: [docker, compose, up, db]
     ready:
-      match: "ready"
+      # TCP host and port on a literal IP or localhost.
+      tcp: 127.0.0.1:5432
+  migrate:
+    argv: [bun, run, migrate]
+    after: [db]
+    ready:
+      # Ready when the process exits 0; dependents do not start if it fails.
+      exit: 0
   api:
     argv: [bun, run, api]
     env:
       PORT: "3000"
       LEGACY_DATABASE_URL: null
-    after: [db]
+    after: [migrate]
     ready:
-      match: "Listening"
+      # HTTP(S) URL on a literal IP or localhost; any 2xx is ready.
+      http: http://127.0.0.1:3000/readyz
+      # First attempt is immediate; retries are serial after failure.
+      interval: 1s # Retry delay for exec, http, and tcp. Defaults to 1s.
       timeout: 30s # Defaults to 30s.
     restart: on-failure # Defaults to never.
     stop_grace: 2s # Omit to inherit the daemon default; 0s sends SIGKILL immediately after the TERM check.
-  health:
-    argv: [bun, run, api]
+  worker:
+    argv: [bun, run, worker]
+    after: [migrate]
     ready:
       # Exact argv runs directly without a shell, using the process cwd/env.
-      exec: [task, health, api]
-      interval: 1s # First attempt is immediate; retries are serial after failure.
+      exec: [task, health, worker]
       # Failed probe output is not retained; terminal diagnostics are bounded.
   web:
     argv: [bun, run, dev]
@@ -36,5 +46,6 @@ processes:
     # after waits until every dependency is ready.
     after: [api]
     ready:
+      # Go regular expression matched against process output.
       match: "Local:"
     tty: true # Defaults to false.

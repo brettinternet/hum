@@ -1,0 +1,6 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
+version: 1
+processes:
+  greeter:
+    argv: [sh, -c, "while printf 'name? ' && read -r name; do echo \"hello, $name\"; done"]
+    tty: true # run in a pseudo-terminal so you can type into it

@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
+version: 1
+processes:
+  flaky:
+    argv: [sh, -c, "echo started; sleep 2; echo crashing; exit 1"]
+    restart: on-failure # retry after 1s, 2s, 4s, 8s, 16s, then give up
+    stop_grace: 2s # wait between SIGTERM and SIGKILL on stop

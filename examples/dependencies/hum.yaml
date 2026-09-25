@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
+version: 1
+processes:
+  db:
+    argv: [sh, -c, "sleep 1; echo ready; exec sleep 3600"]
+    ready: {match: ready}
+  migrate:
+    argv: [sh, -c, "echo migrating; sleep 1; echo done"]
+    after: [db] # starts once db is ready
+    ready: {exit: 0} # ready when it exits successfully
+  api:
+    argv: [sh, -c, "echo listening; exec sleep 3600"]
+    after: [migrate] # starts only if migrate succeeds
+    ready: {match: listening}
