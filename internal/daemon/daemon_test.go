@@ -601,7 +601,10 @@ func TestMultipleFollowers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	_, err = client.Start(context.Background(), testStartRequest(root, "logs", testShell(t), "-c", "printf 'one\\n'; sleep .1; printf 'two\\n'; sleep .1"))
+	// The gate keeps the process alive until both followers attach: a follower
+	// that subscribes after exit is not sent the exit or waiting message.
+	gate := filepath.Join(t.TempDir(), "exit.release")
+	_, err = client.Start(context.Background(), testStartRequest(root, "logs", testShell(t), "-c", `printf 'one\n'; sleep .1; printf 'two\n'; while [ ! -f "$1" ]; do sleep .01; done`, "hum-test", gate))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,6 +618,9 @@ func TestMultipleFollowers(t *testing.T) {
 	}
 	defer first.Close()
 	defer second.Close()
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, follower := range []*Follower{first, second} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		var seenOne, seenTwo, waiting bool
@@ -766,7 +772,10 @@ func TestFollowAcrossOrdinaryStartReplacement(t *testing.T) {
 	}
 	defer client.Close()
 	shell := testShell(t)
-	if _, err := client.Start(context.Background(), testStartRequest(root, "restart", shell, "-c", "printf 'old\\n'; sleep .1")); err != nil {
+	// The gate keeps the first incarnation alive until the follower attaches:
+	// a follower that subscribes after exit is not sent the waiting message.
+	gate := filepath.Join(t.TempDir(), "exit.release")
+	if _, err := client.Start(context.Background(), testStartRequest(root, "restart", shell, "-c", `printf 'old\n'; while [ ! -f "$1" ]; do sleep .01; done`, "hum-test", gate)); err != nil {
 		t.Fatal(err)
 	}
 	follower, err := client.Follow(context.Background(), protocol.NewFollowRequest("restart", root))
@@ -774,6 +783,9 @@ func TestFollowAcrossOrdinaryStartReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer follower.Close()
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	seenOld, seenWaiting := false, false
@@ -1227,7 +1239,7 @@ func TestRemoveAndShutdown(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer client.Close()
-		_, err = client.Start(context.Background(), testStartRequest(root, "active", testShell(t), "-c", "sleep 2"))
+		_, err = client.Start(context.Background(), testStartRequest(root, "active", testShell(t), "-c", "sleep 30"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1940,7 +1952,7 @@ func TestWaitDaemonBridge(t *testing.T) {
 			result, err := client.Wait(context.Background(), daemonWaitRequest("wait", root, "later", time.Second))
 			done <- waitCall{result: result, err: err}
 		}()
-		time.Sleep(10 * time.Millisecond)
+		waitForDaemonTest(t, time.Second, "wait subscription", func() bool { return store.SubscriberCount() > 0 })
 		cursor, err := store.Append(output.Stdout, time.Unix(1, 0), "later\n")
 		if err != nil {
 			t.Fatal(err)
@@ -1969,7 +1981,9 @@ func TestWaitDaemonBridge(t *testing.T) {
 			result, err := client.Wait(context.Background(), daemonWaitRequest("wait", root, "ready", time.Second))
 			done <- waitCall{result: result, err: err}
 		}()
-		time.Sleep(10 * time.Millisecond)
+		// The fixture exit predates the launch, so a waiter that subscribes after
+		// NotifyExit would not replay it; notify only once the wait is attached.
+		waitForDaemonTest(t, time.Second, "wait subscription", func() bool { return store.SubscriberCount() > 0 })
 		exitTime := time.Unix(2, 0)
 		store.NotifyExit(output.Exit{Code: 7, Time: exitTime})
 		select {

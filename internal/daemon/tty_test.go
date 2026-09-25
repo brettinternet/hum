@@ -107,7 +107,9 @@ func TestOneShotInputWrite(t *testing.T) {
 	}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(context.Background()) }()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// This deadline only bounds a hang across dozens of daemon round trips and
+	// TTY launches, which all slow down together under parallel package load.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := server.WaitReady(ctx); err != nil {
 		t.Fatal(err)
