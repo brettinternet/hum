@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -505,8 +506,27 @@ func writePID(path string) error {
 	return writeMarker(path, strconv.Itoa(os.Getpid()))
 }
 
+// writeMarker publishes contents atomically: tests and sibling fixture
+// processes treat marker existence as readiness and read it immediately.
 func writeMarker(path, contents string) error {
-	return os.WriteFile(path, []byte(contents), 0o600)
+	file, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	if _, err := file.WriteString(contents); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return err
+	}
+	if err := os.Rename(file.Name(), path); err != nil {
+		_ = os.Remove(file.Name())
+		return err
+	}
+	return nil
 }
 
 func writeFile(file *os.File, contents string) error {

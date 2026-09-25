@@ -347,18 +347,6 @@ func stopitLaunchTree(t *testing.T, hum, fixture, projectRoot string, env []stri
 
 	startedMarker := marker + ".started"
 	testutil.WaitForFile(t, startedMarker, stopitReadyWait)
-	// The fixture creates PID markers before it finishes writing them. Wait for
-	// the content rather than treating file existence as process readiness.
-	for _, suffix := range []string{".parent.pid", ".child.pid", ".grandchild.pid"} {
-		path := marker + suffix
-		if !testutil.WaitUntil(stopitReadyWait, func() bool {
-			data, err := os.ReadFile(path)
-			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
-			return err == nil && parseErr == nil && pid > 0
-		}) {
-			t.Fatalf("PID marker %q did not contain a positive integer within %s", path, stopitReadyWait)
-		}
-	}
 	tree := stopitTree{
 		name:          name,
 		marker:        marker,
