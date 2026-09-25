@@ -1,9 +1,10 @@
 ---
 id: HUM-146
 title: Find the nearest hum.yaml from the invocation directory up to the project root
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-25 20:22'
+updated_date: '2026-09-25 21:16'
 labels:
   - cli
   - mcp
@@ -77,19 +78,37 @@ Non-goals:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AC1 — `go test ./internal/project -run "^(TestNearestManifestSelection|TestManifestCwdBase)$" -count=1 -v` exits 0. TestNearestManifestSelection (internal/project/resolver_test.go) covers: starting at the root picks the root manifest; starting in `apps/web/src`, with both `apps/web/hum.yaml` and a root `hum.yaml`, picks `apps/web/hum.yaml` with Relative `apps/web/hum.yaml`; `.hum.yaml` beats `hum.yaml` in the same nested directory; a malformed nearer `.hum.yaml` returns a configuration error even though a valid root manifest exists; a directory with no Git root whose parent has `hum.yaml` reports missing; ManifestMissingError prints the unchanged message when start equals root and `... in DIR or its parents up to ROOT: ...` otherwise. TestManifestCwdBase (internal/project/manifest_test.go) covers: a nested manifest default Cwd equals its directory; `cwd: ../api` resolves beside it; a `cwd:` that escapes the root fails; a root manifest Cwd is unchanged; an explicit `--file`-style nested selection uses its own directory.
-- [ ] #2 AC2 — `go test ./internal/cli -run "^(TestManifestMissing|TestDoctorManifest|TestUpNestedManifestNotice|TestMCPResolverNearestManifest)" -count=1 -v` exits 0. New assertions: `hum up` from a nested directory with no manifest up to the root returns manifest_missing naming both the directory and the root (human and JSON); doctor reports `manifest` as the root-relative nested path; human `hum up` writes the nested manifest path to stderr, while `hum up --json` and root-manifest runs produce byte-for-byte unchanged output; the MCP resolver given a nested `project_root` returns the Git root as Root and the nested definitions.
-- [ ] #3 AC3 — `go test ./integration -run "^TestNearestManifest$" -count=1 -v` exits 0. Against the built binary, in a temp Git repo with a root `hum.yaml` (process `top`) and `apps/web/hum.yaml` (process `web`, argv `/bin/sh -c pwd`): `hum up --detach` run from `apps/web/src` starts only `web`; `hum logs web` prints the canonical `apps/web` path; `hum status --json` shows `source` `manifest:apps/web/hum.yaml` and `root` equal to the repo root; `hum up --detach` from the repo root starts `top`; `hum up` in a non-Git temp directory whose parent holds a `hum.yaml` exits with manifest_missing.
-- [ ] #4 AC4 — `go test ./internal/project ./internal/cli ./internal/mcp ./integration -count=1` exits 0. Any existing test that asserted a project-root cwd for a nested `--file` manifest is updated to the manifest-directory contract (not deleted or skipped) and named in Implementation Notes.
-- [ ] #5 AC5 — `go test ./internal/cli -run "^(TestDocs|TestREADME)" -count=1` and `go test ./internal/project -run "^TestExampleManifestsLoad$" -count=1` exit 0, and `rg -n "nearest" docs/design.md docs/cli-json-v1.md docs/coding-agents.md` prints at least one line from each file.
+- [x] #1 AC1 — `go test ./internal/project -run "^(TestNearestManifestSelection|TestManifestCwdBase)$" -count=1 -v` exits 0. TestNearestManifestSelection (internal/project/resolver_test.go) covers: starting at the root picks the root manifest; starting in `apps/web/src`, with both `apps/web/hum.yaml` and a root `hum.yaml`, picks `apps/web/hum.yaml` with Relative `apps/web/hum.yaml`; `.hum.yaml` beats `hum.yaml` in the same nested directory; a malformed nearer `.hum.yaml` returns a configuration error even though a valid root manifest exists; a directory with no Git root whose parent has `hum.yaml` reports missing; ManifestMissingError prints the unchanged message when start equals root and `... in DIR or its parents up to ROOT: ...` otherwise. TestManifestCwdBase (internal/project/manifest_test.go) covers: a nested manifest default Cwd equals its directory; `cwd: ../api` resolves beside it; a `cwd:` that escapes the root fails; a root manifest Cwd is unchanged; an explicit `--file`-style nested selection uses its own directory.
+- [x] #2 AC2 — `go test ./internal/cli -run "^(TestManifestMissing|TestDoctorManifest|TestUpNestedManifestNotice|TestMCPResolverNearestManifest)" -count=1 -v` exits 0. New assertions: `hum up` from a nested directory with no manifest up to the root returns manifest_missing naming both the directory and the root (human and JSON); doctor reports `manifest` as the root-relative nested path; human `hum up` writes the nested manifest path to stderr, while `hum up --json` and root-manifest runs produce byte-for-byte unchanged output; the MCP resolver given a nested `project_root` returns the Git root as Root and the nested definitions.
+- [x] #3 AC3 — `go test ./integration -run "^TestNearestManifest$" -count=1 -v` exits 0. Against the built binary, in a temp Git repo with a root `hum.yaml` (process `top`) and `apps/web/hum.yaml` (process `web`, argv `/bin/sh -c pwd`): `hum up --detach` run from `apps/web/src` starts only `web`; `hum logs web` prints the canonical `apps/web` path; `hum status --json` shows `source` `manifest:apps/web/hum.yaml` and `root` equal to the repo root; `hum up --detach` from the repo root starts `top`; `hum up` in a non-Git temp directory whose parent holds a `hum.yaml` exits with manifest_missing.
+- [x] #4 AC4 — `go test ./internal/project ./internal/cli ./internal/mcp ./integration -count=1` exits 0. Any existing test that asserted a project-root cwd for a nested `--file` manifest is updated to the manifest-directory contract (not deleted or skipped) and named in Implementation Notes.
+- [x] #5 AC5 — `go test ./internal/cli -run "^(TestDocs|TestREADME)" -count=1` and `go test ./internal/project -run "^TestExampleManifestsLoad$" -count=1` exit 0, and `rg -n "nearest" docs/design.md docs/cli-json-v1.md docs/coding-agents.md` prints at least one line from each file.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation 14412fb; merged to main as 8a5e379. Review: one independent verifier pass, PASS AC1–AC5, no item-scoped defects; no existing nested --file test asserting root cwd required updating. No blockers; next step: none.
+AC#1 — go test ./internal/project -run "^(TestNearestManifestSelection|TestManifestCwdBase)$" -count=1 -v: PASS.
+AC#2 — go test ./internal/cli -run "^(TestManifestMissing|TestDoctorManifest|TestUpNestedManifestNotice|TestMCPResolverNearestManifest)" -count=1 -v: PASS.
+AC#3 — go test ./integration -run "^TestNearestManifest$" -count=1 -v: PASS.
+AC#4 — go test ./internal/project ./internal/cli ./internal/mcp ./integration -count=1: PASS.
+AC#5 — go test ./internal/cli -run "^(TestDocs|TestREADME)" -count=1; go test ./internal/project -run "^TestExampleManifestsLoad$" -count=1; rg -n "nearest" docs/design.md docs/cli-json-v1.md docs/coding-agents.md: PASS (matches in all three).
+DoD — task ci PASS on implementation commit 14412fb and merged main 8a5e379; task check:staged PASS; modified paths restricted to declared list; no protected gate files or weakened tests.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Nearest bounded manifest lookup, manifest-relative cwd and CLI/MCP/doctor behavior implemented, independently verified and merged to main (14412fb; 8a5e379). All acceptance commands and task ci passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
