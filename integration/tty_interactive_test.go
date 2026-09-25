@@ -118,7 +118,11 @@ func TestTTYInteractiveSession(t *testing.T) {
 		t.Fatalf("tty logs = %#v", logs)
 	}
 
-	interactive := exec.Command(hum, "run", "interactive", "--tty", "--", "/bin/sh", "-c", "printf ready; read line; printf 'received=%s\\n' \"$line\"; sleep 5")
+	greeter := testutil.Run(t, hum, root, env, "run", "interactive", "--tty", "--detach", "--", "/bin/sh", "-c", "while :; do printf 'name? '; IFS= read -r line || exit; printf 'hello, %s\\n' \"$line\"; done")
+	if greeter.Err != nil {
+		t.Fatalf("start greeter: %#v", greeter)
+	}
+	interactive := exec.Command(hum, "attach", "interactive", "--tail", "1")
 	interactive.Dir = root
 	interactive.Env = env
 	master, err := pty.Start(interactive)
@@ -127,23 +131,30 @@ func TestTTYInteractiveSession(t *testing.T) {
 	}
 	defer func() {
 		_ = master.Close()
-		if interactive.Process != nil {
+		if interactive.Process != nil && testutil.ProcessAlive(interactive.Process.Pid) {
 			_ = interactive.Process.Signal(syscall.SIGTERM)
 		}
 		_ = interactive.Wait()
 		_ = testutil.Run(t, hum, root, env, "stop", "interactive")
 	}()
-	readPTYUntil(t, master, "ready", 5*time.Second)
-	if _, err := master.Write([]byte("typed\n")); err != nil {
-		t.Fatalf("write typed input: %v", err)
+	readPTYUntil(t, master, "name? ", 5*time.Second)
+	for _, name := range []string{"Bob", "Ada"} {
+		if _, err := master.Write([]byte(name + "\n")); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		got := readPTYUntil(t, master, "hello, "+name+"\r\nname? ", 5*time.Second)
+		if !strings.Contains(got, "\r\nhello, "+name+"\r\nname? ") {
+			t.Fatalf("greeter lines not aligned at column zero: %q", got)
+		}
 	}
-	readPTYUntil(t, master, "received=typed", 5*time.Second)
 	if _, err := master.Write([]byte{0x1d}); err != nil {
 		t.Fatalf("write detach chord: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if !testutil.ProcessAlive(interactive.Process.Pid) {
-		t.Fatal("Ctrl-] terminated the attached CLI")
+	if err := interactive.Wait(); err != nil {
+		t.Fatalf("Ctrl-] did not detach cleanly: %v", err)
+	}
+	if status := testutil.Run(t, hum, root, env, "status", "interactive", "--json"); status.Err != nil || !strings.Contains(status.Stdout, `"state":"running"`) {
+		t.Fatalf("Ctrl-] stopped the child: %#v", status)
 	}
 
 	adHoc := testutil.Run(t, hum, root, env, "run", "adhoc", "--tty", "--detach", "--", "/bin/echo", "adhoc")
@@ -152,7 +163,7 @@ func TestTTYInteractiveSession(t *testing.T) {
 	}
 }
 
-func readPTYUntil(t *testing.T, master *os.File, want string, timeout time.Duration) {
+func readPTYUntil(t *testing.T, master *os.File, want string, timeout time.Duration) string {
 	t.Helper()
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -182,4 +193,5 @@ func readPTYUntil(t *testing.T, master *os.File, want string, timeout time.Durat
 			t.Fatalf("PTY output missing %q: %q", want, output.String())
 		}
 	}
+	return output.String()
 }

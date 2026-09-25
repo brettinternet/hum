@@ -847,12 +847,13 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 			_ = session.Release()
 			return err
 		}
-		if _, err = fmt.Fprintln(errWriter, "tty input attached; press Ctrl-] to detach input"); err != nil {
+		if err = writeTTYAttachedNotice(errWriter, localInput.terminal); err != nil {
 			localInput.close()
 			return err
 		}
 		localInput.start()
 		defer localInput.close()
+		writer, errWriter = attachedDisplayWriters(writer, errWriter, localInput.terminal)
 	}
 	// Register before launch so a signal during the start-to-follow handoff is
 	// queued and applied to this incarnation once launch completes. The bridge
@@ -879,6 +880,15 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	// notice while the child kept running.
 	followCtx, cancelFollow := context.WithCancel(context.Background())
 	defer cancelFollow()
+	if localInput != nil {
+		go func() {
+			select {
+			case <-localInput.chord:
+				cancelFollow()
+			case <-followCtx.Done():
+			}
+		}()
+	}
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -1270,13 +1280,25 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 				_ = session.Release()
 				return err
 			}
-			if _, writeErr := fmt.Fprintln(errWriter, "tty input attached; press Ctrl-] to detach input"); writeErr != nil {
+			if writeErr := writeTTYAttachedNotice(errWriter, localInput.terminal); writeErr != nil {
 				localInput.close()
 				return writeErr
 			}
 			localInput.start()
 			defer localInput.close()
+			writer, errWriter = attachedDisplayWriters(writer, errWriter, localInput.terminal)
 		}
+	}
+	followCtx, cancelFollow := context.WithCancel(ctx)
+	defer cancelFollow()
+	if localInput != nil {
+		go func() {
+			select {
+			case <-localInput.chord:
+				cancelFollow()
+			case <-followCtx.Done():
+			}
+		}()
 	}
 
 	replayTail := tail
@@ -1365,7 +1387,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		}
 	}
 
-	return bufferedFollowLoop(ctx, follower, signals, live, func(event output.Event) error {
+	return bufferedFollowLoop(followCtx, follower, signals, live, func(event output.Event) error {
 		if event.Read == nil {
 			return nil
 		}
@@ -1568,11 +1590,20 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err != nil {
 		return crossScopeNotFoundError(err, "logs "+name)
 	}
-	if cmd.Bool("json") {
+	return writeBoundedLogs(writer, errWriter, result, cmd.Bool("json"))
+}
+
+func writeBoundedLogs(writer, errWriter io.Writer, result output.ReadResult, jsonOutput bool) error {
+	if jsonOutput {
 		return encodeJSON(writer, protocol.NewOutputResponse(outputJSON(result)))
 	}
 	if err := writeLogEntries(writer, result.Entries); err != nil {
 		return err
+	}
+	if len(result.Entries) > 0 && !strings.HasSuffix(result.Entries[len(result.Entries)-1].Text, "\n") {
+		if _, err := io.WriteString(writer, "\n"); err != nil {
+			return err
+		}
 	}
 	return writeCursorTrailer(errWriter, result)
 }

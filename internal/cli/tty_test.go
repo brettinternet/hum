@@ -13,7 +13,48 @@ import (
 	"hum/internal/app"
 	"hum/internal/daemon"
 	"hum/internal/project"
+
+	"github.com/creack/pty"
+	"golang.org/x/term"
+	"reflect"
 )
+
+func TestTTYAttachDetach(t *testing.T) {
+	for _, test := range []struct {
+		input, forwarded string
+		detach           bool
+	}{
+		{"Bob\n", "Bob\n", false},
+		{"Bob\n\x1dignored", "Bob\n", true},
+		{"\x1dignored", "", true},
+	} {
+		got, detach := ttyInputBeforeDetach([]byte(test.input))
+		if string(got) != test.forwarded || detach != test.detach {
+			t.Fatalf("input %q: forwarded %q detach %t", test.input, got, detach)
+		}
+	}
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer master.Close()
+	defer slave.Close()
+	before, err := term.GetState(int(slave.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := term.MakeRaw(int(slave.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := &ttyInput{stdin: slave, restore: func() { _ = term.Restore(int(slave.Fd()), raw) }}
+	input.restoreLocal()
+	input.restoreLocal() // idempotent even on concurrent detach/close paths
+	after, err := term.GetState(int(slave.Fd()))
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("terminal state not restored: before=%v after=%v err=%v", before, after, err)
+	}
+}
 
 func TestTTYCLI(t *testing.T) {
 	if runCLIIsolatedTest(t) {

@@ -650,6 +650,45 @@ func writeRawEntry(w io.Writer, entry output.Entry) error {
 	return err
 }
 
+// ttyDisplayWriter corrects LF-only child output for a local terminal in raw
+// mode. It leaves retained output and redirected streams unchanged.
+type ttyDisplayWriter struct {
+	writer io.Writer
+	prevCR bool
+}
+
+func (w *ttyDisplayWriter) Write(data []byte) (int, error) {
+	converted := make([]byte, 0, len(data)+bytes.Count(data, []byte{'\n'}))
+	for _, value := range data {
+		if value == '\n' && !w.prevCR {
+			converted = append(converted, '\r')
+		}
+		converted = append(converted, value)
+		w.prevCR = value == '\r'
+	}
+	n, err := w.writer.Write(converted)
+	if err != nil {
+		return 0, err
+	}
+	if n != len(converted) {
+		return 0, io.ErrShortWrite
+	}
+	return len(data), nil
+}
+
+func attachedDisplayWriters(stdout, stderr io.Writer, raw bool) (io.Writer, io.Writer) {
+	if !raw {
+		return stdout, stderr
+	}
+	if terminalWriter(stdout) {
+		stdout = &ttyDisplayWriter{writer: stdout}
+	}
+	if terminalWriter(stderr) {
+		stderr = &ttyDisplayWriter{writer: stderr}
+	}
+	return stdout, stderr
+}
+
 func writeAttachedEntry(stdout, stderr io.Writer, entry output.Entry) error {
 	switch entry.Stream {
 	case output.Stderr, output.System:
