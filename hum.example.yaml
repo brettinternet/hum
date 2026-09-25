@@ -41,7 +41,7 @@ processes:
       # Failed probe output is not retained; terminal diagnostics are bounded.
   web:
     argv: [bun, run, dev]
-    # cwd is relative to the project root.
+    # cwd is relative to this manifest's directory and must remain inside the project root.
     cwd: web
     # after waits until every dependency is ready.
     after: [api]

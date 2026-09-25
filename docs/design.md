@@ -135,9 +135,12 @@ including for `--json`.
 ### Selecting a project and manifest
 
 - `--project DIR` resolves DIR from the invocation directory, canonicalizes it to a physical
-  absolute path, then uses the nearest Git root or DIR itself. That root scopes names and manifests.
-- `--file PATH` resolves PATH from the invocation directory. It must be a regular file inside the
-  selected project. Without `--project`, the file's location picks the project.
+  absolute path, then uses the nearest Git root or DIR itself. That root scopes names and manifests;
+  default-manifest search starts at DIR and is bounded by that root. Without `--project`, search
+  starts at the invocation directory.
+- Without `--file`, Hum selects the nearest `.hum.yaml` or `hum.yaml` from the search start up to
+  the project root. `--file PATH` still resolves PATH from the invocation directory; it must be a
+  regular file inside the selected project. Without `--project`, the file's location picks the project.
 - Every manifest, selected or default, is read without blocking and must not exceed 1 MiB.
 - Launch commands require an existing directory. Observation and lifecycle commands can target a
   removed worktree when DIR exactly matches a root the daemon still retains.
@@ -510,22 +513,28 @@ settings, runtime path, the manifest, environment files and protocol limits, eac
 ### Manifest selection
 
 ```text
---file PATH  >  .hum.yaml  >  hum.yaml        (first match wins; never merged)
+--file PATH  >  nearest .hum.yaml / hum.yaml  (first directory with either wins; never merged)
 ```
 
+- Default search walks from the invocation directory (or `--project DIR`) up to the project root,
+  inclusive, never above it. In each directory, `.hum.yaml` wins over `hum.yaml`; the nearest
+  directory with either file is authoritative.
 - Every file is complete; Hum has no overlays, inheritance, or merging. Alternates are
   conventionally named `hum.dev.yaml`, `hum.test.yaml`, and so on.
 - A malformed, unreadable, unsafe, or non-regular `.hum.yaml` fails closed; Hum does not fall back
   to `hum.yaml`. A Git-ignored `.hum.yaml` is private and not shared with collaborators or CI.
 - `up` and `start` resolve the manifest before starting or contacting the daemon. With no default
-  manifest they return `manifest_missing`, naming the project root and suggesting `hum init` or
-  `hum run NAME -- COMMAND`, and leave the runtime directory untouched. Ad-hoc `run NAME -- COMMAND` and runtime-only commands work without a
-  manifest.
+  manifest they return `manifest_missing`, naming the search directory and project root when they
+  differ, and suggesting `hum init` or `hum run NAME -- COMMAND`; the runtime directory stays
+  untouched. Ad-hoc `run NAME -- COMMAND` and runtime-only commands work without a manifest.
 - Runtime resolution never auto-discovers commands; only `init` does.
+- Human `up` reports a selected nested manifest's project-root-relative path on stderr; JSON and
+  root-manifest output remain unchanged.
 - Records carry `source: manifest:<project-root-relative-path>`, such as `manifest:.hum.yaml` or
   `manifest:hum.yaml`.
-- All manifests in a project share the `(project root, process name)` namespace. The project root,
-  not the manifest directory, is the default child cwd and the base for `cwd`.
+- All manifests in a project share the `(project root, process name)` namespace. The manifest's
+  directory is the default child cwd and the base for relative `cwd`; the resolved cwd must remain
+  inside the project root.
 - Runtime-only commands stay project-wide. A file selector there only identifies the project; it is
   not parsed and does not filter records.
 - A valid empty manifest has no definitions; an invalid one is an error.
@@ -543,7 +552,7 @@ See [`hum.example.yaml`](../hum.example.yaml) for a complete example.
 | --- | --- |
 | name (key) | required; safe name; unique |
 | `argv` | required; non-empty list of strings; run directly, never through a shell |
-| `cwd` | optional; project-root-relative; must exist and stay beneath the root after lexical and symlink resolution |
+| `cwd` | optional; relative to the manifest directory; must exist and stay beneath the project root after lexical and symlink resolution |
 | `ready` | optional; exactly one [readiness method](#readiness) |
 | `after` | optional list of unique same-manifest names that declare `ready`; no self-reference or cycles |
 | `restart` | `never` (default) or `on-failure` |
@@ -812,7 +821,8 @@ takes one `Options.Environment` snapshot (falling back to `os.Environ`) per requ
   `restart` reloads, including clearing a removed configuration.
 - MCP resolves files from each request's project root and manifest, so worktrees never share
   snapshots.
-- Manifest `cwd` changes only the child directory; discovered definitions use the project root.
+- Manifest `cwd` is relative to its manifest directory and changes only the child directory;
+  discovered definitions use the project root.
 
 Privacy:
 

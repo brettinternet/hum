@@ -159,6 +159,53 @@ func TestPrivateManifest(t *testing.T) {
 	}
 }
 
+func TestUpNestedManifestNotice(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeManifestCLITestFile(t, root, "version: 1\nprocesses: {}\n")
+	manifestDir := filepath.Join(root, "apps", "web")
+	start := filepath.Join(manifestDir, "src")
+	if err := os.MkdirAll(start, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "hum.yaml"), []byte("version: 1\nprocesses: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, runtimeDir := stopShutdownTestServer(t, 100*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(start); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := stopShutdownRun(t, "up")
+	if err != nil || stdout != "No processes are declared in apps/web/hum.yaml.\n" || stderr != "Using manifest apps/web/hum.yaml.\n" {
+		t.Fatalf("nested human up: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	stdout, stderr, err = stopShutdownRun(t, "up", "--json")
+	if err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("nested JSON up: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err = stopShutdownRun(t, "up")
+	if err != nil || stdout != "No processes are declared in hum.yaml.\n" || stderr != "" {
+		t.Fatalf("root human up changed: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	stdout, stderr, err = stopShutdownRun(t, "up", "--json")
+	if err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("root JSON up changed: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if err := os.Chdir(oldwd); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPrivateManifestCLI(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	_, runtimeDir := stopShutdownTestServer(t, 100*time.Millisecond)

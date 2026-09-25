@@ -23,14 +23,30 @@ var ErrManifestMissing = errors.New("manifest is missing")
 
 // ManifestMissingError identifies the project that needs an explicit declaration.
 type ManifestMissingError struct {
-	Root string
+	Start string
+	Root  string
 }
 
 func (e *ManifestMissingError) Error() string {
 	if e == nil {
 		return ErrManifestMissing.Error()
 	}
-	return fmt.Sprintf("%s in %s: run hum init to create hum.yaml, or use hum run NAME -- COMMAND", ErrManifestMissing, e.Root)
+	message := ErrManifestMissing.Error()
+	if e.Start != "" && !samePath(e.Start, e.Root) {
+		message += fmt.Sprintf(" in %s or its parents up to %s", e.Start, e.Root)
+	} else {
+		message += " in " + e.Root
+	}
+	return fmt.Sprintf("%s: run hum init to create hum.yaml, or use hum run NAME -- COMMAND", message)
+}
+
+func samePath(first, second string) bool {
+	if filepath.Clean(first) == filepath.Clean(second) {
+		return true
+	}
+	firstCanonical, firstErr := CanonicalPath(first)
+	secondCanonical, secondErr := CanonicalPath(second)
+	return firstErr == nil && secondErr == nil && firstCanonical == secondCanonical
 }
 
 func (e *ManifestMissingError) Unwrap() error { return ErrManifestMissing }
@@ -254,31 +270,65 @@ func ResolveManifestPath(invocationDir, projectRoot, filename string) (ManifestS
 	return ManifestSelection{Root: resolvedRoot, Path: resolved, Relative: relative, Source: "manifest:" + relative}, nil
 }
 
-// DefaultManifestSelection returns the effective default manifest. A private
-// .hum.yaml is authoritative when present; hum.yaml is selected only when the
-// private file is absent. The returned selection is validated using the same
-// containment and regular-file checks as explicit --file selection.
-func DefaultManifestSelection(root string) (ManifestSelection, bool, error) {
-	root, err := absoluteClean(root)
+// DefaultManifestSelection searches from start up to and including root. The
+// nearest directory containing either conventional manifest wins; within one
+// directory, a private .hum.yaml is authoritative over hum.yaml. The selected
+// file is validated using the same containment and regular-file checks as an
+// explicit --file selection.
+func DefaultManifestSelection(start string, projectRoots ...string) (ManifestSelection, bool, error) {
+	root := start
+	if len(projectRoots) > 1 {
+		return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: errors.New("manifest search accepts one project root")}
+	}
+	if len(projectRoots) == 1 {
+		root = projectRoots[0]
+	}
+	start, err := absoluteClean(start)
 	if err != nil {
 		return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
 	}
-	privatePath := filepath.Join(root, ".hum.yaml")
-	if _, err := os.Lstat(privatePath); err == nil {
-		if _, err := ResolveManifestPath(root, root, ".hum.yaml"); err != nil {
-			return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
+	root, err = absoluteClean(root)
+	if err != nil {
+		return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
+	}
+	if !pathWithin(root, start) {
+		return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: fmt.Errorf("manifest search directory %q is outside project root", start)}
+	}
+	for directory := start; ; directory = filepath.Dir(directory) {
+		for _, filename := range []string{".hum.yaml", "hum.yaml"} {
+			candidate := filepath.Join(directory, filename)
+			if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
+				continue
+			} else if err != nil {
+				return ManifestSelection{}, true, &ConfigurationError{Source: filename, Path: root, Err: fmt.Errorf("%s: inspect: %w", candidate, err)}
+			}
+			selection, err := ResolveManifestPath(directory, root, filename)
+			if err != nil {
+				display := manifestDisplayRelative(root, candidate)
+				return ManifestSelection{}, true, &ConfigurationError{Source: display, Path: root, Err: err}
+			}
+			// Keep the lexical spelling for default child cwd and filesystem
+			// paths; source identity and containment come from the resolved path.
+			selection.Path = candidate
+			if filename == "hum.yaml" && directory == root && selection.Relative == "hum.yaml" {
+				// Preserve the runtime's historical root-manifest identity.
+				selection.Source = "manifest"
+			}
+			return selection, true, nil
 		}
-		return ManifestSelection{Root: root, Path: privatePath, Relative: ".hum.yaml", Source: "manifest:.hum.yaml"}, true, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return ManifestSelection{}, true, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: fmt.Errorf("%s: inspect: %w", privatePath, err)}
+		if directory == root {
+			break
+		}
 	}
-	sharedPath := filepath.Join(root, "hum.yaml")
-	if _, err := os.Lstat(sharedPath); errors.Is(err, os.ErrNotExist) {
-		return ManifestSelection{}, false, nil
-	} else if err != nil {
-		return ManifestSelection{}, true, err
+	return ManifestSelection{}, false, nil
+}
+
+func manifestDisplayRelative(root, filename string) string {
+	relative, err := filepath.Rel(root, filename)
+	if err != nil {
+		return filepath.Base(filename)
 	}
-	return ManifestSelection{Root: root, Path: sharedPath, Relative: "hum.yaml", Source: "manifest"}, true, nil
+	return filepath.ToSlash(filepath.Clean(relative))
 }
 
 // ResolveExplicitDefinitions loads exactly the selected file and never invokes
@@ -290,28 +340,40 @@ func ResolveExplicitDefinitions(ctx context.Context, selection ManifestSelection
 
 // ResolveDefinitions returns the effective default manifest definitions.
 func ResolveDefinitions(root string) ([]Definition, error) {
-	return ResolveDefinitionsContext(context.Background(), root)
+	return ResolveDefinitionsContext(context.Background(), root, root)
 }
 
-// ResolveDefinitionsContext resolves the effective default manifest. An absent
-// default manifest is actionable instead of triggering conventional discovery.
-func ResolveDefinitionsContext(ctx context.Context, root string) ([]Definition, error) {
+// ResolveDefinitionsContext resolves the effective default manifest by
+// searching from start up to root. An absent default manifest is actionable
+// instead of triggering conventional discovery.
+func ResolveDefinitionsContext(ctx context.Context, start string, projectRoots ...string) ([]Definition, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	root, err := absoluteClean(root)
+	root := start
+	if len(projectRoots) > 1 {
+		return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: errors.New("manifest search accepts one project root")}
+	}
+	if len(projectRoots) == 1 {
+		root = projectRoots[0]
+	}
+	start, err := absoluteClean(start)
+	if err != nil {
+		return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
+	}
+	root, err = absoluteClean(root)
 	if err != nil {
 		return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	selection, present, err := DefaultManifestSelection(root)
+	selection, present, err := DefaultManifestSelection(start, root)
 	if err != nil {
 		return nil, err
 	}
 	if !present {
-		return nil, &ManifestMissingError{Root: root}
+		return nil, &ManifestMissingError{Start: start, Root: root}
 	}
 	contents, readErr := readDiscoveryDeclaration(selection.Path)
 	if readErr != nil {
@@ -350,15 +412,26 @@ func ResolveExplicitDefinitionsReadOnly(selection ManifestSelection) ([]Definiti
 // ResolveDefinitionsReadOnly resolves the effective default manifest and
 // conservative conventional init candidates without running project-owned
 // commands. It is intended for observational diagnostics and initialization.
-func ResolveDefinitionsReadOnly(ctx context.Context, root string) ([]Definition, error) {
+func ResolveDefinitionsReadOnly(ctx context.Context, start string, projectRoots ...string) ([]Definition, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	root, err := absoluteClean(root)
+	root := start
+	if len(projectRoots) > 1 {
+		return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: errors.New("manifest search accepts one project root")}
+	}
+	if len(projectRoots) == 1 {
+		root = projectRoots[0]
+	}
+	start, err := absoluteClean(start)
 	if err != nil {
 		return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
 	}
-	selection, present, err := DefaultManifestSelection(root)
+	root, err = absoluteClean(root)
+	if err != nil {
+		return nil, &ConfigurationError{Source: ".hum.yaml", Path: root, Err: err}
+	}
+	selection, present, err := DefaultManifestSelection(start, root)
 	if err != nil {
 		return nil, err
 	}

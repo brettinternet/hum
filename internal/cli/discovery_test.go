@@ -41,6 +41,54 @@ func assertRuntimeDirEmpty(t *testing.T, runtimeDir string) {
 	}
 }
 
+func TestManifestMissing(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := filepath.Join(root, "apps", "web", "src")
+	if err := os.MkdirAll(start, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(start); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(oldwd); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	}()
+	runtimeDir := filepath.Join(t.TempDir(), "runtime")
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+
+	_, _, humanErr := stopShutdownRun(t, "up")
+	if humanErr == nil {
+		t.Fatal("human up unexpectedly succeeded")
+	}
+	for _, want := range []string{start, root, "or its parents up to", "manifest is missing"} {
+		if !strings.Contains(humanErr.Error(), want) {
+			t.Errorf("human missing-manifest error %q lacks %q", humanErr, want)
+		}
+	}
+	stdout, stderr, jsonErr := stopShutdownRun(t, "up", "--json")
+	if jsonErr == nil || stderr != "" {
+		t.Fatalf("JSON up error = %v, stdout=%q stderr=%q", jsonErr, stdout, stderr)
+	}
+	wire := decodeJSONErrorObject(t, stdout)
+	if wire.Code != string(jsonErrorManifestMissing) {
+		t.Fatalf("JSON error code = %q, want manifest_missing", wire.Code)
+	}
+	for _, want := range []string{start, root, "or its parents up to"} {
+		if !strings.Contains(wire.Message, want) {
+			t.Errorf("JSON missing-manifest message %q lacks %q", wire.Message, want)
+		}
+	}
+}
+
 func TestManifestMissingUp(t *testing.T) {
 	root := stopShutdownTestProject(t)
 	runtimeDir := filepath.Join(t.TempDir(), "runtime")

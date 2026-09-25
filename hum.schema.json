@@ -51,7 +51,7 @@
           }
         },
         "cwd": {
-          "description": "An existing working directory relative to the project root.",
+          "description": "An existing working directory relative to the manifest directory, remaining inside the project root.",
           "type": "string"
         },
         "ready": {

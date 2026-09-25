@@ -620,6 +620,34 @@ func TestDoctorManifestMissing(t *testing.T) {
 	assertDoctorCheck(t, result, "project.manifest", doctorFail)
 }
 
+func TestDoctorManifestNearest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := filepath.Join(root, "apps", "web", "src")
+	manifestDir := filepath.Dir(start)
+	if err := os.MkdirAll(start, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeDoctorTestFile(t, filepath.Join(manifestDir, "hum.yaml"), "version: 1\nprocesses:\n  shared:\n    argv: [shared]\n")
+	writeDoctorTestFile(t, filepath.Join(manifestDir, ".hum.yaml"), "version: 1\nprocesses: {}\n")
+	result, _, _, err := runDoctorTest(t, context.Background(), start, "--json")
+	if err != nil || !result.OK {
+		t.Fatalf("doctor nested manifest: err=%v result=%+v", err, result)
+	}
+	for _, check := range result.Checks {
+		if check.Name != "project.manifest" {
+			continue
+		}
+		if check.Status != doctorPass || check.Details["manifest"] != "apps/web/.hum.yaml" || check.Details["shadowed_manifest"] != "apps/web/hum.yaml" {
+			t.Fatalf("doctor project.manifest = %+v, want root-relative nested private manifest and shadowed shared path", check)
+		}
+		return
+	}
+	t.Fatalf("doctor omitted project.manifest check: %+v", result.Checks)
+}
+
 func TestDoctorManifestPresent(t *testing.T) {
 	root := t.TempDir()
 	writeDoctorTestFile(t, filepath.Join(root, "hum.yaml"), "version: 1\nprocesses: {}\n")

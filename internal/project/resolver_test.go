@@ -50,6 +50,78 @@ func wantDiscoveredDefinition(t *testing.T, definitions []Definition, root, sour
 	}
 }
 
+func TestNearestManifestSelection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeDiscoveryFile(t, root, "hum.yaml", "version: 1\nprocesses:\n  top:\n    argv: [top]\n", 0o600)
+	web := filepath.Join(root, "apps", "web")
+	src := filepath.Join(web, "src")
+	if err := os.MkdirAll(src, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeDiscoveryFile(t, root, "apps/web/hum.yaml", "version: 1\nprocesses:\n  web:\n    argv: [web]\n", 0o600)
+
+	selection, present, err := DefaultManifestSelection(root, root)
+	if err != nil || !present || selection.Relative != "hum.yaml" {
+		t.Fatalf("root selection = %#v, present=%t, err=%v", selection, present, err)
+	}
+	selection, present, err = DefaultManifestSelection(src, root)
+	if err != nil || !present || selection.Relative != "apps/web/hum.yaml" {
+		t.Fatalf("nearest selection = %#v, present=%t, err=%v; want apps/web/hum.yaml", selection, present, err)
+	}
+	definitions, err := ResolveDefinitionsContext(context.Background(), src, root)
+	if err != nil || len(definitions) != 1 || definitions[0].Name != "web" || definitions[0].Source != "manifest:apps/web/hum.yaml" {
+		t.Fatalf("nearest definitions = %#v, err=%v", definitions, err)
+	}
+
+	writeDiscoveryFile(t, root, "apps/web/.hum.yaml", "version: 1\nprocesses:\n  private:\n    argv: [private]\n", 0o600)
+	selection, present, err = DefaultManifestSelection(src, root)
+	if err != nil || !present || selection.Relative != "apps/web/.hum.yaml" {
+		t.Fatalf("private selection = %#v, present=%t, err=%v; want .hum.yaml in nearest directory", selection, present, err)
+	}
+	writeDiscoveryFile(t, root, "apps/web/.hum.yaml", "version: 1\nprocesses:\n  broken: [\n", 0o600)
+	if _, err := ResolveDefinitionsContext(context.Background(), src, root); !errors.Is(err, ErrConfiguration) {
+		t.Fatalf("malformed nearer manifest error = %v, want ErrConfiguration", err)
+	}
+
+	noGitParent := t.TempDir()
+	writeDiscoveryFile(t, noGitParent, "hum.yaml", "version: 1\nprocesses: {}\n", 0o600)
+	noGit := filepath.Join(noGitParent, "nested")
+	if err := os.Mkdir(noGit, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, present, err := DefaultManifestSelection(noGit, noGit); err != nil || present {
+		t.Fatalf("no-Git selection = present %t, err %v; must not search above project root", present, err)
+	}
+	if _, err := ResolveDefinitionsContext(context.Background(), noGit, noGit); !errors.Is(err, ErrManifestMissing) || err.Error() != (&ManifestMissingError{Start: noGit, Root: noGit}).Error() {
+		t.Fatalf("no-Git parent manifest error = %v, want manifest_missing only in %s", err, noGit)
+	}
+
+	missingRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(missingRoot, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rootMissing := (&ManifestMissingError{Start: missingRoot, Root: missingRoot}).Error()
+	wantRootMissing := fmt.Sprintf("manifest is missing in %s: run hum init to create hum.yaml, or use hum run NAME -- COMMAND", missingRoot)
+	if rootMissing != wantRootMissing {
+		t.Fatalf("root missing error = %q, want unchanged %q", rootMissing, wantRootMissing)
+	}
+	missingStart := filepath.Join(missingRoot, "apps", "web")
+	if err := os.MkdirAll(missingStart, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := ResolveDefinitionsContext(context.Background(), missingStart, missingRoot)
+	if err == nil || missing != nil {
+		t.Fatalf("nested missing definitions = %#v, err=%v", missing, err)
+	}
+	wantNestedMissing := fmt.Sprintf("manifest is missing in %s or its parents up to %s: run hum init to create hum.yaml, or use hum run NAME -- COMMAND", missingStart, missingRoot)
+	if err.Error() != wantNestedMissing {
+		t.Fatalf("nested missing error = %q, want %q", err.Error(), wantNestedMissing)
+	}
+}
+
 func TestAlternateManifestSelection(t *testing.T) {
 	root := t.TempDir()
 	writeTestManifest(t, root, "version: 1\nprocesses:\n  default:\n    argv: [default]\n    cwd: sub\n")

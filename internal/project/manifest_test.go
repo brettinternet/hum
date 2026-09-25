@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -285,6 +286,68 @@ func TestManifestReadyExit(t *testing.T) {
 				t.Fatalf("exit-ready dependency = %v, want [migrate]", definitions[0].After)
 			}
 		})
+	}
+}
+
+func TestManifestCwdBase(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	web := filepath.Join(root, "apps", "web")
+	api := filepath.Join(root, "apps", "api")
+	if err := os.MkdirAll(web, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(api, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeManifestAt := func(path, contents string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatalf("write manifest %s: %v", path, err)
+		}
+	}
+	manifest := func(cwd string) string {
+		body := "version: 1\nprocesses:\n  web:\n    argv: [web]\n"
+		if cwd != "" {
+			body += "    cwd: " + cwd + "\n"
+		}
+		return body
+	}
+	defaultPath := filepath.Join(web, "hum.yaml")
+	writeManifestAt(defaultPath, manifest(""))
+	definitions, err := ResolveDefinitionsContext(context.Background(), web, root)
+	if err != nil || len(definitions) != 1 || definitions[0].Cwd != web {
+		t.Fatalf("nested default cwd = %#v, err=%v; want %s", definitions, err, web)
+	}
+
+	writeManifestAt(defaultPath, manifest("../api"))
+	definitions, err = ResolveDefinitionsContext(context.Background(), web, root)
+	if err != nil || len(definitions) != 1 || definitions[0].Cwd != api {
+		t.Fatalf("manifest-relative cwd = %#v, err=%v; want %s", definitions, err, api)
+	}
+	writeManifestAt(defaultPath, manifest("../../../outside"))
+	if _, err := ResolveDefinitionsContext(context.Background(), web, root); err == nil || !strings.Contains(err.Error(), "escapes the project root") {
+		t.Fatalf("escaping manifest cwd error = %v, want project-root containment failure", err)
+	}
+
+	rootPath := filepath.Join(root, "hum.yaml")
+	writeManifestAt(rootPath, manifest(""))
+	definitions, err = ResolveDefinitionsContext(context.Background(), root, root)
+	if err != nil || len(definitions) != 1 || definitions[0].Cwd != root {
+		t.Fatalf("root manifest cwd = %#v, err=%v; want %s", definitions, err, root)
+	}
+
+	explicitPath := filepath.Join(web, "explicit.yaml")
+	writeManifestAt(explicitPath, manifest(""))
+	selection, err := ResolveManifestPath(root, root, explicitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := ResolveExplicitDefinitions(context.Background(), selection)
+	if err != nil || len(explicit) != 1 || explicit[0].Cwd != filepath.Dir(selection.Path) {
+		t.Fatalf("explicit nested cwd = %#v, err=%v; want %s", explicit, err, filepath.Dir(selection.Path))
 	}
 }
 
