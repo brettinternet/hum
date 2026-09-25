@@ -23,6 +23,7 @@ import (
 
 	"hum/internal/output"
 	"hum/internal/process"
+	"hum/internal/testutil"
 )
 
 func testSupervisor(t *testing.T, opts Options) *Supervisor {
@@ -4938,16 +4939,22 @@ func TestWaitProcessObserved(t *testing.T) {
 	t.Run("record launched during wait", func(t *testing.T) {
 		root := makeProject(t, false)
 		s := testSupervisor(t, Options{})
+		rec, err := s.ensureSession(root, "during-wait")
+		if err != nil {
+			t.Fatal(err)
+		}
 		result := make(chan WaitResult, 1)
 		errCh := make(chan error, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		go func() {
 			got, err := s.Wait(ctx, root, "during-wait", WaitOptions{})
 			result <- got
 			errCh <- err
 		}()
-		time.Sleep(10 * time.Millisecond)
+		if !testutil.WaitUntil(time.Second, func() bool { return rec.store.SubscriberCount() > 0 }) {
+			t.Fatal("wait did not subscribe before launch")
+		}
 		if _, err := startShell(s, root, "during-wait", "sleep 1"); err != nil {
 			t.Fatal(err)
 		}
@@ -4971,14 +4978,16 @@ func TestWaitProcessObserved(t *testing.T) {
 		s.mu.Unlock()
 		result := make(chan WaitResult, 1)
 		errCh := make(chan error, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		go func() {
 			got, err := s.Wait(ctx, root, "removed", WaitOptions{})
 			result <- got
 			errCh <- err
 		}()
-		time.Sleep(10 * time.Millisecond)
+		if !testutil.WaitUntil(time.Second, func() bool { return rec.store.SubscriberCount() > 0 }) {
+			t.Fatal("wait did not subscribe before removal")
+		}
 		if err := s.Remove(context.Background(), root, "removed"); err != nil {
 			t.Fatal(err)
 		}

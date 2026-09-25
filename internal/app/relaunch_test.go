@@ -376,6 +376,7 @@ func TestRelaunchOnFailure(t *testing.T) {
 		if current.NextLaunchAt != nil {
 			t.Fatalf("running relaunch has pending timer: %#v", current)
 		}
+		harness.timers.wait(relaunchStabilityWindow)
 		if harness.timers.fireAll(relaunchStabilityWindow) == 0 {
 			t.Fatal("missing stability timer")
 		}
