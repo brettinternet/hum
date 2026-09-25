@@ -21,6 +21,7 @@ import (
 // TestDaemonConnectionsRequireTheCurrentUser covers a socket reachable by
 // another local user: the client must refuse such a daemon before sending its
 // environment, and the daemon must refuse such a client before any request.
+// Not parallel: simulateForeignRuntimeUser changes the process-wide runtimeUserOverride.
 func TestDaemonConnectionsRequireTheCurrentUser(t *testing.T) {
 	server := testServer(t, Config{})
 	socket := server.Paths().Socket
@@ -61,6 +62,7 @@ func TestDaemonConnectionsRequireTheCurrentUser(t *testing.T) {
 }
 
 func TestStartupBudgetIncludesEveryRecordedGroup(t *testing.T) {
+	t.Parallel()
 	runtimeDir := filepath.Join(t.TempDir(), "runtime")
 	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -100,6 +102,7 @@ func TestStartupBudgetIncludesEveryRecordedGroup(t *testing.T) {
 }
 
 func TestStartupBudgetWithoutStateIsDialSlack(t *testing.T) {
+	t.Parallel()
 	got, err := StartupBudget(NewRuntimePaths(t.TempDir()), time.Second, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -110,6 +113,7 @@ func TestStartupBudgetWithoutStateIsDialSlack(t *testing.T) {
 }
 
 func TestInputAttachRejectsUnexpectedResponseOperations(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		responses []any
@@ -171,6 +175,7 @@ func TestInputAttachRejectsUnexpectedResponseOperations(t *testing.T) {
 }
 
 func TestInputAckBlankOperationPreservesTypedError(t *testing.T) {
+	t.Parallel()
 	serverConn, clientConn := net.Pipe()
 	defer serverConn.Close()
 	session := &InputSession{client: NewClient(clientConn), acks: make(chan json.RawMessage, 1)}

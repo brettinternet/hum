@@ -38,6 +38,7 @@ func (c *blockedInputChild) WriteContext(ctx context.Context, p []byte) (int, er
 }
 
 func TestTTYRemove(t *testing.T) {
+	t.Parallel()
 	runtimeDir := t.TempDir()
 	root := t.TempDir()
 	server, err := NewServer(Config{RuntimeDir: runtimeDir, StopGrace: 100 * time.Millisecond})
@@ -97,6 +98,7 @@ func TestTTYRemove(t *testing.T) {
 }
 
 func TestOneShotInputWrite(t *testing.T) {
+	t.Parallel()
 	runtimeDir := t.TempDir()
 	root := t.TempDir()
 	server, err := NewServer(Config{RuntimeDir: runtimeDir, StopGrace: 100 * time.Millisecond})
@@ -467,6 +469,7 @@ func TestOneShotInputWrite(t *testing.T) {
 }
 
 func TestInputSessionAcknowledgementWinsConnectionClose(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(protocol.InputAckResponse{Op: protocol.OpInputRelease, OK: true})
 	if err != nil {
 		t.Fatal(err)
@@ -484,6 +487,7 @@ func TestInputSessionAcknowledgementWinsConnectionClose(t *testing.T) {
 }
 
 func TestTTYInputTransport(t *testing.T) {
+	t.Parallel()
 	runtimeDir := t.TempDir()
 	root := t.TempDir()
 	server, err := NewServer(Config{RuntimeDir: runtimeDir, StopGrace: 100 * time.Millisecond})

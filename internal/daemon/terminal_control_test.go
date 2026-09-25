@@ -16,6 +16,7 @@ import (
 )
 
 func TestOutputReadStripsTerminalControl(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	var store *output.Store
 	child := &daemonTestChild{pid: 6101, done: make(chan struct{})}

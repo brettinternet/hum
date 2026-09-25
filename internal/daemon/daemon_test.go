@@ -84,6 +84,7 @@ func testShell(t *testing.T) string {
 	return "/bin/sh"
 }
 
+// Not parallel: subtests change process-wide runtime environment variables.
 func TestPrivateSocket(t *testing.T) {
 	t.Run("XDG", func(t *testing.T) {
 		xdg := shortRuntimeDir(t)
@@ -248,6 +249,7 @@ func assertShutdownArtifactsAbsent(t *testing.T, paths RuntimePaths) {
 }
 
 func TestClientDisconnect(t *testing.T) {
+	t.Parallel()
 	server := testServer(t, Config{})
 	root := t.TempDir()
 	client, err := Dial(context.Background(), server.Paths().Socket)
@@ -363,6 +365,7 @@ func TestClientDisconnect(t *testing.T) {
 }
 
 func TestStatusGetTransportsNextCursorAndTypedErrors(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	var store *output.Store
 	supervisor, err := app.New(app.Options{
@@ -422,6 +425,7 @@ func TestStatusGetTransportsNextCursorAndTypedErrors(t *testing.T) {
 }
 
 func TestStatusFollowers(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	server := testServer(t, Config{})
 	client, err := Dial(context.Background(), server.Paths().Socket)
@@ -453,6 +457,7 @@ func TestStatusFollowers(t *testing.T) {
 }
 
 func TestStatusResponseShapes(t *testing.T) {
+	t.Parallel()
 	item := protocolProcessFromApp(app.Process{Name: "status", Root: "/work/project", PID: 42, PGID: 42, Cwd: "/work/project", Argv: []string{"tool"}, NextCursor: 19})
 	if item.NextCursor != nil {
 		t.Fatalf("generic process conversion retained next cursor: %#v", item.NextCursor)
@@ -541,6 +546,7 @@ func TestStatusResponseShapes(t *testing.T) {
 }
 
 func TestStatusGetRejectsOmittedNextCursor(t *testing.T) {
+	t.Parallel()
 	serverConn, clientConn := net.Pipe()
 	client := NewClient(clientConn)
 	t.Cleanup(func() {
@@ -587,6 +593,7 @@ func TestStatusGetRejectsOmittedNextCursor(t *testing.T) {
 }
 
 func TestMultipleFollowers(t *testing.T) {
+	t.Parallel()
 	server := testServer(t, Config{})
 	root := t.TempDir()
 	client, err := Dial(context.Background(), server.Paths().Socket)
@@ -750,6 +757,7 @@ func TestMultipleFollowers(t *testing.T) {
 }
 
 func TestFollowAcrossOrdinaryStartReplacement(t *testing.T) {
+	t.Parallel()
 	server := testServer(t, Config{})
 	root := t.TempDir()
 	client, err := Dial(context.Background(), server.Paths().Socket)
@@ -806,6 +814,7 @@ func TestFollowAcrossOrdinaryStartReplacement(t *testing.T) {
 }
 
 func TestFollowRetainsOutputAfterCompletedEviction(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	aReady := make(chan struct{})
 	var aStore *output.Store
@@ -923,6 +932,7 @@ func TestFollowRetainsOutputAfterCompletedEviction(t *testing.T) {
 }
 
 func TestRepeatedCompletedProcessFollow(t *testing.T) {
+	t.Parallel()
 	server := testServer(t, Config{CompletedLimit: 1})
 	root := t.TempDir()
 	client, err := Dial(context.Background(), server.Paths().Socket)
@@ -973,6 +983,7 @@ func TestRepeatedCompletedProcessFollow(t *testing.T) {
 }
 
 func TestSocketOwnership(t *testing.T) {
+	t.Parallel()
 	runtimeDir := shortRuntimeDir(t)
 	first, err := NewServer(Config{RuntimeDir: runtimeDir})
 	if err != nil {
@@ -990,6 +1001,7 @@ func TestSocketOwnership(t *testing.T) {
 }
 
 func TestStaleRuntimeRecovery(t *testing.T) {
+	t.Parallel()
 	runtimeDir := shortRuntimeDir(t)
 	paths := NewRuntimePaths(runtimeDir)
 	if err := os.WriteFile(paths.PID, []byte(strconv.Itoa(1<<30)), 0o600); err != nil {
@@ -1007,6 +1019,7 @@ func TestStaleRuntimeRecovery(t *testing.T) {
 }
 
 func TestConcurrentStartup(t *testing.T) {
+	t.Parallel()
 	runtimeDir := shortRuntimeDir(t)
 	const contenders = 8
 	servers := make(chan *Server, contenders)
@@ -1178,6 +1191,7 @@ func TestConcurrentStartup(t *testing.T) {
 }
 
 func TestReadinessHandshake(t *testing.T) {
+	t.Parallel()
 	runtimeDir := shortRuntimeDir(t)
 	server, err := NewServer(Config{RuntimeDir: runtimeDir})
 	if err != nil {
@@ -1204,6 +1218,7 @@ func TestReadinessHandshake(t *testing.T) {
 }
 
 func TestRemoveAndShutdown(t *testing.T) {
+	t.Parallel()
 	t.Run("refuses active processes", func(t *testing.T) {
 		server := testServer(t, Config{})
 		root := t.TempDir()
@@ -1312,6 +1327,7 @@ func TestRemoveAndShutdown(t *testing.T) {
 }
 
 func TestHelloVersion(t *testing.T) {
+	t.Parallel()
 	t.Run("rejects version 0, missing version, and wrong op", func(t *testing.T) {
 		server := testServer(t, Config{})
 		tests := []struct {
@@ -1578,6 +1594,7 @@ func TestHelloVersion(t *testing.T) {
 }
 
 func TestSignalCanonicalRoundTrip(t *testing.T) {
+	t.Parallel()
 	server := testServer(t, Config{})
 	root := t.TempDir()
 	client, err := Dial(context.Background(), server.Paths().Socket)
@@ -1602,6 +1619,7 @@ func TestSignalCanonicalRoundTrip(t *testing.T) {
 }
 
 func TestControlSignalDaemonRoundTripSuppressesRestart(t *testing.T) {
+	t.Parallel()
 	server := testServer(t, Config{StopGrace: 3 * time.Second})
 	root := t.TempDir()
 	client, err := Dial(context.Background(), server.Paths().Socket)
@@ -1645,6 +1663,7 @@ func TestControlSignalDaemonRoundTripSuppressesRestart(t *testing.T) {
 }
 
 func TestControlSignalStopContinuesAfterClientDisconnect(t *testing.T) {
+	t.Parallel()
 	child := &daemonStopDisconnectChild{pid: 4201, done: make(chan struct{}), termSent: make(chan struct{})}
 	supervisor, err := app.New(app.Options{
 		StopGrace: 50 * time.Millisecond,
@@ -1690,6 +1709,7 @@ func TestControlSignalStopContinuesAfterClientDisconnect(t *testing.T) {
 	})
 }
 
+// Not parallel: signals this test process, which shuts down every live server.
 func TestDaemonSignal(t *testing.T) {
 	t.Run("unsupported signal returns invalid_signal", func(t *testing.T) {
 		server := testServer(t, Config{})
@@ -1766,6 +1786,7 @@ func TestDaemonSignal(t *testing.T) {
 }
 
 func TestProtocolSurfaceUsesNoEnvironment(t *testing.T) {
+	t.Parallel()
 	// This focused compile-time/runtime check keeps the daemon's response path
 	// honest when protocol DTOs evolve: a response containing env must be
 	// rejected by the shared encoder before it can reach a client.
@@ -1816,6 +1837,7 @@ func daemonWaitRequest(name, cwd, match string, timeout time.Duration) protocol.
 }
 
 func TestWaitRequestConversion(t *testing.T) {
+	t.Parallel()
 	after := protocol.Cursor(0)
 	request := protocol.WaitRequest{Op: protocol.OpWait, Name: "wait", Cwd: "/work/project", After: &after, Match: "ready", TimeoutMS: 1234}
 	var sink strings.Builder
@@ -1832,6 +1854,7 @@ func TestWaitRequestConversion(t *testing.T) {
 }
 
 func TestWaitProcessObserved(t *testing.T) {
+	t.Parallel()
 	for _, observed := range []bool{false, true} {
 		t.Run(strconv.FormatBool(observed), func(t *testing.T) {
 			response := protocolWaitResponse(app.WaitResult{Outcome: app.WaitTimedOut, ProcessObserved: observed})
@@ -1855,6 +1878,7 @@ func TestWaitProcessObserved(t *testing.T) {
 }
 
 func TestWaitResponseShape(t *testing.T) {
+	t.Parallel()
 	exitTime := time.Unix(3, 0)
 	cases := []app.WaitResult{
 		{Outcome: app.WaitMatched, Cursor: 0},
@@ -1889,6 +1913,7 @@ func TestWaitResponseShape(t *testing.T) {
 }
 
 func TestWaitDaemonBridge(t *testing.T) {
+	t.Parallel()
 	t.Run("buffered match", func(t *testing.T) {
 		_, client, root, store := daemonWaitFixture(t)
 		cursor, err := store.Append(output.Stdout, time.Unix(1, 0), "ready\n")
@@ -2133,6 +2158,7 @@ func TestWaitDaemonBridge(t *testing.T) {
 }
 
 func TestCloseCompletesWithStalledFollower(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	server := testServer(t, Config{})
 	client, err := Dial(context.Background(), server.Paths().Socket)
@@ -2175,6 +2201,7 @@ func TestCloseCompletesWithStalledFollower(t *testing.T) {
 }
 
 func TestStartAcceptsLargeEnvironment(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	server := testServer(t, Config{})
 	client, err := Dial(context.Background(), server.Paths().Socket)
@@ -2189,6 +2216,7 @@ func TestStartAcceptsLargeEnvironment(t *testing.T) {
 }
 
 func TestOutputReadExceedsLogLineLimit(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	server := testServer(t, Config{})
 	client, err := Dial(context.Background(), server.Paths().Socket)
@@ -2239,6 +2267,7 @@ func TestOutputReadExceedsLogLineLimit(t *testing.T) {
 }
 
 func TestSinceWireRequest(t *testing.T) {
+	t.Parallel()
 	cutoff := time.Now().Add(-time.Second).Truncate(time.Nanosecond)
 	outputRequest := protocol.OutputRequest{Op: protocol.OpOutput, Name: "output", Cwd: "/tmp", SinceUnixNano: cutoff.UnixNano()}
 	if outputRequest.SinceUnixNano != cutoff.UnixNano() {
@@ -2297,6 +2326,7 @@ func TestSinceWireRequest(t *testing.T) {
 }
 
 func TestScopeDaemonWire(t *testing.T) {
+	t.Parallel()
 	wire := protocolProcessFromApp(app.Process{Name: "web", Root: "/work/main"})
 	encoded, err := json.Marshal(wire)
 	if err != nil {
@@ -2362,6 +2392,7 @@ func TestScopeDaemonWire(t *testing.T) {
 }
 
 func TestDispatchRejectsNonDispatchableKnownOperations(t *testing.T) {
+	t.Parallel()
 	supervisor, err := app.New(app.Options{StartProcess: func(process.Spec) (app.Child, error) { return nil, errors.New("unused") }})
 	if err != nil {
 		t.Fatal(err)

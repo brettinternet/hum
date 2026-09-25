@@ -28,6 +28,8 @@ func windowsRuntimeDir(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "runtime")
 }
+
+// Not parallel: changes process-wide APPDATA and LOCALAPPDATA.
 func TestWindowsDefaultRuntimeDirIsAbsoluteWithoutAppData(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", "")
 	t.Setenv("APPDATA", "")
@@ -42,6 +44,7 @@ func TestWindowsDefaultRuntimeDirIsAbsoluteWithoutAppData(t *testing.T) {
 }
 
 func TestWindowsTransportAndACL(t *testing.T) {
+	t.Parallel()
 	dir := windowsRuntimeDir(t)
 	server, err := NewServer(Config{RuntimeDir: dir})
 	if err != nil {
@@ -96,6 +99,7 @@ func TestWindowsTransportAndACL(t *testing.T) {
 }
 
 func TestWindowsConcurrentStartup(t *testing.T) {
+	t.Parallel()
 	dir := windowsRuntimeDir(t)
 	owner, err := NewServer(Config{RuntimeDir: dir})
 	if err != nil {
@@ -114,6 +118,7 @@ func TestWindowsConcurrentStartup(t *testing.T) {
 	}
 }
 func TestWindowsStartupContender(t *testing.T) {
+	t.Parallel()
 	dir := os.Getenv("HUM_WINDOWS_CONTENDER")
 	if dir == "" {
 		return
@@ -127,6 +132,7 @@ func TestWindowsStartupContender(t *testing.T) {
 	t.Log("owner refused")
 }
 
+// Not parallel: simulates another user with a process-wide runtimeSIDOverride.
 func TestWindowsForeignRuntimeAndPipeRefused(t *testing.T) {
 	dir := windowsRuntimeDir(t)
 	if err := ensurePrivateDir(dir); err != nil {
@@ -163,6 +169,7 @@ func TestWindowsForeignRuntimeAndPipeRefused(t *testing.T) {
 }
 
 func TestWindowsStaleOwnerRecovery(t *testing.T) {
+	t.Parallel()
 	dir := windowsRuntimeDir(t)
 	if err := ensurePrivateDir(dir); err != nil {
 		t.Fatal(err)
@@ -192,6 +199,7 @@ func TestWindowsStaleOwnerRecovery(t *testing.T) {
 // A real owner process is terminated without Close. Its child belongs to the
 // kill-on-close Job Object; a fresh daemon must reconcile its durable record.
 func TestWindowsCrashRecovery(t *testing.T) {
+	t.Parallel()
 	dir := windowsRuntimeDir(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWindowsCrashOwnerHelper$")
 	cmd.Env = append(os.Environ(), "HUM_WINDOWS_CRASH_OWNER="+dir)
@@ -243,6 +251,7 @@ func TestWindowsCrashRecovery(t *testing.T) {
 	}
 }
 func TestWindowsCrashOwnerHelper(t *testing.T) {
+	t.Parallel()
 	dir := os.Getenv("HUM_WINDOWS_CRASH_OWNER")
 	if dir == "" || os.Getenv("HUM_WINDOWS_CRASH_CHILD") != "" {
 		return
@@ -264,6 +273,7 @@ func TestWindowsCrashOwnerHelper(t *testing.T) {
 	time.Sleep(30 * time.Second)
 }
 func TestWindowsCrashChildHelper(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("HUM_WINDOWS_CRASH_CHILD") == "" {
 		return
 	}
@@ -271,6 +281,7 @@ func TestWindowsCrashChildHelper(t *testing.T) {
 }
 
 func TestWindowsReusedPIDAndUncertainChild(t *testing.T) {
+	t.Parallel()
 	identity, err := process.ProcessStartIdentity(os.Getpid())
 	if err != nil {
 		t.Fatal(err)
@@ -293,6 +304,7 @@ func TestWindowsReusedPIDAndUncertainChild(t *testing.T) {
 	}
 }
 func TestWindowsACLRejectsOtherUsers(t *testing.T) {
+	t.Parallel()
 	dir := windowsRuntimeDir(t)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)

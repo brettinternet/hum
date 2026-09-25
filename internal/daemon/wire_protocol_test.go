@@ -19,6 +19,7 @@ import (
 )
 
 func TestProcessStopGraceWireRoundTrip(t *testing.T) {
+	t.Parallel()
 	item := app.Process{Name: "api", Scope: app.ScopeProject, Root: "/project", StopGrace: 0, StopGraceInherited: false}
 	wire := protocolProcessFromApp(item)
 	if wire.StopGrace != 0 || wire.StopGraceInherited {
@@ -37,6 +38,7 @@ func TestProcessStopGraceWireRoundTrip(t *testing.T) {
 }
 
 func TestProcessStopGraceDaemonManifestFallback(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	testExecutable := strconv.Quote(os.Args[0])
 	manifest := []byte("version: 1\nprocesses:\n  explicit:\n    argv: [" + testExecutable + ", -test.run=^$]\n    stop_grace: 250ms\n  inherited:\n    argv: [" + testExecutable + ", -test.run=^$]\n")
@@ -69,6 +71,7 @@ func TestProcessStopGraceDaemonManifestFallback(t *testing.T) {
 }
 
 func TestReadinessHTTPTargetRoundTrip(t *testing.T) {
+	t.Parallel()
 	config := &protocol.ReadinessConfig{Method: "http", Target: "http://127.0.0.1:3000/readyz"}
 	appConfig := appReadinessConfigFromProtocol(config)
 	if appConfig == nil || appConfig.Method != config.Method || appConfig.Target != config.Target {
@@ -86,6 +89,7 @@ func TestReadinessHTTPTargetRoundTrip(t *testing.T) {
 }
 
 func TestReadinessTCPTargetRoundTrip(t *testing.T) {
+	t.Parallel()
 	config := &protocol.ReadinessConfig{Method: "tcp", Target: "[::1]:5432"}
 	appConfig := appReadinessConfigFromProtocol(config)
 	if appConfig == nil || appConfig.Method != config.Method || appConfig.Target != config.Target {
@@ -94,6 +98,7 @@ func TestReadinessTCPTargetRoundTrip(t *testing.T) {
 }
 
 func TestExecutableReadiness(t *testing.T) {
+	t.Parallel()
 	if protocol.Version != 20 {
 		t.Fatalf("wire protocol version=%d, want 20 for executable readiness", protocol.Version)
 	}
@@ -123,6 +128,7 @@ func TestExecutableReadiness(t *testing.T) {
 }
 
 func TestGlobalScopeWireValidation(t *testing.T) {
+	t.Parallel()
 	legacy := protocol.Request{Op: protocol.OpGet, Get: &protocol.GetRequest{Op: protocol.OpGet, Name: "proxy", Cwd: "/project"}}
 	if err := normalizeProtocolScope(&legacy); err != nil || legacy.Get.Scope != app.ScopeProject {
 		t.Fatalf("legacy scope=%q err=%v", legacy.Get.Scope, err)
@@ -147,6 +153,7 @@ func TestGlobalScopeWireValidation(t *testing.T) {
 }
 
 func TestSystemStreamSelection(t *testing.T) {
+	t.Parallel()
 	store, err := output.NewStore(output.Limits{RetainedBytes: 4096, DefaultReadEntries: 100, DefaultReadBytes: 4096})
 	if err != nil {
 		t.Fatal(err)
@@ -215,6 +222,7 @@ func TestSystemStreamSelection(t *testing.T) {
 }
 
 func TestMatchContextWireOptions(t *testing.T) {
+	t.Parallel()
 	opts, err := readOptionsFromProtocol(protocol.OutputRequest{Stream: protocol.StreamSystem, Match: "ERROR", Context: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -234,6 +242,7 @@ func TestMatchContextWireOptions(t *testing.T) {
 }
 
 func TestSignalExitWireStreamRoundTrip(t *testing.T) {
+	t.Parallel()
 	exitedAt := time.Date(2026, time.September, 6, 12, 34, 56, 0, time.UTC)
 	event := protocolStreamEventFromOutput("signal", output.Event{Exit: &output.Exit{
 		Code: -1, Time: exitedAt, SignalName: "SIGTERM", SignalNumber: 15,
@@ -244,6 +253,7 @@ func TestSignalExitWireStreamRoundTrip(t *testing.T) {
 }
 
 func TestTerminalStateWireRoundTrip(t *testing.T) {
+	t.Parallel()
 	exitedAt := time.Date(2026, time.September, 6, 12, 34, 56, 0, time.UTC)
 	cases := []struct {
 		name string

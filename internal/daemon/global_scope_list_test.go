@@ -15,6 +15,7 @@ import (
 // listing that root as a project would rediscover the caller's own root and
 // return every project record twice.
 func TestGlobalScopeAllListingIsDeduplicated(t *testing.T) {
+	t.Parallel()
 	server := testServer(t, Config{RuntimeDir: filepath.Join(shortRuntimeDir(t), "runtime"), StopGrace: 50 * time.Millisecond})
 	// The server tracks the global record under the empty root, which resolves
 	// through the process working directory. Using that same root as the

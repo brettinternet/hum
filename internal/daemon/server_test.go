@@ -15,6 +15,7 @@ import (
 )
 
 func TestAlternateManifestStopGrace(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	argv := []string{os.Args[0], "-test.run=^$"}
 	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  web:\n    argv: [echo]\n    stop_grace: 900ms\n  default:\n    argv: [echo]\n    stop_grace: 900ms\n"), 0o600); err != nil {
@@ -51,6 +52,7 @@ func TestAlternateManifestStopGrace(t *testing.T) {
 }
 
 func TestSinceProtocolVersionNegotiation(t *testing.T) {
+	t.Parallel()
 	server := testServer(t, Config{WireVersion: protocol.Version - 1})
 	client, err := Dial(context.Background(), server.Paths().Socket)
 	if client == nil {

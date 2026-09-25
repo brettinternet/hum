@@ -20,6 +20,7 @@ import (
 )
 
 func TestPrepareRuntimePreservesExistingMode(t *testing.T) {
+	t.Parallel()
 	t.Run("existing", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "runtime")
 		if err := os.Mkdir(dir, 0o700); err != nil {
@@ -79,6 +80,7 @@ func TestPrepareRuntimePreservesExistingMode(t *testing.T) {
 // pre-created the runtime directory, as anyone can under a shared /tmp. Its
 // planted state must not make the daemon signal this user's processes, its
 // planted lock symlink must not be followed, and the client must not read it.
+// Not parallel: simulates another user with a process-wide runtimeUserOverride.
 func TestForeignRuntimeDirectoryIsNeverTrusted(t *testing.T) {
 	cmd, done := startRuntimeTestGroup(t, false)
 	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
@@ -129,6 +131,7 @@ func simulateForeignRuntimeUser(t *testing.T) {
 }
 
 func TestRuntimeStateFile(t *testing.T) {
+	t.Parallel()
 	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
 	server := testServer(t, Config{RuntimeDir: runtimeDir, StopGrace: 50 * time.Millisecond})
 	paths := server.Paths()
@@ -188,6 +191,7 @@ func TestRuntimeStateFile(t *testing.T) {
 }
 
 func TestLaunchPersistenceFailureStopsChild(t *testing.T) {
+	t.Parallel()
 	t.Run("confirmed cleanup", func(t *testing.T) {
 		runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
 		server := testServer(t, Config{RuntimeDir: runtimeDir, StopGrace: 50 * time.Millisecond})
@@ -263,6 +267,7 @@ func (c *stuckRuntimeChild) Wait() processpkg.Result {
 func (c *stuckRuntimeChild) Signal(os.Signal) error { return nil }
 
 func TestExplicitZeroStopGrace(t *testing.T) {
+	t.Parallel()
 	cmd, done := startRuntimeTestGroup(t, true)
 	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
 	writePriorRuntimeState(t, runtimeDir, RuntimeGroup{
@@ -290,6 +295,7 @@ func TestExplicitZeroStopGrace(t *testing.T) {
 }
 
 func TestStartupReclaimsRecordedGroups(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		ignoreTERM bool
@@ -336,6 +342,7 @@ func TestStartupReclaimsRecordedGroups(t *testing.T) {
 // group must be killed rather than retained as unresolved, which would leave an
 // orphan holding its port while hum reports the name stopped.
 func TestStartupKillsSurvivorAfterLeaderExit(t *testing.T) {
+	t.Parallel()
 	cmd, done, _ := startRuntimeTestSurvivorGroup(t)
 	pgid := cmd.Process.Pid
 	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
@@ -362,6 +369,7 @@ func TestStartupKillsSurvivorAfterLeaderExit(t *testing.T) {
 }
 
 func TestStartupNeverSignalsReusedProcessIdentity(t *testing.T) {
+	t.Parallel()
 	cmd, done := startRuntimeTestGroup(t, false)
 	runtimeDir := filepath.Join(shortRuntimeDir(t), "runtime")
 	root := t.TempDir()
@@ -528,6 +536,7 @@ func mustProcessIdentity(t *testing.T, pid int) string {
 }
 
 func TestRuntimeStateGlobalScope(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	projectRoot := t.TempDir()
 	statePath := filepath.Join(dir, "hum.state")
@@ -586,6 +595,7 @@ func TestRuntimeStateGlobalScope(t *testing.T) {
 }
 
 func TestRuntimeStateScopeIdentity(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := filepath.Join(dir, "main")
 	if err := os.Mkdir(root, 0o700); err != nil {

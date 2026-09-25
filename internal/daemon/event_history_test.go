@@ -21,6 +21,7 @@ import (
 )
 
 func TestEventHistoryAppendAndPaging(t *testing.T) {
+	t.Parallel()
 	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, "/project")
 	for _, item := range []struct{ name, kind, event string }{
 		{"api", string(protocol.EventOperation), "start"},
@@ -49,6 +50,7 @@ func TestEventHistoryAppendAndPaging(t *testing.T) {
 }
 
 func TestEventHistoryLogCursorRoundTrip(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	server := &Server{eventOps: make(map[string]eventOperation), eventQueue: make(chan queuedHistoryEvent, 3)}
 	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, root)
@@ -75,6 +77,7 @@ func TestEventHistoryLogCursorRoundTrip(t *testing.T) {
 }
 
 func TestEventHistoryRetentionAndNameReuse(t *testing.T) {
+	t.Parallel()
 	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, "/project")
 	if history.maxEvents != 2000 || history.maxBytes != 1<<20 {
 		t.Fatalf("production limits = %d events, %d bytes", history.maxEvents, history.maxBytes)
@@ -105,6 +108,7 @@ func TestEventHistoryRetentionAndNameReuse(t *testing.T) {
 }
 
 func TestEventHistoryAppendCost(t *testing.T) {
+	t.Parallel()
 	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, "/project")
 	history.maxEvents, history.maxBytes = 20, 1<<20
 	for i := 0; i < 200; i++ {
@@ -138,6 +142,7 @@ func TestEventHistoryAppendCost(t *testing.T) {
 }
 
 func TestEventHistoryByteCompactionAndReload(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	history := NewEventHistory(dir, protocol.ScopeGlobal, "")
 	history.maxEvents, history.maxBytes = 20, 1000
@@ -162,6 +167,7 @@ func TestEventHistoryByteCompactionAndReload(t *testing.T) {
 }
 
 func TestEventHistoryCrashNeverReusesCursor(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	newHistory := func() *EventHistory { return NewEventHistory(dir, protocol.ScopeProject, "/project") }
 	event := protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch"}
@@ -212,6 +218,7 @@ func TestEventHistoryCrashNeverReusesCursor(t *testing.T) {
 }
 
 func TestEventHistoryReaderIgnoresLiveReservation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	event := protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch"}
 	writer := NewEventHistory(dir, protocol.ScopeProject, "/project")
@@ -237,6 +244,7 @@ func TestEventHistoryReaderIgnoresLiveReservation(t *testing.T) {
 }
 
 func TestEventHistoryServerReusesHistoryAndReleasesReservation(t *testing.T) {
+	t.Parallel()
 	root, err := project.CanonicalPath(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -284,6 +292,7 @@ func TestEventHistoryServerReusesHistoryAndReleasesReservation(t *testing.T) {
 }
 
 func TestEventHistoryRecoveryAndCursorContinuation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	history := NewEventHistory(dir, protocol.ScopeProject, "/project")
 	if _, err := history.Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch"}); err != nil {
@@ -308,6 +317,7 @@ func TestEventHistoryRecoveryAndCursorContinuation(t *testing.T) {
 }
 
 func TestEventHistoryMalformedPayloadAndCursorUnavailable(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	history := NewEventHistory(dir, protocol.ScopeProject, "/project")
 	if _, err := history.Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch"}); err != nil {
@@ -346,6 +356,7 @@ func TestEventHistoryMalformedPayloadAndCursorUnavailable(t *testing.T) {
 // TestEventHistoryRefusesForeignRuntimeDirectory covers the daemonless CLI and
 // MCP read path: events planted by another user who owns the runtime directory
 // must not be reported.
+// Not parallel: simulateForeignRuntimeUser changes the process-wide runtimeUserOverride.
 func TestEventHistoryRefusesForeignRuntimeDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := NewEventHistory(dir, protocol.ScopeGlobal, "").Append(protocol.HistoryEvent{Name: "api", Kind: protocol.EventLifecycle, Event: "launch"}); err != nil {
@@ -363,6 +374,7 @@ func TestEventHistoryRefusesForeignRuntimeDirectory(t *testing.T) {
 }
 
 func TestEventHistoryLifecycleOperationAttributionAndReadIsolation(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	server := &Server{
 		paths:      NewRuntimePaths(t.TempDir()),
@@ -416,6 +428,7 @@ func TestEventHistoryLifecycleOperationAttributionAndReadIsolation(t *testing.T)
 }
 
 func TestEventHistorySanitizesFailedControlRequest(t *testing.T) {
+	t.Parallel()
 	root, err := project.CanonicalPath(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -466,6 +479,7 @@ func TestEventHistorySanitizesFailedControlRequest(t *testing.T) {
 }
 
 func TestEventHistoryByteRetentionAndNeverTruncatedZero(t *testing.T) {
+	t.Parallel()
 	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, "/project")
 	zero := protocol.Cursor(0)
 	if page, err := history.Read(nil, time.Time{}, nil, false, nil, 50, &zero, 0); err != nil || page.Truncated || page.NextCursor != 0 {
@@ -490,6 +504,7 @@ func TestEventHistoryByteRetentionAndNeverTruncatedZero(t *testing.T) {
 }
 
 func TestEventHistoryConcurrentScopesBoundsAndWriteFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const count = 24
 	var wait sync.WaitGroup
