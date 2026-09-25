@@ -1971,9 +1971,7 @@ func TestLogsMatchContext(t *testing.T) {
 	client := &fakeClient{
 		processes: map[string]protocol.Process{"api": {Name: "api", State: "running"}},
 		output: protocol.OutputResult{Entries: []protocol.OutputEntry{
-			{Cursor: 1, Stream: protocol.StreamSystem, Text: "before\n"},
-			{Cursor: 2, Stream: protocol.StreamSystem, Text: "ERROR\n"},
-			{Cursor: 3, Stream: protocol.StreamSystem, Text: "after\n"},
+			{Cursor: 3, Stream: protocol.StreamSystem, Text: "from daemon\n"},
 		}, Next: &cursor},
 	}
 	s, root, _ := newTestServer(t, nil, client)

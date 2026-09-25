@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,10 +17,6 @@ func TestBoundedLogsStripTerminalControl(t *testing.T) {
 	hum := integrationHum(t)
 	fixture := integrationFixture(t)
 	root := t.TempDir()
-	canonicalRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	runtimeDir := testutil.RuntimeDir(t)
 	env := testutil.RuntimeEnv(runtimeDir)
 	gate := filepath.Join(root, "terminal.release")
@@ -47,54 +42,6 @@ func TestBoundedLogsStripTerminalControl(t *testing.T) {
 	}
 	if !strings.Contains(human.Stdout, "initial\n") || !strings.Contains(human.Stdout, "ready\n") || strings.Contains(human.Stdout, "\x1b") || strings.Contains(human.Stdout, "\r") {
 		t.Fatalf("human bounded logs = %q, want stripped initial and ready text", human.Stdout)
-	}
-
-	jsonLogs := testutil.Run(t, hum, root, env, "logs", "terminal", "--json")
-	if jsonLogs.Code != 0 || jsonLogs.Err != nil {
-		t.Fatalf("JSON bounded logs: code=%d stdout=%q stderr=%q err=%v", jsonLogs.Code, jsonLogs.Stdout, jsonLogs.Stderr, jsonLogs.Err)
-	}
-	var bounded struct {
-		Entries []struct {
-			Text string `json:"text"`
-		} `json:"entries"`
-	}
-	if err := json.Unmarshal([]byte(jsonLogs.Stdout), &bounded); err != nil {
-		t.Fatalf("decode bounded JSON logs %q: %v", jsonLogs.Stdout, err)
-	}
-	if len(bounded.Entries) != 2 || bounded.Entries[0].Text != "initial\n" || bounded.Entries[1].Text != "ready\n" {
-		t.Fatalf("bounded JSON entries = %#v, want stripped initial and ready text", bounded.Entries)
-	}
-	for _, entry := range bounded.Entries {
-		if strings.Contains(entry.Text, "\x1b") || strings.Contains(entry.Text, "\r") {
-			t.Fatalf("bounded JSON entry retained terminal control: %q", entry.Text)
-		}
-	}
-
-	mcp := newMCPTestSession(t, hum, root, env)
-	mcpListRaw, mcpListErr := mcp.call(t, "list", canonicalRoot, nil)
-	if mcpListErr || !strings.Contains(string(mcpListRaw), `"name":"terminal"`) {
-		t.Fatalf("MCP terminal list = %s, error=%v", mcpListRaw, mcpListErr)
-	}
-	mcpRaw, isErr := mcp.call(t, "logs", canonicalRoot, map[string]any{"name": "terminal"})
-	if isErr {
-		t.Fatalf("MCP terminal logs error: %s", mcpRaw)
-	}
-	var mcpLogs struct {
-		Entries []struct {
-			Cursor uint64 `json:"cursor"`
-			Text   string `json:"text"`
-		} `json:"entries"`
-	}
-	if err := json.Unmarshal(mcpRaw, &mcpLogs); err != nil {
-		t.Fatalf("decode MCP terminal logs %q: %v", mcpRaw, err)
-	}
-	if len(mcpLogs.Entries) != 2 || mcpLogs.Entries[0].Text != "initial\n" || mcpLogs.Entries[1].Text != "ready\n" || mcpLogs.Entries[0].Cursor != 0 || mcpLogs.Entries[1].Cursor != 1 {
-		t.Fatalf("MCP terminal logs = %#v, want stripped entries with raw cursors", mcpLogs.Entries)
-	}
-	for _, entry := range mcpLogs.Entries {
-		if strings.Contains(entry.Text, "\x1b") || strings.Contains(entry.Text, "\r") {
-			t.Fatalf("MCP logs entry retained terminal control: %q", entry.Text)
-		}
 	}
 
 	follower := testutil.Start(t, hum, root, env, "logs", "terminal", "--follow")

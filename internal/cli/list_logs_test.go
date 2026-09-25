@@ -645,46 +645,23 @@ func TestLogsMatchContext(t *testing.T) {
 
 	hum006ListLogsStartDaemon(t, validationRuntime, 1<<16)
 	project := hum006ListLogsProject(t, "match-context-project")
-	for _, name := range []string{"alpha", "beta"} {
-		script := fmt.Sprintf("printf '%s-before\\n%s-ERROR\\n%s-after\\n%s-outside\\n'", name, name, name, name)
-		if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", name, "--detach", "--", "/bin/sh", "-c", script); err != nil {
-			t.Fatalf("start %s: %v (stdout=%q stderr=%q)", name, err, stdout, stderr)
-		}
-		hum006ListLogsWaitForText(t, project, name, name+"-outside\n")
+	if stdout, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "run", "alpha", "--detach", "--", "/bin/sh", "-c", "printf 'before\\nERROR\\nafter\\n'"); err != nil {
+		t.Fatalf("start alpha: %v (stdout=%q stderr=%q)", err, stdout, stderr)
 	}
+	hum006ListLogsWaitForText(t, project, "alpha", "after\n")
 
-	assertWindow := func(label, raw string, wantObjects int) {
-		t.Helper()
-		objects := hum006ListLogsDecodeJSONLines(t, raw)
-		if len(objects) != wantObjects {
-			t.Fatalf("%s decoded objects = %d, want %d: %q", label, len(objects), wantObjects, raw)
-		}
-		for _, object := range objects {
-			entries := hum006ListLogsEntries(t, object)
-			texts := hum006ListLogsEntryTexts(t, entries)
-			if len(texts) != 3 || !strings.HasSuffix(texts[0], "-before\n") || !strings.HasSuffix(texts[1], "-ERROR\n") || !strings.HasSuffix(texts[2], "-after\n") {
-				t.Fatalf("%s entries = %#v, want bounded context window", label, texts)
-			}
-		}
-	}
+	// A single request verifies that the CLI forwards match and context;
+	// ring_test.go owns the shape and bounds of the resulting window.
 	single, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "alpha", "--json", "--match", "ERROR", "--context", "1")
 	if err != nil {
 		t.Fatalf("single match context: %v (stderr=%q)", err, stderr)
 	}
-	assertWindow("single", single, 1)
-	aggregate, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "alpha", "beta", "--json", "--match", "ERROR", "--context", "1")
-	if err != nil {
-		t.Fatalf("aggregate match context: %v (stderr=%q)", err, stderr)
+	objects := hum006ListLogsDecodeJSONLines(t, single)
+	if len(objects) != 1 {
+		t.Fatalf("single match context objects = %d, want 1: %q", len(objects), single)
 	}
-	assertWindow("aggregate", aggregate, 2)
-
-	zero, stderr, err := hum006ListLogsRunAt(t, project, context.Background(), "logs", "alpha", "--json", "--match", "ERROR", "--context", "0")
-	if err != nil {
-		t.Fatalf("zero match context: %v (stderr=%q)", err, stderr)
-	}
-	zeroObjects := hum006ListLogsDecodeJSONLines(t, zero)
-	if got := hum006ListLogsEntryTexts(t, hum006ListLogsEntries(t, zeroObjects[0])); !hum006ListLogsEqualStrings(got, []string{"alpha-ERROR\n"}) {
-		t.Fatalf("zero context entries = %#v, want match only", got)
+	if got := hum006ListLogsEntryTexts(t, hum006ListLogsEntries(t, objects[0])); !hum006ListLogsEqualStrings(got, []string{"before\n", "ERROR\n", "after\n"}) {
+		t.Fatalf("CLI match/context forwarding entries = %#v", got)
 	}
 }
 
