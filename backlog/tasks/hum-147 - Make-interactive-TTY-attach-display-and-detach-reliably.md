@@ -4,10 +4,11 @@ title: Make interactive TTY attach display and detach reliably
 status: Done
 assignee: []
 created_date: '2026-09-25 20:53'
-updated_date: '2026-09-25 21:39'
+updated_date: '2026-09-25 21:48'
 labels:
   - cli
   - tty
+  - reviewed
 dependencies: []
 modified_files:
   - internal/cli/tty.go
@@ -58,6 +59,8 @@ AC#5 — go test ./internal/cli -run "^TestLogsCursorAfterPartialLine$" -count=1
 Delivery — implementation 7963ad7 merged locally to main cff5ee5; task ci PASS on 7963ad7 and cff5ee5 (full tests, race, security, smoke). Initial CI caught early non-TTY EOF cancellation and --tail 0 replay race; corrected, focused tests repeated, final gates passed. Independent verifier PASS AC1–AC5; no concrete review findings. Only declared seven implementation paths changed; this provider task file is the necessary delivery-record deviation. No tests deleted/skipped/weakened, no protected gates changed. Next step: commit this provider completion and rerun task ci on final main commit; no external blocker.
 
 Final delivery update — provider completion committed on main; task ci passed after the provider commit (full tests, race, security, smoke). Worktree/branch removed by wt remove; Herdr post-remove workspace closed. No blocker or next resumable step.
+
+Review: deduped detach-cancel goroutine; design.md and skills now say Ctrl-] ends attach/run and leaves the child running (a86bd9d). No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

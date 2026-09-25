@@ -4,12 +4,13 @@ title: Find the nearest hum.yaml from the invocation directory up to the project
 status: Done
 assignee: []
 created_date: '2026-09-25 20:22'
-updated_date: '2026-09-25 21:16'
+updated_date: '2026-09-25 21:48'
 labels:
   - cli
   - mcp
   - config
   - contract
+  - reviewed
 dependencies: []
 modified_files:
   - internal/project/resolver.go
@@ -105,6 +106,8 @@ AC#3 — go test ./integration -run "^TestNearestManifest$" -count=1 -v: PASS.
 AC#4 — go test ./internal/project ./internal/cli ./internal/mcp ./integration -count=1: PASS.
 AC#5 — go test ./internal/cli -run "^(TestDocs|TestREADME)" -count=1; go test ./internal/project -run "^TestExampleManifestsLoad$" -count=1; rg -n "nearest" docs/design.md docs/cli-json-v1.md docs/coding-agents.md: PASS (matches in all three).
 DoD — task ci PASS on implementation commit 14412fb and merged main 8a5e379; task check:staged PASS; modified paths restricted to declared list; no protected gate files or weakened tests.
+
+Review: explicit (start, root) search signatures replace variadic root (e0a043e). No follow-up.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
