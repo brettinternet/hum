@@ -25,6 +25,7 @@ import (
 type manifestState struct {
 	root             string
 	missing          bool
+	missingStart     string
 	defs             []project.Definition
 	byName           map[string]project.Definition
 	environments     map[string][]string
@@ -54,20 +55,21 @@ func loadManifest(ctx context.Context, cwd string) (manifestState, error) {
 	if err != nil {
 		return manifestState{}, err
 	}
-	selection, present, err := project.DefaultManifestSelection(filesystemRoot)
+	selection, present, err := project.DefaultManifestSelection(cwd, filesystemRoot)
 	if err != nil {
 		return manifestState{}, err
 	}
-	defs, err := project.ResolveDefinitionsContext(ctx, filesystemRoot)
+	defs, err := project.ResolveDefinitionsContext(ctx, cwd, filesystemRoot)
 	if err != nil {
 		return manifestState{}, err
 	}
 	state := newManifestState(root, defs)
 	if present {
 		state.display = selection.Relative
-		if selection.Relative == ".hum.yaml" {
-			if _, sharedErr := os.Lstat(filepath.Join(filesystemRoot, "hum.yaml")); sharedErr == nil {
-				state.shadowedManifest = "hum.yaml"
+		if filepath.Base(selection.Relative) == ".hum.yaml" {
+			sharedPath := filepath.Join(filepath.Dir(selection.Path), "hum.yaml")
+			if _, sharedErr := os.Lstat(sharedPath); sharedErr == nil {
+				state.shadowedManifest = filepath.ToSlash(filepath.Clean(filepath.Join(filepath.Dir(selection.Relative), "hum.yaml")))
 			}
 		}
 	}
@@ -179,6 +181,7 @@ func loadManifestOrEmpty(ctx context.Context, cwd string) (manifestState, error)
 	}
 	emptyManifest := newManifestState(root, []project.Definition{})
 	emptyManifest.missing = true
+	emptyManifest.missingStart = cwd
 	return emptyManifest, nil
 }
 

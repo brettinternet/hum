@@ -124,6 +124,36 @@ func TestManifestlessProjectDoesNotExecuteConventionalSources(t *testing.T) {
 	}
 }
 
+func TestMCPResolverNearestManifest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  top:\n    argv: [top]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifestDir := filepath.Join(root, "apps", "web")
+	start := filepath.Join(manifestDir, "src")
+	if err := os.MkdirAll(start, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "hum.yaml"), []byte("version: 1\nprocesses:\n  web:\n    argv: [web]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := (mcpResolver{}).Resolve(context.Background(), start)
+	canonicalRoot, rootErr := project.CanonicalPath(root)
+	if rootErr != nil {
+		t.Fatal(rootErr)
+	}
+	if err != nil || resolution.Root != canonicalRoot || len(resolution.Definitions) != 1 {
+		t.Fatalf("MCP nearest resolution = %+v, err=%v; want Git root %s and one nested definition", resolution, err, canonicalRoot)
+	}
+	definition := resolution.Definitions[0]
+	if definition.Name != "web" || definition.Source != "manifest:apps/web/hum.yaml" || definition.Cwd != manifestDir {
+		t.Fatalf("MCP nearest definition = %+v, want nested manifest identity and cwd", definition)
+	}
+}
+
 func TestManifestMissingMCPExplicitSelection(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "hum.yaml"), []byte("version: 1\nprocesses:\n  default:\n    argv: [default]\n"), 0o600); err != nil {

@@ -296,6 +296,115 @@ type manifestListResponse struct {
 	Processes []manifestProcess `json:"processes"`
 }
 
+func TestNearestManifest(t *testing.T) {
+	lifecycleRequireUnix(t)
+	t.Parallel()
+	hum := integrationHum(t)
+	runtime := lifecycleNewRuntime(t)
+	var daemonPID int
+	t.Cleanup(func() { lifecycleCleanupDaemon(t, hum, runtime, daemonPID) })
+
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rootManifest := "version: 1\nprocesses:\n  top:\n    argv: [/bin/sh, -c, 'printf top; sleep 30']\n"
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(rootManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	webDir := filepath.Join(projectRoot, "apps", "web")
+	webStart := filepath.Join(webDir, "src")
+	if err := os.MkdirAll(webStart, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	nestedManifest := "version: 1\nprocesses:\n  web:\n    argv: [/bin/sh, -c, 'pwd; sleep 30']\n"
+	if err := os.WriteFile(filepath.Join(webDir, "hum.yaml"), []byte(nestedManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalWebDir, err := filepath.EvalSymlinks(webDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nestedUp := testutil.Run(t, hum, webStart, runtime.env, "up", "--detach")
+	if nestedUp.Code != 0 || nestedUp.Err != nil || !strings.HasPrefix(nestedUp.Stderr, "Using manifest apps/web/hum.yaml.\n") {
+		t.Fatalf("nested up: code=%d err=%v stdout=%q stderr=%q", nestedUp.Code, nestedUp.Err, nestedUp.Stdout, nestedUp.Stderr)
+	}
+	daemonPID = lifecycleReadPIDNoFatal(runtime.paths.PID)
+	status := testutil.Run(t, hum, webStart, runtime.env, "status", "--json")
+	if status.Code != 0 || status.Err != nil || status.Stderr != "" {
+		t.Fatalf("nested status: code=%d err=%v stdout=%q stderr=%q", status.Code, status.Err, status.Stdout, status.Stderr)
+	}
+	var snapshot struct {
+		Processes []struct {
+			Name   string `json:"name"`
+			Source string `json:"source"`
+			Root   string `json:"root"`
+		} `json:"processes"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(status.Stdout)), &snapshot); err != nil {
+		t.Fatalf("decode nested status: %v; stdout=%q", err, status.Stdout)
+	}
+	if len(snapshot.Processes) != 1 || snapshot.Processes[0].Name != "web" || snapshot.Processes[0].Source != "manifest:apps/web/hum.yaml" || snapshot.Processes[0].Root != canonicalRoot {
+		t.Fatalf("nested status processes = %+v, want only web from manifest:apps/web/hum.yaml at root %s", snapshot.Processes, canonicalRoot)
+	}
+	manifestWaitForLogText(t, hum, webStart, runtime.env, "web", canonicalWebDir+"\n")
+	logs := testutil.Run(t, hum, webStart, runtime.env, "logs", "web")
+	if logs.Code != 0 || logs.Err != nil || !strings.Contains(logs.Stdout, canonicalWebDir) {
+		t.Fatalf("nested web logs: code=%d err=%v stdout=%q stderr=%q; want cwd %s", logs.Code, logs.Err, logs.Stdout, logs.Stderr, canonicalWebDir)
+	}
+
+	rootUp := testutil.Run(t, hum, projectRoot, runtime.env, "up", "--detach")
+	if rootUp.Code != 0 || rootUp.Err != nil || strings.Contains(rootUp.Stderr, "Using manifest") {
+		t.Fatalf("root up: code=%d err=%v stdout=%q stderr=%q", rootUp.Code, rootUp.Err, rootUp.Stdout, rootUp.Stderr)
+	}
+	status = testutil.Run(t, hum, projectRoot, runtime.env, "status", "--json")
+	if status.Code != 0 || status.Err != nil {
+		t.Fatalf("root status: code=%d err=%v stdout=%q stderr=%q", status.Code, status.Err, status.Stdout, status.Stderr)
+	}
+	snapshot = struct {
+		Processes []struct {
+			Name   string `json:"name"`
+			Source string `json:"source"`
+			Root   string `json:"root"`
+		} `json:"processes"`
+	}{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(status.Stdout)), &snapshot); err != nil {
+		t.Fatalf("decode root status: %v; stdout=%q", err, status.Stdout)
+	}
+	seenTop := false
+	for _, process := range snapshot.Processes {
+		if process.Name == "top" && process.Source == "manifest:hum.yaml" && process.Root == canonicalRoot {
+			seenTop = true
+		}
+	}
+	if !seenTop || len(snapshot.Processes) != 2 {
+		t.Fatalf("root status processes = %+v, want web and root top at %s", snapshot.Processes, canonicalRoot)
+	}
+
+	noGitParent := t.TempDir()
+	if err := os.WriteFile(filepath.Join(noGitParent, "hum.yaml"), []byte("version: 1\nprocesses:\n  parent:\n    argv: [parent]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	noGit := filepath.Join(noGitParent, "nested")
+	if err := os.Mkdir(noGit, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonicalNoGit, err := filepath.EvalSymlinks(noGit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := testutil.Run(t, hum, noGit, runtime.env, "up")
+	wantMissing := fmt.Sprintf("manifest is missing in %s: run hum init to create hum.yaml, or use hum run NAME -- COMMAND\n", canonicalNoGit)
+	if missing.Code == 0 || missing.Stdout != "" || missing.Stderr != wantMissing {
+		t.Fatalf("no-Git nested up: code=%d err=%v stdout=%q stderr=%q; want exact manifest_missing in %s", missing.Code, missing.Err, missing.Stdout, missing.Stderr, canonicalNoGit)
+	}
+}
+
 func TestAlternateManifestSelection(t *testing.T) {
 	lifecycleRequireUnix(t)
 	t.Parallel()

@@ -99,9 +99,11 @@ each process's entries stay in ascending cursor order. Result order follows [des
 lexical declaration order for `up`, caller order for `logs`.
 
 Errors: `error` has string `code` and `message`, and optional `details`. CLI codes are `usage`,
-`daemon_unavailable`, `manifest_missing`, `manifest_invalid`, and `internal`. `manifest_missing`
-names the project root and suggests `hum init` or `hum run NAME -- COMMAND`. Daemon errors keep
-their wire code; that does not make the daemon protocol public.
+`daemon_unavailable`, `manifest_missing`, `manifest_invalid`, and `internal`. Without a default
+manifest, `manifest_missing` names the nearest-manifest search directory and project root when they
+differ, and suggests `hum init` or `hum run NAME -- COMMAND`. The nearest lookup never searches
+above the project root. Daemon errors keep their wire code; that does not make the daemon protocol
+public.
 
 ```console
 $ hum up --json

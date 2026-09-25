@@ -2803,7 +2803,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 	if err != nil {
 		if daemonUnavailable(err) {
 			if manifest.missing {
-				return projectGuidanceError(&project.ManifestMissingError{Root: manifest.root}, manifest.selector)
+				return projectGuidanceError(&project.ManifestMissingError{Start: manifest.missingStart, Root: manifest.root}, manifest.selector)
 			}
 			for _, name := range names {
 				if definition, ok := manifest.byName[name]; ok {
@@ -2820,7 +2820,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		for _, name := range names {
 			retained, retainedErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: cwd})
 			if retainedErr != nil || len(retained.Argv) == 0 {
-				return projectGuidanceError(&project.ManifestMissingError{Root: manifest.root}, manifest.selector)
+				return projectGuidanceError(&project.ManifestMissingError{Start: manifest.missingStart, Root: manifest.root}, manifest.selector)
 			}
 		}
 	}
@@ -3031,6 +3031,11 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 			manifest, err = loadManifestOrEmpty(ctx, cwd)
 		}
 		if err != nil {
+			return err
+		}
+	}
+	if !cmd.Bool("json") && strings.Contains(manifest.display, "/") && errWriter != nil {
+		if _, err := fmt.Fprintf(errWriter, "Using manifest %s.\n", manifest.display); err != nil {
 			return err
 		}
 	}
@@ -3318,7 +3323,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 			if retainedErr != nil || len(retained.Argv) == 0 {
 				missing := noCandidateErr
 				if missing == nil {
-					missing = &project.ManifestMissingError{Root: manifest.root}
+					missing = &project.ManifestMissingError{Start: manifest.missingStart, Root: manifest.root}
 				}
 				return projectGuidanceError(missing, manifest.selector)
 			}

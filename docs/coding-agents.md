@@ -98,8 +98,9 @@ remote absolute `project_root` such as `/srv/app`.
 | `signal` | `hum signal` | send a signal without changing restart policy |
 
 Every call takes an absolute `project_root` (resolved to its Git root), or `scope: "global"` for
-machine-wide ad-hoc sessions. `start`, `up`, `restart`, and `list` also accept `manifest` to pick
-an alternate file. Nothing follows forever: `logs`, `wait`, and `events` are bounded, and there is
+machine-wide ad-hoc sessions. Without `manifest`, manifest-based tools select the nearest
+`.hum.yaml` or `hum.yaml` from `project_root` up to the Git root. `start`, `up`, `restart`, and
+`list` also accept `manifest` to pick an alternate file. Nothing follows forever: `logs`, `wait`, and `events` are bounded, and there is
 no arbitrary-command tool.
 
 Example call:

@@ -86,7 +86,7 @@ func doctorCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		if selectionErr != nil {
 			add("project.manifest", doctorFail, selectionErr.Error(), map[string]any{"project_root": selection.root})
 		} else if !declarationPresent {
-			add("project.manifest", doctorFail, (&project.ManifestMissingError{Root: selection.root}).Error(), map[string]any{"project_root": selection.root})
+			add("project.manifest", doctorFail, (&project.ManifestMissingError{Start: selection.cwd, Root: selection.root}).Error(), map[string]any{"project_root": selection.root})
 		} else {
 			manifest.selector = selection.selector
 			details := map[string]any{"project_root": manifest.root, "manifest": manifestDisplayName(manifest)}
@@ -132,11 +132,15 @@ func loadDoctorManifest(ctx context.Context, selection projectSelection) (manife
 		manifest.display = selection.manifest.Relative
 		return manifest, true, nil
 	}
-	defaultSelection, present, selectionErr := project.DefaultManifestSelection(selection.root)
+	filesystemRoot, selectionErr := project.DiscoverProjectRootLexical(selection.cwd)
 	if selectionErr != nil {
 		return manifestState{}, false, selectionErr
 	}
-	definitions, err := project.ResolveDefinitionsContext(ctx, selection.root)
+	defaultSelection, present, selectionErr := project.DefaultManifestSelection(selection.cwd, filesystemRoot)
+	if selectionErr != nil {
+		return manifestState{}, false, selectionErr
+	}
+	definitions, err := project.ResolveDefinitionsContext(ctx, selection.cwd, filesystemRoot)
 	if err != nil {
 		if errors.Is(err, project.ErrManifestMissing) {
 			return newManifestState(selection.root, []project.Definition{}), false, nil
@@ -145,9 +149,9 @@ func loadDoctorManifest(ctx context.Context, selection projectSelection) (manife
 	}
 	manifest := newManifestState(selection.root, definitions)
 	manifest.display = defaultSelection.Relative
-	if present && defaultSelection.Relative == ".hum.yaml" {
-		if _, sharedErr := os.Lstat(filepath.Join(selection.root, "hum.yaml")); sharedErr == nil {
-			manifest.shadowedManifest = "hum.yaml"
+	if present && filepath.Base(defaultSelection.Relative) == ".hum.yaml" {
+		if _, sharedErr := os.Lstat(filepath.Join(filepath.Dir(defaultSelection.Path), "hum.yaml")); sharedErr == nil {
+			manifest.shadowedManifest = filepath.ToSlash(filepath.Clean(filepath.Join(filepath.Dir(defaultSelection.Relative), "hum.yaml")))
 		}
 	}
 	return manifest, true, nil

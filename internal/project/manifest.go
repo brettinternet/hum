@@ -206,7 +206,7 @@ func parseDefinitions(root string, contents []byte, baseDir, display, source str
 	if !ok {
 		return nil, manifestError(display, "manifest", "missing key %q", "processes")
 	}
-	return parseProcesses(root, display, processesNode, source, environment)
+	return parseProcesses(root, baseDir, display, processesNode, source, environment)
 }
 
 var yamlLinePattern = regexp.MustCompile(`^yaml: line ([0-9]+):`)
@@ -236,7 +236,7 @@ func parseVersion(filename string, node *yaml.Node) error {
 	return nil
 }
 
-func parseProcesses(root, filename string, node *yaml.Node, source string, manifestEnvironment *EnvironmentSpec) ([]Definition, error) {
+func parseProcesses(root, baseDir, filename string, node *yaml.Node, source string, manifestEnvironment *EnvironmentSpec) ([]Definition, error) {
 	entries, err := decodeMapping(filename, "processes", node, nil)
 	if err != nil {
 		return nil, err
@@ -247,7 +247,7 @@ func parseProcesses(root, filename string, node *yaml.Node, source string, manif
 			return nil, manifestError(filename, "processes", "invalid process name %q (want [A-Za-z0-9][A-Za-z0-9._-]{0,63})", entry.name)
 		}
 		context := fmt.Sprintf("process %q", entry.name)
-		definition, err := parseProcess(root, filename, context, entry.value, manifestEnvironment)
+		definition, err := parseProcess(root, baseDir, filename, context, entry.value, manifestEnvironment)
 		if err != nil {
 			return nil, err
 		}
@@ -333,7 +333,7 @@ func validateAfterGraph(filename string, definitions []Definition) error {
 	return nil
 }
 
-func parseProcess(root, filename, context string, node *yaml.Node, manifestEnvironment *EnvironmentSpec) (Definition, error) {
+func parseProcess(root, baseDir, filename, context string, node *yaml.Node, manifestEnvironment *EnvironmentSpec) (Definition, error) {
 	entries, err := decodeMapping(filename, context, node, processFields)
 	if err != nil {
 		return Definition{}, err
@@ -351,12 +351,12 @@ func parseProcess(root, filename, context string, node *yaml.Node, manifestEnvir
 		return Definition{}, err
 	}
 
-	cwd := root
+	cwd := baseDir
 	if cwdNode, ok := fields["cwd"]; ok {
 		if !isStringScalar(cwdNode) {
 			return Definition{}, manifestError(filename, context, "cwd must be a string")
 		}
-		cwd, err = normalizeCwd(root, filename, context, cwdNode.Value)
+		cwd, err = normalizeCwd(root, baseDir, filename, context, cwdNode.Value)
 		if err != nil {
 			return Definition{}, err
 		}
@@ -698,11 +698,11 @@ func validateTCPTarget(target string) error {
 	return validatePort(port)
 }
 
-func normalizeCwd(root, filename, context, value string) (string, error) {
+func normalizeCwd(root, baseDir, filename, context, value string) (string, error) {
 	if filepath.IsAbs(value) {
-		return "", manifestError(filename, context, "cwd %q must be relative to the project root", value)
+		return "", manifestError(filename, context, "cwd %q must be relative to the manifest directory", value)
 	}
-	candidate := filepath.Clean(filepath.Join(root, value))
+	candidate := filepath.Clean(filepath.Join(baseDir, value))
 	if !pathWithin(root, candidate) {
 		return "", manifestError(filename, context, "cwd %q escapes the project root", value)
 	}
