@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -248,12 +249,25 @@ func (i *ttyInput) forward() {
 }
 
 func ttyInputBeforeDetach(payload []byte) ([]byte, bool) {
-	for index, value := range payload {
-		if value == 0x1d {
-			return payload[:index], true
-		}
+	if index := bytes.IndexByte(payload, 0x1d); index >= 0 {
+		return payload[:index], true
 	}
 	return payload, false
+}
+
+// cancelOnDetach calls cancel when the local detach chord is consumed, ending
+// the caller's output follow while the supervised child keeps running.
+func (i *ttyInput) cancelOnDetach(ctx context.Context, cancel context.CancelFunc) {
+	if i == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-i.chord:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 }
 
 func (i *ttyInput) forwardChunk(payload []byte) {

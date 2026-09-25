@@ -972,11 +972,11 @@ Without it, stdin is `/dev/null` with separate stdout/stderr pipes.
 - PTY output is merged once as raw retained `stdout`; reads and matches apply the usual stripping.
 - Exactly one attached client owns input. A second attachment and every `logs --follow` get output
   only. The owner alone forwards SIGWINCH resizes.
-- Ctrl-] releases input. Local raw mode is restored on detach, panic, and transport loss. Echo is
-  child output, and input is discarded while stopped.
-- While a foreground TTY `run` owns input, Ctrl-C goes through the PTY. After Ctrl-] releases input,
-  Ctrl+C follows the normal foreground stop rules. SIGTERM stops the incarnation; SIGHUP detaches
-  without signaling the child.
+- Ctrl-] releases input and ends that `attach` or foreground `run`; the child keeps running. Local
+  raw mode is restored on detach, panic, and transport loss. Echo is child output, and input is
+  discarded while stopped.
+- While a foreground TTY `run` owns input, Ctrl-C goes through the PTY. SIGTERM stops the
+  incarnation; SIGHUP detaches without signaling the child.
 - Stop and restart keep the lease across successors; remove and daemon shutdown close it.
 - One-shot [`input`](#hum-input) is scoped to the initial running launch cursor; state events identify
   stopped and running successors.

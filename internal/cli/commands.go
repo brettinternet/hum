@@ -880,15 +880,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 	// notice while the child kept running.
 	followCtx, cancelFollow := context.WithCancel(context.Background())
 	defer cancelFollow()
-	if localInput != nil {
-		go func() {
-			select {
-			case <-localInput.chord:
-				cancelFollow()
-			case <-followCtx.Done():
-			}
-		}()
-	}
+	localInput.cancelOnDetach(followCtx, cancelFollow)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -1291,15 +1283,7 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	}
 	followCtx, cancelFollow := context.WithCancel(ctx)
 	defer cancelFollow()
-	if localInput != nil {
-		go func() {
-			select {
-			case <-localInput.chord:
-				cancelFollow()
-			case <-followCtx.Done():
-			}
-		}()
-	}
+	localInput.cancelOnDetach(followCtx, cancelFollow)
 
 	replayTail := tail
 	if !cmd.IsSet("tail") {

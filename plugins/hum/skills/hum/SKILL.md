@@ -72,10 +72,9 @@ Leave `tty` off unless a tool requires a controlling terminal; prefer a
 non-interactive mode such as `npx --yes`, `CI=1`, or `--force`. A manifest process
 can set `tty: true`; an ad-hoc command can use the CLI TTY option with a command separator.
 Only one attached run owns input; `hum logs --follow` is output-only. The owner uses raw
-mode and alone forwards SIGWINCH resizes. Ctrl-] detaches input, raw mode is restored after
-panic, terminal echo is child output, and Ctrl-C is forwarded only while TTY input is owned;
-Ctrl-D and Ctrl-Z are forwarded too. After Ctrl-], foreground Ctrl+C uses the control-signal
-rules. SIGTERM stops the foreground incarnation and SIGHUP detaches. TTY output is merged as
+mode and alone forwards SIGWINCH resizes. Ctrl-] detaches and leaves the child running, raw
+mode is restored after panic, terminal echo is child output, and Ctrl-C is forwarded while TTY
+input is owned; Ctrl-D and Ctrl-Z are forwarded too. SIGTERM stops the foreground incarnation and SIGHUP detaches. TTY output is merged as
 stdout and may contain ANSI controls. Stop/restart preserves the lease across launch cursors;
 remove and shutdown close it. MCP reports `tty` and provides bounded `input` for exact prompt responses.
 
