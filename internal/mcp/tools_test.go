@@ -2580,7 +2580,7 @@ func TestLogsSince(t *testing.T) {
 	if !ok || len(result.Entries) != 1 || result.Entries[0].Text != "since\n" {
 		t.Fatalf("MCP since result = %#v, want bounded output result", value)
 	}
-	for _, since := range []int64{0, -1, maxSinceMilliseconds + 1} {
+	for _, since := range []int64{0, -1, protocol.MaxDurationMilliseconds + 1} {
 		if _, err := server.callTool(context.Background(), "logs", args(root, "name", "api", "since_ms", since)); mapError(err).Code != "invalid_request" {
 			t.Fatalf("since_ms=%d error = %v, want invalid_request", since, err)
 		}

@@ -24,9 +24,8 @@ import (
 )
 
 const (
-	wireVersion              = protocol.Version
-	defaultWireMaxLine       = protocol.DefaultMaxLineBytes
-	maxWaitTimeoutMS   int64 = (1<<63 - 1) / int64(time.Millisecond)
+	wireVersion        = protocol.Version
+	defaultWireMaxLine = protocol.DefaultMaxLineBytes
 	// maxBoundedReadBytes caps one bounded output response so its JSON encoding
 	// fits within a single wire message.
 	maxBoundedReadBytes = defaultWireMaxLine / 2
@@ -1449,8 +1448,6 @@ func stripBoundedChildText(result output.ReadResult) output.ReadResult {
 	}
 	return result
 }
-
-const maxSinceMilliseconds int64 = (1<<63 - 1) / int64(time.Millisecond)
 
 func errorCode(err error) string {
 	switch {

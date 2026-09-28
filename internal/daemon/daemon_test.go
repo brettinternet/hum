@@ -2024,7 +2024,7 @@ func TestWaitDaemonBridge(t *testing.T) {
 
 	t.Run("invalid request and server bound", func(t *testing.T) {
 		_, client, root, _ := daemonWaitFixture(t)
-		tooLarge := protocol.WaitRequest{Op: protocol.OpWait, Name: "wait", Cwd: root, TimeoutMS: maxWaitTimeoutMS + 1}
+		tooLarge := protocol.WaitRequest{Op: protocol.OpWait, Name: "wait", Cwd: root, TimeoutMS: protocol.MaxDurationMilliseconds + 1}
 		cases := []protocol.WaitRequest{
 			{Op: protocol.OpWait, Cwd: root, TimeoutMS: 1000},
 			daemonWaitRequest("wait", root, "[", time.Second),
@@ -2313,7 +2313,7 @@ func TestSinceWireRequest(t *testing.T) {
 	if relative.Since.IsZero() || time.Until(relative.Since) > 0 {
 		t.Fatalf("relative since cutoff = %v, want a past cutoff", relative.Since)
 	}
-	for _, since := range []int64{-1, maxSinceMilliseconds + 1} {
+	for _, since := range []int64{-1, protocol.MaxDurationMilliseconds + 1} {
 		if _, err := readOptionsFromProtocol(protocol.OutputRequest{SinceMS: since}); err == nil || !errors.Is(err, app.ErrInvalidRequest) {
 			t.Fatalf("since_ms=%d validation error = %v, want invalid request", since, err)
 		}
@@ -2329,7 +2329,7 @@ func TestSinceWireRequest(t *testing.T) {
 			return readOptionsFromFollow(protocol.FollowRequest{Op: protocol.OpFollow, Name: "follow", SinceMS: since, SinceUnixNano: cutoff.UnixNano()})
 		}},
 	} {
-		for _, since := range []int64{-1, 1, maxSinceMilliseconds + 1} {
+		for _, since := range []int64{-1, 1, protocol.MaxDurationMilliseconds + 1} {
 			t.Run(fmt.Sprintf("%s mixed since_ms=%d", test.name, since), func(t *testing.T) {
 				if _, err := test.read(since); err == nil || !errors.Is(err, app.ErrInvalidRequest) {
 					t.Fatalf("mixed since_ms=%d error = %v, want invalid request", since, err)

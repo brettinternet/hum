@@ -1425,7 +1425,7 @@ func TestLogsSince(t *testing.T) {
 		t.Fatalf("logs since flag names = %v, want long-only since", sinceNames)
 	}
 
-	maxDuration := time.Duration(maxSinceMilliseconds) * time.Millisecond
+	maxDuration := time.Duration(protocol.MaxDurationMilliseconds) * time.Millisecond
 	for _, test := range []struct {
 		name  string
 		value time.Duration
@@ -1434,7 +1434,7 @@ func TestLogsSince(t *testing.T) {
 		{name: "one nanosecond", value: time.Nanosecond, want: 1},
 		{name: "999 microseconds", value: 999 * time.Microsecond, want: 1},
 		{name: "1500 microseconds", value: 1500 * time.Microsecond, want: 2},
-		{name: "maximum whole millisecond", value: maxDuration, want: maxSinceMilliseconds},
+		{name: "maximum whole millisecond", value: maxDuration, want: protocol.MaxDurationMilliseconds},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := sinceDurationMilliseconds(test.value)

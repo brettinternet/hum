@@ -18,6 +18,10 @@ import (
 // are additive within the current private wire version.
 const Version = 20
 
+// MaxDurationMilliseconds is the largest whole-millisecond duration that
+// time.Duration can represent.
+const MaxDurationMilliseconds int64 = (1<<63 - 1) / int64(time.Millisecond)
+
 const (
 	ScopeProject = "project"
 	ScopeGlobal  = "global"
