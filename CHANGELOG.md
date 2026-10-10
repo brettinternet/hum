@@ -2,6 +2,21 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.17.0](https://github.com/brettinternet/hum/compare/v0.16.0...v0.17.0) - 2026-10-10
+
+### Added
+
+- Discover supervised TCP listeners on demand
+
+### Fixed
+
+- Correct native port fixtures and daemon startup waits
+- **process:** Harden listener inspection
+
+### Changed
+
+- **protocol:** Centralize duration limit (#7)
+
 ## [v0.16.0](https://github.com/brettinternet/hum/compare/v0.15.0...v0.16.0) - 2026-09-25
 
 ### Added
