@@ -85,7 +85,7 @@ remote absolute `project_root` such as `/srv/app`.
 | --- | --- | --- |
 | `up` | `hum up` | start declarations in `after` order and wait until ready |
 | `start` | `hum start` | start named processes without their prerequisites |
-| `status` | `hum status` | check the project or one process; `ports: true` opts into TCP listener inspection for one running process |
+| `status` | `hum status` | check one process; running status automatically includes TCP listeners |
 | `list` | `hum list` | list processes; `all: true` covers every scope |
 | `logs` | `hum logs` | read bounded output |
 | `wait` | `hum wait` | wait for a log match or exit |
@@ -109,14 +109,14 @@ Example call:
 {"name": "logs", "arguments": {"project_root": "/home/me/app", "name": "api", "stream": "stderr", "tail": 50}}
 ```
 
-Inspect a running process's current TCP listeners only when needed:
+Named status automatically includes a running process's current TCP listeners:
 
 ```sh
-hum status api --ports --json
+hum status api --json
 ```
 
 ```json
-{"name": "status", "arguments": {"project_root": "/home/me/app", "name": "api", "ports": true}}
+{"name": "status", "arguments": {"project_root": "/home/me/app", "name": "api"}}
 ```
 
 The snapshot is limited to members of that launch's Unix process group or Windows Job Object. Descendants

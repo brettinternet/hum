@@ -493,7 +493,7 @@ func manifestCLIExitCode(err error) int {
 	return -1
 }
 
-func manifestCLIRecoveryStubDaemon(t *testing.T, processes map[string]protocol.Process) (string, <-chan protocol.Operation, <-chan struct{}) {
+func manifestCLIRecoveryStubDaemon(t *testing.T, processes map[string]protocol.Process, observeGet ...func(protocol.GetRequest)) (string, <-chan protocol.Operation, <-chan struct{}) {
 	t.Helper()
 	runtimeDir, err := os.MkdirTemp("/tmp", "h-")
 	if err != nil {
@@ -552,6 +552,9 @@ func manifestCLIRecoveryStubDaemon(t *testing.T, processes map[string]protocol.P
 			case protocol.OpGet:
 				if request.Get == nil {
 					return
+				}
+				for _, observe := range observeGet {
+					observe(*request.Get)
 				}
 				process, ok := processes[request.Get.Name]
 				if !ok {

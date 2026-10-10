@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"sort"
 	"strconv"
@@ -1591,18 +1592,33 @@ func renderStatusHumanWithPolicy(w io.Writer, process app.Process, colors colorP
 		}
 	}
 	if status.Ports != nil {
-		if _, err := fmt.Fprintf(w, "ports_state: %s\n", status.Ports.State); err != nil {
-			return err
-		}
-		if status.Ports.Diagnostic != "" {
-			if _, err := fmt.Fprintf(w, "ports_diagnostic: %s\n", status.Ports.Diagnostic); err != nil {
-				return err
-			}
-		}
+		listeners := make([]string, 0, len(status.Ports.Listeners))
 		for _, endpoint := range status.Ports.Listeners {
-			if _, err := fmt.Fprintf(w, "port: transport=%s address=%s port=%d pids=%s\n", endpoint.Transport, endpoint.Address, endpoint.Port, joinPortPIDs(endpoint.PIDs)); err != nil {
-				return err
+			label := "pid"
+			if len(endpoint.PIDs) != 1 {
+				label = "pids"
 			}
+			listeners = append(listeners, fmt.Sprintf("%s (%s %s)", net.JoinHostPort(endpoint.Address, strconv.Itoa(int(endpoint.Port))), label, joinPortPIDs(endpoint.PIDs)))
+		}
+		value := strings.Join(listeners, ", ")
+		switch status.Ports.State {
+		case "available":
+			if value == "" {
+				value = "none"
+			}
+		case "partial":
+			if value != "" {
+				value += " "
+			}
+			value += "(partial: " + status.Ports.Diagnostic + ")"
+		default:
+			value = status.Ports.State
+			if status.Ports.Diagnostic != "" {
+				value += " (" + status.Ports.Diagnostic + ")"
+			}
+		}
+		if _, err := fmt.Fprintf(w, "listening: %s\n", value); err != nil {
+			return err
 		}
 	}
 	_, err := fmt.Fprintf(w, "relaunches: %d\nrestart_count: %d\nfollowers: %d\nnext_cursor: %d\n", status.Relaunches, status.RestartCount, status.Followers, status.NextCursor)

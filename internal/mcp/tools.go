@@ -508,7 +508,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "up", Description: "Start all project definitions, or selected names and their prerequisites. Use for dependency-aware startup; returns per-process results and warnings.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop active sessions in the selected scope, dependents before prerequisites. Use for project-wide shutdown without removing sessions.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
 		{Name: "list", Description: "List declared and retained sessions in the selected scope. Use all from project scope to inspect sessions across projects.", InputSchema: listSchema, OutputSchema: collectionProcesses},
-		{Name: "status", Description: "Inspect one session's state and details; set ports to request a TCP-listener snapshot.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "ports": map[string]any{"type": "boolean", "description": "Opt in to current group TCP listeners."}}, "project_root", "name"), OutputSchema: statusProcess},
+		{Name: "status", Description: "Inspect one session's state and details, including a TCP-listener snapshot for a running process.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: statusProcess},
 		{Name: "logs", Description: "Read bounded output for one session. Use stream, cursor, time, tail, or match filters to inspect recent output without following it.", InputSchema: logsSchema, OutputSchema: output},
 		{Name: "wait", Description: "Wait for matching output or exit from one session. Use after and timeout_ms to bound the wait.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": stringProperty("Runtime name; without after, it may not be launched yet."), "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Send exact text or base64 bytes once to a running TTY session. Use for a prompt response; no newline is added.", InputSchema: inputSchema, OutputSchema: inputResult},
@@ -558,7 +558,6 @@ type commonInput struct {
 	Manifest      string               `json:"manifest,omitempty"`
 	All           bool                 `json:"all,omitempty"`
 	Name          string               `json:"name,omitempty"`
-	Ports         bool                 `json:"ports,omitempty"`
 	NoWait        bool                 `json:"no_wait,omitempty"`
 	TimeoutMS     int64                `json:"timeout_ms,omitempty"`
 	After         *uint64              `json:"after,omitempty"`
@@ -1154,7 +1153,7 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	case "list":
 		return s.list(ctx, resolution, input)
 	case "status":
-		return s.status(ctx, resolution, input.Name, input.Ports)
+		return s.status(ctx, resolution, input.Name)
 	case "logs":
 		return s.logs(ctx, resolution, input)
 	case "wait":
@@ -1616,14 +1615,14 @@ func sortedProcesses(byName map[string]protocol.Process) []protocol.Process {
 	return result
 }
 
-func (s *Server) status(ctx context.Context, resolution Resolution, name string, ports bool) (any, error) {
+func (s *Server) status(ctx context.Context, resolution Resolution, name string) (any, error) {
 	client, err := s.client(ctx, false)
 	if err != nil {
 		return nil, mapError(err)
 	}
 	defer client.Close()
 	recordStartupWarnings(ctx, startupWarnings(client))
-	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Scope: resolution.Scope, Cwd: resolution.Root, Ports: ports})
+	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Scope: resolution.Scope, Cwd: resolution.Root, Ports: true})
 	if err != nil {
 		return nil, mapError(err)
 	}

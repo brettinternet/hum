@@ -524,7 +524,7 @@ func statusAssertExactFields(t *testing.T, text string) {
 	}
 	want := map[string]struct{}{
 		"schema_version": {}, "name": {}, "scope": {}, "project_root": {}, "tty": {}, "pid": {}, "pgid": {}, "cwd": {},
-		"argv": {}, "started_at": {}, "state": {}, "exit_status": {},
+		"argv": {}, "started_at": {}, "state": {}, "exit_status": {}, "ports": {},
 		"restart_count": {}, "followers": {}, "restart": {}, "relaunches": {}, "stop_grace": {}, "stop_grace_inherited": {}, "next_cursor": {},
 	}
 	if len(fields) != len(want) {

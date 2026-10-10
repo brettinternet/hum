@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -123,6 +124,45 @@ func TestPortsStatusIsOptInAndPreservesInspectionOutcomes(t *testing.T) {
 	got, err := s.GetPortsScoped(cancelled, ScopeProject, root, "web")
 	if err != nil || got.Ports == nil || got.Ports.State != process.PortsUnavailable {
 		t.Fatalf("cancelled inspection = %+v, err=%v", got.Ports, err)
+	}
+}
+
+// A context-aware inspector that stalls must return a best-effort snapshot,
+// retaining valid listeners rather than failing status or reporting empty success.
+func TestPortsStatusInspectionDeadline(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unavailable", true: "partial"}[partial], func(t *testing.T) {
+			root := portsMakeProject(t)
+			var observedDeadline bool
+			listeners := []process.Port{}
+			if partial {
+				listeners = append(listeners, process.Port{Transport: "tcp", Address: "127.0.0.1", Port: 43123, PIDs: []int{77}})
+			}
+			child := &portsTestChild{portsTimedChild: &portsTimedChild{pid: os.Getpid(), done: make(chan struct{})}, inspect: func(ctx context.Context) process.PortsResult {
+				_, observedDeadline = ctx.Deadline()
+				if !observedDeadline {
+					t.Error("inspection context has no deadline")
+					return process.PortsResult{}
+				}
+				<-ctx.Done()
+				if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					t.Errorf("inspection context error = %v", ctx.Err())
+				}
+				return process.PortsResult{State: process.PortsAvailable, Listeners: listeners}
+			}}
+			s := portsNewSupervisor(t, Options{StartProcess: func(process.Spec) (Child, error) { return child, nil }})
+			if _, err := s.Start(StartRequest{Name: "web", Cwd: root, Argv: []string{"web"}}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.GetPortsScoped(context.Background(), ScopeProject, root, "web")
+			wantState := process.PortsUnavailable
+			if partial {
+				wantState = process.PortsPartial
+			}
+			if err != nil || !observedDeadline || got.Ports == nil || got.Ports.State != wantState || got.Ports.Diagnostic != context.DeadlineExceeded.Error() || !reflect.DeepEqual(got.Ports.Listeners, listeners) {
+				t.Fatalf("deadline snapshot = %+v, err=%v", got.Ports, err)
+			}
+		})
 	}
 }
 

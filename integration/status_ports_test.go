@@ -55,9 +55,9 @@ func TestStatusPorts(t *testing.T) {
 		t.Fatalf("listener port %q: %v", listenerPortText, err)
 	}
 
-	status := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "ports", "--ports", "--json")
+	status := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "ports", "--json")
 	if status.Code != 0 || status.Err != nil || status.Stderr != "" {
-		t.Fatalf("status --ports --json: code=%d err=%v stdout=%q stderr=%q", status.Code, status.Err, status.Stdout, status.Stderr)
+		t.Fatalf("status --json: code=%d err=%v stdout=%q stderr=%q", status.Code, status.Err, status.Stdout, status.Stderr)
 	}
 	var snapshot protocol.Process
 	if err := json.Unmarshal([]byte(strings.TrimSpace(status.Stdout)), &snapshot); err != nil {
@@ -95,16 +95,21 @@ func TestStatusPorts(t *testing.T) {
 		t.Fatalf("reported unrelated test-process listener: %+v", listener)
 	}
 
-	ordinary := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "ports", "--json")
+	ordinary := testutil.Run(t, hum, runtime.cwd, runtime.env, "status", "--json")
 	if ordinary.Code != 0 || ordinary.Err != nil {
-		t.Fatalf("ordinary status: code=%d err=%v stdout=%q stderr=%q", ordinary.Code, ordinary.Err, ordinary.Stdout, ordinary.Stderr)
+		t.Fatalf("aggregate status: code=%d err=%v stdout=%q stderr=%q", ordinary.Code, ordinary.Err, ordinary.Stdout, ordinary.Stderr)
 	}
-	var ordinaryFields map[string]json.RawMessage
+	var ordinaryFields struct {
+		Processes []map[string]json.RawMessage `json:"processes"`
+	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(ordinary.Stdout)), &ordinaryFields); err != nil {
 		t.Fatal(err)
 	}
-	if _, present := ordinaryFields["ports"]; present {
-		t.Fatalf("ordinary status unexpectedly inspected ports: %s", ordinary.Stdout)
+	if len(ordinaryFields.Processes) != 1 {
+		t.Fatalf("aggregate status processes = %v", ordinaryFields.Processes)
+	}
+	if _, present := ordinaryFields.Processes[0]["ports"]; present {
+		t.Fatalf("aggregate status unexpectedly inspected ports: %s", ordinary.Stdout)
 	}
 	stopped := testutil.Run(t, hum, runtime.cwd, runtime.env, "stop", "ports")
 	if stopped.Code != 0 || stopped.Err != nil {

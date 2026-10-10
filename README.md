@@ -242,13 +242,12 @@ Only one client can type at a time. Input is sent once and never queued.
 ## Ports
 
 ```console
-$ hum status web --ports
+$ hum status web
 ...
-ports_state: available
-port: transport=tcp address=127.0.0.1 port=8123 pids=67051
+listening: 127.0.0.1:8123 (pid 67051)
 ```
 
-Shows TCP listeners held by the process and its descendants, only when asked. Processes that leave its process group and container port-forwards are not seen. See [port observation](docs/design.md#port-observation).
+Named status automatically shows TCP listeners held by the running process and its descendants. Processes that leave its process group and container port-forwards are not seen. See [port observation](docs/design.md#port-observation).
 
 ## Coding agents
 

@@ -17,13 +17,13 @@ func TestStatusPorts(t *testing.T) {
 		"api": {Name: "api", Root: "/work", Cwd: "/work", State: "running", Ports: inspection},
 	}}
 	server, root, _ := newTestServer(t, nil, client)
-	value, err := server.callTool(context.Background(), "status", args(root, "name", "api", "ports", true))
+	value, err := server.callTool(context.Background(), "status", args(root, "name", "api"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	status := value.(protocol.Process)
 	if len(client.gets) != 1 || !client.gets[0].Ports {
-		t.Fatalf("status get requests = %#v, want ports opt-in", client.gets)
+		t.Fatalf("status get requests = %#v, want automatic ports inspection", client.gets)
 	}
 	if status.Ports == nil || status.Ports.State != "partial" || status.Ports.Diagnostic != inspection.Diagnostic || len(status.Ports.Listeners) != 1 || status.Ports.Listeners[0].Port != 43123 {
 		t.Fatalf("status ports = %#v, want partial listener snapshot", status.Ports)
@@ -51,12 +51,35 @@ func TestStatusPorts(t *testing.T) {
 
 	plainClient := &fakeClient{processes: map[string]protocol.Process{"api": {Name: "api", State: "running"}}}
 	plainServer, plainRoot, _ := newTestServer(t, nil, plainClient)
-	plainValue, err := plainServer.callTool(context.Background(), "status", args(plainRoot, "name", "api"))
+	plainValue, err := plainServer.callTool(context.Background(), "list", args(plainRoot))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plainValue.(protocol.Process).Ports != nil || len(plainClient.gets) != 1 || plainClient.gets[0].Ports {
-		t.Fatalf("default status inspected ports: process=%+v requests=%#v", plainValue, plainClient.gets)
+	if len(plainClient.gets) != 0 {
+		t.Fatalf("aggregate list inspected ports: process=%+v requests=%#v", plainValue, plainClient.gets)
+	}
+
+	// Logging and input must not request socket inspection.
+	for _, tool := range []string{"logs", "input"} {
+		t.Run(tool+" bypasses ports", func(t *testing.T) {
+			internalClient := &fakeClient{processes: map[string]protocol.Process{"api": {Name: "api", State: "running", TTY: true}}}
+			internalServer, internalRoot, _ := newTestServer(t, nil, internalClient)
+			input := args(internalRoot, "name", "api")
+			if tool == "input" {
+				input = args(internalRoot, "name", "api", "text", "hello")
+			}
+			if _, err := internalServer.callTool(context.Background(), tool, input); err != nil {
+				t.Fatal(err)
+			}
+			if tool == "input" && len(internalClient.gets) == 0 {
+				t.Fatal("tool did not exercise Get")
+			}
+			for _, req := range internalClient.gets {
+				if req.Ports {
+					t.Fatalf("%s requested port inspection: %+v", tool, req)
+				}
+			}
+		})
 	}
 
 	var statusTool toolDefinition
@@ -67,7 +90,7 @@ func TestStatusPorts(t *testing.T) {
 		}
 	}
 	inputProps := statusTool.InputSchema["properties"].(map[string]any)
-	if portsInput, ok := inputProps["ports"].(map[string]any); !ok || portsInput["type"] != "boolean" {
+	if _, ok := inputProps["ports"]; ok {
 		t.Fatalf("status ports input schema = %#v", inputProps["ports"])
 	}
 	outputProps := statusTool.OutputSchema["properties"].(map[string]any)

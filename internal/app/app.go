@@ -2799,7 +2799,9 @@ func (s *Supervisor) GetScoped(scope, cwd, name string) (Process, error) {
 	return rec.snapshotLocked(), nil
 }
 
-// GetPortsScoped returns a normal status snapshot with an opt-in listener
+const portsInspectionTimeout = 2 * time.Second
+
+// GetPortsScoped returns a normal status snapshot with a bounded listener
 // observation for its current active launch. Native inspection runs outside
 // Supervisor.mu so it cannot delay lifecycle work.
 func (s *Supervisor) GetPortsScoped(ctx context.Context, scope, cwd, name string) (Process, error) {
@@ -2825,7 +2827,16 @@ func (s *Supervisor) GetPortsScoped(ctx context.Context, scope, cwd, name string
 		snapshot.Ports = &process.PortsResult{State: process.PortsUnavailable, Listeners: []process.Port{}, Diagnostic: "process group listener inspection is unavailable"}
 		return snapshot, nil
 	}
-	ports := inspector.InspectPorts(ctx)
+	inspectionCtx, cancel := context.WithTimeout(ctx, portsInspectionTimeout)
+	defer cancel()
+	ports := inspector.InspectPorts(inspectionCtx)
+	if err := inspectionCtx.Err(); err != nil {
+		ports.State = process.PortsUnavailable
+		if len(ports.Listeners) > 0 {
+			ports.State = process.PortsPartial
+		}
+		ports.Diagnostic = err.Error()
+	}
 	s.mu.RLock()
 	stillCurrent := s.records[rec.key] == rec && rec.incarnation == incarnation && rec.startIdentity == launchIdentity && IsActiveState(rec.state)
 	if stillCurrent {
