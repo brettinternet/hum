@@ -26,7 +26,8 @@ func (c *portsTimedChild) Wait() process.Result {
 	<-c.done
 	return process.Result{}
 }
-func (c *portsTimedChild) Signal(os.Signal) error {
+func (c *portsTimedChild) Signal(os.Signal) error { return c.Stop() }
+func (c *portsTimedChild) Stop() error {
 	c.once.Do(func() { close(c.done) })
 	return os.ErrProcessDone
 }

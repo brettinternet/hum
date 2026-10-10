@@ -133,8 +133,3 @@ func finishPortInspection(ctx context.Context, listeners []Port, diagnostics []s
 	}
 	return state, diagnostic
 }
-
-func isInspectionDenied(message string) bool {
-	lower := strings.ToLower(message)
-	return strings.Contains(lower, "permission denied") || strings.Contains(lower, "operation not permitted") || strings.Contains(lower, "not permitted")
-}

@@ -83,6 +83,7 @@ func TestWindowsProcessHelper(t *testing.T) {
 	case "ports-listener":
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
 		defer listener.Close()
@@ -696,7 +697,11 @@ func TestWindowsPortsInspectOwnedJobListener(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unrelated.Close()
-	child, err := Start(windowsHelperSpec(windowsNewStore(t), "ports-listener"))
+	spec := windowsHelperSpec(windowsNewStore(t), "ports-listener")
+	// Winsock needs the native environment (notably SystemRoot) to load
+	// its providers; the other helper modes do not open sockets.
+	spec.Env = append(os.Environ(), spec.Env...)
+	child, err := Start(spec)
 	if err != nil {
 		t.Fatalf("start listener child: %v", err)
 	}

@@ -126,6 +126,11 @@ func inspectGroupPorts(ctx context.Context, pgid, leaderPID int, leaderIdentity 
 	return PortsResult{State: state, Listeners: listeners, Diagnostic: diagnostic}
 }
 
+func isInspectionDenied(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "permission denied") || strings.Contains(lower, "operation not permitted") || strings.Contains(lower, "not permitted")
+}
+
 func darwinGroupMembers(pgid int) (map[int]darwinMember, []string, bool, error) {
 	members, err := unix.SysctlKinfoProcSlice("kern.proc.pgrp", pgid)
 	if err != nil {

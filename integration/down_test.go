@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"hum/internal/daemon"
 	"hum/internal/testutil"
 )
 
@@ -68,7 +69,9 @@ func TestDownStopsDependentsFirst(t *testing.T) {
 		{Name: "web", Argv: []string{fixture, "stream", markers["web"]}, After: []string{"api"}, Ready: &manifestTestReady{Match: "stdout:live"}},
 	})
 
+	paths := daemon.NewRuntimePaths(runtimeDir)
 	daemon := testutil.Start(t, hum, projectRoot, env, "serve")
+	testutil.WaitForFile(t, paths.Socket, downWorkflowTimeout)
 	t.Cleanup(func() {
 		_ = testutil.Run(t, hum, projectRoot, env, "shutdown", "--stop-processes")
 	})
@@ -146,7 +149,9 @@ func TestDownWorkflow(t *testing.T) {
 	}
 	writeManifestTestYAML(t, firstRoot, definitions)
 
+	paths := daemon.NewRuntimePaths(runtimeDir)
 	daemon := testutil.Start(t, hum, firstRoot, env, "serve")
+	testutil.WaitForFile(t, paths.Socket, downWorkflowTimeout)
 	groups := make([]int, 0, len(definitions)+2)
 	t.Cleanup(func() {
 		// Stop by name first while the daemon is normally available. The forced
