@@ -1391,8 +1391,6 @@ func attachCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	})
 }
 
-const maxSinceMilliseconds int64 = (1<<63 - 1) / int64(time.Millisecond)
-
 // logsSinceMilliseconds validates the CLI duration before any daemon contact.
 // The wire protocol carries milliseconds; ceiling the conversion keeps the
 // requested inclusive window from becoming narrower due to truncation.
@@ -1416,12 +1414,12 @@ func sinceDurationMilliseconds(value time.Duration) (int64, error) {
 	}
 	milliseconds := int64(value / time.Millisecond)
 	if value%time.Millisecond != 0 {
-		if milliseconds >= maxSinceMilliseconds {
+		if milliseconds >= protocol.MaxDurationMilliseconds {
 			return 0, newCLIUsageError(newUserFacingError("since duration is too large"))
 		}
 		milliseconds++
 	}
-	if milliseconds <= 0 || milliseconds > maxSinceMilliseconds {
+	if milliseconds <= 0 || milliseconds > protocol.MaxDurationMilliseconds {
 		return 0, newCLIUsageError(newUserFacingError("since duration is too large"))
 	}
 	return milliseconds, nil

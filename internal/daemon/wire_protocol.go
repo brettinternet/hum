@@ -329,7 +329,7 @@ func readOptionsFromValues(after *protocol.Cursor, sinceMS, sinceUnixNano int64,
 	if sinceMS < 0 {
 		return output.ReadOptions{}, fmt.Errorf("%w: since_ms must be positive", app.ErrInvalidRequest)
 	}
-	if sinceMS > maxSinceMilliseconds {
+	if sinceMS > protocol.MaxDurationMilliseconds {
 		return output.ReadOptions{}, fmt.Errorf("%w: since_ms is too large", app.ErrInvalidRequest)
 	}
 	if sinceMS != 0 && sinceUnixNano != 0 {
@@ -365,7 +365,7 @@ func waitOptionsFromProtocol(req protocol.WaitRequest) (app.WaitOptions, time.Du
 	if req.TimeoutMS <= 0 {
 		return app.WaitOptions{}, 0, fmt.Errorf("%w: wait timeout must be positive", app.ErrInvalidRequest)
 	}
-	if req.TimeoutMS > maxWaitTimeoutMS {
+	if req.TimeoutMS > protocol.MaxDurationMilliseconds {
 		return app.WaitOptions{}, 0, fmt.Errorf("%w: wait timeout exceeds server maximum", app.ErrInvalidRequest)
 	}
 	options := app.WaitOptions{}

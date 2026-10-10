@@ -26,7 +26,6 @@ import (
 const (
 	defaultTimeoutMS       = int64(30_000)
 	automaticRelaunchLimit = 5
-	maxSinceMilliseconds   = int64((1<<63 - 1) / int64(time.Millisecond))
 )
 
 type eventOperationContextKey struct{}
@@ -72,7 +71,7 @@ func validateSinceMS(input commonInput) error {
 	if input.SinceMS < 0 {
 		return &ToolError{Code: "invalid_request", Message: "since_ms must be positive"}
 	}
-	if input.SinceMS > maxSinceMilliseconds {
+	if input.SinceMS > protocol.MaxDurationMilliseconds {
 		return &ToolError{Code: "invalid_request", Message: "since_ms is too large"}
 	}
 	if _, sinceSet := input.fields["since_ms"]; sinceSet && input.SinceMS == 0 {
@@ -470,7 +469,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"name":         nameExisting,
 		"stream":       map[string]any{"type": "string", "enum": []string{string(protocol.StreamStdout), string(protocol.StreamStderr), string(protocol.StreamSystem), string(protocol.StreamBoth)}, "default": protocol.StreamBoth, "description": "Eligible output stream; system contains supervision entries and both includes all streams."},
 		"after":        map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor; omit for newest window."},
-		"since_ms":     map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Recent window in milliseconds from request time."},
+		"since_ms":     map[string]any{"type": "integer", "minimum": 1, "maximum": protocol.MaxDurationMilliseconds, "description": "Recent window in milliseconds from request time."},
 		"tail":         map[string]any{"type": "integer", "minimum": 0, "description": "Most recent selected entries; defaults to newest window."},
 		"match":        map[string]any{"type": "string", "minLength": 1, "description": "Regular expression used to select matching entries."},
 		"context":      map[string]any{"type": "integer", "minimum": 0, "description": "Include up to this many eligible entries before and after each match; requires match."},
@@ -481,7 +480,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	event := objectSchema(map[string]any{
 		"scope":        map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}, "description": "Project or machine-wide scope."},
 		"project_root": root, "names": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 2000, "description": "Optional service-name narrowing."},
-		"since_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": maxSinceMilliseconds, "description": "Moving request-time duration window."},
+		"since_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": protocol.MaxDurationMilliseconds, "description": "Moving request-time duration window."},
 		"kinds":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{string(protocol.EventLifecycle), string(protocol.EventOperation)}}, "description": "Optional lifecycle or operation kinds."},
 		"failed":   map[string]any{"type": "boolean", "description": "Return failures only."}, "match": map[string]any{"type": "string", "description": "Regex applied to name and detail."},
 		"tail": map[string]any{"type": "integer", "minimum": 1, "maximum": 2000, "description": "Bounded page size."}, "after_cursor": map[string]any{"type": "integer", "minimum": 0, "description": "Strictly-exclusive history cursor."}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum serialized bytes of returned event records, excluding metadata."},
