@@ -491,6 +491,11 @@ func runProcessHelper() {
 }
 
 func runTTYBlockHelper() {
+	// Canonical input can discard bytes after its line buffer fills, so a
+	// large write need not block. Raw mode exercises real backpressure.
+	if _, err := term.MakeRaw(int(os.Stdin.Fd())); err != nil {
+		os.Exit(2)
+	}
 	fmt.Fprint(os.Stdout, "block-ready\n")
 	signal.Ignore(syscall.SIGTERM, syscall.SIGINT)
 	for {
