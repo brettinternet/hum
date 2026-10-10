@@ -1,10 +1,10 @@
 ---
 id: HUM-149
 title: Show TCP listeners automatically in named status
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-10 15:32'
-updated_date: '2026-10-10 15:48'
+updated_date: '2026-10-10 15:54'
 labels: []
 dependencies: []
 ordinal: 33000
@@ -46,7 +46,7 @@ Dependency: follows completed HUM-148. Next action: remove the flag in internal/
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
+- [x] #1 task ci passes on the final commit
 - [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
 - [x] #3 An independent verifier pass returned PASS for every acceptance criterion
 - [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
@@ -67,4 +67,14 @@ AC#5: task cli:build && bin/hum status --help — PASS; rg -n -e "--ports" -e "p
 AC#6: task cli:test — PASS, all Go packages and 12 Herdr Python tests. Existing opt-in checks converted to automatic contract; no regression test deleted/skipped/weakened.
 Independent verifier 9fbc7ccf returned PASS for AC#1–6; no concrete in-scope defects or residual risks. This was the single general review pass. task ci passed before commit (security, checks, tests, race, smoke); affected LSP diagnostics clean. No protected gate files changed.
 User selected release v0.17.1. Next: commit implementation, rerun task ci on that commit, push main, wait for its CI run to start, then tag that exact commit and push v0.17.1. Keep task In Progress until release delivery completes. Both pre-existing untracked drafts remain untouched.
+
+Delivery completed: implementation commit 7102d47d20b0bdc332a97ec8190aa684b6d78ba6 pushed to main; task ci passed on that final implementation commit before push. GitHub CI run 38065196633 succeeded. Tag v0.17.1 points to that exact commit; release run 38065233192 succeeded and published at 2026-10-10T15:53:55Z with five platform archives and checksums.txt. Release URL: https://github.com/brettinternet/hum/releases/tag/v0.17.1.
+The authorized release workflow generated CHANGELOG.md in 2dbf3b7, now fast-forwarded locally; this release-generated delivery artifact is outside the implementation file contract by design. Independent verifier PASS for all ACs remains valid; no implementation changed after review.
+No remaining blocker or implementation step. Task claim released by Done status. Both pre-existing untracked drafts (DRAFT-004 and DRAFT-005) remain untouched. Final bookkeeping step: commit this closure record, rerun task ci on the closure commit, and push main.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Named CLI and MCP status automatically report TCP listeners with compact human output and a two-second best-effort deadline. Aggregate/internal reads remain inspection-free. All acceptance checks and independent verification passed. Published v0.17.1 from 7102d47; CI and release workflows succeeded.
+<!-- SECTION:FINAL_SUMMARY:END -->
