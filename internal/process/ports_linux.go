@@ -16,10 +16,8 @@ import (
 
 type linuxMember struct {
 	pid      int
-	pgid     int
 	identity string
 	netns    string
-	fdInodes map[string]struct{}
 }
 
 func inspectGroupPorts(ctx context.Context, pgid, leaderPID int, leaderIdentity string) PortsResult {
@@ -44,65 +42,41 @@ func inspectGroupPorts(ctx context.Context, pgid, leaderPID int, leaderIdentity 
 		return emptyPorts(state, diagnostic)
 	}
 	builder := make(portBuilder)
+	// TCP tables are per network namespace; read them once per namespace
+	// rather than once per member.
+	tables := make(map[string]map[string]procListener)
 	for _, member := range members {
-		if err := ctx.Err(); err != nil {
-			diagnostics = append(diagnostics, err.Error())
+		if ctx.Err() != nil {
 			break
 		}
-		member.fdInodes = make(map[string]struct{})
-		fdDir := filepath.Join("/proc", strconv.Itoa(member.pid), "fd")
-		fds, readErr := os.ReadDir(fdDir)
-		if readErr != nil {
-			if !errors.Is(readErr, os.ErrNotExist) {
-				diagnostics = append(diagnostics, fmt.Sprintf("pid %d file descriptors: %v", member.pid, readErr))
-				denied = denied || errors.Is(readErr, os.ErrPermission)
-			}
+		inodes, fdDiagnostics, fdDenied := linuxSocketInodes(ctx, member.pid)
+		diagnostics = append(diagnostics, fdDiagnostics...)
+		denied = denied || fdDenied
+		if len(inodes) == 0 {
 			continue
 		}
-		for _, fd := range fds {
-			if err := ctx.Err(); err != nil {
-				break
-			}
-			target, linkErr := os.Readlink(filepath.Join(fdDir, fd.Name()))
-			if linkErr != nil {
-				if !errors.Is(linkErr, os.ErrNotExist) {
-					diagnostics = append(diagnostics, fmt.Sprintf("pid %d file descriptor: %v", member.pid, linkErr))
-					denied = denied || errors.Is(linkErr, os.ErrPermission)
-				}
-				continue
-			}
-			if strings.HasPrefix(target, "socket:[") && strings.HasSuffix(target, "]") {
-				member.fdInodes[strings.TrimSuffix(strings.TrimPrefix(target, "socket:["), "]")] = struct{}{}
+		rows, cached := tables[member.netns]
+		if !cached {
+			var read, tableDenied bool
+			var tableDiagnostics []string
+			rows, read, tableDiagnostics, tableDenied = linuxListenRows(member.pid)
+			diagnostics = append(diagnostics, tableDiagnostics...)
+			denied = denied || tableDenied
+			if read {
+				tables[member.netns] = rows
 			}
 		}
-		if len(member.fdInodes) == 0 {
-			continue
-		}
-		for _, table := range []struct{ file, family string }{{"tcp", "tcp"}, {"tcp6", "tcp6"}} {
-			data, tableErr := readProcTCPTable(filepath.Join("/proc", strconv.Itoa(member.pid), "net", table.file))
-			if tableErr != nil {
-				if !errors.Is(tableErr, os.ErrNotExist) {
-					diagnostics = append(diagnostics, fmt.Sprintf("pid %d %s table: %v", member.pid, table.file, tableErr))
-					denied = denied || errors.Is(tableErr, os.ErrPermission)
-				}
-				continue
-			}
-			rows, parseErr := parseProcTCPTable(data, table.family)
-			if parseErr != nil {
-				diagnostics = append(diagnostics, fmt.Sprintf("pid %d %s table: %v", member.pid, table.file, parseErr))
-			}
-			for inode, listener := range rows {
-				if _, held := member.fdInodes[inode]; held {
-					builder.add(member.netns+":"+inode, listener.address, listener.port, member.pid)
-				}
+		for inode := range inodes {
+			if listener, ok := rows[inode]; ok {
+				builder.add(member.netns+":"+inode, listener.address, listener.port, member.pid)
 			}
 		}
 	}
 	listeners := builder.listeners()
 	valid := make(map[int]struct{}, len(members))
 	for pid, member := range members {
-		current, state, verifyErr := linuxReadMember(pid)
-		if verifyErr != nil || state == "Z" || current.identity != member.identity || current.pgid != pgid {
+		current, verifyErr := readProcStat(pid)
+		if verifyErr != nil || !linuxLiveMember(current, pgid) || current.identity != member.identity {
 			if verifyErr != nil && !errors.Is(verifyErr, os.ErrNotExist) {
 				diagnostics = append(diagnostics, fmt.Sprintf("pid %d membership recheck: %v", pid, verifyErr))
 				denied = denied || errors.Is(verifyErr, os.ErrPermission)
@@ -125,6 +99,71 @@ func inspectGroupPorts(ctx context.Context, pgid, leaderPID int, leaderIdentity 
 	return PortsResult{State: state, Listeners: listeners, Diagnostic: diagnostic}
 }
 
+func linuxLiveMember(stat procStat, pgid int) bool {
+	return stat.pgid == pgid && stat.state != "Z" && stat.state != "X"
+}
+
+// linuxSocketInodes returns the socket inodes held by pid's descriptors.
+func linuxSocketInodes(ctx context.Context, pid int) (map[string]struct{}, []string, bool) {
+	fdDir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
+	fds, err := os.ReadDir(fdDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, false
+		}
+		return nil, []string{fmt.Sprintf("pid %d file descriptors: %v", pid, err)}, errors.Is(err, os.ErrPermission)
+	}
+	inodes := make(map[string]struct{})
+	var diagnostics []string
+	denied := false
+	for _, fd := range fds {
+		if ctx.Err() != nil {
+			break
+		}
+		target, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				diagnostics = append(diagnostics, fmt.Sprintf("pid %d file descriptor: %v", pid, err))
+				denied = denied || errors.Is(err, os.ErrPermission)
+			}
+			continue
+		}
+		if inode, ok := strings.CutPrefix(target, "socket:["); ok && strings.HasSuffix(inode, "]") {
+			inodes[strings.TrimSuffix(inode, "]")] = struct{}{}
+		}
+	}
+	return inodes, diagnostics, denied
+}
+
+// linuxListenRows reads LISTEN rows from pid's network namespace. read reports
+// whether at least one table was observed, so a member that exits mid-read does
+// not hide the namespace's listeners from other members.
+func linuxListenRows(pid int) (map[string]procListener, bool, []string, bool) {
+	rows := make(map[string]procListener)
+	read := false
+	var diagnostics []string
+	denied := false
+	for _, table := range []string{"tcp", "tcp6"} {
+		data, err := readProcTCPTable(filepath.Join("/proc", strconv.Itoa(pid), "net", table))
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				diagnostics = append(diagnostics, fmt.Sprintf("pid %d %s table: %v", pid, table, err))
+				denied = denied || errors.Is(err, os.ErrPermission)
+			}
+			continue
+		}
+		read = true
+		parsed, err := parseProcTCPTable(data, table)
+		if err != nil {
+			diagnostics = append(diagnostics, fmt.Sprintf("pid %d %s table: %v", pid, table, err))
+		}
+		for inode, listener := range parsed {
+			rows[inode] = listener
+		}
+	}
+	return rows, read, diagnostics, denied
+}
+
 func linuxGroupMembers(ctx context.Context, pgid int) (map[int]linuxMember, []string, bool, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -134,14 +173,14 @@ func linuxGroupMembers(ctx context.Context, pgid int) (map[int]linuxMember, []st
 	var diagnostics []string
 	denied := false
 	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return members, append(diagnostics, err.Error()), denied, nil
+		if ctx.Err() != nil {
+			return members, diagnostics, denied, nil
 		}
 		pid, parseErr := strconv.Atoi(entry.Name())
 		if parseErr != nil || pid <= 0 {
 			continue
 		}
-		member, state, readErr := linuxReadMember(pid)
+		stat, readErr := readProcStat(pid)
 		if readErr != nil {
 			if !errors.Is(readErr, os.ErrNotExist) {
 				diagnostics = append(diagnostics, fmt.Sprintf("pid %d process identity: %v", pid, readErr))
@@ -149,7 +188,7 @@ func linuxGroupMembers(ctx context.Context, pgid int) (map[int]linuxMember, []st
 			}
 			continue
 		}
-		if member.pgid != pgid || state == "Z" || state == "X" {
+		if !linuxLiveMember(stat, pgid) {
 			continue
 		}
 		namespace, nsErr := os.Readlink(filepath.Join("/proc", entry.Name(), "ns", "net"))
@@ -160,38 +199,9 @@ func linuxGroupMembers(ctx context.Context, pgid int) (map[int]linuxMember, []st
 			}
 			continue
 		}
-		member.netns = namespace
-		members[pid] = member
+		members[pid] = linuxMember{pid: pid, identity: stat.identity, netns: namespace}
 	}
 	return members, diagnostics, denied, nil
-}
-
-func linuxReadMember(pid int) (linuxMember, string, error) {
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return linuxMember{}, "", err
-	}
-	closeParen := strings.LastIndexByte(string(data), ')')
-	if closeParen < 0 || closeParen+1 >= len(data) {
-		return linuxMember{}, "", errors.New("malformed procfs stat")
-	}
-	fields := strings.Fields(string(data[closeParen+1:]))
-	if len(fields) <= 19 {
-		return linuxMember{}, "", errors.New("procfs stat omitted start identity")
-	}
-	pgid, err := strconv.Atoi(fields[2])
-	if err != nil {
-		return linuxMember{}, "", errors.New("invalid process group id")
-	}
-	startTime, err := strconv.ParseUint(fields[19], 10, 64)
-	if err != nil || startTime == 0 {
-		return linuxMember{}, "", errors.New("invalid process start time")
-	}
-	boot, err := bootIdentity()
-	if err != nil {
-		return linuxMember{}, "", err
-	}
-	return linuxMember{pid: pid, pgid: pgid, identity: "procfs:" + boot + ":" + strconv.FormatUint(startTime, 10)}, fields[0], nil
 }
 
 type procListener struct {

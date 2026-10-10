@@ -351,7 +351,7 @@ func runPortsChild() {
 		secondData, secondErr := os.ReadFile(reuseReady)
 		if firstErr == nil && secondErr == nil {
 			value := fmt.Sprintf("%d|%s|%s|%s", os.Getpid(), listener.Addr().String(), strings.TrimSpace(string(firstData)), strings.TrimSpace(string(secondData)))
-			if err := os.WriteFile(ready, []byte(value), 0600); err != nil {
+			if err := writePortsMarker(ready, value); err != nil {
 				os.Exit(2)
 			}
 			break
@@ -367,6 +367,16 @@ func runPortsChild() {
 	for {
 		time.Sleep(time.Hour)
 	}
+}
+
+// writePortsMarker publishes a complete marker by rename, because readers poll
+// for existence and os.WriteFile exposes an empty file before writing.
+func writePortsMarker(path, value string) error {
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, []byte(value), 0600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, path)
 }
 
 func portsReuseListener(address string) (*net.TCPListener, error) {
@@ -398,7 +408,7 @@ func runPortsHolder() {
 		os.Exit(2)
 	}
 	defer listener.Close()
-	if err := os.WriteFile(os.Getenv(helperReady), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+	if err := writePortsMarker(os.Getenv(helperReady), strconv.Itoa(os.Getpid())); err != nil {
 		fmt.Fprintf(os.Stderr, "ports-holder ready marker: %v\n", err)
 		os.Exit(2)
 	}

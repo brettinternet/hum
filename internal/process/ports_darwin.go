@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os/exec"
 	"sort"
@@ -98,7 +99,9 @@ func inspectGroupPorts(ctx context.Context, pgid, leaderPID int, leaderIdentity 
 			}
 			diagnostics = append(diagnostics, "lsof: "+message)
 			denied = denied || isInspectionDenied(message)
-			if errors.Is(commandErr, exec.ErrNotFound) {
+			// An absolute path that does not exist fails with ENOENT, not
+			// exec.ErrNotFound.
+			if errors.Is(commandErr, exec.ErrNotFound) || errors.Is(commandErr, fs.ErrNotExist) {
 				return PortsResult{State: PortsUnavailable, Listeners: builder.listeners(), Diagnostic: joinDiagnostics(diagnostics)}
 			}
 		}

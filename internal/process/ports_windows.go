@@ -90,6 +90,10 @@ func (c *Child) InspectPorts(ctx context.Context) PortsResult {
 	}
 	listeners := builder.listeners()
 	c.mu.Lock()
+	if c.groupEnded || c.ownedJobHandle == 0 {
+		c.mu.Unlock()
+		return emptyPorts(PortsUnavailable, "process job ended during listener inspection")
+	}
 	currentIDs, membershipErr := jobProcessIDs(c.ownedJobHandle)
 	c.mu.Unlock()
 	current := make(map[int]string, len(currentIDs))
