@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -74,6 +77,16 @@ func TestWindowsProcessHelper(t *testing.T) {
 		fmt.Fprintf(os.Stdout, "windows-descendant-ready=%d\n", cmd.Process.Pid)
 		os.Exit(17)
 	case "tree-child":
+		for {
+			time.Sleep(time.Hour)
+		}
+	case "ports-listener":
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			os.Exit(2)
+		}
+		defer listener.Close()
+		fmt.Fprintf(os.Stdout, "windows-ports-ready=%d|%s\n", os.Getpid(), listener.Addr().String())
 		for {
 			time.Sleep(time.Hour)
 		}
@@ -675,6 +688,61 @@ func windowsStoreText(t *testing.T, store *output.Store) string {
 		text.WriteString(entry.Text)
 	}
 	return text.String()
+}
+
+func TestWindowsPortsInspectOwnedJobListener(t *testing.T) {
+	unrelated, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unrelated.Close()
+	child, err := Start(windowsHelperSpec(windowsNewStore(t), "ports-listener"))
+	if err != nil {
+		t.Fatalf("start listener child: %v", err)
+	}
+	windowsCleanupChild(t, child)
+	text := windowsWaitForOutput(t, child.output, "windows-ports-ready=")
+	var pid int
+	var address string
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, "windows-ports-ready=") {
+			continue
+		}
+		if _, err := fmt.Sscanf(strings.TrimPrefix(line, "windows-ports-ready="), "%d|%s", &pid, &address); err != nil {
+			t.Fatalf("parse listener marker %q: %v", line, err)
+		}
+	}
+	if pid != child.PID() || address == "" {
+		t.Fatalf("listener marker pid=%d address=%q, want child pid %d", pid, address, child.PID())
+	}
+	listenerHost, listenerPort, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got := child.InspectPorts(ctx)
+	if got.State != PortsPartial || got.Diagnostic == "" || len(got.Listeners) != 1 {
+		t.Fatalf("ports inspection state=%q diagnostic=%q listeners=%+v", got.State, got.Diagnostic, got.Listeners)
+	}
+	port, err := strconv.Atoi(listenerPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Listeners[0].Address != listenerHost || int(got.Listeners[0].Port) != port || !reflect.DeepEqual(got.Listeners[0].PIDs, []int{child.PID()}) {
+		t.Fatalf("listener = %+v, want child %s:%d", got.Listeners[0], listenerHost, port)
+	}
+	otherHost, otherPort, err := net.SplitHostPort(unrelated.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPortNumber, err := strconv.Atoi(otherPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Listeners[0].Address == otherHost && int(got.Listeners[0].Port) == otherPortNumber {
+		t.Fatalf("reported unrelated listener: %+v", got.Listeners[0])
+	}
 }
 
 func TestWindowsProcessStartIdentityAndDone(t *testing.T) {

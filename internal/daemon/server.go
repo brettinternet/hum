@@ -573,7 +573,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			s.handleWait(ctx, conn, encoder, *protocolReq.Wait)
 			return
 		}
-		resp, terminal := s.dispatch(&protocolReq)
+		resp, terminal := s.dispatchWithContext(ctx, &protocolReq)
 		writeErr := encoder.EncodeResponse(resp)
 
 		var oversized *protocol.OversizedError
@@ -807,7 +807,11 @@ func (s *Server) appendHistory(scope, root, cwd, operationID, origin, operation,
 }
 
 func (s *Server) dispatch(req *protocol.Request) (any, bool) {
-	response, terminal := s.dispatchRequest(req)
+	return s.dispatchWithContext(context.Background(), req)
+}
+
+func (s *Server) dispatchWithContext(ctx context.Context, req *protocol.Request) (any, bool) {
+	response, terminal := s.dispatchRequest(ctx, req)
 	if req != nil && req.Op != protocol.OpEvents {
 		if err := responseError(response); err != nil {
 			name, scope, cwd, root, origin := requestTarget(req)
@@ -856,7 +860,7 @@ func requestTarget(req *protocol.Request) (name, scope, cwd, root, origin string
 	return
 }
 
-func (s *Server) dispatchRequest(req *protocol.Request) (any, bool) {
+func (s *Server) dispatchRequest(ctx context.Context, req *protocol.Request) (any, bool) {
 	switch req.Op {
 	case protocol.OpEvents:
 		value := req.Events
@@ -969,7 +973,13 @@ func (s *Server) dispatchRequest(req *protocol.Request) (any, bool) {
 		return protocol.ListResponse{Op: req.Op, OK: true, Processes: protocolProcessesFromApp(items), Warnings: s.StartupWarnings()}, false
 	case protocol.OpGet:
 		value := req.Get
-		item, err := s.supervisor.GetScoped(value.Scope, value.Cwd, value.Name)
+		var item app.Process
+		var err error
+		if value.Ports {
+			item, err = s.supervisor.GetPortsScoped(ctx, value.Scope, value.Cwd, value.Name)
+		} else {
+			item, err = s.supervisor.GetScoped(value.Scope, value.Cwd, value.Name)
+		}
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}

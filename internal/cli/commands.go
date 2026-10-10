@@ -212,11 +212,12 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 		{
 			Name:          "status",
 			Usage:         "status",
-			UsageText:     "hum status [NAME] [--json]",
+			UsageText:     "hum status [NAME] [--ports] [--json]",
 			ArgsUsage:     "[NAME]",
 			ShellComplete: completeProcessNames,
-			Description:   "Show the state of this project's processes, including ones not yet started. Give a name to inspect one process in detail.\n\nExamples:\n  hum status\n  hum status api\n  hum status --json",
+			Description:   "Show this project's process state, including processes not yet started. Give one name for details; --ports opts into a current TCP-listener snapshot.\n\nExamples:\n  hum status\n  hum status api\n  hum status api --ports --json",
 			Flags: []urfavecli.Flag{
+				&urfavecli.BoolFlag{Name: "ports", DefaultText: "false", Usage: "inspect current TCP listeners in this process group (named status only)"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,
@@ -1088,6 +1089,9 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	if len(args) > 1 {
 		return newCLIUsageError(errors.New("status accepts at most one process name"))
 	}
+	if cmd.Bool("ports") && len(args) != 1 {
+		return newCLIUsageError(errors.New("status --ports requires exactly one process name"))
+	}
 	if len(args) == 0 {
 		processes, warnings, err := projectProcessList(ctx, cmd, version, buildTime, false)
 		if err != nil {
@@ -1144,7 +1148,7 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		return err
 	}
 	defer client.Close()
-	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: cwd})
+	process, err := client.Get(ctx, daemon.GetRequest{Name: name, Scope: selection.scope, Cwd: cwd, Ports: cmd.Bool("ports")})
 	warnings := client.StartupWarnings()
 	if !cmd.Bool("json") {
 		if warningErr := writeStartupWarnings(errWriter, warnings); warningErr != nil {

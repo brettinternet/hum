@@ -139,6 +139,13 @@ func appProcessFromProtocol(item protocol.Process) app.Process {
 	if item.Readiness != nil {
 		result.Readiness = &app.Readiness{Method: item.Readiness.Method, Target: item.Readiness.Target, Argv: append([]string(nil), item.Readiness.Argv...), Interval: item.Readiness.Interval, State: item.Readiness.State, Cursor: cursorFromProtocol(item.Readiness.Cursor), Time: item.Readiness.Time, Match: item.Readiness.Match, Diagnostic: item.Readiness.Diagnostic}
 	}
+	if item.Ports != nil {
+		inspection := &process.PortsResult{State: item.Ports.State, Diagnostic: item.Ports.Diagnostic, Listeners: make([]process.Port, 0, len(item.Ports.Listeners))}
+		for _, endpoint := range item.Ports.Listeners {
+			inspection.Listeners = append(inspection.Listeners, process.Port{Transport: endpoint.Transport, Address: endpoint.Address, Port: endpoint.Port, PIDs: append([]int(nil), endpoint.PIDs...)})
+		}
+		result.Ports = inspection
+	}
 	if item.NextCursor != nil {
 		result.NextCursor = output.Cursor(*item.NextCursor)
 	}
@@ -163,6 +170,13 @@ func protocolProcessFromApp(item app.Process) protocol.Process {
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount, Followers: item.Followers, Restart: string(item.Restart), StopGrace: item.StopGrace, StopGraceInherited: item.StopGraceInherited, Relaunches: item.Relaunches, NextLaunchAt: item.NextLaunchAt}
 	if item.Readiness != nil {
 		result.Readiness = &protocol.Readiness{Method: item.Readiness.Method, Target: item.Readiness.Target, Argv: append([]string(nil), item.Readiness.Argv...), Interval: item.Readiness.Interval, State: item.Readiness.State, Cursor: protocolCursor(item.Readiness.Cursor), Time: item.Readiness.Time, Match: item.Readiness.Match, Diagnostic: item.Readiness.Diagnostic}
+	}
+	if item.Ports != nil {
+		inspection := &protocol.PortInspection{State: item.Ports.State, Diagnostic: item.Ports.Diagnostic, Listeners: make([]protocol.PortEndpoint, 0, len(item.Ports.Listeners))}
+		for _, endpoint := range item.Ports.Listeners {
+			inspection.Listeners = append(inspection.Listeners, protocol.PortEndpoint{Transport: endpoint.Transport, Address: endpoint.Address, Port: endpoint.Port, PIDs: append([]int(nil), endpoint.PIDs...)})
+		}
+		result.Ports = inspection
 	}
 	if item.Exit != nil {
 		result.Exit = &protocol.Exit{Code: item.Exit.ExitCode, Error: errorString(item.Exit.Err), Time: item.Exit.ExitedAt}

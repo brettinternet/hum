@@ -12,8 +12,8 @@ import (
 )
 
 func TestExecutableReadinessRoundTrip(t *testing.T) {
-	if Version != 20 {
-		t.Fatalf("protocol version = %d, want executable-readiness version 20", Version)
+	if Version != 21 {
+		t.Fatalf("protocol version = %d, want port inspection version 21", Version)
 	}
 	argv := []string{"task", "health", "api"}
 	request := StartRequest{Op: OpStart, Name: "api", Argv: []string{"api"}, Cwd: "/tmp", Ready: &ReadinessConfig{Method: "exec", Argv: argv, Interval: time.Second, Timeout: 30 * time.Second}}
@@ -250,7 +250,7 @@ func TestHelloAndShutdownFrozenShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(hello), `{"op":"hello","version":20}`; got != want {
+	if got, want := string(hello), `{"op":"hello","version":21}`; got != want {
 		t.Fatalf("hello JSON = %s, want %s", got, want)
 	}
 	var decodedHello Hello
@@ -843,7 +843,7 @@ func TestTypedErrorsAndBoundedNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":20}}`; got != want {
+	if got, want := string(encoded), `{"code":"version_mismatch","message":"protocol version mismatch","details":{"client":2,"daemon":21}}`; got != want {
 		t.Fatalf("wire error JSON = %s, want %s", got, want)
 	}
 	var decoded WireError

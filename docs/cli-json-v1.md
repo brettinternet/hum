@@ -57,7 +57,7 @@ Command-specific meanings are in [design.md](design.md).
 | Diagnostic preflight | `doctor` | `schema_version`, `ok`, `checks`, `summary` |
 | Manifest creation | `init` | `schema_version`, `path`, `outcome`, `next_command`, `candidates` |
 | Aggregate snapshot | `list`, aggregate `status` | `schema_version`, `processes`; `warnings` optional |
-| Single-process snapshot | named `status` | `schema_version`, `name`, `scope`, `tty`, `pid`, `pgid`, `cwd`, `argv`, `started_at`, `state`, `exit_status`, `restart_count`, `followers`, `restart`, `relaunches`, `stop_grace`, `stop_grace_inherited`, `next_cursor` |
+| Single-process snapshot | named `status` | `schema_version`, `name`, `scope`, `tty`, `pid`, `pgid`, `cwd`, `argv`, `started_at`, `state`, `exit_status`, `restart_count`, `followers`, `restart`, `relaunches`, `stop_grace`, `stop_grace_inherited`, `next_cursor`; optional `ports` only with `--ports` |
 | Detached launch | detached `run` | `schema_version`, `name`, `pid`, `cursor`; launch metadata optional when unavailable |
 | Launch/restart record | `start`, `up`, `restart` | `schema_version`, `name`, `outcome`, `restart`, `relaunches`; other fields depend on the outcome |
 | Stop/remove/down record | `stop`, `remove`, `down` | `schema_version`, `name`, `status`; `process` and `message` optional |
@@ -92,6 +92,14 @@ Values:
 | process `next_cursor` | next cursor to be assigned |
 | timestamps | RFC 3339 strings |
 | durations | integer nanoseconds, unless documented as a duration string (such as `stop_grace`) |
+
+Named `status --ports` adds `ports` with `state` (`available`, `partial`, `denied`, or `unavailable`), a
+`listeners` array, and an optional `diagnostic`. Each listener has `transport: "tcp"`, its literal local
+`address`, numeric `port`, and sorted holder `pids`. A successful empty `listeners` array is distinct
+from inspection failure and does not prove that the service is unreachable. Ordinary status output omits
+`ports` and never inspects sockets. See [design.md](design.md#port-observation) for group scope and
+snapshot limitations. On Windows, `pids` contains only the API's verified binding owner, not every
+inherited holder; inspection is always `partial` with a diagnostic, including empty results.
 
 Streams: `type` is a lifecycle outcome or `output` (`entries` and cursor metadata), `exit`
 (`cursor`, `exit`), `warning` (`warnings`), or `error` (`error`). Records arrive in observed order;

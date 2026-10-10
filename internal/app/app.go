@@ -251,6 +251,7 @@ type Process struct {
 	Relaunches         int
 	NextLaunchAt       *time.Time
 	Readiness          *Readiness
+	Ports              *process.PortsResult
 }
 
 // WaitOutcome describes the terminal state observed by Wait.
@@ -2796,6 +2797,46 @@ func (s *Supervisor) GetScoped(scope, cwd, name string) (Process, error) {
 		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
 	}
 	return rec.snapshotLocked(), nil
+}
+
+// GetPortsScoped returns a normal status snapshot with an opt-in listener
+// observation for its current active launch. Native inspection runs outside
+// Supervisor.mu so it cannot delay lifecycle work.
+func (s *Supervisor) GetPortsScoped(ctx context.Context, scope, cwd, name string) (Process, error) {
+	rec, err := s.lookupScoped(scope, cwd, name, "")
+	if err != nil {
+		return Process{}, err
+	}
+	s.mu.RLock()
+	if s.records[rec.key] != rec {
+		s.mu.RUnlock()
+		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
+	}
+	snapshot := rec.snapshotLocked()
+	child := rec.child
+	incarnation := rec.incarnation
+	launchIdentity := rec.startIdentity
+	s.mu.RUnlock()
+	if !IsActiveState(snapshot.State) {
+		return snapshot, nil
+	}
+	inspector, ok := child.(process.PortInspector)
+	if !ok {
+		snapshot.Ports = &process.PortsResult{State: process.PortsUnavailable, Listeners: []process.Port{}, Diagnostic: "process group listener inspection is unavailable"}
+		return snapshot, nil
+	}
+	ports := inspector.InspectPorts(ctx)
+	s.mu.RLock()
+	stillCurrent := s.records[rec.key] == rec && rec.incarnation == incarnation && rec.startIdentity == launchIdentity && IsActiveState(rec.state)
+	if stillCurrent {
+		stillCurrent = rec.snapshotLocked().StartIdentity == snapshot.StartIdentity
+	}
+	s.mu.RUnlock()
+	if !stillCurrent {
+		ports = process.PortsResult{State: process.PortsUnavailable, Listeners: []process.Port{}, Diagnostic: "launch changed during listener inspection"}
+	}
+	snapshot.Ports = &ports
+	return snapshot, nil
 }
 
 // List returns deterministic snapshots for one project root. By default only

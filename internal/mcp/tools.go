@@ -332,6 +332,17 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}, "code", "time")
 	startupWarning := objectSchema(map[string]any{"project": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}, "project", "name", "outcome", "message")
 	startupWarningsSchema := map[string]any{"type": "array", "items": startupWarning}
+	portEndpoint := objectSchema(map[string]any{
+		"transport": map[string]any{"type": "string", "const": "tcp"},
+		"address":   map[string]any{"type": "string"},
+		"port":      map[string]any{"type": "integer", "minimum": 1, "maximum": 65535},
+		"pids":      map[string]any{"type": "array", "items": map[string]any{"type": "integer", "minimum": 1}},
+	}, "transport", "address", "port", "pids")
+	ports := objectSchema(map[string]any{
+		"state":      map[string]any{"type": "string", "enum": []string{"available", "partial", "denied", "unavailable"}},
+		"listeners":  map[string]any{"type": "array", "items": portEndpoint},
+		"diagnostic": map[string]any{"type": "string"},
+	}, "state", "listeners")
 	process := objectSchema(map[string]any{
 		"name": map[string]any{"type": "string"}, "source": map[string]any{"type": "string"},
 		"scope": map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}}, "project_root": map[string]any{"type": "string"},
@@ -351,6 +362,9 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"readiness":            readiness,
 		"warnings":             startupWarningsSchema,
 	}, "name", "source", "scope", "tty", "cwd", "argv", "state", "launch_cursor", "followers", "restart", "relaunches", "stop_grace", "stop_grace_inherited")
+	statusProcessProperties := cloneProperties(process["properties"].(map[string]any))
+	statusProcessProperties["ports"] = ports
+	statusProcess := objectSchema(statusProcessProperties, process["required"].([]string)...)
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}, "details": map[string]any{}}, "code", "message")
 	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
 	restart := objectSchema(map[string]any{
@@ -495,7 +509,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		{Name: "up", Description: "Start all project definitions, or selected names and their prerequisites. Use for dependency-aware startup; returns per-process results and warnings.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop active sessions in the selected scope, dependents before prerequisites. Use for project-wide shutdown without removing sessions.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
 		{Name: "list", Description: "List declared and retained sessions in the selected scope. Use all from project scope to inspect sessions across projects.", InputSchema: listSchema, OutputSchema: collectionProcesses},
-		{Name: "status", Description: "Inspect one existing session's state, readiness, and restart details without starting a daemon.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: process},
+		{Name: "status", Description: "Inspect one session's state and details; set ports to request a TCP-listener snapshot.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting, "ports": map[string]any{"type": "boolean", "description": "Opt in to current group TCP listeners."}}, "project_root", "name"), OutputSchema: statusProcess},
 		{Name: "logs", Description: "Read bounded output for one session. Use stream, cursor, time, tail, or match filters to inspect recent output without following it.", InputSchema: logsSchema, OutputSchema: output},
 		{Name: "wait", Description: "Wait for matching output or exit from one session. Use after and timeout_ms to bound the wait.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": stringProperty("Runtime name; without after, it may not be launched yet."), "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Send exact text or base64 bytes once to a running TTY session. Use for a prompt response; no newline is added.", InputSchema: inputSchema, OutputSchema: inputResult},
@@ -545,6 +559,7 @@ type commonInput struct {
 	Manifest      string               `json:"manifest,omitempty"`
 	All           bool                 `json:"all,omitempty"`
 	Name          string               `json:"name,omitempty"`
+	Ports         bool                 `json:"ports,omitempty"`
 	NoWait        bool                 `json:"no_wait,omitempty"`
 	TimeoutMS     int64                `json:"timeout_ms,omitempty"`
 	After         *uint64              `json:"after,omitempty"`
@@ -696,9 +711,9 @@ func effectiveRestart(policy string) string {
 }
 
 func normalizeProcess(process protocol.Process) protocol.Process {
-	scope, root := process.Scope, process.Root
+	scope, root, ports := process.Scope, process.Root, process.Ports
 	process = protocolProcess(orchestrate.NormalizeProcess(orchestrateProcess(process)))
-	process.Scope, process.Root = scope, root
+	process.Scope, process.Root, process.Ports = scope, root, ports
 	return process
 }
 
@@ -1140,7 +1155,7 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 	case "list":
 		return s.list(ctx, resolution, input)
 	case "status":
-		return s.status(ctx, resolution, input.Name)
+		return s.status(ctx, resolution, input.Name, input.Ports)
 	case "logs":
 		return s.logs(ctx, resolution, input)
 	case "wait":
@@ -1602,14 +1617,14 @@ func sortedProcesses(byName map[string]protocol.Process) []protocol.Process {
 	return result
 }
 
-func (s *Server) status(ctx context.Context, resolution Resolution, name string) (any, error) {
+func (s *Server) status(ctx context.Context, resolution Resolution, name string, ports bool) (any, error) {
 	client, err := s.client(ctx, false)
 	if err != nil {
 		return nil, mapError(err)
 	}
 	defer client.Close()
 	recordStartupWarnings(ctx, startupWarnings(client))
-	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Scope: resolution.Scope, Cwd: resolution.Root})
+	process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Name: name, Scope: resolution.Scope, Cwd: resolution.Root, Ports: ports})
 	if err != nil {
 		return nil, mapError(err)
 	}

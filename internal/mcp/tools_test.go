@@ -469,7 +469,7 @@ func TestExitReadinessMCPPropagationAndCompletion(t *testing.T) {
 		t.Fatalf("MCP up results=%#v starts=%#v, want rerun migrate before api", up, client.starts)
 	}
 
-	statusValue, err := server.status(context.Background(), resolution, "migrate")
+	statusValue, err := server.status(context.Background(), resolution, "migrate", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1278,7 +1278,7 @@ func TestReadinessHTTPAndTCPMCPStartStatusList(t *testing.T) {
 		if started.Process.Readiness.Target != target {
 			t.Fatalf("%s MCP start target=%q", method, started.Process.Readiness.Target)
 		}
-		statusValue, err := server.status(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, "probe")
+		statusValue, err := server.status(context.Background(), Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}, "probe", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1332,7 +1332,7 @@ func TestExecutableReadiness(t *testing.T) {
 	if restart.Outcome != "restarted" || restart.Readiness != protocol.ReadinessReady || len(client.restarts) != 1 || client.restarts[0].Ready == nil || client.restarts[0].Ready.Method != "exec" || !reflect.DeepEqual(client.restarts[0].Ready.Argv, argv) || len(client.waits) != 0 {
 		t.Fatalf("executable restart=%#v requests=%#v waits=%#v", restart, client.restarts, client.waits)
 	}
-	status, err := server.status(context.Background(), resolution, "api")
+	status, err := server.status(context.Background(), resolution, "api", false)
 	if err != nil {
 		t.Fatal(err)
 	}

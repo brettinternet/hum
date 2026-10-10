@@ -335,6 +335,7 @@ type statusJSON struct {
 	StopGraceInherited  bool                      `json:"stop_grace_inherited"`
 	NextLaunchAt        *time.Time                `json:"next_launch_at,omitempty"`
 	NextCursor          protocol.Cursor           `json:"next_cursor"`
+	Ports               *protocol.PortInspection  `json:"ports,omitempty"`
 	Warnings            []protocol.StartupWarning `json:"warnings,omitempty"`
 }
 
@@ -376,6 +377,13 @@ func statusJSONFor(process app.Process) statusJSON {
 			signal := protocol.SignalInfo{Name: process.Exit.Signal.Name, Number: process.Exit.Signal.Number}
 			result.Signal = &signal
 		}
+	}
+	if process.Ports != nil {
+		inspection := &protocol.PortInspection{State: process.Ports.State, Diagnostic: process.Ports.Diagnostic, Listeners: make([]protocol.PortEndpoint, 0, len(process.Ports.Listeners))}
+		for _, endpoint := range process.Ports.Listeners {
+			inspection.Listeners = append(inspection.Listeners, protocol.PortEndpoint{Transport: endpoint.Transport, Address: endpoint.Address, Port: endpoint.Port, PIDs: append([]int(nil), endpoint.PIDs...)})
+		}
+		result.Ports = inspection
 	}
 	return result
 }
@@ -1582,6 +1590,29 @@ func renderStatusHumanWithPolicy(w io.Writer, process app.Process, colors colorP
 			return err
 		}
 	}
+	if status.Ports != nil {
+		if _, err := fmt.Fprintf(w, "ports_state: %s\n", status.Ports.State); err != nil {
+			return err
+		}
+		if status.Ports.Diagnostic != "" {
+			if _, err := fmt.Fprintf(w, "ports_diagnostic: %s\n", status.Ports.Diagnostic); err != nil {
+				return err
+			}
+		}
+		for _, endpoint := range status.Ports.Listeners {
+			if _, err := fmt.Fprintf(w, "port: transport=%s address=%s port=%d pids=%s\n", endpoint.Transport, endpoint.Address, endpoint.Port, joinPortPIDs(endpoint.PIDs)); err != nil {
+				return err
+			}
+		}
+	}
 	_, err := fmt.Fprintf(w, "relaunches: %d\nrestart_count: %d\nfollowers: %d\nnext_cursor: %d\n", status.Relaunches, status.RestartCount, status.Followers, status.NextCursor)
 	return err
+}
+
+func joinPortPIDs(pids []int) string {
+	values := make([]string, len(pids))
+	for index, pid := range pids {
+		values[index] = strconv.Itoa(pid)
+	}
+	return strings.Join(values, ",")
 }

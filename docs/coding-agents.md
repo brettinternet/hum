@@ -85,7 +85,7 @@ remote absolute `project_root` such as `/srv/app`.
 | --- | --- | --- |
 | `up` | `hum up` | start declarations in `after` order and wait until ready |
 | `start` | `hum start` | start named processes without their prerequisites |
-| `status` | `hum status` | check the project or one process |
+| `status` | `hum status` | check the project or one process; `ports: true` opts into TCP listener inspection for one running process |
 | `list` | `hum list` | list processes; `all: true` covers every scope |
 | `logs` | `hum logs` | read bounded output |
 | `wait` | `hum wait` | wait for a log match or exit |
@@ -108,6 +108,23 @@ Example call:
 ```json
 {"name": "logs", "arguments": {"project_root": "/home/me/app", "name": "api", "stream": "stderr", "tail": 50}}
 ```
+
+Inspect a running process's current TCP listeners only when needed:
+
+```sh
+hum status api --ports --json
+```
+
+```json
+{"name": "status", "arguments": {"project_root": "/home/me/app", "name": "api", "ports": true}}
+```
+
+The snapshot is limited to members of that launch's Unix process group or Windows Job Object. Descendants
+that escape the group, container runtimes, and forwarding layers such as Docker Desktop or OrbStack are
+not included. Results can change immediately after the snapshot; an empty successful result means no
+listener was observed at that moment, not that the service is unreachable. Denied, partial, and unavailable
+inspection are returned as states with diagnostics. Windows exposes binding-owner PIDs only, not all
+inherited socket holders; its results always carry `partial` and an explanatory diagnostic, even when empty.
 
 Full argument, result, and error semantics: [MCP adapter](design.md#mcp-adapter).
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -46,6 +47,9 @@ modes:
       write PID/readiness markers. SIGTERM writes .parent.term, .child.term,
       and .grandchild.term; graceful descendants wait for .release, while
       ignore-term descendants remain alive until forcibly killed.
+  listen-parent <marker>
+      Launch a child that binds an ephemeral loopback TCP listener and waits
+      for its process group to stop. The child writes PID and endpoint to marker.
 
 Markers are created with mode 0600. The fixture never creates .release; the
 caller creates it to release a graceful tree.`
@@ -167,6 +171,16 @@ func run(args []string) (int, error) {
 			return 0, err
 		}
 		return runTreeGrandchild(args[1], mode)
+	case "listen-parent":
+		if len(args) != 2 || args[1] == "" {
+			return 0, errors.New("listen-parent requires a marker path")
+		}
+		return runListenParent(args[1])
+	case "listen-child":
+		if len(args) != 2 || args[1] == "" {
+			return 0, errors.New("internal listen-child invocation is malformed")
+		}
+		return runListenChild(args[1])
 	default:
 		return 0, fmt.Errorf("unknown mode %q", args[0])
 	}
@@ -198,6 +212,42 @@ func runInspect() (int, error) {
 		return 0, fmt.Errorf("write stderr: %w", err)
 	}
 	return 23, nil
+}
+
+func runListenParent(marker string) (int, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("resolve fixture executable: %w", err)
+	}
+	child := exec.Command(executable, "listen-child", marker)
+	child.Stdout, child.Stderr = os.Stdout, os.Stderr
+	if err := child.Start(); err != nil {
+		return 0, fmt.Errorf("start listener child: %w", err)
+	}
+	if err := waitForFile(marker, 10*time.Second); err != nil {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+		return 0, err
+	}
+	return 0, child.Wait()
+}
+
+func runListenChild(marker string) (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("bind ephemeral TCP listener: %w", err)
+	}
+	defer listener.Close()
+	if err := writeMarker(marker, fmt.Sprintf("%d|%s", os.Getpid(), listener.Addr().String())); err != nil {
+		return 0, err
+	}
+	for {
+		connection, err := listener.Accept()
+		if err != nil {
+			return 1, err
+		}
+		_ = connection.Close()
+	}
 }
 
 func selectedTestEnvironment() map[string]string {

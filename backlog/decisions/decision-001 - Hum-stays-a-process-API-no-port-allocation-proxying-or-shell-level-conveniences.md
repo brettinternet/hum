@@ -33,3 +33,9 @@ Two open questions were whether to add port allocation or networking across work
 ## Revision 2026-09-23: native Windows is a goal
 
 Native Windows support moves from non-goal to goal, tracked by HUM-117 through HUM-122. It extends the same exact-argv process interface to another platform and does not reopen any other non-goal. Until those tasks ship, Hum supports macOS and Linux.
+
+## Revision 2026-10-09: read-only port observation
+
+The revisit trigger occurred: development servers in parallel worktrees can choose a fallback port, launchers can start listener-owning descendants, and logs may omit or evict the startup banner. Named `hum status NAME --ports` and the MCP status tool's opt-in `ports` argument may therefore report a current snapshot of TCP listeners held by the supervised process group. This is observation only; port allocation, `$PORT` injection, proxying, and URL inference remain non-goals. Addresses and ports are returned as observed, never turned into URLs.
+
+The snapshot includes descendants that remain in the recorded Unix process group or Windows Job Object, including a process group after its leader exits. Processes that leave the group, container runtimes and port-forwarding layers such as Docker Desktop or OrbStack are outside the observed boundary. Inspection is opt-in and read-only; ordinary status and list do not query sockets. Results are identity-checked snapshots and can race with later process or listener changes. An empty successful snapshot means no listener was observed at that moment, not that a service is unreachable; denied, partial, or unavailable inspection is reported separately.

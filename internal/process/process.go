@@ -312,6 +312,20 @@ func (c *Child) StartIdentity() string {
 	return c.startIdentity
 }
 
+// InspectPorts returns one bounded snapshot of TCP listeners in this launch's
+// process group. It never changes the child's lifecycle state.
+func (c *Child) InspectPorts(ctx context.Context) PortsResult {
+	if c == nil {
+		return emptyPorts(PortsUnavailable, "process group is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return inspectGroupPorts(ctx, c.pgid, c.pid, c.startIdentity)
+}
+
 // ProcessStartIdentity reads the host process-start identity for pid.
 func ProcessStartIdentity(pid int) (string, error) { return processStartIdentity(pid) }
 

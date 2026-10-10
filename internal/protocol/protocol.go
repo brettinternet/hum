@@ -13,10 +13,10 @@ import (
 // Version is the current private protocol version. Version 16 added attached-
 // run launch/follow scoping and control-intent signal requests; version 17 added
 // the explicit global process namespace; version 18 added bounded match context;
-// version 19 added per-process stop grace; version 20 adds executable readiness
-// configuration and durable readiness diagnostics; durable event history reads
-// are additive within the current private wire version.
-const Version = 20
+// version 19 added per-process stop grace; version 20 added executable readiness
+// configuration and durable readiness diagnostics; version 21 adds opt-in TCP
+// listener snapshots to named status requests.
+const Version = 21
 
 const (
 	ScopeProject = "project"
@@ -386,6 +386,7 @@ type GetRequest struct {
 	Scope string    `json:"scope,omitempty"`
 	Name  string    `json:"name"`
 	Cwd   string    `json:"cwd"`
+	Ports bool      `json:"ports,omitempty"`
 }
 
 // NewGetRequest builds a process lookup request.
@@ -400,7 +401,8 @@ func (r GetRequest) MarshalJSON() ([]byte, error) {
 		Scope string    `json:"scope,omitempty"`
 		Name  string    `json:"name"`
 		Cwd   string    `json:"cwd"`
-	}{Op: OpGet, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd})
+		Ports bool      `json:"ports,omitempty"`
+	}{Op: OpGet, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Ports: r.Ports})
 }
 
 // UnmarshalJSON decodes a get request.
@@ -410,6 +412,7 @@ func (r *GetRequest) UnmarshalJSON(data []byte) error {
 		Scope string    `json:"scope"`
 		Name  string    `json:"name"`
 		Cwd   string    `json:"cwd"`
+		Ports bool      `json:"ports"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -417,7 +420,7 @@ func (r *GetRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpGet {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Scope, r.Name, r.Cwd = OpGet, wire.Scope, wire.Name, wire.Cwd
+	r.Op, r.Scope, r.Name, r.Cwd, r.Ports = OpGet, wire.Scope, wire.Name, wire.Cwd, wire.Ports
 	return nil
 }
 
@@ -1142,30 +1145,31 @@ const (
 // is the next output cursor to be assigned, unlike OutputResult.Next, which is
 // the last source cursor consumed by a logs read.
 type Process struct {
-	Name               string        `json:"name"`
-	Source             string        `json:"source,omitempty"`
-	Scope              string        `json:"scope"`
-	Root               string        `json:"project_root,omitempty"`
-	TTY                bool          `json:"tty"`
-	PID                int           `json:"pid"`
-	PGID               int           `json:"pgid"`
-	Cwd                string        `json:"cwd"`
-	Argv               []string      `json:"argv"`
-	Start              time.Time     `json:"start"`
-	LaunchCursor       Cursor        `json:"launch_cursor"`
-	NextCursor         *Cursor       `json:"next_cursor,omitempty"`
-	State              string        `json:"state"`
-	Exit               *Exit         `json:"exit,omitempty"`
-	ExitCode           int           `json:"exit_code,omitempty"`
-	ExitedAt           time.Time     `json:"exited_at,omitempty"`
-	RestartCount       int           `json:"restart_count,omitempty"`
-	Followers          int           `json:"followers"`
-	Restart            string        `json:"restart"`
-	Relaunches         int           `json:"relaunches"`
-	StopGrace          time.Duration `json:"stop_grace"`
-	StopGraceInherited bool          `json:"stop_grace_inherited"`
-	NextLaunchAt       *time.Time    `json:"next_launch_at,omitempty"`
-	Readiness          *Readiness    `json:"readiness,omitempty"`
+	Name               string          `json:"name"`
+	Source             string          `json:"source,omitempty"`
+	Scope              string          `json:"scope"`
+	Root               string          `json:"project_root,omitempty"`
+	TTY                bool            `json:"tty"`
+	PID                int             `json:"pid"`
+	PGID               int             `json:"pgid"`
+	Cwd                string          `json:"cwd"`
+	Argv               []string        `json:"argv"`
+	Start              time.Time       `json:"start"`
+	LaunchCursor       Cursor          `json:"launch_cursor"`
+	NextCursor         *Cursor         `json:"next_cursor,omitempty"`
+	State              string          `json:"state"`
+	Exit               *Exit           `json:"exit,omitempty"`
+	ExitCode           int             `json:"exit_code,omitempty"`
+	ExitedAt           time.Time       `json:"exited_at,omitempty"`
+	RestartCount       int             `json:"restart_count,omitempty"`
+	Followers          int             `json:"followers"`
+	Restart            string          `json:"restart"`
+	Relaunches         int             `json:"relaunches"`
+	StopGrace          time.Duration   `json:"stop_grace"`
+	StopGraceInherited bool            `json:"stop_grace_inherited"`
+	NextLaunchAt       *time.Time      `json:"next_launch_at,omitempty"`
+	Readiness          *Readiness      `json:"readiness,omitempty"`
+	Ports              *PortInspection `json:"ports,omitempty"`
 }
 
 // MarshalJSON normalizes the default policy while retaining the stable flat
@@ -1223,6 +1227,21 @@ func (p *Process) UnmarshalJSON(data []byte) error {
 		p.Scope = "project"
 	}
 	return nil
+}
+
+// PortEndpoint identifies one observed TCP listener and its process-group holders.
+type PortEndpoint struct {
+	Transport string `json:"transport"`
+	Address   string `json:"address"`
+	Port      uint16 `json:"port"`
+	PIDs      []int  `json:"pids"`
+}
+
+// PortInspection reports the state of one opt-in listener snapshot.
+type PortInspection struct {
+	State      string         `json:"state"`
+	Listeners  []PortEndpoint `json:"listeners"`
+	Diagnostic string         `json:"diagnostic,omitempty"`
 }
 
 // StartupWarning reports one group considered during daemon startup

@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -20,8 +22,10 @@ import (
 	"time"
 
 	"hum/internal/output"
+	"hum/internal/testutil"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -75,6 +79,117 @@ func TestProcessHelper(t *testing.T) {
 		return
 	}
 	runProcessHelper()
+}
+
+func TestPortsFindSharedChildListenerAfterLeaderExit(t *testing.T) {
+	unrelated, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unrelated.Close()
+
+	ready := filepath.Join(t.TempDir(), "ports-ready")
+	store := newStore(t)
+	child, err := Start(Spec{
+		Argv:         []string{helperBinary(), "-test.run=TestProcessHelper", "ports-parent"},
+		Dir:          t.TempDir(),
+		Env:          helperEnvironment("ports-parent", helperReady+"="+ready, "HUM_PROCESS_OUTBOUND="+unrelated.Addr().String()),
+		Output:       store,
+		MaxLineBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("start listener group: %v", err)
+	}
+	defer func() {
+		_ = child.Signal(syscall.SIGKILL)
+		select {
+		case <-child.Done():
+			_ = child.Wait()
+		case <-time.After(3 * time.Second):
+			t.Errorf("listener group did not stop after kill")
+		}
+	}()
+	if !testutil.WaitUntil(6*time.Second, func() bool {
+		_, err := os.Stat(ready)
+		return err == nil
+	}) {
+		captured, _ := store.Read(output.ReadOptions{MaxEntries: 100, MaxBytes: 1 << 20})
+		var text strings.Builder
+		for _, entry := range captured.Entries {
+			text.WriteString(entry.Text)
+		}
+		t.Fatalf("listener child did not become ready; process output=%q", text.String())
+	}
+	fields := strings.Split(strings.TrimSpace(mustReadFile(t, ready)), "|")
+	if len(fields) != 4 {
+		t.Fatalf("listener marker fields = %q", fields)
+	}
+	childPID, err := strconv.Atoi(fields[0])
+	if err != nil {
+		t.Fatalf("parse child pid: %v", err)
+	}
+	firstWorkerPID, err := strconv.Atoi(fields[2])
+	if err != nil {
+		t.Fatalf("parse first worker pid: %v", err)
+	}
+	secondWorkerPID, err := strconv.Atoi(fields[3])
+	if err != nil {
+		t.Fatalf("parse second worker pid: %v", err)
+	}
+	address, portText, err := net.SplitHostPort(fields[1])
+	if err != nil {
+		t.Fatalf("parse child listener address %q: %v", fields[1], err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse child listener port: %v", err)
+	}
+	select {
+	case <-child.LeaderDone():
+	case <-time.After(6 * time.Second):
+		t.Fatal("listener group leader did not exit")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got := child.InspectPorts(ctx)
+	if got.State != PortsAvailable {
+		t.Fatalf("inspect ports state=%q diagnostic=%q", got.State, got.Diagnostic)
+	}
+	if len(got.Listeners) != 2 {
+		t.Fatalf("listeners = %#v, want two distinct SO_REUSEPORT sockets", got.Listeners)
+	}
+	wantHolders := map[string]bool{}
+	for _, pids := range [][]int{{childPID, firstWorkerPID}, {childPID, secondWorkerPID}} {
+		sort.Ints(pids)
+		wantHolders[fmt.Sprint(pids)] = true
+	}
+	for _, listener := range got.Listeners {
+		if listener.Transport != "tcp" || listener.Address != address || int(listener.Port) != port {
+			t.Fatalf("listener = %+v, want tcp %s:%d", listener, address, port)
+		}
+		if !wantHolders[fmt.Sprint(listener.PIDs)] {
+			t.Fatalf("listener holders = %v, want shared socket holder pairs %v", listener.PIDs, wantHolders)
+		}
+		delete(wantHolders, fmt.Sprint(listener.PIDs))
+		if listener.Address == unrelated.Addr().(*net.TCPAddr).IP.String() && listener.Port == uint16(unrelated.Addr().(*net.TCPAddr).Port) {
+			t.Fatalf("attributed unrelated process listener %+v", listener)
+		}
+		if childPID == child.PID() || firstWorkerPID == child.PID() || secondWorkerPID == child.PID() {
+			t.Fatalf("leader PID %d unexpectedly appears as a listener holder: %v", child.PID(), listener.PIDs)
+		}
+	}
+	if len(wantHolders) != 0 {
+		t.Fatalf("missing listener holder pairs: %v", wantHolders)
+	}
+}
+
+func mustReadFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func TestProcessStartIdentity(t *testing.T) {
@@ -141,6 +256,158 @@ func TestProcessGroupAliveIgnoresZombieMembers(t *testing.T) {
 	}
 }
 
+func runPortsParent() {
+	ready := os.Getenv(helperReady)
+	if ready == "" {
+		os.Exit(2)
+	}
+	listener, err := portsReuseListener("127.0.0.1:0")
+	if err != nil {
+		os.Exit(2)
+	}
+	defer listener.Close()
+	file, err := listener.File()
+	if err != nil {
+		os.Exit(2)
+	}
+	defer file.Close()
+	workerReady := ready + ".worker"
+	reuseReady := ready + ".reuse"
+	command := exec.Command(helperBinary(), "-test.run=TestProcessHelper", "ports-child")
+	outbound := os.Getenv("HUM_PROCESS_OUTBOUND")
+	command.Env = helperEnvironment("ports-child", helperReady+"="+ready, "HUM_PROCESS_OUTBOUND="+outbound, "HUM_PROCESS_WORKER_READY="+workerReady, "HUM_PROCESS_REUSE_READY="+reuseReady)
+	command.ExtraFiles = []*os.File{file}
+	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	if err := command.Start(); err != nil {
+		os.Exit(2)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			os.Exit(orphanLeaderExitCode)
+		}
+		if time.Now().After(deadline) {
+			_ = command.Process.Kill()
+			os.Exit(2)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func runPortsChild() {
+	listener, err := net.FileListener(os.NewFile(3, "shared-listener"))
+	if err != nil {
+		os.Exit(2)
+	}
+	defer listener.Close()
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		os.Exit(2)
+	}
+	defer udp.Close()
+	if outbound := os.Getenv("HUM_PROCESS_OUTBOUND"); outbound != "" {
+		connection, err := net.Dial("tcp", outbound)
+		if err != nil {
+			os.Exit(2)
+		}
+		defer connection.Close()
+	}
+	ready := os.Getenv(helperReady)
+	workerReady := os.Getenv("HUM_PROCESS_WORKER_READY")
+	reuseReady := os.Getenv("HUM_PROCESS_REUSE_READY")
+	if ready == "" || workerReady == "" || reuseReady == "" {
+		os.Exit(2)
+	}
+	reuseListener, err := portsReuseListener(listener.Addr().String())
+	if err != nil {
+		os.Exit(2)
+	}
+	defer reuseListener.Close()
+	startHolder := func(source *net.TCPListener, marker string) (*exec.Cmd, error) {
+		file, fileErr := source.File()
+		if fileErr != nil {
+			return nil, fileErr
+		}
+		worker := exec.Command(helperBinary(), "-test.run=TestProcessHelper", "ports-holder")
+		worker.Env = helperEnvironment("ports-holder", helperReady+"="+marker)
+		worker.ExtraFiles = []*os.File{file}
+		worker.Stdout, worker.Stderr = os.Stdout, os.Stderr
+		startErr := worker.Start()
+		_ = file.Close()
+		return worker, startErr
+	}
+	firstWorker, err := startHolder(listener.(*net.TCPListener), workerReady)
+	if err != nil {
+		os.Exit(2)
+	}
+	secondWorker, err := startHolder(reuseListener, reuseReady)
+	if err != nil {
+		_ = firstWorker.Process.Kill()
+		os.Exit(2)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		firstData, firstErr := os.ReadFile(workerReady)
+		secondData, secondErr := os.ReadFile(reuseReady)
+		if firstErr == nil && secondErr == nil {
+			value := fmt.Sprintf("%d|%s|%s|%s", os.Getpid(), listener.Addr().String(), strings.TrimSpace(string(firstData)), strings.TrimSpace(string(secondData)))
+			if err := os.WriteFile(ready, []byte(value), 0600); err != nil {
+				os.Exit(2)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = firstWorker.Process.Kill()
+			_ = secondWorker.Process.Kill()
+			os.Exit(2)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	signal.Ignore(os.Interrupt, syscall.SIGTERM)
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
+func portsReuseListener(address string) (*net.TCPListener, error) {
+	configuration := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
+		var optionErr error
+		if err := raw.Control(func(fd uintptr) {
+			optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+		}); err != nil {
+			return err
+		}
+		return optionErr
+	}}
+	listener, err := configuration.Listen(context.Background(), "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	tcp, ok := listener.(*net.TCPListener)
+	if !ok {
+		_ = listener.Close()
+		return nil, fmt.Errorf("reuseport listener has type %T", listener)
+	}
+	return tcp, nil
+}
+
+func runPortsHolder() {
+	listener, err := net.FileListener(os.NewFile(3, "shared-listener"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ports-holder file listener: %v\n", err)
+		os.Exit(2)
+	}
+	defer listener.Close()
+	if err := os.WriteFile(os.Getenv(helperReady), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "ports-holder ready marker: %v\n", err)
+		os.Exit(2)
+	}
+	signal.Ignore(os.Interrupt, syscall.SIGTERM)
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
 func runProcessHelper() {
 	switch os.Getenv(helperMode) {
 	case "literal":
@@ -198,6 +465,12 @@ func runProcessHelper() {
 		runGroupEscapedParent()
 	case "group-escaped-child":
 		runGroupEscapedChild()
+	case "ports-parent":
+		runPortsParent()
+	case "ports-child":
+		runPortsChild()
+	case "ports-holder":
+		runPortsHolder()
 	case "buffered-output":
 		runBufferedOutput()
 	case "too-large":

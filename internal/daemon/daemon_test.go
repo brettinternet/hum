@@ -364,14 +364,25 @@ func TestClientDisconnect(t *testing.T) {
 	})
 }
 
-func TestStatusGetTransportsNextCursorAndTypedErrors(t *testing.T) {
+type daemonPortsChild struct {
+	*daemonTestChild
+	inspections atomic.Int32
+}
+
+func (c *daemonPortsChild) InspectPorts(context.Context) process.PortsResult {
+	c.inspections.Add(1)
+	return process.PortsResult{State: process.PortsDenied, Listeners: []process.Port{}, Diagnostic: "permission denied"}
+}
+
+func TestStatusPortsGetTransportsNextCursorAndTypedErrors(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	var store *output.Store
+	child := &daemonPortsChild{daemonTestChild: &daemonTestChild{pid: 9001, done: make(chan struct{})}}
 	supervisor, err := app.New(app.Options{
 		StartProcess: func(spec process.Spec) (app.Child, error) {
 			store = spec.Output
-			return &daemonTestChild{pid: 9001, done: make(chan struct{})}, nil
+			return child, nil
 		},
 	})
 	if err != nil {
@@ -409,6 +420,16 @@ func TestStatusGetTransportsNextCursorAndTypedErrors(t *testing.T) {
 	}
 	if got.NextCursor != output.Cursor(2) {
 		t.Fatalf("status next cursor = %d, want 2", got.NextCursor)
+	}
+
+	if got.Ports != nil || child.inspections.Load() != 0 {
+		t.Fatal("ordinary daemon status inspected sockets")
+	}
+	request := protocol.NewGetRequest("status", root)
+	request.Ports = true
+	inspected, err := client.Get(context.Background(), request)
+	if err != nil || inspected.Ports == nil || inspected.Ports.State != process.PortsDenied || inspected.Ports.Diagnostic != "permission denied" || len(inspected.Ports.Listeners) != 0 || child.inspections.Load() != 1 {
+		t.Fatalf("daemon port inspection = %+v, error=%v, calls=%d", inspected.Ports, err, child.inspections.Load())
 	}
 
 	_, err = client.Get(context.Background(), protocol.NewGetRequest("bad/name", root))

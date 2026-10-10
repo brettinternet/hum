@@ -35,7 +35,8 @@ Hum is a local exact-argv process supervisor for humans and coding agents.
 Hum deliberately does not provide:
 
 - a TUI or web UI; Herdr provides panes;
-- port allocation or a reverse proxy;
+- port allocation, `$PORT` injection, reverse proxying, or URL inference; read-only listener observation is
+  available only through opt-in status;
 - cron scheduling, boot start, or shell-hook autostart;
 - file-watch restarts or liveness/health monitoring;
 - child CPU/RSS sampling or resource limits (wrap argv with platform tools instead; Hum still
@@ -129,7 +130,7 @@ no aliases.
 | `-f` | `--follow` | `logs` |
 
 Long-only: `--force`, `--since`, `--no-wait`, `--tty`, `--stop-processes`, `--runtime-dir`,
-`--stop-grace`, `--output-bytes`, and `--completed-records`. `input` adds no short aliases,
+`--stop-grace`, `--output-bytes`, `--completed-records`, and status-only `--ports`. `input` adds no short aliases,
 including for `--json`.
 
 ### Selecting a project and manifest
@@ -155,7 +156,7 @@ Human-readable output is the default.
 
 | Command | Default columns | Extra detail |
 | --- | --- | --- |
-| `status` | `NAME`, `STATE`, `PID`, `READINESS`, `RESTART`, `FOLLOWERS`; includes unlaunched declarations | `status NAME`: full single-process detail, readiness configuration, diagnostics |
+| `status` | `NAME`, `STATE`, `PID`, `READINESS`, `RESTART`, `FOLLOWERS`; includes unlaunched declarations | `status NAME`: full single-process detail, readiness configuration, diagnostics; `--ports`: opt-in TCP listener snapshot |
 | `list` | `NAME`, `STATE`, `PID` | `--full`: source, argv, readiness, followers (when followed), TTY, exit signal, restart details |
 | `up` summary | `NAME`, `RESULT`, `STATE`, `PID` in lexical order | `--full`: readiness matcher or exec method/argv/interval |
 | `doctor` | ordered `PASS`/`WARN`/`FAIL`/`INFO` rows and summary counts | — |
@@ -176,6 +177,26 @@ empty `NO_COLOR` also disables it). Piped output and JSON never contain ANSI sty
 | aggregate `[NAME]` log prefix | stable per-name color, never red or green |
 
 Names outside log prefixes, paths, messages, and child output are never styled.
+
+### Port observation
+
+`hum status NAME --ports` and MCP `status` with `ports: true` request a current, read-only TCP listener
+snapshot. Ordinary `status`, aggregate status, and `list` never inspect sockets. Missing or non-running
+processes keep their existing status semantics and are not inspected.
+
+The snapshot reports one entry per socket, its literal local address and port, and sorted PIDs for every
+member holding it on Unix, scoped to the recorded process group. Windows is limited to binding-owner PIDs
+reported by `GetExtendedTcpTable`, filtered to the launch's Job Object; the API cannot enumerate inherited
+holders or identify shared sockets. Windows retains separate table rows, never merges equal endpoints as
+proof of sharing, and returns `partial` with a diagnostic even when no owners are observed.
+Descendants remain visible after the group leader exits, but processes that escape the group, container
+runtimes, and forwarding layers such as Docker Desktop or OrbStack do not. UDP, Unix sockets, outbound
+connections, and non-listening TCP are excluded. Addresses are not converted to URLs.
+
+Inspection runs only on request, outside supervision locks, and rechecks process identities after reading
+sockets. It is still a snapshot: a process or listener may change immediately afterward. `available` with
+no listeners means none were observed at that moment; it does not prove the service unreachable. `denied`,
+`partial`, and `unavailable` are distinct from a successful empty result and carry a diagnostic.
 
 ### JSON output
 
@@ -942,6 +963,9 @@ Behavior matches the CLI:
 - In process results, `argv` is null before the first launch and `stop_grace` is in nanoseconds.
   `status` and `list` report `tty` and the same `followers` count. Recorded environments are never
   returned.
+- `status` accepts optional `ports: true` for a named, running process only; it returns the same
+  opt-in TCP snapshot as `hum status NAME --ports`. Default status and list omit the snapshot and
+  never inspect sockets.
 - Only `start` and `up` may create or replace a daemon; without a manifest they cannot start
   unknown names. Ad-hoc definitions from `hum run` disappear when the daemon is replaced. With no
   daemon, `list` reports stopped declarations, `stop` and `down` succeed, and other controls return
