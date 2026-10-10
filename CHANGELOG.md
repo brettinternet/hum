@@ -2,6 +2,17 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.17.1](https://github.com/brettinternet/hum/compare/v0.17.0...v0.17.1) - 2026-10-10
+
+### Added
+
+- **status:** Show TCP listeners automatically for named processes
+
+### Documentation
+
+- Queue automatic ports in named status
+- Tighten README
+
 ## [v0.17.0](https://github.com/brettinternet/hum/compare/v0.16.0...v0.17.0) - 2026-10-10
 
 ### Added
