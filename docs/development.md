@@ -94,8 +94,8 @@ Do not assert help or documentation wording with phrase or prose checks.
 
 | Tool | Version |
 | --- | --- |
-| Go | 1.27.1 |
-| Staticcheck | 2026.2.1 |
+| Go | 1.27.2 |
+| Staticcheck | `f1838cc308e5` (source build; Go 1.27.2 export-format support) |
 | govulncheck | 1.8.0 |
 
 Hum ships as prebuilt binaries and its module is not importable, so the pinned Go is the only
