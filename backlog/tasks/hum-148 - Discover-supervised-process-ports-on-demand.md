@@ -1,10 +1,10 @@
 ---
 id: HUM-148
 title: Discover supervised process TCP listeners on demand
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-10 01:33'
-updated_date: '2026-10-10 05:11'
+updated_date: '2026-10-10 05:16'
 labels:
   - cli
   - mcp
@@ -54,9 +54,9 @@ No task dependencies. Next action: trace the named status path (cli/mcp -> app -
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
+- [x] #1 task ci passes on the final commit
 - [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
 - [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
 - [x] #5 No test was deleted, skipped, or weakened
 - [x] #6 No protected gate file was modified unless the owner labelled this task tooling
@@ -80,4 +80,12 @@ Delivery: 1d588f1 implements on-demand listener discovery; 9c904da contains appr
 CI 38024720975: macOS CI and Linux/macOS race jobs PASS; Linux staticcheck found Darwin-only helper compiled as unused, and Windows failed new test doubles lacking Stop plus listener fixture with an incomplete environment. Fix scoped helper placement and native fixture contracts without weakening assertions. Owner approved including concurrent intentional edits; they were committed separately as b565f09 fix(process): harden listener inspection and are retained. Additional modified-file justification: integration/down_test.go needs existing socket wait before client calls in two tests. Repeated task ci failures showed daemon-alive assertions; both tests issue auto-start-capable clients immediately after async serve, allowing another daemon to win ownership. Waiting for the owned daemon socket preserves assertions and fixes the demonstrated fixture race rather than retrying or relaxing the gate.
 
 AC#1: native fixture coverage now passes on all hosts. macOS focused Ports command PASS (independent verifier); Linux native container focused command PASS and Linux CI full process/app suites PASS; Windows task windows:test process/app/integration suites PASS, including TestWindowsPortsInspectOwnedJobListener with approved owner-only partial semantics. Native evidence: CI 38026448404 at 7dc2c60, jobs Linux 114138191951, macOS 114138191833, Windows 114138192002 all success; logs /tmp/hum-148-final-ci/native-platform.log. AC#5: native task cli:test PASS in Linux/macOS CI and task windows:test PASS in Windows CI at the same SHA; local task cli:build, bin/hum status --help, and focused TestHelpContract|TestDocs PASS. All three platform jobs green; Linux race job alone failed pre-existing TestTTYWriteContextCancellation because canonical tty input may discard bytes instead of providing backpressure. Fixture now makes stdin raw before its readiness marker, keeping every cancellation/resize/liveness assertion. Five native macOS and Linux-container race repetitions PASS. Final full gate and CI reconciliation remain before Done.
+
+Final delivery PASS: CI 38026836014 at df2613227135aa62483d895ea08e5a49140510e2 succeeded on all five jobs: Go CI Windows 114139359430, macOS 114139359450, Linux 114139359483; Go race macOS 114139359277, Linux 114139359410. Native task cli:test (Linux/macOS), task windows:test, and race suites all passed. Full local task ci on df26132 PASS (/tmp/hum-148-final-ci/gate-tty.log). Independent verifier fd0ff86f-9ee5-46fc-8f43-ef9becb77ce2 returned PASS for AC1 through AC5 with no remaining task-scoped findings after bounded correction/evidence reconciliation. Final verifier artifact: /Users/brett/.pi/agent/sessions/--Users-brett-dev-me-hum--/subagent-artifacts/outputs/bae2a288-80c7-4c5b-8ce4-eebb19b57a21/verification.md (final reconciliation supersedes earlier findings). Feature 1d588f1, approved tooling 9c904da, upstream merge 91e689a, owner-approved hardening b565f09, native fixture fixes 7dc2c60, and tty fixture correction df26132 are pushed to main. No remaining blocker or resumable implementation step. Claim released by Done; no worktree/workspace was created. Pre-existing draft-004/draft-005 remain untouched and untracked. Completion record is a provider-only commit; rerun task check:staged and task ci before its push.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added opt-in status NAME --ports and MCP ports:true with bounded, identity-checked TCP listener snapshots. Linux procfs and macOS lsof aggregate shared holders; Windows explicitly reports partial binding-owner observations as approved. Default status is unchanged. Native Linux/macOS/Windows checks and both race jobs pass, full local task ci passes, and independent verification passes every criterion. Approved Go/Staticcheck upgrades and non-weakened fixture race fixes are included. Delivered on main; no outstanding work.
+<!-- SECTION:FINAL_SUMMARY:END -->
