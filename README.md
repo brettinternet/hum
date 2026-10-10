@@ -56,7 +56,7 @@ $env:Path += ";$installDir" # add this directory to your user PATH for future sh
 & (Join-Path $installDir 'hum.exe') --version
 ```
 
-Everything works except `hum signal`. TTY processes use ConPTY: in `hum attach`, Ctrl+] detaches, Ctrl+C goes to the process, and Ctrl+D and Ctrl+Z are passed to the process as ordinary keys (many Windows programs treat Ctrl+Z as end of input). See [Windows behavior](docs/design.md#platforms).
+Everything works except `hum signal`. In `hum attach`, Ctrl+] detaches; other keys, including Ctrl+C, Ctrl+D, and Ctrl+Z, go to the process. See [Windows behavior](docs/design.md#platforms).
 
 </details>
 
@@ -239,6 +239,17 @@ hum input console --text 'yes'       # answer a prompt without attaching
 
 Only one client can type at a time. Input is sent once and never queued.
 
+## Ports
+
+```console
+$ hum status web --ports
+...
+ports_state: available
+port: transport=tcp address=127.0.0.1 port=8123 pids=67051
+```
+
+Shows TCP listeners held by the process and its descendants, only when asked. Processes that leave its process group and container port-forwards are not seen. See [port observation](docs/design.md#port-observation).
+
 ## Coding agents
 
 Install a plugin, or point any MCP client at `hum mcp`:
@@ -284,17 +295,15 @@ hum completion fish > ~/.config/fish/completions/hum.fish  # fish
 
 `–` means not documented.
 
-Pick pitchfork for port allocation, a reverse proxy, boot start, cron, file-watch restarts, lifecycle hooks, or a UI. Pick Hum for exact argv, per-worktree isolation with no setup, and a small, stable API for agents: cursor-paged `logs` and `events`, `wait`, `input`, `signal`, and versioned JSON. An agent can read a page, act, then continue from the last cursor without missing or repeating a line. They can share a repo: keep Hum config in a Git-ignored `.hum.yaml`.
+Pick pitchfork for port allocation, a proxy, boot start, cron, file-watch restarts, hooks, or a UI. Pick Hum for exact argv, per-worktree isolation, and a small agent API where reads resume without missing or repeating a line:
+
+```console
+$ hum logs api --tail 2
+...
+next cursor: 7
+$ hum logs api --after-cursor 7   # only lines written since
+```
 
 ## Non-goals
 
 Hum does not provide a UI, port allocation, `$PORT` injection, a reverse proxy, URL inference, scheduling, boot start, file-watch restarts, health monitoring, resource limits, log queries, or shell templating. See [decision-001](backlog/decisions/decision-001%20-%20Hum-stays-a-process-API-no-port-allocation-proxying-or-shell-level-conveniences.md).
-
-Named status has opt-in, read-only TCP listener observation:
-
-```sh
-hum status web --ports
-hum status web --ports --json
-```
-
-It reports current listeners held by members of the process group (Unix) or Job Object (Windows), including descendants still in that group after its leader exits. Escaped processes, container runtimes, and port-forwarders such as Docker Desktop or OrbStack are outside the boundary. It never allocates ports, injects `$PORT`, proxies traffic, or builds URLs. An empty successful snapshot means no listener was observed then, not that the service is unreachable; denied, partial, and unavailable inspection has a separate state. Ordinary `status` and `list` never inspect sockets. Windows reports only the API's binding-owner PIDs, not every inherited holder, and always labels this limited observation `partial` with a diagnostic.
