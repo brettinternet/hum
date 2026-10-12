@@ -2,6 +2,7 @@ package output
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -144,7 +145,7 @@ func (w *LineWriter) flushReadyLocked() error {
 			limit = w.maxBytes
 		}
 		size := 0
-		if newline := indexByte(w.pending[:limit], '\n'); newline >= 0 {
+		if newline := strings.IndexByte(w.pending[:limit], '\n'); newline >= 0 {
 			size = newline + 1
 		} else if len(w.pending) >= w.maxBytes {
 			size = w.maxBytes
@@ -167,7 +168,7 @@ func (w *LineWriter) flushAllLocked() error {
 			if size > w.maxBytes {
 				size = w.maxBytes
 			}
-			if newline := indexByte(w.pending[:size], '\n'); newline >= 0 {
+			if newline := strings.IndexByte(w.pending[:size], '\n'); newline >= 0 {
 				size = newline + 1
 			}
 		}
@@ -218,13 +219,4 @@ func (w *LineWriter) idleFlush(generation uint64) {
 		w.scheduleIdleLocked()
 		return
 	}
-}
-
-func indexByte(s string, needle byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == needle {
-			return i
-		}
-	}
-	return -1
 }
