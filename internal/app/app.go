@@ -2919,9 +2919,8 @@ type portLookupCandidate struct {
 }
 
 type portLookupInspection struct {
-	index    int
-	ports    process.PortsResult
-	finished time.Time
+	index int
+	ports process.PortsResult
 }
 
 // LookupPort searches every active process group in every scope for a TCP
@@ -2943,7 +2942,6 @@ func (s *Supervisor) lookupPortWithBounds(ctx context.Context, port uint16, time
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	deadline, _ := lookupCtx.Deadline()
 
 	candidates := make([]portLookupCandidate, 0)
 	s.mu.RLock()
@@ -2993,51 +2991,28 @@ func (s *Supervisor) lookupPortWithBounds(ctx context.Context, port uint16, time
 				if lookupCtx.Err() != nil {
 					return
 				}
-				ports := s.inspectLookupCandidate(lookupCtx, candidates[index])
-				inspection := portLookupInspection{index: index, ports: ports, finished: time.Now()}
-				inspections <- inspection
+				inspections <- portLookupInspection{index: index, ports: s.inspectLookupCandidate(lookupCtx, candidates[index])}
 			}
 		}()
 	}
 
-	completed := make([]*portLookupInspection, len(candidates))
-	remaining := len(candidates)
-	for remaining > 0 {
+	// Inspections cut off by the lookup deadline already report their context
+	// error; candidates not received before it are reported incomplete below.
+	completed := make([]*process.PortsResult, len(candidates))
+collect:
+	for received := 0; received < len(candidates); received++ {
 		select {
 		case inspection := <-inspections:
-			if inspection.finished.After(deadline) {
-				continue
-			}
-			if completed[inspection.index] == nil {
-				copy := inspection
-				completed[inspection.index] = &copy
-				remaining--
-			}
+			ports := inspection.ports
+			completed[inspection.index] = &ports
 		case <-lookupCtx.Done():
-			for {
-				select {
-				case inspection := <-inspections:
-					if !inspection.finished.After(deadline) && completed[inspection.index] == nil {
-						copy := inspection
-						completed[inspection.index] = &copy
-						remaining--
-					}
-				default:
-					remaining = 0
-				}
-				if remaining == 0 {
-					break
-				}
-			}
-		}
-		if lookupCtx.Err() != nil {
-			break
+			break collect
 		}
 	}
 
 	for index, candidate := range candidates {
-		inspection := completed[index]
-		if inspection == nil {
+		inspected := completed[index]
+		if inspected == nil {
 			diagnostic := context.DeadlineExceeded.Error()
 			if err := lookupCtx.Err(); err != nil {
 				diagnostic = err.Error()
@@ -3048,7 +3023,7 @@ func (s *Supervisor) lookupPortWithBounds(ctx context.Context, port uint16, time
 			})
 			continue
 		}
-		ports := inspection.ports
+		ports := *inspected
 		listeners := make([]process.Port, 0, len(ports.Listeners))
 		for _, listener := range ports.Listeners {
 			if listener.Transport == "tcp" && listener.Port == port {
@@ -3061,7 +3036,9 @@ func (s *Supervisor) lookupPortWithBounds(ctx context.Context, port uint16, time
 			snapshot.Ports = &process.PortsResult{State: ports.State, Listeners: listeners, Diagnostic: ports.Diagnostic}
 			result.Processes = append(result.Processes, snapshot)
 		}
-		if ports.State == process.PortsDenied || ports.State == process.PortsUnavailable || ports.State == process.PortsPartial && !hasMatch || ports.State != process.PortsAvailable && ports.State != process.PortsPartial && ports.State != process.PortsDenied && ports.State != process.PortsUnavailable {
+		// Only a complete inspection, or a partial one that found the port,
+		// can rule this group in or out.
+		if ports.State != process.PortsAvailable && !(ports.State == process.PortsPartial && hasMatch) {
 			result.Incomplete = append(result.Incomplete, PortLookupIncomplete{
 				Name: candidate.snapshot.Name, Scope: candidate.snapshot.Scope, Root: candidate.snapshot.Root,
 				State: ports.State, Diagnostic: ports.Diagnostic,
@@ -3812,7 +3789,18 @@ func (s *Supervisor) SubscribeScoped(scope, cwd, name string, opts output.ReadOp
 
 // SubscribeSessionScoped attaches to the current session after checking its optional identity.
 func (s *Supervisor) SubscribeSessionScoped(scope, cwd, name string, opts output.ReadOptions, sessionID string) (*Follower, error) {
-	rec, err := s.ensureSessionScoped(scope, cwd, name)
+	// A session-checked follow never creates a pre-launch record: a missing
+	// record means the cursor's session is gone.
+	var rec *record
+	var err error
+	if sessionID != "" {
+		rec, err = s.lookupScoped(scope, cwd, name, "")
+		if errors.Is(err, ErrProcessNotFound) {
+			return nil, &CursorStaleError{Provided: sessionID}
+		}
+	} else {
+		rec, err = s.ensureSessionScoped(scope, cwd, name)
+	}
 	if err != nil {
 		return nil, err
 	}

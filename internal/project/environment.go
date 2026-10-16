@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"unicode/utf8"
 )
 
@@ -240,7 +240,7 @@ func PrepareEnvironmentsWithSkipped(definitions []Definition, baseline []string)
 				return nil, nil, err
 			}
 			_, lstatErr := os.Lstat(lexical)
-			if errors.Is(lstatErr, syscall.ENOENT) && !fileSpec.Required {
+			if errors.Is(lstatErr, fs.ErrNotExist) && !fileSpec.Required {
 				ref := environmentFileRef(definition.Environment, filename)
 				if _, seen := skippedRefs[ref]; !seen {
 					skippedRefs[ref] = struct{}{}

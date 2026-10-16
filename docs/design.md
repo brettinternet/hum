@@ -684,7 +684,7 @@ that looks like expansion, or use an external loader. This is not a dotenvx or d
   while it stays inside the canonical project root. Empty, absolute, root, lexical or symlink
   escapes, non-regular, and unreadable paths fail. Files are required unless a mapping sets
   `required: false`; an optional file is skipped only when `Lstat` of its lexical path reports
-  `ENOENT` (including a missing parent directory). A dangling final symlink is invalid.
+  not-exist (including a missing parent directory). A dangling final symlink is invalid.
 - Manifest parsing checks syntax and containment without reading files. Launch preflight reads each
   unique canonical file once per invocation and reuses that snapshot per target. Optional-file
   absence is decided in that same snapshot. There is no cache across requests or worktrees and no

@@ -1611,8 +1611,10 @@ func renderStatusHumanWithPolicy(w io.Writer, process app.Process, colors colorP
 	); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "session: %s\n", status.SessionID); err != nil {
-		return err
+	if status.SessionID != "" {
+		if _, err := fmt.Fprintf(w, "session: %s\n", status.SessionID); err != nil {
+			return err
+		}
 	}
 	if status.PID != 0 {
 		if _, err := fmt.Fprintf(w, "pid: %d\n", status.PID); err != nil {

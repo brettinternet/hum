@@ -16,7 +16,7 @@ import (
 // version 19 added per-process stop grace; version 20 added executable readiness
 // configuration and durable readiness diagnostics; version 21 adds opt-in TCP
 // listener snapshots to named status requests, and version 22 adds aggregate
-// TCP port lookup.
+// TCP port lookup and output session identities.
 const Version = 22
 
 // MaxDurationMilliseconds is the largest whole-millisecond duration that

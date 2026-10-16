@@ -5326,4 +5326,16 @@ func TestCursorSessionChecksOutputAndWaitBeforeReading(t *testing.T) {
 	if !errors.As(err, &stale) || stale.Current != second.SessionID {
 		t.Fatalf("stale wait error = %v, want current session %q", err, second.SessionID)
 	}
+
+	// A stale follow after remove must report stale without creating a
+	// pre-launch record for the removed name.
+	if err := s.Remove(context.Background(), root, "cursor"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SubscribeSessionScoped(ScopeProject, root, "cursor", output.ReadOptions{After: &cursor}, second.SessionID); !errors.As(err, &stale) || stale.Current != "" {
+		t.Fatalf("stale follow after remove = %v, want cursor_stale with no current session", err)
+	}
+	if _, err := s.lookupScoped(ScopeProject, root, "cursor", ""); !errors.Is(err, ErrProcessNotFound) {
+		t.Fatalf("stale follow created a record: lookup err %v", err)
+	}
 }
