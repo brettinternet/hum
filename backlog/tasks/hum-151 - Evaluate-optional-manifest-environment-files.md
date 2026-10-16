@@ -1,10 +1,10 @@
 ---
 id: HUM-151
 title: Allow optional environment files in hum.yaml
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-25 20:18'
-updated_date: '2026-10-16 17:12'
+updated_date: '2026-10-16 17:38'
 labels:
   - config
   - contract
@@ -67,18 +67,31 @@ Next action: change `EnvironmentSpec.Files` (internal/project/environment.go:25)
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 mise exec go -- go test ./internal/project -run 'TestManifestEnvironmentContract|TestEnvironmentFileContract|TestEnvironmentCompositionContract|TestManifestSchemaContract|TestExampleManifestsLoad' -count=1 -v exits 0 with those tests executed: string and mapping items parse in order and required defaults to true; unknown mapping keys, a missing, empty, absolute, or escaping path, and a non-boolean required fail at parse; the schema accepts both forms and rejects unknown mapping keys; a missing optional file, including one under a missing directory, is skipped while later files still apply in order; an optional path that is a directory, an escaping symlink, a dangling symlink, unreadable, oversized, or malformed fails as a required file does; a missing required file still fails with the unchanged message; the worktrees example manifest loads.
-- [ ] #2 mise exec go -- go test ./internal/cli -run 'TestDoctorProjectEnvironmentAndExecutableContract|TestManifestEnvironmentPreflightContract' -count=1 -v exits 0 with those tests executed: doctor reports environment.composition PASS and names a skipped optional file by manifest-relative path in its message and details, never a value; launch preflight with a missing optional file succeeds and with a missing required file fails before daemon contact.
-- [ ] #3 mise exec go -- go test ./integration -run '^TestManifestEnvironmentLifecycle$' -count=1 -v exits 0 with the built binary: with files [.env, {path: .env.local, required: false}] and no .env.local, start succeeds and the child sees the .env value; after .env.local is created, hum restart applies its override.
-- [ ] #4 task cli:test exits 0 with no test skipped, deleted, or weakened, and rg -n 'required: false' README.md docs/design.md hum.example.yaml examples/worktrees/hum.yaml prints at least one line from each file (the schema form is covered by TestManifestSchemaContract in AC1).
+- [x] #1 mise exec go -- go test ./internal/project -run 'TestManifestEnvironmentContract|TestEnvironmentFileContract|TestEnvironmentCompositionContract|TestManifestSchemaContract|TestExampleManifestsLoad' -count=1 -v exits 0 with those tests executed: string and mapping items parse in order and required defaults to true; unknown mapping keys, a missing, empty, absolute, or escaping path, and a non-boolean required fail at parse; the schema accepts both forms and rejects unknown mapping keys; a missing optional file, including one under a missing directory, is skipped while later files still apply in order; an optional path that is a directory, an escaping symlink, a dangling symlink, unreadable, oversized, or malformed fails as a required file does; a missing required file still fails with the unchanged message; the worktrees example manifest loads.
+- [x] #2 mise exec go -- go test ./internal/cli -run 'TestDoctorProjectEnvironmentAndExecutableContract|TestManifestEnvironmentPreflightContract' -count=1 -v exits 0 with those tests executed: doctor reports environment.composition PASS and names a skipped optional file by manifest-relative path in its message and details, never a value; launch preflight with a missing optional file succeeds and with a missing required file fails before daemon contact.
+- [x] #3 mise exec go -- go test ./integration -run '^TestManifestEnvironmentLifecycle$' -count=1 -v exits 0 with the built binary: with files [.env, {path: .env.local, required: false}] and no .env.local, start succeeds and the child sees the .env value; after .env.local is created, hum restart applies its override.
+- [x] #4 task cli:test exits 0 with no test skipped, deleted, or weakened, and rg -n 'required: false' README.md docs/design.md hum.example.yaml examples/worktrees/hum.yaml prints at least one line from each file (the schema form is covered by TestManifestSchemaContract in AC1).
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Modified-file deviation authorized by implementation necessity: internal/mcp/tools_test.go must migrate EnvironmentSpec.Files fixtures from []string to typed entries so existing MCP regression tests continue compiling; no MCP behavior changes. Task metadata is maintained in the primary checkout via backlog CLI.
+
+AC#1: mise exec go -- go test ./internal/project -run "TestManifestEnvironmentContract|TestEnvironmentFileContract|TestEnvironmentCompositionContract|TestManifestSchemaContract|TestExampleManifestsLoad" -count=1 -v — PASS (executor and independent verifier); required defaults, ordered mappings, closed schema, absent/invalid optional paths, unchanged missing-required errors, example loading covered.
+AC#2: mise exec go -- go test ./internal/cli -run "TestDoctorProjectEnvironmentAndExecutableContract|TestManifestEnvironmentPreflightContract" -count=1 -v — PASS (executor and independent verifier); doctor snapshot reports skipped paths without values and launch preflight preserves required errors.
+AC#3: mise exec go -- go test ./integration -run "^TestManifestEnvironmentLifecycle$" -count=1 -v — PASS (executor and independent verifier); built binary starts with defaults then restart reads newly created optional override.
+AC#4: task cli:test — PASS; rg -n "required: false" README.md docs/design.md hum.example.yaml examples/worktrees/hum.yaml — exit 0, matches all four files. No tests deleted, skipped, or weakened.
+Delivery: implementation commit f3138b0d41b32160ee7e1e59d81dbf1e6ecab157 passed task check:staged and task ci (security, vet/staticcheck, tests, race, installer, release smoke), log /tmp/hum-151-ci.log. Fast-forward merged into main; no push. Independent verifier 4cca36e6-a553-4c61-9d48-cb88fe713bfa returned PASS for AC1–4 and found no item-scoped defects. No protected gate files changed. LSP unavailable; compiler and executable checks passed.
+Cleanup: verified session-owned receipt for 01a145b9-52e3-751d-b85f-5b7e9b105be0, removed .worktrees/hum-151 and branch via wt remove --foreground; verified Herdr workspace wD8 disappeared. No retained task checkout. HUM-150 work preserved. Remaining blocker: none. Next resumable step: none; complete.
+<!-- SECTION:NOTES:END -->
