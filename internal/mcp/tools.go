@@ -158,6 +158,7 @@ type manifestResolver interface {
 type Client interface {
 	Start(context.Context, protocol.StartRequest) (protocol.Process, error)
 	List(context.Context, protocol.ListRequest) ([]protocol.Process, error)
+	PortLookup(context.Context, protocol.PortLookupRequest) ([]protocol.Process, []protocol.PortLookupIncomplete, error)
 	Get(context.Context, protocol.GetRequest) (protocol.Process, error)
 	Output(context.Context, protocol.OutputRequest) (protocol.OutputResult, error)
 	Wait(context.Context, protocol.WaitRequest) (protocol.WaitResponse, error)
@@ -444,7 +445,19 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	collectionResults := func(items map[string]any) map[string]any {
 		return objectSchema(map[string]any{"results": map[string]any{"type": "array", "items": items}, "warnings": startupWarningsSchema}, "results")
 	}
-	collectionProcesses := objectSchema(map[string]any{"processes": map[string]any{"type": "array", "items": process}, "warnings": startupWarningsSchema}, "processes")
+	portLookupProcessProperties := cloneProperties(process["properties"].(map[string]any))
+	portLookupProcessProperties["ports"] = ports
+	portLookupProcess := objectSchema(portLookupProcessProperties, process["required"].([]string)...)
+	incompletePortInspection := objectSchema(map[string]any{
+		"name": map[string]any{"type": "string"}, "scope": map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}},
+		"project_root": map[string]any{"type": "string"}, "state": map[string]any{"type": "string", "enum": []string{"partial", "denied", "unavailable"}},
+		"diagnostic": map[string]any{"type": "string"},
+	}, "name", "scope", "project_root", "state", "diagnostic")
+	portLookupOutput := objectSchema(map[string]any{
+		"processes":  map[string]any{"type": "array", "items": portLookupProcess},
+		"incomplete": map[string]any{"type": "array", "items": incompletePortInspection},
+		"warnings":   startupWarningsSchema,
+	}, "processes")
 	upSchema := objectSchema(waitProps, "project_root")
 	upSchema["required"] = []string{"project_root"}
 	delete(upSchema, "allOf")
@@ -454,15 +467,35 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"items":       map[string]any{"type": "string", "minLength": 1},
 		"description": "Declared names; includes after prerequisites. Omit for all declarations.",
 	}
-	listSchema := objectSchema(map[string]any{"project_root": root, "manifest": manifest, "all": map[string]any{"type": "boolean", "description": "Include every project scope from project scope; default is false."}}, "project_root")
+	listSchema := objectSchema(map[string]any{
+		"project_root": root, "manifest": manifest,
+		"all":  map[string]any{"type": "boolean", "description": "Include every project scope."},
+		"port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535, "description": "Find listeners across every scope."},
+	}, "project_root")
 	listSchema["allOf"] = append(listSchema["allOf"].([]any), map[string]any{
-		"not": map[string]any{
-			"required": []string{"scope", "all"},
-			"properties": map[string]any{
-				"scope": map[string]any{"const": protocol.ScopeGlobal},
-				"all":   map[string]any{"const": true},
+		"not": map[string]any{"anyOf": []any{
+			map[string]any{
+				"required": []string{"scope", "all"},
+				"properties": map[string]any{
+					"scope": map[string]any{"const": protocol.ScopeGlobal},
+					"all":   map[string]any{"const": true},
+				},
 			},
-		},
+			map[string]any{
+				"required": []string{"port", "scope"},
+				"properties": map[string]any{
+					"port":  map[string]any{"type": "integer"},
+					"scope": map[string]any{"const": protocol.ScopeGlobal},
+				},
+			},
+			map[string]any{
+				"required": []string{"port", "all"},
+				"properties": map[string]any{
+					"port": map[string]any{"type": "integer"},
+					"all":  map[string]any{"const": false},
+				},
+			},
+		}},
 	})
 	logsSchema := objectSchema(map[string]any{
 		"project_root": root,
@@ -504,12 +537,12 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"truncated": map[string]any{"type": "boolean"}, "has_more": map[string]any{"type": "boolean"},
 	}, "events", "next_cursor", "truncated", "has_more")
 	definitions := []toolDefinition{
-		{Name: "start", Description: "Start one declared process or retained session without starting its prerequisites. Waits for readiness by default; use up for dependency-aware startup.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
+		{Name: "start", Description: "Start one declared process or retained session without prerequisites; waits for readiness by default. Use up for dependencies.", InputSchema: objectSchema(startProps, "project_root", "name"), OutputSchema: launch},
 		{Name: "up", Description: "Start all project definitions, or selected names and their prerequisites. Use for dependency-aware startup; returns per-process results and warnings.", InputSchema: upSchema, OutputSchema: collectionResults(launch)},
 		{Name: "down", Description: "Stop active sessions in the selected scope, dependents before prerequisites. Use for project-wide shutdown without removing sessions.", InputSchema: objectSchema(map[string]any{"project_root": root}, "project_root"), OutputSchema: collectionResults(stop)},
-		{Name: "list", Description: "List declared and retained sessions in the selected scope. Use all from project scope to inspect sessions across projects.", InputSchema: listSchema, OutputSchema: collectionProcesses},
-		{Name: "status", Description: "Inspect one session's state and details, including a TCP-listener snapshot for a running process.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: statusProcess},
-		{Name: "logs", Description: "Read bounded output for one session. Use stream, cursor, time, tail, or match filters to inspect recent output without following it.", InputSchema: logsSchema, OutputSchema: output},
+		{Name: "list", Description: "List sessions, or find Hum listeners on one TCP port.", InputSchema: listSchema, OutputSchema: portLookupOutput},
+		{Name: "status", Description: "Inspect one session and its TCP listeners.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": nameExisting}, "project_root", "name"), OutputSchema: statusProcess},
+		{Name: "logs", Description: "Read bounded output for one session; filter by stream, cursor, time, tail, or match without following.", InputSchema: logsSchema, OutputSchema: output},
 		{Name: "wait", Description: "Wait for matching output or exit from one session. Use after and timeout_ms to bound the wait.", InputSchema: objectSchema(map[string]any{"project_root": root, "name": stringProperty("Runtime name; without after, it may not be launched yet."), "after": map[string]any{"type": "integer", "minimum": 0, "description": "Exclusive output cursor to wait from; omitting it waits from the current launch cursor."}, "match": map[string]any{"type": "string", "description": "Regular expression that resolves the wait early when it matches new output."}, "timeout_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum time to wait in milliseconds; defaults to 30000."}}, "project_root", "name"), OutputSchema: wait},
 		{Name: "input", Description: "Send exact text or base64 bytes once to a running TTY session. Use for a prompt response; no newline is added.", InputSchema: inputSchema, OutputSchema: inputResult},
 		{Name: "restart", Description: "Replace one session, adopting the current definition when present. Use after editing a definition or to rerun a retained session; waits for readiness by default.", InputSchema: objectSchema(restartProps, "project_root", "name"), OutputSchema: restart},
@@ -557,6 +590,7 @@ type commonInput struct {
 	ProjectRoot   string               `json:"project_root,omitempty"`
 	Manifest      string               `json:"manifest,omitempty"`
 	All           bool                 `json:"all,omitempty"`
+	Port          int                  `json:"port,omitempty"`
 	Name          string               `json:"name,omitempty"`
 	NoWait        bool                 `json:"no_wait,omitempty"`
 	TimeoutMS     int64                `json:"timeout_ms,omitempty"`
@@ -1124,6 +1158,19 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 			return nil, err
 		}
 	}
+	if name == "list" {
+		if _, portSet := input.fields["port"]; portSet {
+			if input.Port < 1 || input.Port > 65535 {
+				return nil, &ToolError{Code: "invalid_request", Message: "port must be between 1 and 65535"}
+			}
+			if input.Scope == protocol.ScopeGlobal {
+				return nil, &ToolError{Code: "invalid_request", Message: "port lookup cannot be combined with global scope"}
+			}
+			if _, allSet := input.fields["all"]; allSet && !input.All {
+				return nil, &ToolError{Code: "invalid_request", Message: "port lookup requires all to be true when specified"}
+			}
+		}
+	}
 	if name == "remove" {
 		_, allSet := input.fields["all"]
 		nameSet := strings.TrimSpace(input.Name) != ""
@@ -1571,7 +1618,26 @@ func listProcessKey(process protocol.Process) string {
 	return scope + "\x00" + process.Root + "\x00" + process.Name
 }
 
+type portLookupResult struct {
+	Processes  []protocol.Process              `json:"processes"`
+	Incomplete []protocol.PortLookupIncomplete `json:"incomplete,omitempty"`
+}
+
 func (s *Server) list(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
+	if _, portSet := input.fields["port"]; portSet {
+		client, err := s.client(ctx, false)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		defer client.Close()
+		recordStartupWarnings(ctx, startupWarnings(client))
+		processes, incomplete, err := client.PortLookup(ctx, protocol.PortLookupRequest{Op: protocol.OpPortLookup, Port: input.Port})
+		if err != nil {
+			return nil, mapError(err)
+		}
+		recordStartupWarnings(ctx, startupWarnings(client))
+		return portLookupResult{Processes: processes, Incomplete: incomplete}, nil
+	}
 	byName := make(map[string]protocol.Process, len(resolution.Definitions))
 	for _, definition := range resolution.Definitions {
 		process := stoppedProcess(resolution.Root, definition)

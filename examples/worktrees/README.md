@@ -29,4 +29,4 @@ wt hook pre-start                                # once, for the main checkout
 wt switch --create feature -x hum -- up --detach # writes .env.local, then starts
 ```
 
-Two branches can hash to the same port. If they do, edit one worktree's `.env.local`.
+Two branches can hash to the same port. If a launch reports `address already in use`, inspect the machine-wide Hum groups from either worktree with `hum list --port 8810`. The result shows the owning project selector; incomplete inspections are called out separately. Hum never reports non-Hum holders. Then edit one worktree's `.env.local` if needed.

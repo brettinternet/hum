@@ -970,6 +970,28 @@ func (s *Server) dispatchRequest(ctx context.Context, req *protocol.Request) (an
 			s.trackProcess(item)
 		}
 		return protocol.ListResponse{Op: req.Op, OK: true, Processes: protocolProcessesFromApp(items), Warnings: s.StartupWarnings()}, false
+	case protocol.OpPortLookup:
+		value := req.PortLookup
+		if value == nil {
+			value = new(protocol.PortLookupRequest)
+			if err := req.Decode(value); err != nil {
+				return dispatchError(req.Op, fmt.Errorf("%w: invalid port lookup request", app.ErrInvalidRequest)), false
+			}
+		}
+		if value.Port < 1 || value.Port > 65535 {
+			return dispatchError(req.Op, fmt.Errorf("%w: port must be between 1 and 65535", app.ErrInvalidRequest)), false
+		}
+		lookup := s.supervisor.LookupPort(ctx, uint16(value.Port))
+		for _, item := range lookup.Processes {
+			s.trackProcess(item)
+		}
+		incomplete := make([]protocol.PortLookupIncomplete, 0, len(lookup.Incomplete))
+		for _, item := range lookup.Incomplete {
+			incomplete = append(incomplete, protocol.PortLookupIncomplete{
+				Name: item.Name, Scope: item.Scope, ProjectRoot: item.Root, State: item.State, Diagnostic: item.Diagnostic,
+			})
+		}
+		return protocol.PortLookupResponse{Op: req.Op, OK: true, Processes: protocolProcessesFromApp(lookup.Processes), Incomplete: incomplete, Warnings: s.StartupWarnings()}, false
 	case protocol.OpGet:
 		value := req.Get
 		var item app.Process

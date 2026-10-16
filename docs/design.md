@@ -181,8 +181,9 @@ Names outside log prefixes, paths, messages, and child output are never styled.
 ### Port observation
 
 `hum status NAME` and named MCP `status` automatically include a current, read-only TCP listener
-snapshot for running processes. Aggregate status and `list` never inspect sockets. Missing or non-running
-processes keep their existing status semantics and are not inspected.
+snapshot for running processes. `hum list --port PORT` and MCP `list` with `port` explicitly inspect
+active groups across every project and global scope; plain `list`, `list --all`, and aggregate status
+never inspect sockets. Missing or non-running processes are not inspected.
 
 The snapshot reports one entry per socket, its literal local address and port, and sorted PIDs for every
 member holding it on Unix, scoped to the recorded process group. Windows is limited to binding-owner PIDs
@@ -194,9 +195,16 @@ runtimes, and forwarding layers such as Docker Desktop or OrbStack do not. UDP, 
 connections, and non-listening TCP are excluded. Addresses are not converted to URLs.
 
 Named inspection runs outside supervision locks with a two-second deadline and rechecks process identities
-after reading sockets. Deadline expiry returns partial or unavailable inspection with a diagnostic, not a status error. It is still a snapshot: a process or listener may change immediately afterward. `available` with
-no listeners means none were observed at that moment; it does not prove the service unreachable. `denied`,
-`partial`, and `unavailable` are distinct from a successful empty result and carry a diagnostic.
+after reading sockets. Aggregate port lookup snapshots all active records under one read lock, then inspects
+outside it with at most four concurrent workers, a two-second per-group deadline, and a five-second whole-
+lookup deadline. Matching records include only listeners for the requested port. Denied, unavailable,
+non-matching partial, deadline-cut-off, and launch-changed records appear in `incomplete`; therefore an
+incomplete search is never presented as a clean miss. A no-holder answer is not a claim about foreign
+processes: Hum inspects only its supervised groups and never identifies or describes other PIDs.
+
+Both modes are snapshots: a process or listener may change immediately afterward. `available` with no
+listeners means none were observed at that moment; it does not prove the service unreachable. `denied`,
+`partial`, and `unavailable` remain distinct from a successful empty result and carry a diagnostic.
 
 ### JSON output
 

@@ -19,7 +19,7 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 	tty := &TTYSize{Columns: 120, Rows: 40}
 	stopGrace := 2 * time.Second
 	requests := []any{
-		Hello{Op: OpHello, Version: 21},
+		Hello{Op: OpHello, Version: 22},
 		StartRequest{Op: OpStart, Scope: ScopeProject, Name: "start", Argv: []string{"tool", "--flag"}, Cwd: "/work", Root: "/project", Env: []string{"A=B"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace, Attached: true, Origin: "cli"},
 		ListRequest{Op: OpList, Scope: ScopeGlobal, Cwd: "/work", All: true, IncludeCompleted: true},
 		GetRequest{Op: OpGet, Scope: ScopeProject, Name: "get", Cwd: "/work", Ports: true},
@@ -97,7 +97,7 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 	entries := []OutputEntry{{Cursor: cursor, Stream: StreamStdout, Time: stamp, Text: "output"}}
 	wireError := NewWireError(ErrorInvalidRequest, "bad", map[string]any{"client": 18, "daemon": 19})
 	responses := []any{
-		HelloResponse{Op: OpHello, Version: 21, Warnings: []StartupWarning{{Project: "/project", Name: "x", Outcome: "reclaimed", Message: "ok"}}},
+		HelloResponse{Op: OpHello, Version: 22, Warnings: []StartupWarning{{Project: "/project", Name: "x", Outcome: "reclaimed", Message: "ok"}}},
 		StartResponse{Op: OpStart, OK: true, Process: &process, Warnings: []StartupWarning{{Project: "/project", Name: "x", Outcome: "reclaimed", Message: "ok"}}},
 		ListResponse{Op: OpList, OK: true, Processes: []Process{process}, Warnings: []StartupWarning{{Project: "/project", Name: "x", Outcome: "unresolved", Message: "hold"}}},
 		GetResponse{Op: OpGet, OK: true, Process: &process, Warnings: []StartupWarning{{Project: "/project", Name: "x", Outcome: "reclaimed", Message: "ok"}}},

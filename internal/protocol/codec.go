@@ -169,6 +169,7 @@ type Request struct {
 	Hello        *HelloRequest        `json:"-"`
 	Start        *StartRequest        `json:"-"`
 	List         *ListRequest         `json:"-"`
+	PortLookup   *PortLookupRequest   `json:"-"`
 	Get          *GetRequest          `json:"-"`
 	Output       *OutputRequest       `json:"-"`
 	Events       *EventsRequest       `json:"-"`
@@ -207,7 +208,7 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	r.Raw = append(r.Raw[:0], data...)
 	r.Payload = append(r.Payload[:0], data...)
 	r.Version = 0
-	r.Hello, r.Start, r.List, r.Get, r.Output, r.Events, r.Follow, r.Wait, r.Signal, r.Stop, r.Restart, r.Remove, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+	r.Hello, r.Start, r.List, r.PortLookup, r.Get, r.Output, r.Events, r.Follow, r.Wait, r.Signal, r.Stop, r.Restart, r.Remove, r.Shutdown = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 	r.InputAttach, r.InputRelease, r.InputWrite, r.InputResize = nil, nil, nil, nil
 
 	var err error
@@ -222,6 +223,9 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	case OpList:
 		r.List = new(ListRequest)
 		err = json.Unmarshal(data, r.List)
+	case OpPortLookup:
+		r.PortLookup = new(PortLookupRequest)
+		err = json.Unmarshal(data, r.PortLookup)
 	case OpGet:
 		r.Get = new(GetRequest)
 		err = json.Unmarshal(data, r.Get)
@@ -299,6 +303,9 @@ func (r Request) MarshalJSON() ([]byte, error) {
 	if r.List != nil {
 		return json.Marshal(r.List)
 	}
+	if r.PortLookup != nil {
+		return json.Marshal(r.PortLookup)
+	}
 	if r.Get != nil {
 		return json.Marshal(r.Get)
 	}
@@ -365,6 +372,7 @@ type ResponseEnvelope struct {
 	Hello       *HelloResponse
 	Start       *StartResponse
 	List        *ListResponse
+	PortLookup  *PortLookupResponse
 	Get         *GetResponse
 	Wait        *WaitResponse
 	Output      *OutputResponse
@@ -416,6 +424,10 @@ func (d *Decoder) DecodeResponse() (ResponseEnvelope, error) {
 		result.List = new(ListResponse)
 		err = decode(result.List)
 		result.OK, result.Error, result.Warnings = result.List.OK, result.List.Error, result.List.Warnings
+	case OpPortLookup:
+		result.PortLookup = new(PortLookupResponse)
+		err = decode(result.PortLookup)
+		result.OK, result.Error, result.Warnings = result.PortLookup.OK, result.PortLookup.Error, result.PortLookup.Warnings
 	case OpGet:
 		result.Get = new(GetResponse)
 		err = decode(result.Get)

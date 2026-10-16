@@ -43,6 +43,7 @@ type Client struct {
 // protocol DTOs while allowing callers to use typed operation methods.
 type StartRequest = protocol.StartRequest
 type ListRequest = protocol.ListRequest
+type PortLookupRequest = protocol.PortLookupRequest
 type GetRequest = protocol.GetRequest
 type OutputRequest = protocol.OutputRequest
 type EventsRequest = protocol.EventsRequest
@@ -327,6 +328,28 @@ func (c *Client) List(ctx context.Context, req ListRequest) ([]app.Process, erro
 	}
 	return items, nil
 }
+func (c *Client) PortLookup(ctx context.Context, req PortLookupRequest) (PortLookupResult, error) {
+	req.Op = protocol.OpPortLookup
+	response, err := c.roundTrip(ctx, req, protocol.OpPortLookup)
+	if err != nil {
+		return PortLookupResult{}, err
+	}
+	if response.PortLookup == nil {
+		return PortLookupResult{}, errors.New("daemon port lookup response omitted payload")
+	}
+	items := make([]app.Process, 0, len(response.PortLookup.Processes))
+	for _, item := range response.PortLookup.Processes {
+		items = append(items, appProcessFromProtocol(item))
+	}
+	return PortLookupResult{Processes: items, Incomplete: append([]protocol.PortLookupIncomplete(nil), response.PortLookup.Incomplete...)}, nil
+}
+
+// PortLookupResult is the client-side port lookup snapshot.
+type PortLookupResult struct {
+	Processes  []app.Process
+	Incomplete []protocol.PortLookupIncomplete
+}
+
 func (c *Client) Get(ctx context.Context, req GetRequest) (app.Process, error) {
 	req.Op = protocol.OpGet
 	response, err := c.roundTrip(ctx, req, protocol.OpGet)

@@ -86,7 +86,7 @@ remote absolute `project_root` such as `/srv/app`.
 | `up` | `hum up` | start declarations in `after` order and wait until ready |
 | `start` | `hum start` | start named processes without their prerequisites |
 | `status` | `hum status` | check one process; running status automatically includes TCP listeners |
-| `list` | `hum list` | list processes; `all: true` covers every scope |
+| `list` | `hum list` | list processes; `all: true` covers every scope; `port: 3000` finds Hum listeners machine-wide |
 | `logs` | `hum logs` | read bounded output |
 | `wait` | `hum wait` | wait for a log match or exit |
 | `events` | `hum events` | read recent starts, exits, and failures |
@@ -125,6 +125,11 @@ not included. Results can change immediately after the snapshot; an empty succes
 listener was observed at that moment, not that the service is unreachable. Denied, partial, and unavailable
 inspection are returned as states with diagnostics. Windows exposes binding-owner PIDs only, not all
 inherited socket holders; its results always carry `partial` and an explanatory diagnostic, even when empty.
+
+To recover a collision across worktrees, call MCP `list` with `port: 3000` (or run `hum list --port 3000`).
+This searches every scope; `scope: "global"` and explicit `all: false` cannot be combined with `port`.
+Matching Hum groups include their filtered listener snapshot. Incomplete groups are listed separately so a
+negative result is not mistaken for a complete search; foreign processes are never identified or reported.
 
 Full argument, result, and error semantics: [MCP adapter](design.md#mcp-adapter).
 

@@ -14,6 +14,108 @@ import (
 	"hum/internal/testutil"
 )
 
+func TestListPortLookup(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("port lookup integration requires Unix process-group inspection")
+	}
+	t.Parallel()
+	hum := integrationHum(t)
+	fixture := integrationFixture(t)
+	runtime := lifecycleNewRuntime(t)
+	rootA, rootB := filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")
+	for _, root := range []*string{&rootA, &rootB} {
+		if err := os.MkdirAll(filepath.Join(*root, ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := filepath.EvalSymlinks(*root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		*root = canonical
+	}
+	defer func() {
+		_ = testutil.Run(t, hum, runtime.cwd, runtime.env, "shutdown", "--stop-processes")
+	}()
+
+	marker := filepath.Join(t.TempDir(), "listener")
+	started := testutil.Run(t, hum, runtime.cwd, runtime.env, "-C", rootB, "run", "ports", "--detach", "--json", "--", fixture, "listen-parent", marker)
+	if started.Code != 0 || started.Err != nil || started.Stderr != "" {
+		t.Fatalf("start project B listener: code=%d err=%v stdout=%q stderr=%q", started.Code, started.Err, started.Stdout, started.Stderr)
+	}
+	testutil.WaitForFile(t, marker, lifecycleTimeout)
+	fields, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(strings.TrimSpace(string(fields)), "|")
+	if len(parts) != 2 {
+		t.Fatalf("listener marker = %q, want pid|endpoint", fields)
+	}
+	childPID, err := strconv.Atoi(parts[0])
+	if err != nil || childPID <= 0 {
+		t.Fatalf("listener child pid %q: %v", parts[0], err)
+	}
+	listenerHost, listenerPortText, err := net.SplitHostPort(parts[1])
+	if err != nil {
+		t.Fatalf("listener endpoint %q: %v", parts[1], err)
+	}
+	listenerPort, err := strconv.Atoi(listenerPortText)
+	if err != nil || listenerPort <= 0 {
+		t.Fatalf("listener port %q: %v", listenerPortText, err)
+	}
+
+	listed := testutil.Run(t, hum, runtime.cwd, runtime.env, "-C", rootA, "list", "--port", strconv.Itoa(listenerPort), "--json")
+	if listed.Code != 0 || listed.Err != nil || listed.Stderr != "" {
+		t.Fatalf("list --port from project A: code=%d err=%v stdout=%q stderr=%q", listed.Code, listed.Err, listed.Stdout, listed.Stderr)
+	}
+	var lookup struct {
+		Processes  []protocol.Process              `json:"processes"`
+		Incomplete []protocol.PortLookupIncomplete `json:"incomplete"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(listed.Stdout)), &lookup); err != nil {
+		t.Fatalf("decode cross-project port lookup: %v (%q)", err, listed.Stdout)
+	}
+	if len(lookup.Processes) != 1 {
+		t.Fatalf("project A found %d holders: %s", len(lookup.Processes), listed.Stdout)
+	}
+	holder := lookup.Processes[0]
+	if holder.Name != "ports" || holder.Root != rootB || holder.Ports == nil || len(holder.Ports.Listeners) != 1 {
+		t.Fatalf("cross-project holder = %#v; want project B and one filtered listener", holder)
+	}
+	listener := holder.Ports.Listeners[0]
+	if listener.Transport != "tcp" || listener.Address != listenerHost || int(listener.Port) != listenerPort || len(listener.PIDs) != 1 || listener.PIDs[0] != childPID {
+		t.Fatalf("cross-project listener = %+v, want tcp %s:%d held by child %d", listener, listenerHost, listenerPort, childPID)
+	}
+
+	foreign, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer foreign.Close()
+	foreignPID := os.Getpid()
+	_, foreignPortText, err := net.SplitHostPort(foreign.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignPort, err := strconv.Atoi(foreignPortText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	miss := testutil.Run(t, hum, runtime.cwd, runtime.env, "-C", rootA, "list", "--port", strconv.Itoa(foreignPort), "--json")
+	if miss.Code != 0 || miss.Err != nil || miss.Stderr != "" {
+		t.Fatalf("list foreign-only port: code=%d err=%v stdout=%q stderr=%q", miss.Code, miss.Err, miss.Stdout, miss.Stderr)
+	}
+	var noHolders struct {
+		Processes []protocol.Process `json:"processes"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(miss.Stdout)), &noHolders); err != nil {
+		t.Fatalf("decode foreign-only port lookup: %v (%q)", err, miss.Stdout)
+	}
+	if len(noHolders.Processes) != 0 || strings.Contains(miss.Stdout+miss.Stderr, strconv.Itoa(foreignPID)) {
+		t.Fatalf("foreign listener leaked into output: pid=%d stdout=%q stderr=%q", foreignPID, miss.Stdout, miss.Stderr)
+	}
+}
+
 func TestStatusPorts(t *testing.T) {
 	t.Parallel()
 	hum := integrationHum(t)

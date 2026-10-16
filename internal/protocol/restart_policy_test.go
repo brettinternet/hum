@@ -8,8 +8,8 @@ import (
 )
 
 func TestRestartPolicyProtocol(t *testing.T) {
-	if Version != 21 {
-		t.Fatalf("protocol version = %d, want port inspection protocol version 21", Version)
+	if Version != 22 {
+		t.Fatalf("protocol version = %d, want aggregate port lookup protocol version 22", Version)
 	}
 	if !IsActiveState(StateRunning) || !IsActiveState(StateDescendants) || IsActiveState(StateExited) {
 		t.Fatal("active state classification does not include running leaders and surviving descendants")

@@ -15,8 +15,9 @@ import (
 // the explicit global process namespace; version 18 added bounded match context;
 // version 19 added per-process stop grace; version 20 added executable readiness
 // configuration and durable readiness diagnostics; version 21 adds opt-in TCP
-// listener snapshots to named status requests.
-const Version = 21
+// listener snapshots to named status requests, and version 22 adds aggregate
+// TCP port lookup.
+const Version = 22
 
 // MaxDurationMilliseconds is the largest whole-millisecond duration that
 // time.Duration can represent.
@@ -70,6 +71,8 @@ const (
 	OpStart Operation = "start"
 	// OpList lists supervised processes.
 	OpList Operation = "list"
+	// OpPortLookup searches active supervised groups for one TCP port.
+	OpPortLookup Operation = "port_lookup"
 	// OpGet retrieves one supervised process.
 	OpGet Operation = "get"
 	// OpOutput reads one bounded output window.
@@ -108,6 +111,7 @@ const (
 	OperationHello        = OpHello
 	OperationStart        = OpStart
 	OperationList         = OpList
+	OperationPortLookup   = OpPortLookup
 	OperationGet          = OpGet
 	OperationOutput       = OpOutput
 	OperationFollow       = OpFollow
@@ -139,7 +143,7 @@ const (
 )
 
 var knownOperations = map[Operation]struct{}{
-	OpHello: {}, OpStart: {}, OpList: {}, OpGet: {}, OpOutput: {},
+	OpHello: {}, OpStart: {}, OpList: {}, OpPortLookup: {}, OpGet: {}, OpOutput: {},
 	OpFollow: {}, OpWait: {}, OpSignal: {}, OpStop: {}, OpRestart: {}, OpRemove: {}, OpShutdown: {}, OpEvents: {},
 	OpInputAttach: {}, OpInputRelease: {}, OpInputWrite: {}, OpInputResize: {},
 }
@@ -381,6 +385,36 @@ func (r *ListRequest) UnmarshalJSON(data []byte) error {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
 	r.Op, r.Scope, r.Cwd, r.All, r.IncludeCompleted = OpList, wire.Scope, wire.Cwd, wire.All, wire.IncludeCompleted
+	return nil
+}
+
+// PortLookupRequest searches active process groups on one TCP port.
+type PortLookupRequest struct {
+	Op   Operation `json:"op"`
+	Port int       `json:"port"`
+}
+
+// MarshalJSON fixes the private lookup operation.
+func (r PortLookupRequest) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Op   Operation `json:"op"`
+		Port int       `json:"port"`
+	}{Op: OpPortLookup, Port: r.Port})
+}
+
+// UnmarshalJSON decodes the private port lookup request.
+func (r *PortLookupRequest) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Op   Operation `json:"op"`
+		Port int       `json:"port"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.Op != "" && wire.Op != OpPortLookup {
+		return &UnknownOperationError{Operation: wire.Op}
+	}
+	r.Op, r.Port = OpPortLookup, wire.Port
 	return nil
 }
 
@@ -1290,6 +1324,27 @@ type ListResponse struct {
 // NewListResponse builds a successful list response.
 func NewListResponse(processes []Process) ListResponse {
 	return ListResponse{Op: OpList, OK: true, Processes: processes}
+}
+
+// PortLookupIncomplete identifies one process group whose inspection could
+// not establish whether it holds the queried port.
+type PortLookupIncomplete struct {
+	Name        string `json:"name"`
+	Scope       string `json:"scope"`
+	ProjectRoot string `json:"project_root"`
+	State       string `json:"state"`
+	Diagnostic  string `json:"diagnostic"`
+}
+
+// PortLookupResponse reports matching holders and records that could not be
+// inspected completely.
+type PortLookupResponse struct {
+	Op         Operation              `json:"op"`
+	OK         bool                   `json:"ok"`
+	Processes  []Process              `json:"processes"`
+	Incomplete []PortLookupIncomplete `json:"incomplete,omitempty"`
+	Warnings   []StartupWarning       `json:"warnings,omitempty"`
+	Error      *WireError             `json:"error,omitempty"`
 }
 
 // GetResponse reports one process snapshot.

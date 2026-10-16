@@ -8,11 +8,99 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"hum/internal/app"
+	"hum/internal/process"
 	"hum/internal/protocol"
 )
+
+type serverPortLookupChild struct {
+	*daemonTestChild
+	result      process.PortsResult
+	inspections atomic.Int32
+}
+
+func (c *serverPortLookupChild) InspectPorts(context.Context) process.PortsResult {
+	c.inspections.Add(1)
+	return c.result
+}
+
+func TestPortLookupRoundTripAcrossScopes(t *testing.T) {
+	t.Parallel()
+	rootA, rootB := t.TempDir(), t.TempDir()
+	for _, root := range []*string{&rootA, &rootB} {
+		if err := os.Mkdir(filepath.Join(*root, ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := filepath.EvalSymlinks(*root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		*root = canonical
+	}
+	children := map[string]*serverPortLookupChild{
+		"web-a": {daemonTestChild: &daemonTestChild{pid: 9001, done: make(chan struct{})}, result: process.PortsResult{State: process.PortsAvailable, Listeners: []process.Port{
+			{Transport: "tcp", Address: "127.0.0.1", Port: 3000, PIDs: []int{9101}},
+			{Transport: "tcp", Address: "127.0.0.1", Port: 3001, PIDs: []int{9101}},
+		}}},
+		"web-b":  {daemonTestChild: &daemonTestChild{pid: 9002, done: make(chan struct{})}, result: process.PortsResult{State: process.PortsPartial, Diagnostic: "one member was unreadable", Listeners: []process.Port{{Transport: "tcp", Address: "::1", Port: 3000, PIDs: []int{9102}}}}},
+		"global": {daemonTestChild: &daemonTestChild{pid: 9003, done: make(chan struct{})}, result: process.PortsResult{State: process.PortsDenied, Diagnostic: "permission denied", Listeners: []process.Port{}}},
+	}
+	supervisor, err := app.New(app.Options{StartProcess: func(spec process.Spec) (app.Child, error) {
+		return children[spec.Argv[0]], nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := testServer(t, Config{Supervisor: supervisor})
+	client, err := Dial(context.Background(), server.Paths().Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	for _, request := range []protocol.StartRequest{
+		{Name: "web-a", Root: rootA, Cwd: rootA, Argv: []string{"web-a"}},
+		{Name: "web-b", Root: rootB, Cwd: rootB, Argv: []string{"web-b"}},
+		{Name: "global", Scope: app.ScopeGlobal, Cwd: rootA, Argv: []string{"global"}},
+	} {
+		if _, err := client.Start(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.List(context.Background(), protocol.NewListRequest(rootA, false, true)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.List(context.Background(), protocol.NewListRequest(rootA, true, true)); err != nil {
+		t.Fatal(err)
+	}
+	for name, child := range children {
+		if child.inspections.Load() != 0 {
+			t.Fatalf("ordinary list inspected %s sockets %d times", name, child.inspections.Load())
+		}
+	}
+
+	lookup, err := client.PortLookup(context.Background(), protocol.PortLookupRequest{Port: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lookup.Processes) != 2 || lookup.Processes[0].Name != "web-a" || lookup.Processes[1].Name != "web-b" {
+		t.Fatalf("port lookup holders = %#v", lookup.Processes)
+	}
+	for _, holder := range lookup.Processes {
+		if holder.Ports == nil || len(holder.Ports.Listeners) != 1 || holder.Ports.Listeners[0].Port != 3000 {
+			t.Fatalf("holder %s listener filter = %#v", holder.Name, holder.Ports)
+		}
+	}
+	if lookup.Processes[1].Root != rootB || lookup.Processes[1].Ports.State != process.PortsPartial {
+		t.Fatalf("cross-project partial holder = %#v", lookup.Processes[1])
+	}
+	if len(lookup.Incomplete) != 1 || lookup.Incomplete[0].Name != "global" || lookup.Incomplete[0].Scope != app.ScopeGlobal || lookup.Incomplete[0].State != process.PortsDenied || lookup.Incomplete[0].Diagnostic != "permission denied" {
+		t.Fatalf("incomplete global inspection = %#v", lookup.Incomplete)
+	}
+}
 
 func TestAlternateManifestStopGrace(t *testing.T) {
 	t.Parallel()

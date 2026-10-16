@@ -176,6 +176,17 @@ func (c *mcpDaemonClient) List(ctx context.Context, request protocol.ListRequest
 	}
 	return result, nil
 }
+func (c *mcpDaemonClient) PortLookup(ctx context.Context, request protocol.PortLookupRequest) ([]protocol.Process, []protocol.PortLookupIncomplete, error) {
+	result, err := c.client.PortLookup(ctx, request)
+	if err != nil {
+		return nil, nil, err
+	}
+	processes := make([]protocol.Process, 0, len(result.Processes))
+	for _, process := range result.Processes {
+		processes = append(processes, mcpProcess(process))
+	}
+	return processes, result.Incomplete, nil
+}
 func (c *mcpDaemonClient) Get(ctx context.Context, request protocol.GetRequest) (protocol.Process, error) {
 	process, err := c.client.Get(ctx, request)
 	return mcpProcess(process), err
@@ -250,6 +261,13 @@ func mcpProcess(process app.Process) protocol.Process {
 			readiness.Cursor = &cursor
 		}
 		result.Readiness = readiness
+	}
+	if process.Ports != nil {
+		inspection := &protocol.PortInspection{State: process.Ports.State, Diagnostic: process.Ports.Diagnostic, Listeners: make([]protocol.PortEndpoint, 0, len(process.Ports.Listeners))}
+		for _, endpoint := range process.Ports.Listeners {
+			inspection.Listeners = append(inspection.Listeners, protocol.PortEndpoint{Transport: endpoint.Transport, Address: endpoint.Address, Port: endpoint.Port, PIDs: append([]int(nil), endpoint.PIDs...)})
+		}
+		result.Ports = inspection
 	}
 	return result
 }

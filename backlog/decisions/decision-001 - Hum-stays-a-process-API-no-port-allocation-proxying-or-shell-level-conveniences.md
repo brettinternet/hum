@@ -45,3 +45,7 @@ The snapshot includes descendants that remain in the recorded Unix process group
 TCP listener observation is automatic for named status of a running process, through both `hum status NAME` and the MCP status tool. This supersedes the previous opt-in rule; there is no public inspection switch. Aggregate status and list, non-running snapshots, and internal lifecycle/logging Get calls do not inspect sockets. Inspection has a two-second deadline and returns partial or unavailable results with a diagnostic on expiry, without failing status. Human output uses one compact `listening:` line; the JSON snapshot shape and schema version remain unchanged.
 
 The group boundary, escaped-process and container exclusions, identity checks, snapshot races, and distinction between successful empty and failed inspection remain as recorded above. Port allocation, proxying, readiness changes, and URL inference remain out of scope.
+
+## Revision 2026-10-16: explicit aggregate port-holder lookup
+
+`hum list --port PORT` and MCP `list` with `port` explicitly inspect every active supervised process group in every project and global scope, with bounded concurrency and an aggregate deadline. This is the only aggregate operation that inspects sockets; plain list, list --all, and aggregate status remain inspection-free. Results identify Hum-supervised holders only and list incomplete inspections separately. This does not add port allocation, conflict resolution, foreign-process identification, or changes to platform inspectors.

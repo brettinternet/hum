@@ -2799,7 +2799,28 @@ func (s *Supervisor) GetScoped(scope, cwd, name string) (Process, error) {
 	return rec.snapshotLocked(), nil
 }
 
-const portsInspectionTimeout = 2 * time.Second
+const (
+	portsInspectionTimeout = 2 * time.Second
+	portsLookupTimeout     = 5 * time.Second
+	portsLookupConcurrency = 4
+)
+
+// PortLookupIncomplete identifies one running process group whose listener
+// inspection could not establish whether it holds the requested port.
+type PortLookupIncomplete struct {
+	Name       string
+	Scope      string
+	Root       string
+	State      string
+	Diagnostic string
+}
+
+// PortLookupResult contains only matching holders and the inspections that
+// prevent a clean negative answer.
+type PortLookupResult struct {
+	Processes  []Process
+	Incomplete []PortLookupIncomplete
+}
 
 // GetPortsScoped returns a normal status snapshot with a bounded listener
 // observation for its current active launch. Native inspection runs outside
@@ -2848,6 +2869,196 @@ func (s *Supervisor) GetPortsScoped(ctx context.Context, scope, cwd, name string
 	}
 	snapshot.Ports = &ports
 	return snapshot, nil
+}
+
+type portLookupCandidate struct {
+	record        *record
+	snapshot      Process
+	child         Child
+	incarnation   uint64
+	startIdentity string
+}
+
+type portLookupInspection struct {
+	index    int
+	ports    process.PortsResult
+	finished time.Time
+}
+
+// LookupPort searches every active process group in every scope for a TCP
+// listener on port. Inspection is bounded and performed outside the registry
+// lock; a record racing to another launch is reported as incomplete.
+func (s *Supervisor) LookupPort(ctx context.Context, port uint16) PortLookupResult {
+	return s.lookupPortWithBounds(ctx, port, portsLookupTimeout, portsLookupConcurrency)
+}
+
+func (s *Supervisor) lookupPortWithBounds(ctx context.Context, port uint16, timeout time.Duration, concurrency int) PortLookupResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = portsLookupTimeout
+	}
+	if concurrency <= 0 {
+		concurrency = portsLookupConcurrency
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	deadline, _ := lookupCtx.Deadline()
+
+	candidates := make([]portLookupCandidate, 0)
+	s.mu.RLock()
+	for _, rec := range s.records {
+		snapshot := rec.snapshotLocked()
+		if !IsActiveState(snapshot.State) {
+			continue
+		}
+		candidates = append(candidates, portLookupCandidate{
+			record: rec, snapshot: snapshot, child: rec.child,
+			incarnation: rec.incarnation, startIdentity: rec.startIdentity,
+		})
+	}
+	s.mu.RUnlock()
+	sort.Slice(candidates, func(i, j int) bool {
+		left, right := candidates[i].snapshot, candidates[j].snapshot
+		if left.Scope != right.Scope {
+			return left.Scope < right.Scope
+		}
+		if left.Root != right.Root {
+			return left.Root < right.Root
+		}
+		if left.Name != right.Name {
+			return left.Name < right.Name
+		}
+		return left.Start.Before(right.Start)
+	})
+
+	result := PortLookupResult{Processes: make([]Process, 0), Incomplete: make([]PortLookupIncomplete, 0)}
+	if len(candidates) == 0 {
+		return result
+	}
+
+	jobs := make(chan int, len(candidates))
+	inspections := make(chan portLookupInspection, len(candidates))
+	for index := range candidates {
+		jobs <- index
+	}
+	close(jobs)
+	workers := concurrency
+	if workers > len(candidates) {
+		workers = len(candidates)
+	}
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			for index := range jobs {
+				if lookupCtx.Err() != nil {
+					return
+				}
+				ports := s.inspectLookupCandidate(lookupCtx, candidates[index])
+				inspection := portLookupInspection{index: index, ports: ports, finished: time.Now()}
+				inspections <- inspection
+			}
+		}()
+	}
+
+	completed := make([]*portLookupInspection, len(candidates))
+	remaining := len(candidates)
+	for remaining > 0 {
+		select {
+		case inspection := <-inspections:
+			if inspection.finished.After(deadline) {
+				continue
+			}
+			if completed[inspection.index] == nil {
+				copy := inspection
+				completed[inspection.index] = &copy
+				remaining--
+			}
+		case <-lookupCtx.Done():
+			for {
+				select {
+				case inspection := <-inspections:
+					if !inspection.finished.After(deadline) && completed[inspection.index] == nil {
+						copy := inspection
+						completed[inspection.index] = &copy
+						remaining--
+					}
+				default:
+					remaining = 0
+				}
+				if remaining == 0 {
+					break
+				}
+			}
+		}
+		if lookupCtx.Err() != nil {
+			break
+		}
+	}
+
+	for index, candidate := range candidates {
+		inspection := completed[index]
+		if inspection == nil {
+			diagnostic := context.DeadlineExceeded.Error()
+			if err := lookupCtx.Err(); err != nil {
+				diagnostic = err.Error()
+			}
+			result.Incomplete = append(result.Incomplete, PortLookupIncomplete{
+				Name: candidate.snapshot.Name, Scope: candidate.snapshot.Scope, Root: candidate.snapshot.Root,
+				State: process.PortsUnavailable, Diagnostic: diagnostic,
+			})
+			continue
+		}
+		ports := inspection.ports
+		listeners := make([]process.Port, 0, len(ports.Listeners))
+		for _, listener := range ports.Listeners {
+			if listener.Transport == "tcp" && listener.Port == port {
+				listeners = append(listeners, listener)
+			}
+		}
+		hasMatch := len(listeners) != 0
+		if hasMatch {
+			snapshot := candidate.snapshot
+			snapshot.Ports = &process.PortsResult{State: ports.State, Listeners: listeners, Diagnostic: ports.Diagnostic}
+			result.Processes = append(result.Processes, snapshot)
+		}
+		if ports.State == process.PortsDenied || ports.State == process.PortsUnavailable || ports.State == process.PortsPartial && !hasMatch || ports.State != process.PortsAvailable && ports.State != process.PortsPartial && ports.State != process.PortsDenied && ports.State != process.PortsUnavailable {
+			result.Incomplete = append(result.Incomplete, PortLookupIncomplete{
+				Name: candidate.snapshot.Name, Scope: candidate.snapshot.Scope, Root: candidate.snapshot.Root,
+				State: ports.State, Diagnostic: ports.Diagnostic,
+			})
+		}
+	}
+	return result
+}
+
+func (s *Supervisor) inspectLookupCandidate(ctx context.Context, candidate portLookupCandidate) process.PortsResult {
+	inspector, ok := candidate.child.(process.PortInspector)
+	if !ok {
+		return process.PortsResult{State: process.PortsUnavailable, Listeners: []process.Port{}, Diagnostic: "process group listener inspection is unavailable"}
+	}
+	inspectionCtx, cancel := context.WithTimeout(ctx, portsInspectionTimeout)
+	ports := inspector.InspectPorts(inspectionCtx)
+	if err := inspectionCtx.Err(); err != nil {
+		ports.State = process.PortsUnavailable
+		if len(ports.Listeners) > 0 {
+			ports.State = process.PortsPartial
+		}
+		ports.Diagnostic = err.Error()
+	}
+	cancel()
+
+	s.mu.RLock()
+	rec := candidate.record
+	stillCurrent := s.records[rec.key] == rec && rec.incarnation == candidate.incarnation && rec.startIdentity == candidate.startIdentity && IsActiveState(rec.state)
+	if stillCurrent {
+		stillCurrent = rec.snapshotLocked().StartIdentity == candidate.snapshot.StartIdentity
+	}
+	s.mu.RUnlock()
+	if !stillCurrent {
+		return process.PortsResult{State: process.PortsUnavailable, Listeners: []process.Port{}, Diagnostic: "launch changed during listener inspection"}
+	}
+	return ports
 }
 
 // List returns deterministic snapshots for one project root. By default only

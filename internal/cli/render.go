@@ -264,43 +264,45 @@ func writeListTable(w io.Writer, table listTable, policy colorPolicy) error {
 }
 
 type listJSON struct {
-	Processes []listProcessJSON         `json:"processes"`
-	Warnings  []protocol.StartupWarning `json:"warnings,omitempty"`
+	Processes  []listProcessJSON               `json:"processes"`
+	Incomplete []protocol.PortLookupIncomplete `json:"incomplete,omitempty"`
+	Warnings   []protocol.StartupWarning       `json:"warnings,omitempty"`
 }
 
 type listProcessJSON struct {
-	Name                string           `json:"name"`
-	Source              string           `json:"source"`
-	Scope               string           `json:"scope"`
-	Root                string           `json:"root"`
-	ProjectRoot         string           `json:"project_root,omitempty"`
-	TTY                 bool             `json:"tty"`
-	PID                 int              `json:"pid"`
-	PGID                int              `json:"pgid"`
-	Cwd                 string           `json:"cwd"`
-	Argv                []string         `json:"argv"`
-	Start               time.Time        `json:"start"`
-	LaunchCursor        protocol.Cursor  `json:"launch_cursor"`
-	NextCursor          *protocol.Cursor `json:"next_cursor,omitempty"`
-	State               string           `json:"state"`
-	Exit                *protocol.Exit   `json:"exit,omitempty"`
-	ExitCode            int              `json:"exit_code,omitempty"`
-	ExitedAt            time.Time        `json:"exited_at,omitempty"`
-	RestartCount        int              `json:"restart_count,omitempty"`
-	Followers           int              `json:"followers"`
-	Restart             string           `json:"restart"`
-	Relaunches          int              `json:"relaunches"`
-	StopGrace           string           `json:"stop_grace"`
-	StopGraceInherited  bool             `json:"stop_grace_inherited"`
-	NextLaunchAt        *time.Time       `json:"next_launch_at,omitempty"`
-	Readiness           string           `json:"readiness,omitempty"`
-	ReadinessMatch      string           `json:"readiness_match,omitempty"`
-	ReadinessMethod     string           `json:"readiness_method,omitempty"`
-	ReadinessTarget     string           `json:"readiness_target,omitempty"`
-	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
-	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
-	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
-	ReadyCursor         *protocol.Cursor `json:"ready_cursor,omitempty"`
+	Name                string                   `json:"name"`
+	Source              string                   `json:"source"`
+	Scope               string                   `json:"scope"`
+	Root                string                   `json:"root"`
+	ProjectRoot         string                   `json:"project_root,omitempty"`
+	TTY                 bool                     `json:"tty"`
+	PID                 int                      `json:"pid"`
+	PGID                int                      `json:"pgid"`
+	Cwd                 string                   `json:"cwd"`
+	Argv                []string                 `json:"argv"`
+	Start               time.Time                `json:"start"`
+	LaunchCursor        protocol.Cursor          `json:"launch_cursor"`
+	NextCursor          *protocol.Cursor         `json:"next_cursor,omitempty"`
+	State               string                   `json:"state"`
+	Exit                *protocol.Exit           `json:"exit,omitempty"`
+	ExitCode            int                      `json:"exit_code,omitempty"`
+	ExitedAt            time.Time                `json:"exited_at,omitempty"`
+	RestartCount        int                      `json:"restart_count,omitempty"`
+	Followers           int                      `json:"followers"`
+	Restart             string                   `json:"restart"`
+	Relaunches          int                      `json:"relaunches"`
+	StopGrace           string                   `json:"stop_grace"`
+	StopGraceInherited  bool                     `json:"stop_grace_inherited"`
+	NextLaunchAt        *time.Time               `json:"next_launch_at,omitempty"`
+	Readiness           string                   `json:"readiness,omitempty"`
+	ReadinessMatch      string                   `json:"readiness_match,omitempty"`
+	ReadinessMethod     string                   `json:"readiness_method,omitempty"`
+	ReadinessTarget     string                   `json:"readiness_target,omitempty"`
+	ReadinessArgv       []string                 `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration            `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string                   `json:"readiness_diagnostic,omitempty"`
+	ReadyCursor         *protocol.Cursor         `json:"ready_cursor,omitempty"`
+	Ports               *protocol.PortInspection `json:"ports,omitempty"`
 }
 
 // statusJSON is the stable, response-safe representation used by status.
@@ -379,13 +381,7 @@ func statusJSONFor(process app.Process) statusJSON {
 			result.Signal = &signal
 		}
 	}
-	if process.Ports != nil {
-		inspection := &protocol.PortInspection{State: process.Ports.State, Diagnostic: process.Ports.Diagnostic, Listeners: make([]protocol.PortEndpoint, 0, len(process.Ports.Listeners))}
-		for _, endpoint := range process.Ports.Listeners {
-			inspection.Listeners = append(inspection.Listeners, protocol.PortEndpoint{Transport: endpoint.Transport, Address: endpoint.Address, Port: endpoint.Port, PIDs: append([]int(nil), endpoint.PIDs...)})
-		}
-		result.Ports = inspection
-	}
+	result.Ports = portInspectionJSON(process)
 	return result
 }
 
@@ -540,6 +536,7 @@ func processJSON(process app.Process) listProcessJSON {
 		StopGrace:          process.StopGrace.String(),
 		StopGraceInherited: process.StopGraceInherited,
 		NextLaunchAt:       process.NextLaunchAt,
+		Ports:              portInspectionJSON(process),
 	}
 	if process.NextCursor != 0 {
 		nextCursor := protocol.Cursor(process.NextCursor)
@@ -561,6 +558,17 @@ func processJSON(process app.Process) listProcessJSON {
 		result.Exit = &exit
 	}
 	return result
+}
+
+func portInspectionJSON(process app.Process) *protocol.PortInspection {
+	if process.Ports == nil {
+		return nil
+	}
+	inspection := &protocol.PortInspection{State: process.Ports.State, Diagnostic: process.Ports.Diagnostic, Listeners: make([]protocol.PortEndpoint, 0, len(process.Ports.Listeners))}
+	for _, endpoint := range process.Ports.Listeners {
+		inspection.Listeners = append(inspection.Listeners, protocol.PortEndpoint{Transport: endpoint.Transport, Address: endpoint.Address, Port: endpoint.Port, PIDs: append([]int(nil), endpoint.PIDs...)})
+	}
+	return inspection
 }
 
 func outputJSON(result output.ReadResult) protocol.OutputResult {
@@ -911,6 +919,89 @@ func renderListHumanWithPolicy(w io.Writer, processes []app.Process, all, full b
 		return nil
 	}
 	return writeLifecycleTable(w, buildListTable(processes, false, full), policy)
+}
+
+func renderPortLookupHuman(w io.Writer, port int, processes []app.Process, incomplete []protocol.PortLookupIncomplete) error {
+	if len(processes) == 0 {
+		if _, err := fmt.Fprintf(w, "No Hum process is listening on TCP port %d.\n", port); err != nil {
+			return err
+		}
+	} else {
+		groups := make(map[string][]app.Process)
+		for _, process := range processes {
+			groups[process.Root] = append(groups[process.Root], process)
+		}
+		roots := make([]string, 0, len(groups))
+		for root := range groups {
+			roots = append(roots, root)
+		}
+		sort.Strings(roots)
+		policy := colorPolicyForWriter(w)
+		for index, root := range roots {
+			if index > 0 {
+				if _, err := fmt.Fprintln(w); err != nil {
+					return err
+				}
+			}
+			if root == "" {
+				if _, err := fmt.Fprintln(w, "Global: (hum --global)"); err != nil {
+					return err
+				}
+			} else if _, err := fmt.Fprintf(w, "Project: %s (hum --project %s)\n", root, shellEscape(root)); err != nil {
+				return err
+			}
+			table := listTable{
+				header: listRow{styledListCell("NAME", ansiBold), styledListCell("STATE", ansiBold), styledListCell("PID", ansiBold), styledListCell("LISTENING", ansiBold)},
+				rows:   make([]listRow, 0, len(groups[root])),
+			}
+			for _, process := range groups[root] {
+				pid := "-"
+				if process.PID != 0 {
+					pid = strconv.Itoa(process.PID)
+				}
+				table.rows = append(table.rows, listRow{
+					plainListCell(process.Name),
+					styledListCell(string(process.State), processStateStyle(process.State, process.ExitCode)),
+					plainListCell(pid), plainListCell(portListenersText(process, port)),
+				})
+			}
+			if err := writeLifecycleTable(w, table, policy); err != nil {
+				return err
+			}
+		}
+	}
+	for _, item := range incomplete {
+		selector := "hum --project " + shellEscape(item.ProjectRoot)
+		if item.Scope == protocol.ScopeGlobal {
+			selector = "hum --global"
+		}
+		if item.Diagnostic == "" {
+			if _, err := fmt.Fprintf(w, "Incomplete: %s (%s) %s\n", item.Name, selector, item.State); err != nil {
+				return err
+			}
+		} else if _, err := fmt.Fprintf(w, "Incomplete: %s (%s) %s: %s\n", item.Name, selector, item.State, item.Diagnostic); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func portListenersText(process app.Process, port int) string {
+	if process.Ports == nil {
+		return "-"
+	}
+	listeners := make([]string, 0, len(process.Ports.Listeners))
+	for _, endpoint := range process.Ports.Listeners {
+		if endpoint.Transport != "tcp" || int(endpoint.Port) != port {
+			continue
+		}
+		label := "pid"
+		if len(endpoint.PIDs) != 1 {
+			label = "pids"
+		}
+		listeners = append(listeners, fmt.Sprintf("%s (%s %s)", net.JoinHostPort(endpoint.Address, strconv.Itoa(int(endpoint.Port))), label, joinPortPIDs(endpoint.PIDs)))
+	}
+	return strings.Join(listeners, ", ")
 }
 
 func renderStatusSummaryHuman(w io.Writer, processes []app.Process, roots ...string) error {

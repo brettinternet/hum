@@ -8,6 +8,122 @@ import (
 	"hum/internal/protocol"
 )
 
+type portLookupTestClient struct {
+	*fakeClient
+	processes  []protocol.Process
+	incomplete []protocol.PortLookupIncomplete
+	requests   []protocol.PortLookupRequest
+}
+
+func (c *portLookupTestClient) PortLookup(_ context.Context, request protocol.PortLookupRequest) ([]protocol.Process, []protocol.PortLookupIncomplete, error) {
+	c.requests = append(c.requests, request)
+	return c.processes, c.incomplete, nil
+}
+
+func TestPortLookupToolStructuredContent(t *testing.T) {
+	root := t.TempDir()
+	client := &portLookupTestClient{
+		fakeClient: &fakeClient{},
+		processes: []protocol.Process{{
+			Name: "web", Scope: protocol.ScopeProject, Root: "/work/b", State: protocol.StateRunning,
+			Ports: &protocol.PortInspection{State: "available", Listeners: []protocol.PortEndpoint{{Transport: "tcp", Address: "127.0.0.1", Port: 3000, PIDs: []int{4190}}}},
+		}},
+		incomplete: []protocol.PortLookupIncomplete{{Name: "uncertain", Scope: protocol.ScopeGlobal, State: "denied", Diagnostic: "permission denied"}},
+	}
+	server := NewServer(Options{
+		Resolver:      fakeResolver{resolution: Resolution{Root: root}},
+		ClientFactory: func(context.Context, bool) (Client, error) { return client, nil },
+	})
+	arguments, err := json.Marshal(callToolParams{Name: "list", Arguments: args(root, "port", 3000, "all", true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"list"`), Method: "tools/call", Params: arguments})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	result, ok := value.(callToolResult)
+	if !ok || result.IsError {
+		t.Fatalf("MCP port lookup result = %#v", value)
+	}
+	encoded, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var structured portLookupResult
+	if err := json.Unmarshal(encoded, &structured); err != nil {
+		t.Fatal(err)
+	}
+	if len(structured.Processes) != 1 || structured.Processes[0].Name != "web" || structured.Processes[0].Ports == nil || structured.Processes[0].Ports.Listeners[0].PIDs[0] != 4190 {
+		t.Fatalf("MCP holder structuredContent = %#v", structured.Processes)
+	}
+	if len(structured.Incomplete) != 1 || structured.Incomplete[0].Name != "uncertain" || structured.Incomplete[0].State != "denied" {
+		t.Fatalf("MCP incomplete structuredContent = %#v", structured.Incomplete)
+	}
+	if len(client.requests) != 1 || client.requests[0].Port != 3000 {
+		t.Fatalf("MCP lookup requests = %#v", client.requests)
+	}
+}
+
+func TestPortLookupToolValidationAndOrdinaryList(t *testing.T) {
+	root := t.TempDir()
+	client := &portLookupTestClient{fakeClient: &fakeClient{}}
+	factoryCalls := 0
+	server := NewServer(Options{
+		Resolver: fakeResolver{resolution: Resolution{Root: root}},
+		ClientFactory: func(context.Context, bool) (Client, error) {
+			factoryCalls++
+			return client, nil
+		},
+	})
+	for _, raw := range []json.RawMessage{
+		args(root, "port", 0),
+		args(root, "port", 65536),
+		args(root, "port", 3000, "all", false),
+		json.RawMessage(`{"scope":"global","port":3000}`),
+	} {
+		if _, err := server.callTool(context.Background(), "list", raw); mapError(err).Code != "invalid_request" {
+			t.Fatalf("invalid list port arguments %s error = %v", raw, err)
+		}
+		if factoryCalls != 0 {
+			t.Fatalf("invalid lookup contacted daemon %d times", factoryCalls)
+		}
+	}
+	if _, err := server.callTool(context.Background(), "list", args(root)); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 0 || factoryCalls != 1 {
+		t.Fatalf("ordinary list triggered lookup: requests=%#v factories=%d", client.requests, factoryCalls)
+	}
+	if _, err := server.callTool(context.Background(), "list", args(root, "port", 3000)); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 1 || client.requests[0].Port != 3000 || factoryCalls != 2 {
+		t.Fatalf("valid lookup request = %#v factories=%d", client.requests, factoryCalls)
+	}
+
+	var list toolDefinition
+	for _, definition := range server.toolDefinitions() {
+		if definition.Name == "list" {
+			list = definition
+			break
+		}
+	}
+	inputProperties := list.InputSchema["properties"].(map[string]any)
+	port := inputProperties["port"].(map[string]any)
+	if port["minimum"] != 1 || port["maximum"] != 65535 {
+		t.Fatalf("MCP list port schema = %#v", port)
+	}
+	outputProperties := list.OutputSchema["properties"].(map[string]any)
+	if _, ok := outputProperties["incomplete"]; !ok {
+		t.Fatalf("MCP list output schema omits incomplete: %#v", outputProperties)
+	}
+	holderProperties := outputProperties["processes"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := holderProperties["ports"]; !ok {
+		t.Fatalf("MCP list holder schema omits ports: %#v", holderProperties)
+	}
+}
+
 func TestStatusPorts(t *testing.T) {
 	inspection := &protocol.PortInspection{
 		State: "partial", Diagnostic: "one process could not be inspected",

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -173,12 +174,13 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 			Name:        "list",
 			Aliases:     []string{"ls"},
 			Usage:       "list supervised processes",
-			UsageText:   "hum list [--all] [--full] [--json]",
+			UsageText:   "hum list [--all] [--full] [--port PORT] [--json]",
 			ArgsUsage:   "",
-			Description: "List supervised processes and their current state. Use --full for more detail or --all to see processes in every project.\n\nExamples:\n  hum list\n  hum list --full\n  hum list --all",
+			Description: "List supervised processes. Use --all across projects or --port to find a Hum listener.\n\nExamples:\n  hum list\n  hum list --all\n  hum list --port 3000",
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "all", Aliases: []string{"a"}, DefaultText: "false", Usage: "include every scope; default is the current project"},
 				&urfavecli.BoolFlag{Name: "full", DefaultText: "false", Usage: "include all human-readable details; default is name, state, and PID"},
+				&urfavecli.IntFlag{Name: "port", HideDefault: true, Usage: "optional; find Hum groups listening on TCP PORT (1..65535)"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write all fields as JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,
@@ -1013,6 +1015,9 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err := requireNoArgs(cmd, "list"); err != nil {
 		return err
 	}
+	if cmd.IsSet("port") || rawScopeFlag(cmd, "port", "") {
+		return listPortLookupCommand(ctx, cmd, version, buildTime, writer, errWriter)
+	}
 	processes, warnings, err := projectProcessList(ctx, cmd, version, buildTime, cmd.Bool("all"))
 	if err != nil {
 		return err
@@ -1032,6 +1037,53 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		}
 	}
 	return renderListHuman(writer, processes, cmd.Bool("all"), cmd.Bool("full"), root)
+}
+
+func listPortLookupCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
+	port := cmd.Int("port")
+	if rawPort := rawFlagValue(cmd, "port", ""); rawPort != "" {
+		if parsed, err := strconv.Atoi(rawPort); err == nil {
+			port = parsed
+		}
+	}
+	if port < 1 || port > 65535 {
+		return newCLIUsageError(errors.New("--port must be between 1 and 65535"))
+	}
+	if cmd.Bool("global") || cmd.IsSet("global") || rawScopeFlag(cmd, "global", "g") {
+		return newCLIUsageError(errors.New("hum list --port does not accept --global; it already searches every scope"))
+	}
+	selection, err := selectedProjectDirectory(cmd)
+	if err != nil {
+		return err
+	}
+	if selection.scope == app.ScopeGlobal {
+		return newCLIUsageError(errors.New("hum list --port does not accept --global; it already searches every scope"))
+	}
+	cfg, err := cliConfig(cmd, version, buildTime)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	result, err := client.PortLookup(ctx, daemon.PortLookupRequest{Port: port})
+	if err != nil {
+		return err
+	}
+	warnings := client.StartupWarnings()
+	if cmd.Bool("json") {
+		processes := make([]listProcessJSON, 0, len(result.Processes))
+		for _, process := range result.Processes {
+			processes = append(processes, processJSON(process))
+		}
+		return encodeJSON(writer, listJSON{Processes: processes, Incomplete: result.Incomplete, Warnings: warnings})
+	}
+	if err := writeStartupWarnings(errWriter, warnings); err != nil {
+		return err
+	}
+	return renderPortLookupHuman(writer, port, result.Processes, result.Incomplete)
 }
 
 func projectProcessList(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, all bool) ([]app.Process, []protocol.StartupWarning, error) {

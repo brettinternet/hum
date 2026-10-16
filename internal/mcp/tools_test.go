@@ -274,6 +274,9 @@ func (f *fakeClient) List(_ context.Context, req protocol.ListRequest) ([]protoc
 	}
 	return out, nil
 }
+func (f *fakeClient) PortLookup(context.Context, protocol.PortLookupRequest) ([]protocol.Process, []protocol.PortLookupIncomplete, error) {
+	return []protocol.Process{}, []protocol.PortLookupIncomplete{}, nil
+}
 func (f *fakeClient) Get(_ context.Context, req protocol.GetRequest) (protocol.Process, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

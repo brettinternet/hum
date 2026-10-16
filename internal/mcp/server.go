@@ -653,7 +653,11 @@ func structuredToolContent(name string, value any, warningSets ...[]protocol.Sta
 			structured = value
 		}
 	case "list":
-		structured = map[string]any{"processes": value}
+		if lookup, ok := value.(portLookupResult); ok {
+			structured = lookup
+		} else {
+			structured = map[string]any{"processes": value}
+		}
 	default:
 		structured = value
 	}

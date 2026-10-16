@@ -247,7 +247,7 @@ $ hum status web
 listening: 127.0.0.1:8123 (pid 67051)
 ```
 
-Named status automatically shows TCP listeners held by the running process and its descendants. Processes that leave its process group and container port-forwards are not seen. See [port observation](docs/design.md#port-observation).
+Named status automatically shows TCP listeners held by the running process and its descendants. To find a Hum-managed listener across projects after a port collision, run `hum list --port 8123`; incomplete inspections are listed separately. Ordinary list and aggregate status never inspect sockets. Processes outside the supervised group and container port-forwards are not seen. See [port observation](docs/design.md#port-observation).
 
 ## Coding agents
 

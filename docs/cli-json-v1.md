@@ -57,6 +57,7 @@ Command-specific meanings are in [design.md](design.md).
 | Diagnostic preflight | `doctor` | `schema_version`, `ok`, `checks`, `summary` |
 | Manifest creation | `init` | `schema_version`, `path`, `outcome`, `next_command`, `candidates` |
 | Aggregate snapshot | `list`, aggregate `status` | `schema_version`, `processes`; `warnings` optional |
+| Port lookup | `list --port PORT` | `schema_version`, `processes`; `incomplete` and `warnings` optional |
 | Single-process snapshot | named `status` | `schema_version`, `name`, `scope`, `tty`, `pid`, `pgid`, `cwd`, `argv`, `started_at`, `state`, `exit_status`, `restart_count`, `followers`, `restart`, `relaunches`, `stop_grace`, `stop_grace_inherited`, `next_cursor`; `ports` on running snapshots only |
 | Detached launch | detached `run` | `schema_version`, `name`, `pid`, `cursor`; launch metadata optional when unavailable |
 | Launch/restart record | `start`, `up`, `restart` | `schema_version`, `name`, `outcome`, `restart`, `relaunches`; other fields depend on the outcome |
@@ -95,11 +96,12 @@ Values:
 
 Named `status` automatically includes `ports` for running processes with `state` (`available`, `partial`, `denied`, or `unavailable`), a
 `listeners` array, and an optional `diagnostic`. Each listener has `transport: "tcp"`, its literal local
-`address`, numeric `port`, and sorted holder `pids`. A successful empty `listeners` array is distinct
-from inspection failure and does not prove that the service is unreachable. Aggregate status and non-running named status omit
-`ports` and never inspect sockets. This additive field keeps `schema_version: 1`. See [design.md](design.md#port-observation) for group scope and
-snapshot limitations. On Windows, `pids` contains only the API's verified binding owner, not every
-inherited holder; inspection is always `partial` with a diagnostic, including empty results.
+`address`, numeric `port`, and sorted holder `pids`. `list --port PORT` returns only matching holders, each
+with `ports.listeners` filtered to that port; `incomplete`, when present, names records that prevented a
+complete lookup. Both fields are additive and keep `schema_version: 1`. Plain list and aggregate status
+never inspect sockets. See [design.md](design.md#port-observation) for scope, deadlines, and snapshot
+limitations. On Windows, `pids` contains only the API's verified binding owner, not every inherited holder;
+inspection is always `partial` with a diagnostic, including empty results.
 
 Streams: `type` is a lifecycle outcome or `output` (`entries` and cursor metadata), `exit`
 (`cursor`, `exit`), `warning` (`warnings`), or `error` (`error`). Records arrive in observed order;

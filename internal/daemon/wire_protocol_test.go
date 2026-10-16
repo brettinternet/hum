@@ -99,8 +99,8 @@ func TestReadinessTCPTargetRoundTrip(t *testing.T) {
 
 func TestExecutableReadiness(t *testing.T) {
 	t.Parallel()
-	if protocol.Version != 21 {
-		t.Fatalf("wire protocol version=%d, want 21 for port inspection", protocol.Version)
+	if protocol.Version != 22 {
+		t.Fatalf("wire protocol version=%d, want 22 for aggregate port lookup", protocol.Version)
 	}
 	argv := []string{"probe", "--service", "api"}
 	config := &protocol.ReadinessConfig{Method: "exec", Argv: argv, Interval: 250 * time.Millisecond, Timeout: 3 * time.Second}
