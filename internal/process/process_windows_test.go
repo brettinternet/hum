@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -444,10 +445,14 @@ func TestWindowsTTYStartupFailureCleansUpConsole(t *testing.T) {
 		}
 	}
 	before := windowsTTYHandleCount(t)
-	for range 10 {
+	threads, _ := runtime.ThreadCreateProfile(nil)
+	t.Logf("baseline: handles=%d Go threads=%d goroutines=%d", before, threads, runtime.NumGoroutine())
+	for i := range 10 {
 		if _, err := Start(spec); err == nil {
 			t.Fatal("invalid PE started under ConPTY")
 		}
+		threads, _ := runtime.ThreadCreateProfile(nil)
+		t.Logf("launch %d: handles=%d Go threads=%d goroutines=%d", i+1, windowsTTYHandleCount(t), threads, runtime.NumGoroutine())
 	}
 	if after := windowsTTYHandleCount(t); after > before+2 {
 		t.Fatalf("ConPTY startup leaked handles: before=%d after=%d", before, after)
