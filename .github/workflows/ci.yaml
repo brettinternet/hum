@@ -88,7 +88,15 @@ jobs:
             ${{ runner.os }}-go-${{ github.job }}-${{ steps.go-cache.outputs.version }}-
 
       - name: Run Windows tests
-        run: task windows:test
+        env:
+          GOFLAGS: -count=1 -v
+        run: |
+          task windows:test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          1..10 | ForEach-Object {
+            task windows:test WINDOWS_PACKAGES=./internal/process RUN=TestWindowsTTYStartupFailureCleansUpConsole
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
   race-linux:
     name: Go race (Linux)
