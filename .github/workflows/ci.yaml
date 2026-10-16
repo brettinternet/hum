@@ -98,6 +98,19 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
+      - name: Verify handle leak detection (diagnostic only)
+        env:
+          HUM_TEST_LEAK_HANDLE: '1'
+          GOFLAGS: -count=1 -v
+        run: |
+          $output = task windows:test WINDOWS_PACKAGES=./internal/process RUN=TestWindowsTTYStartupFailureCleansUpConsole 2>&1
+          $code = $LASTEXITCODE
+          $output | Write-Output
+          if ($code -eq 0 -or "$output" -notmatch 'ConPTY startup leaked handles:') {
+            throw 'Injected handle leak was not detected'
+          }
+          exit 0
+
   race-linux:
     name: Go race (Linux)
     runs-on: ubuntu-latest
