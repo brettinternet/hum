@@ -119,7 +119,7 @@ func TestManifestEnvironmentLifecycle(t *testing.T) {
 	t.Cleanup(func() { _ = testutil.Run(t, hum, root, env, "shutdown", "--stop-processes") })
 
 	resultFile := filepath.Join(root, "environment.txt")
-	writeEnvironmentLifecycleManifest(t, root, resultFile, "environment:\n  files: [.env]\n")
+	writeEnvironmentLifecycleManifest(t, root, resultFile, "environment:\n  files: [.env, {path: .env.local, required: false}]\n")
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("VALUE=file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -147,6 +147,18 @@ func TestManifestEnvironmentLifecycle(t *testing.T) {
 	}
 	manifestWaitForFileContents(t, resultFile, "reloaded|inherited|unset")
 
+	if err := os.WriteFile(filepath.Join(root, ".env.local"), []byte("VALUE=local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(resultFile); err != nil {
+		t.Fatal(err)
+	}
+	localOverride := testutil.Run(t, hum, root, env, "restart", "api", "--no-wait", "--json")
+	if localOverride.Code != 0 || localOverride.Err != nil {
+		t.Fatalf("optional local restart: code=%d err=%v stdout=%q stderr=%q", localOverride.Code, localOverride.Err, localOverride.Stdout, localOverride.Stderr)
+	}
+	manifestWaitForFileContents(t, resultFile, "local|inherited|unset")
+
 	if err := os.Remove(filepath.Join(root, ".env")); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +170,7 @@ func TestManifestEnvironmentLifecycle(t *testing.T) {
 	if missing.Code == 0 || missing.Err == nil || !strings.Contains(missing.Stdout+missing.Stderr, ".env") {
 		t.Fatalf("required-file preflight: code=%d err=%v stdout=%q stderr=%q", missing.Code, missing.Err, missing.Stdout, missing.Stderr)
 	}
-	manifestAssertFileContents(t, resultFile, "reloaded|inherited|unset")
+	manifestAssertFileContents(t, resultFile, "local|inherited|unset")
 
 	writeEnvironmentLifecycleManifest(t, root, resultFile, "")
 	if err := os.Remove(resultFile); err != nil {

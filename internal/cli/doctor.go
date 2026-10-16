@@ -94,13 +94,26 @@ func doctorCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 				details["shadowed_manifest"] = manifest.shadowedManifest
 			}
 			add("project.manifest", doctorPass, fmt.Sprintf("resolved %d process definition(s)", len(manifest.defs)), details)
-			if err := prepareManifestEnvironments(&manifest, nil, os.Environ(), true); err != nil {
-				add("environment.composition", doctorFail, err.Error(), nil)
-			} else if !doctorEnvironmentsFitProtocol(manifest) {
-				add("environment.composition", doctorFail, "a composed process request exceeds the protocol limit", nil)
+			baseline := os.Environ()
+			prepared, skipped, err := project.PrepareEnvironmentsWithSkipped(manifest.defs, baseline)
+			if err != nil {
+				configurationErr := &project.ConfigurationError{Source: manifestDisplayName(manifest), Err: err}
+				add("environment.composition", doctorFail, configurationErr.Error(), nil)
 			} else {
-				add("environment.composition", doctorPass, fmt.Sprintf("composed %d process environment(s)", len(manifest.defs)), map[string]any{"processes": len(manifest.defs)})
-				diagnoseExecutables(ctx, manifest, add)
+				manifest.baseline = append([]string(nil), baseline...)
+				manifest.environments = prepared
+				if !doctorEnvironmentsFitProtocol(manifest) {
+					add("environment.composition", doctorFail, "a composed process request exceeds the protocol limit", nil)
+				} else {
+					message := fmt.Sprintf("composed %d process environment(s)", len(manifest.defs))
+					compositionDetails := map[string]any{"processes": len(manifest.defs)}
+					if len(skipped) != 0 {
+						message += "; skipped optional files: " + strings.Join(skipped, ", ")
+						compositionDetails["skipped_optional_files"] = skipped
+					}
+					add("environment.composition", doctorPass, message, compositionDetails)
+					diagnoseExecutables(ctx, manifest, add)
+				}
 			}
 		}
 	}

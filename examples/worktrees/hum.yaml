@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
 version: 1
 environment:
-  files: [.env.local] # Git-ignored, one per worktree; hum up fails if it is missing
+  files: [.env, {path: .env.local, required: false}] # committed default, Git-ignored per-worktree override
 processes:
   web:
     # Hum never expands $PORT; sh does.

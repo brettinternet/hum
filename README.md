@@ -176,7 +176,7 @@ processes:
 ```yaml
 version: 1
 environment:
-  files: [.env]
+  files: [.env, {path: .env.local, required: false}]
 processes:
   api:
     argv: [bun, run, api]
@@ -186,10 +186,10 @@ processes:
 ```
 
 ```text
-your shell env  →  .env  →  processes.api.env     (later wins)
+your shell env  →  .env  →  .env.local  →  processes.api.env     (later wins)
 ```
 
-Set `environment.inherit: false` to skip your shell env. Hum never expands `$VAR`, `$(...)`, or backticks. Changes apply on `hum restart`. Limits and file syntax: [design](docs/design.md#environment).
+Files are required by default; a mapping with `required: false` skips only a missing file. Set `environment.inherit: false` to skip your shell env. Hum never expands `$VAR`, `$(...)`, or backticks. Changes apply on `hum restart`. Limits and file syntax: [design](docs/design.md#environment).
 
 ## Run without a manifest
 
@@ -213,7 +213,7 @@ hum list --all
 hum -C .worktrees/agent-a down
 ```
 
-Hum does not assign ports. To run two worktrees at once, give each a different `PORT` in a Git-ignored `.env.local` listed under `environment.files`.
+Hum does not assign ports. Commit a default `PORT` in `.env`, then override it in a Git-ignored `.env.local` listed as `{path: .env.local, required: false}`. If the override is missing, the committed default applies; if that port is already bound, the server fails loudly at bind. Use a plain string entry (`.env.local`) when a missing local file should fail launch preflight instead.
 
 | Pick a project or manifest | Example |
 | --- | --- |

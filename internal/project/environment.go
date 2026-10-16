@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 )
 
@@ -23,11 +24,18 @@ const (
 // EnvironmentSpec is the manifest's process environment specification. Values
 // are intentionally not included in process snapshots or response models.
 type EnvironmentSpec struct {
-	Inherit bool               `json:"-"`
-	Files   []string           `json:"-"`
-	Values  map[string]*string `json:"-"`
-	BaseDir string             `json:"-"`
-	Root    string             `json:"-"`
+	Inherit bool                  `json:"-"`
+	Files   []EnvironmentFileSpec `json:"-"`
+	Values  map[string]*string    `json:"-"`
+	BaseDir string                `json:"-"`
+	Root    string                `json:"-"`
+}
+
+// EnvironmentFileSpec is one ordered manifest environment file. Required is
+// true for string entries and when a mapping omits required.
+type EnvironmentFileSpec struct {
+	Path     string
+	Required bool
 }
 
 // EnvironmentAssignment is one parsed assignment in an environment file.
@@ -197,28 +205,52 @@ func envFileError(path string, line int, message string) error {
 
 // PreparedEnvironment contains one invocation's immutable file snapshot.
 type PreparedEnvironment struct {
-	baseline []string
-	files    map[string][]EnvironmentAssignment
-	paths    map[string]string
+	baseline             []string
+	files                map[string][]EnvironmentAssignment
+	paths                map[string]string
+	skippedOptionalFiles []string
 }
 
 // PrepareEnvironments validates and loads each unique file once, then composes
 // a target environment for every definition. It also checks encoded protocol
 // request size without exposing values in diagnostics.
 func PrepareEnvironments(definitions []Definition, baseline []string) (map[string][]string, error) {
+	environments, _, err := PrepareEnvironmentsWithSkipped(definitions, baseline)
+	return environments, err
+}
+
+// PrepareEnvironmentsWithSkipped prepares the same environment snapshot as
+// PrepareEnvironments and also reports optional files skipped during that
+// snapshot, using the paths as written relative to their manifests.
+func PrepareEnvironmentsWithSkipped(definitions []Definition, baseline []string) (map[string][]string, []string, error) {
 	prepared := &PreparedEnvironment{
 		baseline: append([]string(nil), baseline...),
 		files:    map[string][]EnvironmentAssignment{},
 		paths:    map[string]string{},
 	}
+	skippedRefs := map[string]struct{}{}
 	for _, definition := range definitions {
 		if definition.Environment == nil || environmentNoop(definition.Environment) {
 			continue
 		}
-		for _, filename := range definition.Environment.Files {
+		for _, fileSpec := range definition.Environment.Files {
+			filename := fileSpec.Path
+			lexical, err := lexicalEnvironmentFilePath(definition.Environment.BaseDir, definition.Environment.Root, filename)
+			if err != nil {
+				return nil, nil, err
+			}
+			_, lstatErr := os.Lstat(lexical)
+			if errors.Is(lstatErr, syscall.ENOENT) && !fileSpec.Required {
+				ref := environmentFileRef(definition.Environment, filename)
+				if _, seen := skippedRefs[ref]; !seen {
+					skippedRefs[ref] = struct{}{}
+					prepared.skippedOptionalFiles = append(prepared.skippedOptionalFiles, filepath.ToSlash(filename))
+				}
+				continue
+			}
 			canonical, err := resolveEnvironmentFile(definition.Environment.BaseDir, definition.Environment.Root, filename)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			prepared.paths[environmentFileRef(definition.Environment, filename)] = canonical
 			if _, ok := prepared.files[canonical]; ok {
@@ -226,29 +258,29 @@ func PrepareEnvironments(definitions []Definition, baseline []string) (map[strin
 			}
 			info, err := os.Stat(canonical)
 			if err != nil {
-				return nil, fmt.Errorf("environment file %q: %w", filename, err)
+				return nil, nil, fmt.Errorf("environment file %q: %w", filename, err)
 			}
 			if !info.Mode().IsRegular() {
-				return nil, fmt.Errorf("environment file %q is not a regular file", filename)
+				return nil, nil, fmt.Errorf("environment file %q is not a regular file", filename)
 			}
 			if info.Size() > maxEnvironmentFileBytes {
-				return nil, fmt.Errorf("environment file %q exceeds the 1 MiB limit", filename)
+				return nil, nil, fmt.Errorf("environment file %q exceeds the 1 MiB limit", filename)
 			}
 			file, err := os.Open(canonical)
 			if err != nil {
-				return nil, fmt.Errorf("environment file %q: %w", filename, err)
+				return nil, nil, fmt.Errorf("environment file %q: %w", filename, err)
 			}
 			data, readErr := io.ReadAll(io.LimitReader(file, maxEnvironmentFileBytes+1))
 			_ = file.Close()
 			if readErr != nil {
-				return nil, fmt.Errorf("environment file %q: %w", filename, readErr)
+				return nil, nil, fmt.Errorf("environment file %q: %w", filename, readErr)
 			}
 			if len(data) > maxEnvironmentFileBytes {
-				return nil, fmt.Errorf("environment file %q exceeds the 1 MiB limit", filename)
+				return nil, nil, fmt.Errorf("environment file %q exceeds the 1 MiB limit", filename)
 			}
 			assignments, parseErr := ParseEnvironmentFile(filename, data)
 			if parseErr != nil {
-				return nil, parseErr
+				return nil, nil, parseErr
 			}
 			prepared.files[canonical] = assignments
 		}
@@ -257,11 +289,11 @@ func PrepareEnvironments(definitions []Definition, baseline []string) (map[strin
 	for _, definition := range definitions {
 		env, err := prepared.compose(definition.Environment)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		result[definition.Name] = env
 	}
-	return result, nil
+	return result, prepared.skippedOptionalFiles, nil
 }
 
 // HasEnvironmentConfiguration reports whether a specification changes the
@@ -296,9 +328,13 @@ type positionedEnvironmentEntry struct {
 }
 
 func (p *PreparedEnvironment) composeMap(values map[string]string, opaque []positionedEnvironmentEntry, spec *EnvironmentSpec) ([]string, error) {
-	for _, filename := range spec.Files {
+	for _, fileSpec := range spec.Files {
+		filename := fileSpec.Path
 		canonical, ok := p.paths[environmentFileRef(spec, filename)]
 		if !ok {
+			if !fileSpec.Required {
+				continue
+			}
 			return nil, fmt.Errorf("environment file %q was not prepared", filename)
 		}
 		for _, entry := range p.files[canonical] {
@@ -360,15 +396,9 @@ func splitEnvEntry(entry string) (string, string, bool) {
 	return entry[:i], entry[i+1:], true
 }
 func resolveEnvironmentFile(base, root, name string) (string, error) {
-	if name == "" || strings.IndexByte(name, 0) >= 0 || filepath.IsAbs(name) {
-		return "", fmt.Errorf("environment file %q must be a non-empty relative path", name)
-	}
-	lexical := filepath.Clean(filepath.Join(base, name))
-	if lexical == base {
-		return "", fmt.Errorf("environment file %q is not a file", name)
-	}
-	if !pathWithin(root, lexical) {
-		return "", fmt.Errorf("environment file %q escapes the project root", name)
+	lexical, err := lexicalEnvironmentFilePath(base, root, name)
+	if err != nil {
+		return "", err
 	}
 	canonicalRoot, rootErr := filepath.EvalSymlinks(root)
 	if rootErr != nil {
@@ -382,4 +412,18 @@ func resolveEnvironmentFile(base, root, name string) (string, error) {
 		return "", fmt.Errorf("environment file %q resolves outside the project root", name)
 	}
 	return canonical, nil
+}
+
+func lexicalEnvironmentFilePath(base, root, name string) (string, error) {
+	if name == "" || strings.IndexByte(name, 0) >= 0 || filepath.IsAbs(name) {
+		return "", fmt.Errorf("environment file %q must be a non-empty relative path", name)
+	}
+	lexical := filepath.Clean(filepath.Join(base, name))
+	if lexical == base {
+		return "", fmt.Errorf("environment file %q is not a file", name)
+	}
+	if !pathWithin(root, lexical) {
+		return "", fmt.Errorf("environment file %q escapes the project root", name)
+	}
+	return lexical, nil
 }

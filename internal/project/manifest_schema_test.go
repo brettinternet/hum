@@ -43,9 +43,45 @@ func TestManifestSchemaContract(t *testing.T) {
 		t.Fatalf("environment.files schema = %#v", files)
 	}
 	fileItem := schemaObject(t, files, "items")
-	filePattern, _ := fileItem["pattern"].(string)
-	if fileItem["type"] != "string" || fileItem["minLength"] != float64(1) || !strings.Contains(filePattern, "u0000") {
+	fileVariants, ok := fileItem["anyOf"].([]any)
+	if !ok || len(fileVariants) != 2 {
 		t.Fatalf("environment.files item schema = %#v", fileItem)
+	}
+	stringFileSchema, ok := fileVariants[0].(map[string]any)
+	if !ok {
+		t.Fatalf("environment.files string schema = %#v", fileVariants[0])
+	}
+	filePattern, _ := stringFileSchema["pattern"].(string)
+	if stringFileSchema["type"] != "string" || stringFileSchema["minLength"] != float64(1) || !strings.Contains(filePattern, "u0000") {
+		t.Fatalf("environment.files string schema = %#v", stringFileSchema)
+	}
+	mappingFileSchema, ok := fileVariants[1].(map[string]any)
+	if !ok {
+		t.Fatalf("environment.files mapping schema = %#v", fileVariants[1])
+	}
+	assertClosedSchemaObject(t, "environment.files mapping", mappingFileSchema)
+	assertSchemaKeys(t, "environment.files mapping", mappingFileSchema, map[string]struct{}{"path": {}, "required": {}})
+	assertRequiredKeys(t, "environment.files mapping", mappingFileSchema, "path")
+	mappingPath := schemaObject(t, mappingFileSchema, "properties", "path")
+	mappingRequired := schemaObject(t, mappingFileSchema, "properties", "required")
+	if mappingRequired["type"] != "boolean" || mappingRequired["default"] != true {
+		t.Fatalf("environment.files required schema = %#v", mappingRequired)
+	}
+	assertNULOnlyPattern(t, "environment.files string path", filePattern, "sub/.env", "line\nbreak")
+	assertNULOnlyPattern(t, "environment.files mapping path", mappingPath["pattern"].(string), "sub/.env", "line\nbreak")
+	for _, test := range []struct {
+		name string
+		item any
+		want bool
+	}{
+		{name: "string", item: ".env", want: true},
+		{name: "mapping", item: map[string]any{"path": ".env.local", "required": false}, want: true},
+		{name: "mapping default", item: map[string]any{"path": ".env.local"}, want: true},
+		{name: "unknown mapping key", item: map[string]any{"path": ".env.local", "optional": true}, want: false},
+	} {
+		if got := schemaEnvironmentFileItemAccepts(fileItem, test.item); got != test.want {
+			t.Errorf("schema environment file %s accepted=%v, want=%v", test.name, got, test.want)
+		}
 	}
 
 	process := schemaObject(t, schema, "$defs", "process")
@@ -65,7 +101,6 @@ func TestManifestSchemaContract(t *testing.T) {
 	}
 	envValuePattern, _ := variants[0].(map[string]any)["pattern"].(string)
 	assertNULOnlyPattern(t, "process.env value", envValuePattern, "", "plain", "line\nbreak")
-	assertNULOnlyPattern(t, "environment.files item", filePattern, "sub/.env", "line\nbreak")
 
 	readiness := schemaObject(t, schema, "$defs", "readiness")
 	assertClosedSchemaObject(t, "readiness", readiness)
@@ -323,6 +358,58 @@ func assertReadinessDocumentCorpus(t *testing.T, readiness map[string]any) {
 			}
 		})
 	}
+}
+
+func schemaEnvironmentFileItemAccepts(itemSchema map[string]any, item any) bool {
+	variants, ok := itemSchema["anyOf"].([]any)
+	if !ok || len(variants) != 2 {
+		return false
+	}
+	stringSchema, stringOK := variants[0].(map[string]any)
+	mappingSchema, mappingOK := variants[1].(map[string]any)
+	if !stringOK || !mappingOK {
+		return false
+	}
+	if value, ok := item.(string); ok {
+		return schemaEnvironmentFilePathAccepts(stringSchema, value)
+	}
+	mapping, ok := item.(map[string]any)
+	if !ok || mappingSchema["type"] != "object" || mappingSchema["additionalProperties"] != false {
+		return false
+	}
+	properties, ok := mappingSchema["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	path, foundPath := mapping["path"]
+	if !foundPath {
+		return false
+	}
+	for key, value := range mapping {
+		property, known := properties[key].(map[string]any)
+		if !known {
+			return false
+		}
+		switch property["type"] {
+		case "string":
+			text, ok := value.(string)
+			if !ok || !schemaEnvironmentFilePathAccepts(property, text) {
+				return false
+			}
+		case "boolean":
+			if _, ok := value.(bool); !ok {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return schemaEnvironmentFilePathAccepts(properties["path"].(map[string]any), path.(string))
+}
+
+func schemaEnvironmentFilePathAccepts(schema map[string]any, value string) bool {
+	minimum, _ := schema["minLength"].(float64)
+	return schema["type"] == "string" && float64(len(value)) >= minimum && value != "." && !strings.HasPrefix(value, "/") && !strings.ContainsRune(value, 0)
 }
 
 func schemaReadinessDocumentAccepts(readiness map[string]any, document map[string]any) bool {

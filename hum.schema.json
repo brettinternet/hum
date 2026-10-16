@@ -17,7 +17,24 @@
       "additionalProperties": false,
       "properties": {
         "inherit": {"type": "boolean", "default": true},
-        "files": {"type": "array", "maxItems": 16, "items": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!\\.$)[^\\u0000]+$"}}
+        "files": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "anyOf": [
+              {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!\\.$)[^\\u0000]+$"},
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path"],
+                "properties": {
+                  "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!\\.$)[^\\u0000]+$"},
+                  "required": {"type": "boolean", "default": true}
+                }
+              }
+            ]
+          }
+        }
       }
     },
     "processes": {

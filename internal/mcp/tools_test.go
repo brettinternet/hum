@@ -29,7 +29,7 @@ func TestMCPManifestEnvironmentContract(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("TOKEN=file-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fileSpec := &project.EnvironmentSpec{Inherit: true, Files: []string{".env"}, Values: map[string]*string{}, BaseDir: root, Root: root}
+	fileSpec := &project.EnvironmentSpec{Inherit: true, Files: []project.EnvironmentFileSpec{{Path: ".env", Required: true}}, Values: map[string]*string{}, BaseDir: root, Root: root}
 	resolution := Resolution{Root: root, Definitions: []Definition{{Name: "api", Source: "manifest", Argv: []string{"api"}, Cwd: root, Environment: fileSpec}}}
 
 	t.Run("configured baseline captured once", func(t *testing.T) {
@@ -91,7 +91,7 @@ func TestMCPManifestEnvironmentContract(t *testing.T) {
 				return nil, errors.New("unexpected client contact")
 			},
 		})
-		missing := Resolution{Root: root, Definitions: []Definition{{Name: "bad", Source: "manifest", Argv: []string{"bad"}, Cwd: root, Environment: &project.EnvironmentSpec{Inherit: true, Files: []string{"missing.env"}, Values: map[string]*string{}, BaseDir: root, Root: root}}}}
+		missing := Resolution{Root: root, Definitions: []Definition{{Name: "bad", Source: "manifest", Argv: []string{"bad"}, Cwd: root, Environment: &project.EnvironmentSpec{Inherit: true, Files: []project.EnvironmentFileSpec{{Path: "missing.env", Required: true}}, Values: map[string]*string{}, BaseDir: root, Root: root}}}}
 		if _, err := server.start(context.Background(), missing, commonInput{Name: "bad", NoWait: true}); err == nil || contacts != 0 {
 			t.Fatalf("missing-file error=%v contacts=%d", err, contacts)
 		}
