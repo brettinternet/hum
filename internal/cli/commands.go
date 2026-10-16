@@ -179,7 +179,7 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 			Flags: []urfavecli.Flag{
 				&urfavecli.BoolFlag{Name: "all", Aliases: []string{"a"}, DefaultText: "false", Usage: "include every scope; default is the current project"},
 				&urfavecli.BoolFlag{Name: "full", DefaultText: "false", Usage: "include all human-readable details; default is name, state, and PID"},
-				&urfavecli.IntFlag{Name: "port", HideDefault: true, Usage: "optional; find Hum groups listening on TCP PORT (1..65535)"},
+				&urfavecli.IntFlag{Name: "port", Aliases: []string{"p"}, HideDefault: true, Usage: "optional; find Hum groups listening on TCP PORT (1..65535)"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write all fields as JSON; default is human-readable output"},
 			},
 			OnUsageError: onUsageError,

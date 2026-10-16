@@ -122,6 +122,7 @@ no aliases.
 | `-d` | `--daemon`, `--detach` | `serve`, `run`, `up` |
 | `-t` | `--timeout` | `start`, `up`, `wait`, `restart` |
 | `-a` | `--all` | `list` |
+| `-p` | `--port` | `list` |
 | `-s` | `--stream` | `logs` |
 | `-n` | `--tail` | `attach`, `logs`, `events` |
 | `-c` | `--after-cursor` | `logs`, `wait`, `events` |
@@ -129,8 +130,9 @@ no aliases.
 | `-m` | `--match` | `logs`, `wait`, `events` |
 | `-f` | `--follow` | `logs` |
 
-Long-only: `--force`, `--since`, `--no-wait`, `--tty`, `--stop-processes`, `--runtime-dir`,
-`--stop-grace`, `--output-bytes`, and `--completed-records`. `input` adds no short aliases,
+Long-only: `--force`, `--full`, `--since`, `--kind`, `--failed`, `--context`, `--session-id`,
+`--no-wait`, `--tty`, `--text`, `--base64`, `--stop-processes`, `--runtime-dir`, `--stop-grace`,
+`--output-bytes`, and `--completed-records`. `input` adds no short aliases,
 including for `--json`.
 
 ### Selecting a project and manifest
