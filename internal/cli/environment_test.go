@@ -19,7 +19,7 @@ func TestManifestEnvironmentPreflightContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		baseline := []string{"PATH=/bin", "DUP=first", "DUP=last"}
-		manifest := manifestState{root: root, defs: []project.Definition{{Name: "api", Environment: &project.EnvironmentSpec{Inherit: true, Files: []string{".env"}, Values: map[string]*string{}, BaseDir: root, Root: root}}}}
+		manifest := manifestState{root: root, defs: []project.Definition{{Name: "api", Environment: &project.EnvironmentSpec{Inherit: true, Files: []project.EnvironmentFileSpec{{Path: ".env", Required: true}}, Values: map[string]*string{}, BaseDir: root, Root: root}}}}
 		if err := prepareManifestEnvironments(&manifest, []string{"api"}, baseline, false); err != nil {
 			t.Fatal(err)
 		}
@@ -32,9 +32,20 @@ func TestManifestEnvironmentPreflightContract(t *testing.T) {
 		}
 	})
 
+	t.Run("missing optional file", func(t *testing.T) {
+		root := t.TempDir()
+		manifest := manifestState{root: root, defs: []project.Definition{{Name: "api", Environment: &project.EnvironmentSpec{Inherit: true, Files: []project.EnvironmentFileSpec{{Path: "missing/.env.local", Required: false}}, Values: map[string]*string{}, BaseDir: root, Root: root}}}}
+		if err := prepareManifestEnvironments(&manifest, []string{"api"}, []string{"PATH=/bin"}, false); err != nil {
+			t.Fatalf("optional absence failed launch preflight: %v", err)
+		}
+		if got := manifest.environments["api"]; !reflect.DeepEqual(got, []string{"PATH=/bin"}) {
+			t.Fatalf("prepared environment=%v", got)
+		}
+	})
+
 	t.Run("missing required file", func(t *testing.T) {
 		root := t.TempDir()
-		missing := manifestState{root: root, defs: []project.Definition{{Name: "bad", Environment: &project.EnvironmentSpec{Inherit: true, Files: []string{"missing.env"}, Values: map[string]*string{}, BaseDir: root, Root: root}}}}
+		missing := manifestState{root: root, defs: []project.Definition{{Name: "bad", Environment: &project.EnvironmentSpec{Inherit: true, Files: []project.EnvironmentFileSpec{{Path: "missing.env", Required: true}}, Values: map[string]*string{}, BaseDir: root, Root: root}}}}
 		if err := prepareManifestEnvironments(&missing, []string{"bad"}, []string{"PATH=/bin"}, false); err == nil {
 			t.Fatal("missing environment file accepted")
 		}

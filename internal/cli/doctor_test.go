@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -425,13 +426,27 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 	writeDoctorExecutable(t, filepath.Join(bin, "app"))
 	writeDoctorExecutable(t, filepath.Join(projectRoot, "ready"))
 	writeDoctorTestFile(t, filepath.Join(projectRoot, ".env"), "PATH="+bin+"\nTOKEN=private-value\n")
-	writeDoctorTestFile(t, filepath.Join(projectRoot, "hum.yaml"), "version: 1\nenvironment:\n  inherit: false\n  files: [.env]\nprocesses:\n  app:\n    argv: [app]\n    ready:\n      exec: [./ready]\n")
+	writeDoctorTestFile(t, filepath.Join(projectRoot, "hum.yaml"), "version: 1\nenvironment:\n  inherit: false\n  files: [.env, {path: worktree/.env.local, required: false}]\nprocesses:\n  app:\n    argv: [app]\n    ready:\n      exec: [./ready]\n")
 
 	result, stdout, stderr, err := runDoctorTest(t, context.Background(), projectRoot, "--json")
 	if err != nil || !result.OK || stderr != "" {
 		t.Fatalf("doctor: err=%v result=%+v stdout=%q stderr=%q", err, result, stdout, stderr)
 	}
 	assertDoctorCheck(t, result, "environment.composition", doctorPass)
+	var composition doctorCheck
+	for _, check := range result.Checks {
+		if check.Name == "environment.composition" {
+			composition = check
+			break
+		}
+	}
+	if !strings.Contains(composition.Message, "worktree/.env.local") {
+		t.Fatalf("doctor message omitted skipped path: %#v", composition)
+	}
+	skipped, ok := composition.Details["skipped_optional_files"].([]any)
+	if !ok || !reflect.DeepEqual(skipped, []any{"worktree/.env.local"}) {
+		t.Fatalf("doctor skipped-path details = %#v", composition.Details)
+	}
 	assertDoctorCheck(t, result, "process.executable", doctorPass)
 	assertDoctorCheck(t, result, "ready.executable", doctorPass)
 	if strings.Contains(stdout+stderr, "private-value") || strings.Contains(stdout+stderr, "TOKEN") {

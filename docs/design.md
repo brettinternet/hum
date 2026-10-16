@@ -645,7 +645,7 @@ A running, completed setup, or recovery-capable manifest record whose definition
 ```yaml
 environment:
   inherit: true      # default; false starts empty
-  files: [.env]      # required, applied in order
+  files: [.env, {path: .env.local, required: false}] # required by default, applied in order
 processes:
   api:
     env:
@@ -681,10 +681,13 @@ that looks like expansion, or use an external loader. This is not a dotenvx or d
 
 - Paths resolve from the selected manifest's directory (including `--file`). `../.env` is fine
   while it stays inside the canonical project root. Empty, absolute, root, lexical or symlink
-  escapes, missing, non-regular, and unreadable paths fail.
+  escapes, non-regular, and unreadable paths fail. Files are required unless a mapping sets
+  `required: false`; an optional file is skipped only when `Lstat` of its lexical path reports
+  `ENOENT` (including a missing parent directory). A dangling final symlink is invalid.
 - Manifest parsing checks syntax and containment without reading files. Launch preflight reads each
-  unique canonical file once per invocation and reuses that snapshot per target. There is no cache
-  across requests or worktrees and no global environment mutation.
+  unique canonical file once per invocation and reuses that snapshot per target. Optional-file
+  absence is decided in that same snapshot. There is no cache across requests or worktrees and no
+  global environment mutation.
 - CLI and MCP never activate mise, nvm, direnv, or shell hooks.
 
 | Limit | Value |
@@ -841,7 +844,8 @@ takes one `Options.Environment` snapshot (falling back to `os.Environ`) per requ
 - Declared `start`, `up`, declared `run`, and `restart` compose the environment once before
   contacting the daemon. `up` covers its whole dependency closure, and any failure aborts a mixed
   declared/retained batch before changing anything. Required files are validated even for a running
-  record that will be kept.
+  record that will be kept; files are required unless their mapping sets `required: false`, which
+  skips only lexical paths reported absent by `Lstat` in that invocation's preflight.
 - Empty `up`, ad-hoc and retained-only commands, discovered definitions, explicit-argv `run`, and
   read-only commands never read environment files.
 - `up` keeps running, pending, and exhausted snapshots. `start` keeps running entries but composes

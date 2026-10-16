@@ -1,10 +1,11 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/brettinternet/hum/main/hum.schema.json
 version: 1
-# Optional process environment composition. Files are required and relative to
-# this manifest; values are literal and are never shell-expanded.
+# Optional process environment composition. Files are required by default and
+# relative to this manifest; required: false skips only an absent file. Values
+# are literal and are never shell-expanded.
 environment:
   inherit: true
-  files: [.env]
+  files: [.env, {path: .env.local, required: false}]
 processes:
   db:
     # argv runs directly, without shell parsing.

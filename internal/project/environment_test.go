@@ -121,10 +121,123 @@ func TestEnvironmentCompositionContract(t *testing.T) {
 		}
 	})
 
+	t.Run("missing optional files skip in ordered composition", func(t *testing.T) {
+		caseRoot := t.TempDir()
+		mustWriteEnvironmentFile(t, filepath.Join(caseRoot, "first.env"), "A=first\n")
+		mustWriteEnvironmentFile(t, filepath.Join(caseRoot, "last.env"), "A=last\n")
+		spec := &EnvironmentSpec{
+			Inherit: true,
+			Files: []EnvironmentFileSpec{
+				{Path: "first.env", Required: true},
+				{Path: "missing-directory/.env.local", Required: false},
+				{Path: "last.env", Required: true},
+			},
+			Values:  map[string]*string{},
+			BaseDir: caseRoot,
+			Root:    caseRoot,
+		}
+		got, skipped, err := PrepareEnvironmentsWithSkipped([]Definition{{Name: "api", Environment: spec}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got["api"], []string{"A=last"}) {
+			t.Fatalf("environment=%v, want later file to win", got["api"])
+		}
+		if !reflect.DeepEqual(skipped, []string{"missing-directory/.env.local"}) {
+			t.Fatalf("skipped files=%v", skipped)
+		}
+	})
+
+	t.Run("optional existing invalid files fail like required files", func(t *testing.T) {
+		type invalidFileCase struct {
+			name  string
+			setup func(*testing.T, string) string
+		}
+		cases := []invalidFileCase{
+			{name: "directory", setup: func(t *testing.T, root string) string {
+				path := filepath.Join(root, "directory.env")
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				return "directory.env"
+			}},
+			{name: "oversized", setup: func(t *testing.T, root string) string {
+				mustWriteEnvironmentFile(t, filepath.Join(root, "oversized.env"), strings.Repeat("X", maxEnvironmentFileBytes+1))
+				return "oversized.env"
+			}},
+			{name: "malformed", setup: func(t *testing.T, root string) string {
+				mustWriteEnvironmentFile(t, filepath.Join(root, "malformed.env"), "TOKEN=$SECRET_VALUE\n")
+				return "malformed.env"
+			}},
+		}
+		if runtime.GOOS != "windows" {
+			cases = append(cases,
+				invalidFileCase{name: "escaping symlink", setup: func(t *testing.T, root string) string {
+					outside := t.TempDir()
+					mustWriteEnvironmentFile(t, filepath.Join(outside, "outside.env"), "TOKEN=private\n")
+					if err := os.Symlink(filepath.Join(outside, "outside.env"), filepath.Join(root, "escaping.env")); err != nil {
+						t.Fatal(err)
+					}
+					return "escaping.env"
+				}},
+				invalidFileCase{name: "dangling symlink", setup: func(t *testing.T, root string) string {
+					if err := os.Symlink(filepath.Join(root, "not-created.env"), filepath.Join(root, "dangling.env")); err != nil {
+						t.Fatal(err)
+					}
+					return "dangling.env"
+				}},
+				invalidFileCase{name: "unreadable", setup: func(t *testing.T, root string) string {
+					path := filepath.Join(root, "unreadable.env")
+					mustWriteEnvironmentFile(t, path, "TOKEN=private\n")
+					if err := os.Chmod(path, 0); err != nil {
+						t.Fatal(err)
+					}
+					if file, err := os.Open(path); err == nil {
+						_ = file.Close()
+						t.Fatal("test file remains readable after removing permissions")
+					}
+					t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+					return "unreadable.env"
+				}},
+			)
+		}
+		for _, test := range cases {
+			t.Run(test.name, func(t *testing.T) {
+				root := t.TempDir()
+				file := test.setup(t, root)
+				var requiredError string
+				for _, required := range []bool{true, false} {
+					spec := &EnvironmentSpec{Inherit: true, Files: []EnvironmentFileSpec{{Path: file, Required: required}}, Values: map[string]*string{}, BaseDir: root, Root: root}
+					_, err := PrepareEnvironments([]Definition{{Name: "bad", Environment: spec}}, nil)
+					if err == nil {
+						t.Fatalf("required=%v accepted invalid file", required)
+					}
+					if strings.Contains(err.Error(), "SECRET_VALUE") {
+						t.Fatalf("diagnostic leaked file value: %v", err)
+					}
+					if required {
+						requiredError = err.Error()
+					} else if err.Error() != requiredError {
+						t.Fatalf("optional error %q differs from required error %q", err, requiredError)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("nonexistent final path under a file is not optional absence", func(t *testing.T) {
+		caseRoot := t.TempDir()
+		mustWriteEnvironmentFile(t, filepath.Join(caseRoot, "not-a-directory"), "")
+		spec := &EnvironmentSpec{Inherit: true, Files: []EnvironmentFileSpec{{Path: "not-a-directory/missing.env", Required: false}}, Values: map[string]*string{}, BaseDir: caseRoot, Root: caseRoot}
+		if _, err := PrepareEnvironments([]Definition{{Name: "bad", Environment: spec}}, nil); err == nil {
+			t.Fatal("non-directory parent was treated as a missing optional file")
+		}
+	})
+
 	t.Run("precedence null sorting and duplicates", func(t *testing.T) {
 		spec := &EnvironmentSpec{
 			Inherit: true,
-			Files:   []string{"first.env", "second.env"},
+			Files:   []EnvironmentFileSpec{{Path: "first.env", Required: true}, {Path: "second.env", Required: true}},
 			Values: map[string]*string{
 				"A": envString("map"),
 				"B": nil,
@@ -180,7 +293,7 @@ func TestEnvironmentCompositionContract(t *testing.T) {
 		if err := os.Symlink(filepath.Join(root, "first.env"), filepath.Join(nested, "alias.env")); err != nil {
 			t.Fatal(err)
 		}
-		spec := &EnvironmentSpec{Inherit: false, Files: []string{"../first.env", "alias.env"}, Values: map[string]*string{}, BaseDir: nested, Root: root}
+		spec := &EnvironmentSpec{Inherit: false, Files: []EnvironmentFileSpec{{Path: "../first.env", Required: true}, {Path: "alias.env", Required: true}}, Values: map[string]*string{}, BaseDir: nested, Root: root}
 		got, err := PrepareEnvironments([]Definition{{Name: "nested", Environment: spec}}, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -203,9 +316,11 @@ func TestEnvironmentCompositionContract(t *testing.T) {
 	}
 	for _, test := range pathErrors {
 		t.Run("path "+test.name, func(t *testing.T) {
-			spec := &EnvironmentSpec{Inherit: true, Files: []string{test.path}, Values: map[string]*string{}, BaseDir: root, Root: root}
+			spec := &EnvironmentSpec{Inherit: true, Files: []EnvironmentFileSpec{{Path: test.path, Required: true}}, Values: map[string]*string{}, BaseDir: root, Root: root}
 			if _, err := PrepareEnvironments([]Definition{{Name: "bad", Environment: spec}}, nil); err == nil || !strings.Contains(err.Error(), "environment file") {
 				t.Fatalf("path error = %v", err)
+			} else if test.name == "missing" && !strings.Contains(err.Error(), `environment file "missing.env": lstat `) {
+				t.Fatalf("missing-file diagnostic changed: %v", err)
 			}
 		})
 	}
@@ -218,7 +333,7 @@ func TestEnvironmentCompositionContract(t *testing.T) {
 			if err := os.Symlink(filepath.Join(outside, "outside.env"), link); err != nil {
 				t.Fatal(err)
 			}
-			spec := &EnvironmentSpec{Inherit: true, Files: []string{"outside.env"}, Values: map[string]*string{}, BaseDir: root, Root: root}
+			spec := &EnvironmentSpec{Inherit: true, Files: []EnvironmentFileSpec{{Path: "outside.env", Required: true}}, Values: map[string]*string{}, BaseDir: root, Root: root}
 			if _, err := PrepareEnvironments([]Definition{{Name: "bad", Environment: spec}}, nil); err == nil || !strings.Contains(err.Error(), "outside the project root") {
 				t.Fatalf("symlink error = %v", err)
 			}
@@ -227,7 +342,7 @@ func TestEnvironmentCompositionContract(t *testing.T) {
 
 	t.Run("file byte bound", func(t *testing.T) {
 		mustWriteEnvironmentFile(t, filepath.Join(root, "oversized.env"), strings.Repeat("X", maxEnvironmentFileBytes+1))
-		spec := &EnvironmentSpec{Inherit: false, Files: []string{"oversized.env"}, Values: map[string]*string{}, BaseDir: root, Root: root}
+		spec := &EnvironmentSpec{Inherit: false, Files: []EnvironmentFileSpec{{Path: "oversized.env", Required: true}}, Values: map[string]*string{}, BaseDir: root, Root: root}
 		if _, err := PrepareEnvironments([]Definition{{Name: "bad", Environment: spec}}, nil); err == nil || !strings.Contains(err.Error(), "1 MiB") || strings.Contains(err.Error(), ":1:") {
 			t.Fatalf("file bound error = %v", err)
 		}

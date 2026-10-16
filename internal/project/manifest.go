@@ -419,7 +419,7 @@ func parseProcess(root, baseDir, filename, context string, node *yaml.Node, mani
 	var environment *EnvironmentSpec
 	if manifestEnvironment != nil {
 		merged := *manifestEnvironment
-		merged.Files = append([]string(nil), manifestEnvironment.Files...)
+		merged.Files = append([]EnvironmentFileSpec(nil), manifestEnvironment.Files...)
 		merged.Values = processEnvironment
 		if merged.Values == nil {
 			merged.Values = map[string]*string{}
@@ -448,23 +448,56 @@ func parseEnvironment(root, base, filename string, node *yaml.Node) (*Environmen
 			}
 		case "files":
 			if !isSequenceNode(entry.value) {
-				return nil, manifestError(filename, "environment.files", "must be a sequence of non-empty relative strings")
+				return nil, manifestError(filename, "environment.files", "must be a sequence of path strings or mappings")
 			}
 			if len(entry.value.Content) > maxEnvironmentFiles {
 				return nil, manifestError(filename, "environment.files", "must contain at most %d entries", maxEnvironmentFiles)
 			}
 			for index, item := range entry.value.Content {
-				if !isStringScalar(item) || item.Value == "" || filepath.IsAbs(item.Value) || strings.IndexByte(item.Value, 0) >= 0 {
-					return nil, manifestError(filename, fmt.Sprintf("environment.files[%d]", index), "must be a non-empty relative path")
+				context := fmt.Sprintf("environment.files[%d]", index)
+				file := EnvironmentFileSpec{Required: true}
+				if isStringScalar(item) {
+					file.Path = item.Value
+				} else if isMappingNode(item) {
+					fields, err := decodeMapping(filename, context, item, map[string]struct{}{"path": {}, "required": {}})
+					if err != nil {
+						return nil, err
+					}
+					foundPath := false
+					for _, field := range fields {
+						switch field.name {
+						case "path":
+							if !isStringScalar(field.value) {
+								return nil, manifestError(filename, context, "path must be a string")
+							}
+							file.Path = field.value.Value
+							foundPath = true
+						case "required":
+							if field.value == nil || field.value.Kind != yaml.ScalarNode || field.value.ShortTag() != "!!bool" {
+								return nil, manifestError(filename, context, "required must be a boolean")
+							}
+							if err := field.value.Decode(&file.Required); err != nil {
+								return nil, manifestError(filename, context, "required must be a boolean")
+							}
+						}
+					}
+					if !foundPath {
+						return nil, manifestError(filename, context, "missing key %q", "path")
+					}
+				} else {
+					return nil, manifestError(filename, context, "must be a path string or mapping")
 				}
-				clean := filepath.Clean(filepath.Join(base, item.Value))
+				if file.Path == "" || filepath.IsAbs(file.Path) || strings.IndexByte(file.Path, 0) >= 0 {
+					return nil, manifestError(filename, context, "must be a non-empty relative path")
+				}
+				clean := filepath.Clean(filepath.Join(base, file.Path))
 				if clean == base {
-					return nil, manifestError(filename, fmt.Sprintf("environment.files[%d]", index), "path %q is not a file", item.Value)
+					return nil, manifestError(filename, context, "path %q is not a file", file.Path)
 				}
 				if !pathWithin(root, clean) {
-					return nil, manifestError(filename, fmt.Sprintf("environment.files[%d]", index), "path escapes the project root")
+					return nil, manifestError(filename, context, "path escapes the project root")
 				}
-				spec.Files = append(spec.Files, item.Value)
+				spec.Files = append(spec.Files, file)
 			}
 		}
 	}

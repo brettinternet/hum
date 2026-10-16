@@ -44,6 +44,22 @@ func TestManifestEnvironmentContract(t *testing.T) {
 		}
 	})
 
+	t.Run("file entries retain order and required defaults", func(t *testing.T) {
+		writeTestManifest(t, root, "version: 1\nenvironment:\n  files: [.env, {path: .env.defaults}, {path: .env.local, required: false}]\nprocesses:\n  api: {argv: [api]}\n  worker: {argv: [worker]}\n")
+		defs, err := LoadDefinitions(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []EnvironmentFileSpec{{Path: ".env", Required: true}, {Path: ".env.defaults", Required: true}, {Path: ".env.local", Required: false}}
+		if len(defs) != 2 || !reflect.DeepEqual(defs[0].Environment.Files, want) || !reflect.DeepEqual(defs[1].Environment.Files, want) {
+			t.Fatalf("file entries = %#v, want each process to retain ordered entries %#v", defs, want)
+		}
+		defs[0].Environment.Files[0].Path = "changed.env"
+		if defs[1].Environment.Files[0].Path != ".env" {
+			t.Fatal("process environment file slices share storage")
+		}
+	})
+
 	t.Run("defaults are no-op", func(t *testing.T) {
 		for _, environment := range []string{"", "environment: {}\n"} {
 			writeTestManifest(t, root, "version: 1\n"+environment+"processes:\n  api:\n    argv: [api]\n    env: {}\n")
@@ -75,6 +91,13 @@ func TestManifestEnvironmentContract(t *testing.T) {
 		{name: "root file", body: "environment: {files: [.]}\nprocesses: {}\n"},
 		{name: "escaping file", body: "environment: {files: [../private.env]}\nprocesses: {}\n"},
 		{name: "too many files", body: "environment: {files: [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q]}\nprocesses: {}\n"},
+		{name: "unknown environment file key", body: "environment: {files: [{path: .env, optional: true}]}\nprocesses: {}\n"},
+		{name: "missing mapping path", body: "environment: {files: [{required: false}]}\nprocesses: {}\n"},
+		{name: "empty mapping path", body: "environment: {files: [{path: ''}]}\nprocesses: {}\n"},
+		{name: "absolute mapping path", body: "environment: {files: [{path: '" + absoluteEnvPath + "', required: false}]}\nprocesses: {}\n"},
+		{name: "escaping mapping path", body: "environment: {files: [{path: ../private.env, required: false}]}\nprocesses: {}\n"},
+		{name: "non-boolean required", body: "environment: {files: [{path: .env, required: 'false'}]}\nprocesses: {}\n"},
+		{name: "mapping path type", body: "environment: {files: [{path: 1}]}\nprocesses: {}\n"},
 		{name: "env sequence", body: "processes:\n  api: {argv: [api], env: []}\n"},
 		{name: "env numeric", body: "processes:\n  api: {argv: [api], env: {PORT: 3000}}\n"},
 		{name: "env boolean", body: "processes:\n  api: {argv: [api], env: {DEBUG: true}}\n"},
@@ -96,6 +119,14 @@ func TestManifestEnvironmentContract(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("mapping entries share the file count limit", func(t *testing.T) {
+		files := strings.TrimSuffix(strings.Repeat("{path: .env},", maxEnvironmentFiles+1), ",")
+		writeTestManifest(t, root, "version: 1\nenvironment:\n  files: ["+files+"]\nprocesses: {}\n")
+		if _, err := LoadDefinitions(root); err == nil || !strings.Contains(err.Error(), "at most") {
+			t.Fatalf("mapping file count error = %v", err)
+		}
+	})
 }
 
 func writeTestManifest(t *testing.T, root, contents string) {
