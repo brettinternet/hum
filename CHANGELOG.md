@@ -2,6 +2,12 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.18.1](https://github.com/brettinternet/hum/compare/v0.18.0...v0.18.1) - 2026-10-16
+
+### Documentation
+
+- Simplify agent skill and MCP tool text
+
 ## [v0.18.0](https://github.com/brettinternet/hum/compare/v0.17.1...v0.18.0) - 2026-10-16
 
 ### Added
