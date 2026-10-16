@@ -1,10 +1,10 @@
 ---
 id: HUM-150
 title: Find which Hum process holds a TCP port with hum list --port
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-10 02:13'
-updated_date: '2026-10-16 17:11'
+updated_date: '2026-10-16 17:54'
 labels:
   - cli
   - mcp
@@ -79,19 +79,42 @@ Next action: add the fan-out beside `GetPortsScoped` (internal/app/app.go:2807),
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 mise exec go -- go test ./internal/app -run 'PortLookup' -count=1 -v exits 0 with named tests executed: with controlled fake inspectors across two project scopes and the global scope, the lookup returns exactly the running records whose listeners include the port, with listeners filtered to it; terminal and stopped records are never inspected; denied, unavailable, and non-matching partial results and a launch that changes during inspection are reported incomplete, never as a clean miss; a blocking inspector cannot hold the lookup past the whole-lookup deadline and uninspected records are reported incomplete; a counter shows concurrent inspections never exceed the bound.
-- [ ] #2 mise exec go -- go test ./internal/protocol ./internal/daemon ./internal/cli ./internal/mcp -run 'PortLookup' -count=1 -v exits 0 with named tests executed: the private request and response round-trip port, holders, and incomplete records; hum list --port validates 1-65535 before daemon contact and rejects --global; human output shows grouped holders with the LISTENING column, the no-holder message, and incomplete lines; JSON has processes and incomplete; plain list, list --all, and aggregate status send no port lookup; MCP list accepts port, rejects it with scope global or all false before daemon contact, and returns holders and incomplete in structuredContent.
-- [ ] #3 mise exec go -- go test ./integration -run '^TestListPortLookup$' -count=1 -v exits 0 on Unix with the built binary: projects A and B share one runtime and B runs a child listening on an ephemeral TCP port; hum -C A list --port PORT --json exits 0 and reports B's process with B's project_root, the child PID, and the endpoint; a port held only by a listener the test owns outside Hum returns exit 0, empty processes, and no PID of that listener anywhere in the output.
-- [ ] #4 task cli:build && bin/hum list --help exits 0 and shows --port. rg -n 'list --port' README.md docs/design.md docs/cli-json-v1.md docs/coding-agents.md examples/worktrees/README.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md prints at least one line from each file. decision-001 ends with a dated revision allowing explicit port-holder lookup. mise exec go -- go test ./internal/cli ./internal/mcp -run 'TestHelpContract|TestDocs|TestToolsListBudget' -count=1 -v exits 0 with the budgets unchanged.
-- [ ] #5 task cli:test exits 0 with no test skipped, deleted, or weakened.
+- [x] #1 mise exec go -- go test ./internal/app -run 'PortLookup' -count=1 -v exits 0 with named tests executed: with controlled fake inspectors across two project scopes and the global scope, the lookup returns exactly the running records whose listeners include the port, with listeners filtered to it; terminal and stopped records are never inspected; denied, unavailable, and non-matching partial results and a launch that changes during inspection are reported incomplete, never as a clean miss; a blocking inspector cannot hold the lookup past the whole-lookup deadline and uninspected records are reported incomplete; a counter shows concurrent inspections never exceed the bound.
+- [x] #2 mise exec go -- go test ./internal/protocol ./internal/daemon ./internal/cli ./internal/mcp -run 'PortLookup' -count=1 -v exits 0 with named tests executed: the private request and response round-trip port, holders, and incomplete records; hum list --port validates 1-65535 before daemon contact and rejects --global; human output shows grouped holders with the LISTENING column, the no-holder message, and incomplete lines; JSON has processes and incomplete; plain list, list --all, and aggregate status send no port lookup; MCP list accepts port, rejects it with scope global or all false before daemon contact, and returns holders and incomplete in structuredContent.
+- [x] #3 mise exec go -- go test ./integration -run '^TestListPortLookup$' -count=1 -v exits 0 on Unix with the built binary: projects A and B share one runtime and B runs a child listening on an ephemeral TCP port; hum -C A list --port PORT --json exits 0 and reports B's process with B's project_root, the child PID, and the endpoint; a port held only by a listener the test owns outside Hum returns exit 0, empty processes, and no PID of that listener anywhere in the output.
+- [x] #4 task cli:build && bin/hum list --help exits 0 and shows --port. rg -n 'list --port' README.md docs/design.md docs/cli-json-v1.md docs/coding-agents.md examples/worktrees/README.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md prints at least one line from each file. decision-001 ends with a dated revision allowing explicit port-holder lookup. mise exec go -- go test ./internal/cli ./internal/mcp -run 'TestHelpContract|TestDocs|TestToolsListBudget' -count=1 -v exits 0 with the budgets unchanged.
+- [x] #5 task cli:test exits 0 with no test skipped, deleted, or weakened.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed for implementation in /Users/brett/dev/me/hum/.worktrees/hum-150, branch hum-150, base d9255874700ea2b23b0329e8d36cbc0741cf7f03. Worktrunk creation receipt: .git/worktrees/hum-150/agent-creation.json. Parent owns provider and delivery; executor implements, followed by one independent acceptance verifier. User authorized local commit, merge, and cleanup; no push.
+
+Modified-file contract deviation approved before editing: internal/protocol/codec.go must register typed request and response decoding for the dedicated private OpPortLookup operation required by the task. Reusing an untyped generic envelope would weaken the existing protocol pattern; this is necessary item-scoped wiring.
+
+Modified-file contract deviation approved before editing: update only private-protocol version expectations in internal/protocol/codec_test.go, internal/protocol/restart_policy_test.go, and internal/protocol/protocol_test.go for Version 22. The new private operation requires a version bump consistent with prior additions; preserving fixed-version wire assertions at the new value maintains their coverage and does not weaken tests. Public cli-json-v1 schema_version remains unchanged.
+
+Modified-file deviation: internal/mcp/server.go is approved for the minimal list structuredContent switch needed to preserve top-level processes and incomplete for port lookup while retaining ordinary list wrapping. Executor reported applying this edit before noticing the contract boundary; parent inspected and approved it afterward. No further out-of-contract edits may precede recorded justification.
+
+Modified-file contract deviation approved before editing: internal/cli/flag_alias_test.go must register the new list port flag with no alias, preserving exhaustive flag coverage; internal/daemon/wire_protocol_test.go must update private-protocol version expectations from 21 to 22, preserving handshake wire assertions. These narrow expectation updates address failures exposed by task cli:test without weakening tests.
+
+AC#1 PASS: mise exec go -- go test ./internal/app -run PortLookup -count=1 -v; cross-scope filtering, incomplete states, identity changes, deadline and concurrency tests executed.
+AC#2 PASS: mise exec go -- go test ./internal/protocol ./internal/daemon ./internal/cli ./internal/mcp -run PortLookup -count=1 -v; typed roundtrip, validation, rendering, structuredContent and inspection-free ordinary operations verified.
+AC#3 PASS: mise exec go -- go test ./integration -run ^TestListPortLookup$ -count=1 -v; cross-project descendant holder and foreign-listener exclusion passed.
+AC#4 PASS: task cli:build && bin/hum list --help shows --port; required rg list --port found all seven documentation files; decision-001 ends with dated revision; mise exec go -- go test ./internal/cli ./internal/mcp -run TestHelpContract|TestDocs|TestToolsListBudget -count=1 -v (regex shell-quoted) passed with unchanged budgets.
+AC#5 PASS: task cli:test completed all Go packages and 12 Python tests. No tests deleted, skipped, or weakened; no protected gate files modified.
+Independent verifier e486155d-babe-4782-a584-75f5cb2ac069 returned PASS for every AC; no concrete defects. Report retained in session subagent artifacts. Supplemental LSP diagnostics clean for app.go and MCP tools.go.
+Delivery: implementation a4ec88e; integrated concurrent main changes without conflicts in 3daf2c2071ad859c34034484c3cc386378257817. task check:staged passed before commits. task ci passed on a4ec88e and final integrated implementation commit 3daf2c2 (log /tmp/hum-150-ci-integrated.log), including security, checks, all tests, race tests and smoke. Fast-forwarded main to 3daf2c2. No push.
+Cleanup: verified session receipt and Worktrunk listing, checked Herdr wD7 pane was shell-only, then wt remove hum-150 --foreground --format=json removed worktree and branch. Verified wD7 absent. No retained checkout/workspace, blocker, or next implementation step; claim released as Done.
+<!-- SECTION:NOTES:END -->
