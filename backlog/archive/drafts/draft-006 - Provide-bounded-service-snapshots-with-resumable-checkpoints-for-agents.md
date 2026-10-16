@@ -4,6 +4,7 @@ title: Provide bounded service snapshots with resumable checkpoints for agents
 status: Draft
 assignee: []
 created_date: '2026-10-16 16:45'
+updated_date: '2026-10-16 17:12'
 labels:
   - cli
   - mcp
@@ -56,3 +57,9 @@ Testing: implement first and extend existing public-interface tests. Critical fa
 - [ ] #5 No test was deleted, skipped, or weakened
 - [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Archived 2026-10-16 (owner decision); the real gap is split into HUM-152 (reject log cursors from an earlier output session). The rest is already covered: named status reports started_at, restart_count, relaunches, exit_status, and ports; lifecycle events carry log_cursor (HUM-136); `wait --after-cursor` covers checkpoint, edit, and wait. Revisit a composed snapshot tool only with a recorded reproducer that HUM-152 plus existing calls cannot satisfy, and within the MCP tools/list budget.
+<!-- SECTION:NOTES:END -->
