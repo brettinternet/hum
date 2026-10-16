@@ -325,8 +325,12 @@ func TestEnvironmentCompositionContract(t *testing.T) {
 			spec := &EnvironmentSpec{Inherit: true, Files: []EnvironmentFileSpec{{Path: test.path, Required: true}}, Values: map[string]*string{}, BaseDir: root, Root: root}
 			if _, err := PrepareEnvironments([]Definition{{Name: "bad", Environment: spec}}, nil); err == nil || !strings.Contains(err.Error(), "environment file") {
 				t.Fatalf("path error = %v", err)
-			} else if test.name == "missing" && !strings.Contains(err.Error(), `environment file "missing.env": lstat `) {
-				t.Fatalf("missing-file diagnostic changed: %v", err)
+			} else if test.name == "missing" {
+				_, pathErr := filepath.EvalSymlinks(filepath.Join(root, test.path))
+				want := fmt.Sprintf("environment file %q: %v", test.path, pathErr)
+				if err.Error() != want {
+					t.Fatalf("missing-file diagnostic = %q, want %q", err, want)
+				}
 			}
 		})
 	}
