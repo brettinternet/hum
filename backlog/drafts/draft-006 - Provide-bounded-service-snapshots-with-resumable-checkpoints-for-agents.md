@@ -1,0 +1,58 @@
+---
+id: DRAFT-006
+title: Provide bounded service snapshots with resumable checkpoints for agents
+status: Draft
+assignee: []
+created_date: '2026-10-16 16:45'
+labels:
+  - cli
+  - mcp
+  - events
+  - output
+dependencies: []
+type: enhancement
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+Outcome: an agent can inspect one supervised service in one bounded request, recover context after an interruption, and resume reading evidence without confusing an earlier launch with the service it is testing.
+
+Problem and use cases:
+- A replacement agent needs the checkout, current launch, readiness observation, listeners, recent failures, and unread output without assembling several unrelated responses.
+- A service can crash and restart between two status reads; current running state alone hides that failure.
+- An agent editing code needs a checkpoint before the edit, a bounded wait for an existing dev-tool completion signal, then only the output relevant to verification.
+
+Scope:
+- Compose existing named status, event-history, and log-reading capabilities into a compact service snapshot. Include canonical project identity, current launch identity/state, startup readiness with its observation semantics, observed listeners and inspection diagnostics, bounded lifecycle events and output, and a continuation checkpoint.
+- Treat checkpoints as positions in distinct event/log streams, scoped to their project, service, and retained session. Define explicit expired/invalid/truncated outcomes for removal, daemon replacement, and retention loss; never silently reuse a cursor against another session.
+- Preserve evidence across ordinary process restarts and distinguish launches. Define consistency honestly when a restart occurs during collection: identify the observations or retry within a bound; do not promise an atomic snapshot assembled from unrelated reads.
+- Reuse existing wait-after-cursor behavior for configured dev-command output. Document checkpoint -> edit -> wait for a fresh completion signal -> verify behavior -> read new output.
+- Provide CLI JSON and MCP access using the smallest surface justified by a concrete reproducer. Keep aggregate status/list behavior unchanged.
+
+Non-goals: Hum-owned file watching, rebuilding, browser reload, application hot reload, continuous health monitoring, automatic repair, semantic log interpretation, build adapters, a new event subscription system, or claims that a recent success message proves an exact edit is served. Existing task runners/dev servers retain those responsibilities. An explicit rebuild/restart and readiness check remains the simpler verification route where available.
+
+Modified-file contract (provisional until refinement): internal/app/ for composition; internal/cli/ and internal/mcp/ for adapters; internal/daemon/ and internal/protocol/ only if existing identity/read contracts cannot safely support checkpoints; focused existing tests under those packages and integration/; docs/design.md, docs/cli-json-v1.md, docs/coding-agents.md, and the bundled Hum skill if its workflow changes. Resolve exact files before promotion; no task-runner configuration, platform process inspectors, or unrelated features.
+
+Next action: reproduce agent recovery and edit/verify workflows with current status/events/logs/wait APIs, then specify the minimal public surface, checkpoint identity, retention behavior, response limits, and restart consistency. Keep this item Draft until those decisions and exact file scope are settled. The acceptance commands below are proposed implementation checks, not evidence that this draft is implemented.
+
+Testing: implement first and extend existing public-interface tests. Critical failures to cover are silently accepting a checkpoint from a replaced session, losing or duplicating output during continuation, and presenting events from one launch as the state of another. Avoid static documentation tests and duplicated adapter coverage.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 mise exec go -- go test ./internal/app ./internal/cli ./internal/mcp -run 'Snapshot|Checkpoint' -count=1 -v exits 0 with relevant tests actually executed: a named bounded response exposes project/launch identity, readiness semantics, listener diagnostics, events, output, and continuation metadata; partial inspection does not masquerade as an empty successful result.
+- [ ] #2 mise exec go -- go test ./internal/app ./internal/daemon -run 'Snapshot|Checkpoint' -count=1 -v exits 0 with relevant tests actually executed: continuation preserves retained ordering without silent loss/duplication; eviction, removal/recreation, and daemon replacement explicitly invalidate or truncate affected evidence; a concurrent restart cannot silently mix launch identities.
+- [ ] #3 mise exec go -- go test ./integration -run 'Snapshot|Checkpoint' -count=1 -v exits 0 with a real supervised child: capture a checkpoint, produce new output and a restart, resume the snapshot, and observe the new evidence with the correct launch identity within configured bounds.
+- [ ] #4 mise exec -- task cli:test exits 0; execute the docs/coding-agents.md checkpoint/edit/wait example against its documented local fixture and record the exact commands/results: a retained old completion line does not satisfy the fresh wait, a new completion does, and absent completion reaches the configured deadline. Documentation states that completion output alone does not prove exact source freshness.
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 task ci passes on the final commit
+- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [ ] #5 No test was deleted, skipped, or weakened
+- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+<!-- DOD:END -->
