@@ -1000,10 +1000,14 @@ func TestUpOrderedStack(t *testing.T) {
 	lifecycleRequireUnix(t)
 	t.Parallel()
 	hum := integrationHum(t)
+	fixture := integrationFixture(t)
 	projectRoot := t.TempDir()
 	runtimeDir := testutil.RuntimeDir(t)
 	env := testutil.RuntimeEnv(runtimeDir, "HUM_STOP_GRACE=1s")
 	timeline := filepath.Join(projectRoot, "timeline")
+	// Hold db readiness until root launches: concurrency must not depend on
+	// starting root within a fixed sleep under full-suite load.
+	rootLaunched := filepath.Join(projectRoot, "root-launched")
 	manifest := fmt.Sprintf(`version: 1
 processes:
   db:
@@ -1020,7 +1024,7 @@ processes:
   root:
     argv: [/bin/sh, -c, %s]
     ready: {match: root-ready}
-`, strconv.Quote(fmt.Sprintf("printf 'db-launched\\n' >> %q; sleep 0.2; printf 'db-ready\\n' >> %q; printf db-ready; sleep 30", timeline, timeline)), strconv.Quote(fmt.Sprintf("printf 'api-launched\\n' >> %q; printf api-ready; sleep 30", timeline)), strconv.Quote(fmt.Sprintf("printf 'web-launched\\n' >> %q; printf web-ready; sleep 30", timeline)), strconv.Quote(fmt.Sprintf("printf 'root-launched\\n' >> %q; printf root-ready; sleep 30", timeline)))
+`, strconv.Quote(fmt.Sprintf("printf 'db-launched\\n' >> %q; %q echo-wait %q waiting -; printf 'db-ready\\n' >> %q; printf db-ready; sleep 30", timeline, fixture, rootLaunched, timeline)), strconv.Quote(fmt.Sprintf("printf 'api-launched\\n' >> %q; printf api-ready; sleep 30", timeline)), strconv.Quote(fmt.Sprintf("printf 'web-launched\\n' >> %q; printf web-ready; sleep 30", timeline)), strconv.Quote(fmt.Sprintf("printf 'root-launched\\n' >> %q; touch %q; printf root-ready; sleep 30", timeline, rootLaunched)))
 	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
