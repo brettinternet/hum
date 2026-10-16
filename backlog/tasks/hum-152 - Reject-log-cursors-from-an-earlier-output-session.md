@@ -1,10 +1,10 @@
 ---
 id: HUM-152
 title: Reject log cursors from an earlier output session
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-16 17:12'
-updated_date: '2026-10-16 17:13'
+updated_date: '2026-10-16 18:50'
 labels:
   - output
   - protocol
@@ -76,20 +76,46 @@ Next action: add the ID to `record` beside `store` (internal/app/app.go:1179; se
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 mise exec go -- go test ./internal/app -run 'CursorSession' -count=1 -v exits 0 with named tests executed: a record keeps one session ID across stop/start, restart, and automatic relaunch; remove followed by start, and completed-record eviction followed by start, produce a new ID; output and wait reads with the current ID succeed; a stale ID returns the stale error without reading, including when the record is replaced between lookup and read.
-- [ ] #2 mise exec go -- go test ./internal/protocol ./internal/daemon -run 'CursorSession' -count=1 -v exits 0 with named tests executed: process snapshots, output results, and wait responses round-trip session_id; launch and exit history events round-trip log_session_id and keep it after the history is reopened from disk; the stale error maps to wire code cursor_stale; a future cursor without a session gets the new message.
-- [ ] #3 mise exec go -- go test ./internal/cli ./internal/mcp -run 'CursorSession|TestToolsListBudget' -count=1 -v exits 0 with named tests executed and budgets unchanged: --session-id without --after-cursor, or with several names, is a usage error before daemon contact; logs, logs --follow, and wait forward it; JSON renders session_id and the cursor_stale error code; named human status prints a session line; MCP logs and wait reject after without session_id before daemon contact and return session_id in structuredContent.
-- [ ] #4 mise exec go -- go test ./integration -run '^TestLogCursorSession$' -count=1 -v exits 0 with the built binary: read logs --json from a detached process to get next and session_id; hum remove, then run the same name again; logs and wait with --after-cursor next --session-id OLD exit nonzero with cursor_stale; the current session_id succeeds; after hum shutdown --stop-processes and a fresh launch the earlier ID is stale too; events --json launch log_session_id equals the status session_id.
-- [ ] #5 task cli:test exits 0 with no test skipped, deleted, or weakened.
-- [ ] #6 rg -n -i 'compare (returned )?log' docs README.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md exits 1 (today it matches docs/design.md:883, docs/cli-json-v1.md:143, and docs/coding-agents.md:174); rg -n 'session[-_]id' docs/design.md docs/cli-json-v1.md docs/coding-agents.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md prints at least one line from each file; mise exec go -- go test ./internal/cli ./internal/mcp ./internal/skill -run 'TestHelpContract|TestDocs|TestSkill' -count=1 -v exits 0.
+- [x] #1 mise exec go -- go test ./internal/app -run 'CursorSession' -count=1 -v exits 0 with named tests executed: a record keeps one session ID across stop/start, restart, and automatic relaunch; remove followed by start, and completed-record eviction followed by start, produce a new ID; output and wait reads with the current ID succeed; a stale ID returns the stale error without reading, including when the record is replaced between lookup and read.
+- [x] #2 mise exec go -- go test ./internal/protocol ./internal/daemon -run 'CursorSession' -count=1 -v exits 0 with named tests executed: process snapshots, output results, and wait responses round-trip session_id; launch and exit history events round-trip log_session_id and keep it after the history is reopened from disk; the stale error maps to wire code cursor_stale; a future cursor without a session gets the new message.
+- [x] #3 mise exec go -- go test ./internal/cli ./internal/mcp -run 'CursorSession|TestToolsListBudget' -count=1 -v exits 0 with named tests executed and budgets unchanged: --session-id without --after-cursor, or with several names, is a usage error before daemon contact; logs, logs --follow, and wait forward it; JSON renders session_id and the cursor_stale error code; named human status prints a session line; MCP logs and wait reject after without session_id before daemon contact and return session_id in structuredContent.
+- [x] #4 mise exec go -- go test ./integration -run '^TestLogCursorSession$' -count=1 -v exits 0 with the built binary: read logs --json from a detached process to get next and session_id; hum remove, then run the same name again; logs and wait with --after-cursor next --session-id OLD exit nonzero with cursor_stale; the current session_id succeeds; after hum shutdown --stop-processes and a fresh launch the earlier ID is stale too; events --json launch log_session_id equals the status session_id.
+- [x] #5 task cli:test exits 0 with no test skipped, deleted, or weakened.
+- [x] #6 rg -n -i 'compare (returned )?log' docs README.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md exits 1 (today it matches docs/design.md:883, docs/cli-json-v1.md:143, and docs/coding-agents.md:174); rg -n 'session[-_]id' docs/design.md docs/cli-json-v1.md docs/coding-agents.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md prints at least one line from each file; mise exec go -- go test ./internal/cli ./internal/mcp ./internal/skill -run 'TestHelpContract|TestDocs|TestSkill' -count=1 -v exits 0.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 task ci passes on the final commit
-- [ ] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
-- [ ] #3 An independent verifier pass returned PASS for every acceptance criterion
-- [ ] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
-- [ ] #5 No test was deleted, skipped, or weakened
-- [ ] #6 No protected gate file was modified unless the owner labelled this task tooling
+- [x] #1 task ci passes on the final commit
+- [x] #2 Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+- [x] #3 An independent verifier pass returned PASS for every acceptance criterion
+- [x] #4 The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+- [x] #5 No test was deleted, skipped, or weakened
+- [x] #6 No protected gate file was modified unless the owner labelled this task tooling
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Modified-file deviation approved before editing: internal/daemon/wire_protocol.go contains the app-to-wire process, output, stream and wait conversion functions; these must propagate session_id to satisfy AC#2 and AC#3. Worktree: /Users/brett/dev/me/hum/.worktrees/hum-152, branch hum-152, base 34f7a944fb26c8bf3d1931b4a0d66fd0a0fb9981. Creation receipt: .git/worktrees/hum-152/agent-creation.json; owning session 01a145b9-91c8-72de-80b5-2d1c604e1f04.
+
+Modified-file deviation approved before editing: internal/cli/manifest.go defines and populates manifestLaunchResult plus process conversions used by start/up; propagate session_id through these paths to satisfy the required start/up exposure. Requested internal/mcp/mcp.go deviation is not approved pending corrected evidence: that path and mcpProcess function do not exist in the current checkout.
+
+Modified-file deviations approved before editing, following corrected path verification: internal/cli/mcp.go contains mcpDaemonClient.Wait and mcpProcess adapters that must preserve session_id in MCP responses; internal/orchestrate/orchestrate.go defines the shared Process representation used by CLI/MCP start/up conversions and needs SessionID to avoid losing identity. These changes implement required response exposure, not additional scope. The earlier internal/mcp/mcp.go request was a path typo; no such file will be created.
+
+Modified-file deviation approved before editing: internal/daemon/client.go converts protocol wait and follower responses into app.WaitResult and output.Event/ReadResult. Propagating session_id here is required for CLI wait and follow JSON exposure (AC#3); otherwise these client adapters discard the wire identity.
+
+Modified-file deviation approved before editing: internal/cli/events.go manually constructs events JSON and must emit persisted log_session_id beside log_cursor for AC#4. internal/cli/events_test.go may extend existing adapter rendering coverage to catch session identity being dropped from event JSON; no duplicate domain-rule tests are needed.
+
+Modified-file deviations approved before editing for contract fixture updates: internal/protocol/codec_test.go must include SessionID in all-field wire fixtures; internal/cli/flag_alias_test.go must cover the new --session-id flag; internal/cli/render_test.go must expect the required named-status session line; integration/mcp_test.go must supply the actual session_id with existing after requests. Preserve all existing assertions and scenarios, updating expected contract values rather than deleting, skipping or weakening coverage. Existing allowed status/tools tests may likewise reflect the new contract; explicit missing-session rejection coverage remains required.
+
+AC#1 evidence: mise exec go -- go test ./internal/app -run 'CursorSession' -count=1 -v — exit 0; named lifecycle, eviction, relaunch and stale-resolution tests passed.
+AC#2 evidence: mise exec go -- go test ./internal/protocol ./internal/daemon -run 'CursorSession' -count=1 -v — exit 0; wire round trips, persisted event session IDs, stale mapping and future-cursor message passed.
+AC#3 evidence: mise exec go -- go test ./internal/cli ./internal/mcp -run 'CursorSession|TestToolsListBudget' -count=1 -v — exit 0; validation, forwarding, rendering and unchanged budgets passed.
+AC#4 evidence: mise exec go -- go test ./integration -run '^TestLogCursorSession$' -count=1 -v — exit 0; built-binary remove/replacement and daemon-replacement scenario passed.
+AC#5 evidence: task cli:test — exit 0, Go and Herdr suites passed; no test deleted, skipped or weakened. Fixtures updated for required additive fields/inputs.
+AC#6 evidence: rg -n -i 'compare (returned )?log' docs README.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md — exit 1; rg -n 'session[-_]id' docs/design.md docs/cli-json-v1.md docs/coding-agents.md internal/skill/SKILL.md plugins/hum/skills/hum/SKILL.md — exit 0, all five files matched; mise exec go -- go test ./internal/cli ./internal/mcp ./internal/skill -run 'TestHelpContract|TestDocs|TestSkill' -count=1 -v — exit 0.
+Independent verifier 6a8b949c-70b6-4627-ae2e-605c8b8defbf returned PASS for AC#1–6 after executing all commands and inspecting implementation. Its sandbox could only read the worktree task; parent confirmed acceptance criteria unchanged in primary. No concrete defects reported.
+Delivery: implementation commit 8ab88a93ca0124bd70abe0fe7847d1db930a4f44 fast-forward merged into main. task check:staged and task ci passed on that final implementation commit (security, checks, tests, race, smoke); final CI log /tmp/hum-152-ci-final.log. LSP diagnostics clean for internal/mcp/tools.go. All modified paths are declared or justified above; no protected gate files changed. Shared random-ID generator moved into app to avoid an app-to-daemon import cycle; daemon.NewOperationID delegates to it.
+Cleanup: verified original session receipt and clean merged checkout; wt remove hum-152 --foreground --format=json removed branch/worktree, and Herdr workspace wDB disappeared. No retained checkout/workspace. Claim released by Done status; no blocker or remaining resumable step. No push performed.
+<!-- SECTION:NOTES:END -->
