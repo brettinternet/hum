@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -436,22 +437,34 @@ func TestWindowsTTYStartupFailureCleansUpConsole(t *testing.T) {
 	}
 	spec.Argv[0] = invalid
 	spec.Dir = t.TempDir()
-	// Warm up Windows' process/console machinery before checking for growth:
-	// the first few failed launches may initialize handles that stay open.
+	// Go's Windows runtime retains handles for each OS thread. A new thread
+	// during launch must not be mistaken for a ConPTY leak. Require a stable
+	// thread count across warmup AND measurement, not merely a fixed warmup.
 	for range 10 {
-		if _, err := Start(spec); err == nil {
-			t.Fatal("invalid PE started under ConPTY")
+		threadsBefore, _ := runtime.ThreadCreateProfile(nil)
+		for range 10 {
+			if _, err := Start(spec); err == nil {
+				t.Fatal("invalid PE started under ConPTY")
+			}
 		}
-	}
-	before := windowsTTYHandleCount(t)
-	for range 10 {
-		if _, err := Start(spec); err == nil {
-			t.Fatal("invalid PE started under ConPTY")
+		before := windowsTTYHandleCount(t)
+		for range 10 {
+			if _, err := Start(spec); err == nil {
+				t.Fatal("invalid PE started under ConPTY")
+			}
 		}
+		after := windowsTTYHandleCount(t)
+		threadsAfter, _ := runtime.ThreadCreateProfile(nil)
+		if threadsAfter != threadsBefore {
+			t.Logf("runtime threads changed during measurement: %d -> %d; retrying", threadsBefore, threadsAfter)
+			continue
+		}
+		if after > before+2 {
+			t.Fatalf("ConPTY startup leaked handles: before=%d after=%d", before, after)
+		}
+		return
 	}
-	if after := windowsTTYHandleCount(t); after > before+2 {
-		t.Fatalf("ConPTY startup leaked handles: before=%d after=%d", before, after)
-	}
+	t.Fatal("runtime thread count never stabilized for ConPTY handle measurement")
 }
 
 func windowsTTYHandleCount(t *testing.T) uint32 {
