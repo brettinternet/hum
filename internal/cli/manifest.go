@@ -29,6 +29,7 @@ type manifestState struct {
 	defs             []project.Definition
 	byName           map[string]project.Definition
 	environments     map[string][]string
+	skippedEnvFiles  []string
 	baseline         []string
 	selector         string
 	display          string
@@ -121,7 +122,7 @@ func prepareManifestEnvironments(manifest *manifestState, names []string, baseli
 			}
 		}
 	}
-	prepared, err := project.PrepareEnvironments(selected, baseline)
+	prepared, skipped, err := project.PrepareEnvironmentsWithSkipped(selected, baseline)
 	if err != nil {
 		return &project.ConfigurationError{Source: manifestDisplayName(*manifest), Err: err}
 	}
@@ -140,6 +141,7 @@ func prepareManifestEnvironments(manifest *manifestState, names []string, baseli
 		}
 	}
 	manifest.environments = prepared
+	manifest.skippedEnvFiles = skipped
 	return nil
 }
 

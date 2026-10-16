@@ -186,6 +186,12 @@ func TestEnvironmentCompositionContract(t *testing.T) {
 					}
 					return "dangling.env"
 				}},
+				invalidFileCase{name: "dangling directory symlink", setup: func(t *testing.T, root string) string {
+					if err := os.Symlink(filepath.Join(root, "not-created"), filepath.Join(root, "local")); err != nil {
+						t.Fatal(err)
+					}
+					return "local/.env"
+				}},
 				invalidFileCase{name: "unreadable", setup: func(t *testing.T, root string) string {
 					path := filepath.Join(root, "unreadable.env")
 					mustWriteEnvironmentFile(t, path, "TOKEN=private\n")

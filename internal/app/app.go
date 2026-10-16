@@ -2985,6 +2985,10 @@ func (s *Supervisor) lookupPortWithBounds(ctx context.Context, port uint16, time
 	if workers > len(candidates) {
 		workers = len(candidates)
 	}
+	// Workers may outlive the lookup only while an inspector is still running.
+	// Platform inspectors honor ctx (canceled when this function returns) and
+	// apply their own timeout, and the buffered channel never blocks a send, so
+	// every worker exits shortly after the deadline.
 	for worker := 0; worker < workers; worker++ {
 		go func() {
 			for index := range jobs {

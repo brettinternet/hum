@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1017,7 +1016,7 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	if err := requireNoArgs(cmd, "list"); err != nil {
 		return err
 	}
-	if cmd.IsSet("port") || rawScopeFlag(cmd, "port", "") {
+	if cmd.IsSet("port") {
 		return listPortLookupCommand(ctx, cmd, version, buildTime, writer, errWriter)
 	}
 	processes, warnings, err := projectProcessList(ctx, cmd, version, buildTime, cmd.Bool("all"))
@@ -1043,11 +1042,6 @@ func listCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 
 func listPortLookupCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
 	port := cmd.Int("port")
-	if rawPort := rawFlagValue(cmd, "port", ""); rawPort != "" {
-		if parsed, err := strconv.Atoi(rawPort); err == nil {
-			port = parsed
-		}
-	}
 	if port < 1 || port > 65535 {
 		return newCLIUsageError(errors.New("--port must be between 1 and 65535"))
 	}

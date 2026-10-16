@@ -683,8 +683,9 @@ that looks like expansion, or use an external loader. This is not a dotenvx or d
 - Paths resolve from the selected manifest's directory (including `--file`). `../.env` is fine
   while it stays inside the canonical project root. Empty, absolute, root, lexical or symlink
   escapes, non-regular, and unreadable paths fail. Files are required unless a mapping sets
-  `required: false`; an optional file is skipped only when `Lstat` of its lexical path reports
-  not-exist (including a missing parent directory). A dangling final symlink is invalid.
+  `required: false`; an optional file is skipped only when its lexical path does not exist and
+  its nearest existing ancestor is a directory, so a missing parent directory counts as absent.
+  A dangling symlink anywhere on the path, or a non-directory parent, is invalid.
 - Manifest parsing checks syntax and containment without reading files. Launch preflight reads each
   unique canonical file once per invocation and reuses that snapshot per target. Optional-file
   absence is decided in that same snapshot. There is no cache across requests or worktrees and no
@@ -855,7 +856,7 @@ takes one `Options.Environment` snapshot (falling back to `os.Environ`) per requ
   contacting the daemon. `up` covers its whole dependency closure, and any failure aborts a mixed
   declared/retained batch before changing anything. Required files are validated even for a running
   record that will be kept; files are required unless their mapping sets `required: false`, which
-  skips only lexical paths reported absent by `Lstat` in that invocation's preflight.
+  skips only files found absent in that invocation's preflight.
 - Empty `up`, ad-hoc and retained-only commands, discovered definitions, explicit-argv `run`, and
   read-only commands never read environment files.
 - `up` keeps running, pending, and exhausted snapshots. `start` keeps running entries but composes

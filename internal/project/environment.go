@@ -239,8 +239,7 @@ func PrepareEnvironmentsWithSkipped(definitions []Definition, baseline []string)
 			if err != nil {
 				return nil, nil, err
 			}
-			_, lstatErr := os.Lstat(lexical)
-			if errors.Is(lstatErr, fs.ErrNotExist) && !fileSpec.Required {
+			if !fileSpec.Required && environmentFileAbsent(lexical) {
 				ref := environmentFileRef(definition.Environment, filename)
 				if _, seen := skippedRefs[ref]; !seen {
 					skippedRefs[ref] = struct{}{}
@@ -412,6 +411,29 @@ func resolveEnvironmentFile(base, root, name string) (string, error) {
 		return "", fmt.Errorf("environment file %q resolves outside the project root", name)
 	}
 	return canonical, nil
+}
+
+// environmentFileAbsent reports whether lexical does not exist and its nearest
+// existing ancestor resolves to a directory. A dangling symlink or a
+// non-directory on the path is an invalid path, not absence, so the caller
+// validates it like a required file.
+func environmentFileAbsent(lexical string) bool {
+	if _, err := os.Lstat(lexical); !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	for dir := filepath.Dir(lexical); ; {
+		if _, err := os.Lstat(dir); err == nil {
+			info, statErr := os.Stat(dir)
+			return statErr == nil && info.IsDir()
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 func lexicalEnvironmentFilePath(base, root, name string) (string, error) {
