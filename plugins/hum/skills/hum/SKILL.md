@@ -1,91 +1,64 @@
 ---
 name: hum
-description: Manage and inspect project development processes through hum MCP tools, with the hum CLI as a fallback when MCP is unavailable.
+description: Manage and inspect project dev processes with hum MCP tools, falling back to the hum CLI when MCP is unavailable.
 ---
 
-# hum process control
+# hum
 
-Use the bundled hum MCP tools when available. Pass the absolute current project root as `project_root`. Use the equivalent `hum` CLI commands only when MCP is unavailable.
+hum runs a project's dev processes under a shared daemon. Use the hum MCP tools. Pass the absolute project directory as `project_root` on every call. Use the `hum` CLI only when MCP is unavailable; run `hum skill` for the CLI guide.
 
-## Start and inspect
+## Rules
 
-- Try `up` first when a private `.hum.yaml` or committed `hum.yaml` is present; without one, use `hum init` or the ad-hoc `hum run NAME -- COMMAND` form. Selection precedence is `--file PATH` > `.hum.yaml` > `hum.yaml`; each file is complete and Hum never merges them. An invalid, unreadable, unsafe, or non-regular `.hum.yaml` fails closed rather than falling back. The private file suits repository or global Git ignore rules, but ignored configuration is not shared with collaborators or CI. When the selected manifest declares `after`, it starts independent roots concurrently and launches each dependent only after every direct prerequisite is observed `ready`; each process timeout starts at its own launch or first running observation, with lexical final results. Silent services may use `ready.exec` with exact argv, `ready.http` for a literal-IP/localhost GET (2xx), or `ready.tcp` for a literal-IP/localhost connection; probes run directly/in-process without a shell, do not expand `PORT`, and gate startup rather than monitor liveness. Pass `names: ["api"]` to select that declaration and its transitive `after` prerequisites; only those results are returned. Without names, `up` selects every declaration. The CLI equivalent is `hum up api --detach`; interactive plain `hum up` keeps following aggregate output after startup. Setup steps use `ready: {exit: 0}` (optional timeout, no interval): successful exit returns `completed` and releases dependents; nonzero exit, signal, or stop blocks them. Retained completion satisfies `up` until a direct dependent needs launch, including after `down`.
-- Use `start` for one explicitly named resolved process. It never pulls in `after` prerequisites. Explicit `start` and `restart` rerun exit-ready setup steps and wait for completion. For a running or recovery-capable manifest record, changed argv, canonical cwd, readiness method, readiness matcher or exec argv, TTY, normalized restart policy, or `stop_grace` returns `definition_drift` with sorted `changed_fields` and `hum restart NAME` guidance; CLI `up` exits 1 for drift and drift cannot satisfy an `after` gate. The CLI equivalent is `hum start <name>`.
-- `after` must be a unique same-manifest name list whose dependencies declare `ready`; unknown names, duplicates, self-reference, malformed values, cycles, and dependencies without readiness fail manifest validation. `up --no-wait` is rejected before daemon contact only when the selected subgraph declares `after`.
-- Use `list` to discover processes and inspect source and readiness. After a port collision, run `hum list --port PORT` to find matching Hum groups across worktrees; check incomplete records before treating a miss as clear.
-- Read bounded output with `logs`. Use `stream: "system"` for supervision events and combine `match` with `context` for bounded surrounding entries. For CLI fallback, use `hum logs --tail 100 <name>`, `hum logs --stream system <name>`, `hum logs --match REGEX --context N <name>`, or continue from a cursor with `hum logs --after-cursor <cursor> --session-id <id> --json <name>`. Bound a recent time window with `since_ms`, or CLI `hum logs --since 5m <name>`.
-- Pair every output cursor with its `session_id` from process status or event `log_session_id`. The ID survives stop/start, restart, and automatic relaunch, but changes after remove, completed-record eviction, or daemon replacement. MCP `logs` and `wait` require `session_id` whenever `after` is set; stale IDs return `cursor_stale`.
-- Use `signal` (CLI `hum signal NAME HUP`) to deliver one observational signal to a running process group; it never sets stop intent or cancels automatic relaunch, including for TERM and KILL.
-- Use `wait` for a bounded later condition, including before another client starts the name.
-- For intermediate work, use `stop`, run the work, then `start`; the durable session keeps terminal observers attached.
-- After process-definition changes, use `restart`; only restart adopts changed definitions. `up` and `start` report active or recovery-capable definition drift instead of silently replacing them; CLI `up` exits 1 for drift, and only restart applies a changed definition. Manifest `stop_grace` overrides the inherited stop window; `0s` requests immediate SIGKILL after the TERM check, and process results expose the effective value and inheritance marker.
-- A manifest process may opt into `restart: on-failure`; the default is `never`. Unexpected exits retry after 1s, 2s, 4s, 8s, and 16s, at most five times. Inspect retained `logs` before editing a crashing process again.
-- If an `after` prerequisite exits before readiness (except successful exit readiness), `up` returns the failure and returns dependents as `skipped` with sorted direct `blocked_by` names rather than following its automatic successor. A skip may include read-only `existing_state` and process snapshot data, but it still means no launch occurred and still blocks dependents. Read the retained failure, then rerun `up` after the prerequisite is ready; skips keep aggregate exit precedence unchanged (1 request error, 3 early exit, 2 timeout, 0 success).
-- Use `remove` only to discard the runtime session, retained output, and launch state; it never edits `hum.yaml`. CLI `hum remove --all` discards every runtime session only in the selected project or global scope, never other scopes or unlaunched manifest declarations.
-- Use `down` only when the developer asks you to stop everything in the project; a later `up` restarts only resolved definitions.
-- If unnamed `up` reports a manifest-sourced running, pending-recovery, or exhausted record as `removed_definition`, explicitly use `stop NAME` or `remove NAME` (or the CLI equivalents `hum stop NAME` and `hum remove NAME`); these lexical warnings do not change aggregate status and exclude ad-hoc/discovered sessions; removed records require an explicit stop or remove.
-- For a bounded prompt response, observe with `logs` or `wait --match`, answer with `input` (or CLI fallback `hum input NAME --text VALUE`), then confirm with `wait --match`. Text sends exact bytes without a newline; use `hum input NAME --base64 PADDED_VALUE` for awkward bytes, and require strict padded base64 (standard alphabet) without whitespace. Payloads are 1-32768 bytes. Input targets only a running TTY, is at-most-once with no resend across a launch race, writes once at its launch cursor, fails immediately on ownership conflict, and never starts, waits, queues, retries, retains, or explicitly echoes input.
+- Start processes through hum. Never run dev commands such as npm, bun, yarn, or pnpm directly. There is no arbitrary-command tool by design.
+- Read logs before changing a failing process.
+- Call `down` only when the developer asks to stop everything.
 
-## Crash relaunch policy
+## Start
 
-Only explicit manifest definitions may use `restart: on-failure`; ad-hoc sessions always use
-`never`, and manifest values are strict. Spawn
-failures consume attempts, a child that survives 30 seconds resets the counter,
-and explicit lifecycle controls cancel pending work. Automatic attempts retain
-the last effective argv, cwd, environment, readiness, TTY, and stop grace. Snapshots expose
-`restart`, `relaunches`, and `next_launch_at`; followers stay attached through
-backoff and exhaustion, while bounded logs retain failures and system boundaries.
-Read the failing incarnation's output before changing the definition.
+- `up` starts every declared process in `after` order and waits until all are ready. Pass `names: ["api"]` to start `api` and its prerequisites.
+- `start` starts one process without its prerequisites.
+- Both wait for readiness. Set `no_wait` to return right after launch, or `timeout_ms` to change the limit.
+- hum reads `.hum.yaml`, then `hum.yaml`, or the file given in `manifest`. It never merges them. With no manifest, tools return `manifest_missing`; run `hum init` to draft `hum.yaml` from project files.
 
-## Init source detection
+If `up` reports `exited_before_ready` or `timed_out`, dependents are `skipped` with the failed prerequisite in `blocked_by`. Read its logs, fix it, then call `up` again.
 
-`hum init` performs conservative read-only source detection and creates a candidate or commented
-`hum.yaml` template. It launches no subprocess. Commit the manifest before using `up` or `start`;
-use `hum run NAME -- COMMAND` for ad-hoc work.
+## Inspect
 
-## Foreground run ownership
+- `list` shows processes. `list` with `port: 3000` finds Hum processes on that port across every worktree. Check any `incomplete` entries before treating a miss as clear.
+- `status` shows state, restart counters, and TCP listeners.
+- `events` shows recent starts, exits, and failures. Narrow with `names`, `failed`, or `since_ms`.
 
-`hum run NAME -- COMMAND` owns exactly one incarnation: it streams raw child output, propagates the child exit status, stops on Ctrl+C or SIGTERM, and detaches on SIGHUP. Use `hum run NAME --detach -- COMMAND` for daemon ownership, and `hum attach NAME` or `hum logs NAME --follow` for durable observation.
+## Logs
 
-## Command boundary
+- `logs` with `tail: 100` reads recent output.
+- Set `stream` to `stderr`, or `system` for supervision events.
+- `since_ms` reads a time window.
+- `match` with `context: 5` shows matches with surrounding lines.
+- To page forward, pass the returned `next` as `after` with its `session_id`. `after` requires `session_id`. A stale ID returns `cursor_stale`.
 
-Never derive or run underlying development commands, including npm, bun, yarn, or pnpm-style commands. The MCP server intentionally has no arbitrary-command tool. Never use raw `hum run ... -- ...`; use resolved definitions and the lifecycle operations above.
+Matching ignores ANSI color codes. Output stays raw.
 
-## Bounded output
+## Wait and input
 
-Bounded child-output reads and matches use byte-wise terminal-control-stripped
-text, independently per entry for each stdout/stderr stream. This covers
-`hum logs` (including JSON and tail), `hum logs --match`, `hum wait --match`,
-readiness matches, and MCP `logs`. System entries remain raw; stored bytes remain raw;
-cursors and byte-limit accounting use raw stored lengths. Patterns containing
-raw ESC bytes no longer match stripped child text; a `^` anchor now matches
-colourised output whose raw first byte is ESC. A control-only bounded
-child entry remains present with empty text. `hum logs --follow --match` selects
-stripped child text but emits selected raw entries, while follow and attached
-`run` rendering remain raw. There is no `--raw` flag or other raw opt-out.
-Stripping is not terminal emulation or redraw collapsing: split sequences can
-leave a tail visible and carriage-return redraw
-frames remain separate.
+- `wait` with `match` waits for new output. Without `match`, it waits for exit. It defaults to 30s (`timeout_ms`) and works before the process starts.
+- To answer a TTY prompt: `wait` for the prompt, `input` with `text: "y\n"`, then `wait` again to confirm. No newline is added for you. Use `base64` for raw bytes. Input is sent once and is never retried.
 
-## Optional TTY sessions
+## Change
 
-Leave `tty` off unless a tool requires a controlling terminal; prefer a
-non-interactive mode such as `npx --yes`, `CI=1`, or `--force`. A manifest process
-can set `tty: true`; an ad-hoc command can use the CLI TTY option with a command separator.
-Only one attached run owns input; `hum logs --follow` is output-only. The owner uses raw
-mode and alone forwards SIGWINCH resizes. Ctrl-] detaches and leaves the child running, raw
-mode is restored after panic, terminal echo is child output, and Ctrl-C is forwarded while TTY
-input is owned; Ctrl-D and Ctrl-Z are forwarded too. SIGTERM stops the foreground incarnation and SIGHUP detaches. TTY output is merged as
-stdout and may contain ANSI controls. Stop/restart preserves the lease across launch cursors;
-remove and shutdown close it. MCP reports `tty` and provides bounded `input` for exact prompt responses.
+- After editing a definition, call `restart`. `up` and `start` report `definition_drift` instead of applying edits.
+- `stop` stops a process and keeps its logs. To do work between runs: `stop`, work, then `start`.
+- `remove` stops it and discards its state and logs. `all: true` does this for every session in the scope. Neither edits the manifest.
+- `signal` sends a signal. It never stops automatic restarts, even TERM or KILL; use `stop`.
+- If `up` warns `removed_definition`, a process started from the manifest is no longer declared. Stop or remove it explicitly.
 
-## Project and global scopes
+## Manifest notes
 
-hum selects project scope automatically from the invocation directory; symlink aliases share a canonical scope while separate worktrees remain distinct. Use `hum --project /path/to/main` (or `-C`) for explicit cross-worktree access, including a removed worktree. Use `hum --global` (`-g`) only for machine-wide ad-hoc retained sessions; it works around lifecycle commands and `run` NAME, conflicts with `--project` and `list --all`, and `init`/`up` reject it. Global `start`/`restart` reuse retained launch specifications without reading a manifest, and child cwd remains the lexical run directory. Project not-found guidance can produce `hum --global logs proxy`; `hum list --all` discovers every scope. MCP tool calls accept `scope`: omit it for project scope with an absolute `project_root`, or pass `scope: "global"` without `project_root`. JSON `scope` is `project` or `global`; global records omit `project_root`.
+- `after` lists prerequisites. Each must declare `ready`. Dependents start only after their prerequisites are ready.
+- Readiness: `match` (log regex), `exec` (command exits 0), `http` (GET returns 2xx), `tcp` (connection accepted), or `exit: 0` for setup steps that must finish first.
+- `restart: on-failure` retries crashes after 1s, 2s, 4s, 8s, and 16s, then gives up. The default is `never`. While retrying, `up` reports `recovery_pending`. Retries reuse the old definition.
+- `stop_grace` sets the wait between TERM and KILL.
+- Leave `tty` off unless a tool needs a terminal. Prefer a non-interactive flag such as `--yes` or `CI=1`.
 
-## Event history
+## Scope
 
-`hum events` shows recent bounded service history without a manifest or daemon. Narrow with names,
-`--since`, repeatable `--kind`, `--failed`, `--match`, `--tail`, or `--after-cursor`; `--json`
-returns structured events and cursor metadata. Retention is private at 2,000 events or 1 MiB per
-scope; input, environment, and child output are never retained.
+Each worktree is its own project; pass its own `project_root`. Set `scope: "global"` and omit `project_root` for machine-wide ad-hoc sessions. `list` with `all: true` lists every scope.
