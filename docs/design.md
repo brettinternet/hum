@@ -82,7 +82,7 @@ hum [--project DIR|-C DIR] start <name>... [--no-wait] [--timeout DURATION] [--j
 hum [--project DIR|-C DIR] up [<name>...] [--detach] [--no-wait] [--timeout DURATION] [--full] [--json]
 hum [--project DIR|-C DIR] down [--json]
 hum run [--project DIR|-C DIR] <name> [--detach] [--tty] [--json] [-- <command> [args...]]
-hum [--project DIR|-C DIR] list [--all] [--full] [--json]
+hum [--project DIR|-C DIR] list [--all] [--full] [--port PORT] [--json]
 hum [--project DIR|-C DIR] status [<name>] [--json]
 hum [--project DIR|-C DIR] attach <name> [--tail N]
 hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|system|both] [--tail N] [--after-cursor N] [--session-id ID]

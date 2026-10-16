@@ -117,6 +117,7 @@ Without `--detach`, `hum up` follows the logs. Ctrl+C stops following; the proce
 | See what's running | `hum status` |
 | See one process in detail | `hum status api` |
 | See every project | `hum list --all` |
+| Find who holds a port | `hum list --port 3000` |
 | Read recent logs | `hum logs api --tail 50` |
 | Read only errors | `hum logs api --stream stderr` |
 | Follow all logs | `hum logs --follow` |
@@ -247,7 +248,16 @@ $ hum status web
 listening: 127.0.0.1:8123 (pid 67051)
 ```
 
-Named status automatically shows TCP listeners held by the running process and its descendants. To find a Hum-managed listener across projects after a port collision, run `hum list --port 8123`; incomplete inspections are listed separately. Ordinary list and aggregate status never inspect sockets. Processes outside the supervised group and container port-forwards are not seen. See [port observation](docs/design.md#port-observation).
+Port taken? Find which project holds it:
+
+```console
+$ hum list --port 8123
+Project: /src/app/.worktrees/agent-a (hum --project /src/app/.worktrees/agent-a)
+NAME  STATE    PID    LISTENING
+web   running  67051  127.0.0.1:8123 (pid 67051)
+```
+
+Named status shows TCP listeners held by the process and its descendants. `list --port` searches every project; inspections that could not finish print as `Incomplete:` lines. Plain `list` and `status` never inspect sockets. Non-Hum processes and container port-forwards are not seen. See [port observation](docs/design.md#port-observation).
 
 ## Coding agents
 
@@ -301,6 +311,13 @@ $ hum logs api --tail 2
 ...
 next cursor: 7
 $ hum logs api --after-cursor 7   # only lines written since
+```
+
+Scripts pair the cursor with the `session_id` from `--json` output, so a cursor from a removed or replaced process fails instead of silently skipping lines:
+
+```console
+$ hum logs api --after-cursor 7 --session-id 5361f4a2...
+output cursor session "5361f4a2..." is stale; current session is "9c0e17b4..."; read without a cursor
 ```
 
 ## Non-goals
