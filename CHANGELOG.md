@@ -2,6 +2,25 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.18.0](https://github.com/brettinternet/hum/compare/v0.17.1...v0.18.0) - 2026-10-16
+
+### Added
+
+- **list:** Add -p alias for --port
+- Support optional manifest environment files
+- Find supervised TCP port holders across scopes
+
+### Fixed
+
+- Tighten optional env absence and simplify review follow-ups
+- Address HUM-150-152 review findings
+- **output:** Reject cursors from stale sessions
+
+### Documentation
+
+- Show port lookup and cursor sessions
+- Draft agent service snapshots
+
 ## [v0.17.1](https://github.com/brettinternet/hum/compare/v0.17.0...v0.17.1) - 2026-10-10
 
 ### Added
