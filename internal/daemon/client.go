@@ -420,7 +420,7 @@ func (c *Client) wait(ctx context.Context, req WaitRequest) (app.WaitResult, err
 		return app.WaitResult{}, fmt.Errorf("daemon wait response has unknown outcome %q", value.Outcome)
 	}
 	processObserved := value.ProcessObserved
-	result := app.WaitResult{Outcome: outcome, Cursor: output.Cursor(value.Cursor), ProcessObserved: processObserved}
+	result := app.WaitResult{Outcome: outcome, Cursor: output.Cursor(value.Cursor), SessionID: value.SessionID, ProcessObserved: processObserved}
 	if value.Exit != nil {
 		result.Exit = &processResult{ExitCode: value.Exit.Code, Err: errorFromString(value.Exit.Error), ExitedAt: value.Exit.Time}
 		if value.Exit.Signal != nil {
@@ -490,9 +490,9 @@ func (f *Follower) Next(ctx context.Context) (output.Event, error) {
 			exit.SignalName = event.Exit.Signal.Name
 			exit.SignalNumber = event.Exit.Signal.Number
 		}
-		return output.Event{Exit: exit}, nil
+		return output.Event{SessionID: event.SessionID, Exit: exit}, nil
 	}
-	return output.Event{Read: &output.ReadResult{Entries: entriesFromProtocol(event.Entries), Next: cursorFromProtocol(event.Next), Oldest: cursorFromProtocol(event.Oldest), Latest: cursorFromProtocol(event.Latest), EvictedThrough: cursorFromProtocol(event.EvictedThrough), Truncated: event.Truncated, More: event.More}}, nil
+	return output.Event{SessionID: event.SessionID, Read: &output.ReadResult{SessionID: event.SessionID, Entries: entriesFromProtocol(event.Entries), Next: cursorFromProtocol(event.Next), Oldest: cursorFromProtocol(event.Oldest), Latest: cursorFromProtocol(event.Latest), EvictedThrough: cursorFromProtocol(event.EvictedThrough), Truncated: event.Truncated, More: event.More}}, nil
 }
 func (f *Follower) Close() error {
 	if f == nil || f.client == nil {

@@ -76,6 +76,29 @@ func TestEventHistoryLogCursorRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCursorSessionEventHistorySurvivesReload(t *testing.T) {
+	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, "/project")
+	zero, last := protocol.Cursor(0), protocol.Cursor(9)
+	for _, event := range []protocol.HistoryEvent{
+		{Kind: protocol.EventLifecycle, Name: "api", Event: "launch", LogCursor: &zero, LogSessionID: "session-launch"},
+		{Kind: protocol.EventLifecycle, Name: "api", Event: "exit", LogCursor: &last, LogSessionID: "session-exit"},
+	} {
+		if _, err := history.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded := NewEventHistory(history.dir, protocol.ScopeProject, "/project")
+	page, err := loaded.Read(nil, time.Time{}, nil, false, nil, 10, nil, 0)
+	if err != nil || len(page.Events) != 2 {
+		t.Fatalf("reloaded session history = %+v, err %v", page, err)
+	}
+	for index, want := range []string{"session-launch", "session-exit"} {
+		if got := page.Events[index].LogSessionID; got != want {
+			t.Errorf("event %q log_session_id = %q, want %q", page.Events[index].Event, got, want)
+		}
+	}
+}
+
 func TestEventHistoryRetentionAndNameReuse(t *testing.T) {
 	t.Parallel()
 	history := NewEventHistory(t.TempDir(), protocol.ScopeProject, "/project")

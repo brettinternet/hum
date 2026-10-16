@@ -5,6 +5,8 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +28,16 @@ import (
 	"hum/internal/process"
 	projectpkg "hum/internal/project"
 )
+
+// NewSessionID generates an opaque random identity shared by output sessions and operation IDs.
+func NewSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		binary.LittleEndian.PutUint64(b[:8], uint64(time.Now().UnixNano()))
+		binary.LittleEndian.PutUint64(b[8:], uint64(os.Getpid()))
+	}
+	return fmt.Sprintf("%x", b[:])
+}
 
 // State is the lifecycle state of a supervised process.
 type State string
@@ -222,8 +234,9 @@ type TTYSize struct {
 // Process is an immutable read model. It intentionally has no environment or
 // output-store field; callers use Supervisor.Output for output access.
 type Process struct {
-	Name   string
-	Source string
+	Name      string
+	SessionID string
+	Source    string
 	// Scope identifies the namespace of this record. HUM-058 currently has
 	// only the project namespace; the field is explicit for protocol stability.
 	Scope string
@@ -268,8 +281,9 @@ const (
 // boundary for an explicit same-store restart; fresh launches use the
 // initial-cursor rule, which includes output cursor zero.
 type WaitOptions struct {
-	After *output.Cursor
-	Match *regexp.Regexp
+	After     *output.Cursor
+	Match     *regexp.Regexp
+	SessionID string
 }
 
 // WaitResult is the stable result of a Wait call. Exit is populated when the
@@ -279,6 +293,7 @@ type WaitOptions struct {
 type WaitResult struct {
 	Outcome         WaitOutcome
 	Cursor          output.Cursor
+	SessionID       string
 	Exit            *process.Result
 	ProcessObserved bool
 }
@@ -387,6 +402,7 @@ type ContextInputResizer interface {
 var (
 	ErrSupervisorClosed = errors.New("supervisor is shut down")
 	ErrProcessNotFound  = errors.New("supervised process not found")
+	ErrCursorStale      = errors.New("output cursor belongs to a stale session")
 	ErrNotRunning       = errors.New("supervised process is not running")
 	ErrNameInUse        = errors.New("supervised process name is already running")
 	ErrInvalidName      = errors.New("invalid supervised process name")
@@ -400,6 +416,24 @@ var (
 	ErrInputNotTTY      = errors.New("process does not have a tty")
 	ErrUnresolved       = errors.New("process identity is unresolved")
 )
+
+// CursorStaleError reports that a cursor belongs to a different output session.
+type CursorStaleError struct {
+	Provided string
+	Current  string
+}
+
+func (e *CursorStaleError) Error() string {
+	if e == nil {
+		return ErrCursorStale.Error()
+	}
+	if e.Current == "" {
+		return fmt.Sprintf("output cursor session %q is stale; no current session exists; read without a cursor", e.Provided)
+	}
+	return fmt.Sprintf("output cursor session %q is stale; current session is %q; read without a cursor", e.Provided, e.Current)
+}
+
+func (e *CursorStaleError) Unwrap() error { return ErrCursorStale }
 
 const maxInputBytes = 32 * 1024
 
@@ -1177,14 +1211,15 @@ func capProbeDiagnostic(value string, max int) string {
 // record contains private relaunch state in addition to the immutable public
 // snapshot. It is never returned to callers.
 type record struct {
-	key    string
-	name   string
-	scope  string
-	root   string
-	cwd    string
-	source string
-	argv   []string
-	env    []string
+	key       string
+	name      string
+	scope     string
+	root      string
+	cwd       string
+	source    string
+	sessionID string
+	argv      []string
+	env       []string
 
 	readyConfig         *ReadinessConfig
 	readyPattern        *regexp.Regexp
@@ -1395,16 +1430,17 @@ func (r *record) waitInputOperations() {
 // LifecycleEvent is a bounded, payload-free supervisor transition. Hooks must
 // not inspect child argv, environment, output, or input.
 type LifecycleEvent struct {
-	Name      string
-	Scope     string
-	Root      string
-	Cwd       string
-	Event     string
-	Detail    string
-	Time      time.Time
-	ExitCode  *int
-	Signal    string
-	LogCursor *output.Cursor
+	Name         string
+	Scope        string
+	Root         string
+	Cwd          string
+	Event        string
+	Detail       string
+	Time         time.Time
+	ExitCode     *int
+	Signal       string
+	LogCursor    *output.Cursor
+	LogSessionID string
 }
 
 type Supervisor struct {
@@ -1769,6 +1805,9 @@ func (s *Supervisor) emitLifecycle(rec *record, event, detail string, at time.Ti
 		at = s.now()
 	}
 	value := LifecycleEvent{Name: rec.name, Scope: normalizedScope(rec.scope), Root: rec.root, Cwd: rec.cwd, Event: event, Detail: detail, Time: at}
+	if event == "launch" || event == "exit" {
+		value.LogSessionID = rec.sessionID
+	}
 	if len(logCursor) != 0 {
 		value.LogCursor = logCursor[0]
 	}
@@ -1848,7 +1887,7 @@ func (s *Supervisor) AddUnresolvedScoped(scope, root, name string, pid, pgid int
 	}
 	rec := &record{
 		key: key, name: name, scope: scope, root: canonicalRoot, cwd: canonicalRoot,
-		pid: pid, pgid: pgid, startIdentity: startIdentity, store: store,
+		pid: pid, pgid: pgid, startIdentity: startIdentity, store: store, sessionID: NewSessionID(),
 		state: StateUnresolved, done: make(chan struct{}), terminal: false,
 		unresolved: true,
 	}
@@ -2022,7 +2061,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		if req.StopGrace != nil {
 			recordGrace, inherited = *req.StopGrace, false
 		}
-		rec = &record{key: key, name: req.Name, scope: req.Scope, root: root, store: store, restart: restartPolicyForSource(req.Source, req.Restart), stopGrace: recordGrace, stopGraceInherited: inherited}
+		rec = &record{key: key, name: req.Name, scope: req.Scope, root: root, store: store, sessionID: NewSessionID(), restart: restartPolicyForSource(req.Source, req.Restart), stopGrace: recordGrace, stopGraceInherited: inherited}
 		transitionDormantLocked(rec)
 		if !automatic && explicitRecord == nil {
 			rec.stopMu.Lock()
@@ -3110,16 +3149,32 @@ func (s *Supervisor) Output(cwd, name string) (*output.Store, error) {
 }
 
 func (s *Supervisor) OutputScoped(scope, cwd, name string) (*output.Store, error) {
+	store, _, err := s.OutputSessionScoped(scope, cwd, name, "")
+	return store, err
+}
+
+// OutputSessionScoped resolves the session identity and store under one registry lock.
+func (s *Supervisor) OutputSessionScoped(scope, cwd, name, sessionID string) (*output.Store, string, error) {
 	rec, err := s.lookupScoped(scope, cwd, name, "")
 	if err != nil {
-		return nil, err
+		if sessionID != "" && errors.Is(err, ErrProcessNotFound) {
+			return nil, "", &CursorStaleError{Provided: sessionID}
+		}
+		return nil, "", err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.records[rec.key] != rec || rec.store == nil {
-		return nil, &NotFoundError{Root: rec.root, Name: rec.name}
+	current := s.records[rec.key]
+	if current == nil || current.store == nil {
+		if sessionID != "" {
+			return nil, "", &CursorStaleError{Provided: sessionID}
+		}
+		return nil, "", &NotFoundError{Root: rec.root, Name: rec.name}
 	}
-	return rec.store, nil
+	if sessionID != "" && current.sessionID != sessionID {
+		return nil, "", &CursorStaleError{Provided: sessionID, Current: current.sessionID}
+	}
+	return current.store, current.sessionID, nil
 }
 
 // ensureSession returns the durable project/name record, creating an empty
@@ -3154,7 +3209,7 @@ func (s *Supervisor) ensureSessionScoped(scope, cwd, name string) (*record, erro
 	if err != nil {
 		return nil, fmt.Errorf("output store: %w", err)
 	}
-	rec := &record{key: key, name: name, scope: scope, root: root, cwd: root, store: store, restart: RestartNever}
+	rec := &record{key: key, name: name, scope: scope, root: root, cwd: root, store: store, sessionID: NewSessionID(), restart: RestartNever}
 	transitionDormantLocked(rec)
 	s.trackStore(key, store)
 	s.records[key] = rec
@@ -3209,7 +3264,7 @@ func (s *Supervisor) PrepareTTYScoped(scope string, req StartRequest) error {
 		if storeErr != nil {
 			return fmt.Errorf("output store: %w", storeErr)
 		}
-		rec = &record{key: key, name: req.Name, scope: scope, root: root, cwd: requestCwd, store: store, restart: RestartNever}
+		rec = &record{key: key, name: req.Name, scope: scope, root: root, cwd: requestCwd, store: store, sessionID: NewSessionID(), restart: RestartNever}
 		transitionDormantLocked(rec)
 		s.trackStore(key, store)
 		s.records[key] = rec
@@ -3752,23 +3807,38 @@ func (s *Supervisor) Subscribe(cwd, name string, opts output.ReadOptions) (*Foll
 }
 
 func (s *Supervisor) SubscribeScoped(scope, cwd, name string, opts output.ReadOptions) (*Follower, error) {
+	return s.SubscribeSessionScoped(scope, cwd, name, opts, "")
+}
+
+// SubscribeSessionScoped attaches to the current session after checking its optional identity.
+func (s *Supervisor) SubscribeSessionScoped(scope, cwd, name string, opts output.ReadOptions, sessionID string) (*Follower, error) {
 	rec, err := s.ensureSessionScoped(scope, cwd, name)
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
-	if s.records[rec.key] != rec || rec.store == nil {
+	current := s.records[rec.key]
+	if current == nil || current.store == nil {
+		if sessionID != "" {
+			s.mu.Unlock()
+			return nil, &CursorStaleError{Provided: sessionID}
+		}
 		root, processName := rec.root, rec.name
 		s.mu.Unlock()
 		return nil, &NotFoundError{Root: root, Name: processName}
 	}
+	if sessionID != "" && current.sessionID != sessionID {
+		s.mu.Unlock()
+		return nil, &CursorStaleError{Provided: sessionID, Current: current.sessionID}
+	}
+	rec = current
 	sub := rec.store.Subscribe(opts)
 	rec.followers++
 	if !rec.start.IsZero() && !rec.terminal {
 		sub.ReplayLatestExitSince(rec.start)
 	}
 	s.mu.Unlock()
-	return &Follower{sub: sub, close: func() {
+	return &Follower{sessionID: rec.sessionID, sub: sub, close: func() {
 		s.mu.Lock()
 		if s.records[rec.key] == rec && rec.followers > 0 {
 			rec.followers--
@@ -3780,13 +3850,24 @@ func (s *Supervisor) SubscribeScoped(scope, cwd, name string, opts output.ReadOp
 // Follower is one live durable follow attachment. It wraps the output cursor
 // so snapshots can count follow clients without including private Wait users.
 type Follower struct {
+	sessionID string
 	sub       *output.Subscription
 	close     func()
 	closeOnce sync.Once
 }
 
-func (f *Follower) Next(ctx context.Context) (output.Event, error) { return f.sub.Next(ctx) }
-func (f *Follower) Cursor() output.Cursor                          { return f.sub.Cursor() }
+func (f *Follower) Next(ctx context.Context) (output.Event, error) {
+	event, err := f.sub.Next(ctx)
+	if err == nil {
+		event.SessionID = f.sessionID
+		if event.Read != nil {
+			event.Read.SessionID = f.sessionID
+		}
+	}
+	return event, err
+}
+func (f *Follower) Cursor() output.Cursor { return f.sub.Cursor() }
+func (f *Follower) SessionID() string     { return f.sessionID }
 
 // Close detaches the follower and updates the session count exactly once.
 func (f *Follower) Close() {
@@ -3824,6 +3905,9 @@ func (s *Supervisor) WaitScoped(ctx context.Context, scope, cwd, name string, op
 
 	rec, err := s.lookupScoped(scope, cwd, name, "")
 	if err != nil {
+		if opts.SessionID != "" && errors.Is(err, ErrProcessNotFound) {
+			return WaitResult{}, &CursorStaleError{Provided: opts.SessionID}
+		}
 		if opts.After != nil || !errors.Is(err, ErrProcessNotFound) {
 			return WaitResult{}, err
 		}
@@ -3834,12 +3918,22 @@ func (s *Supervisor) WaitScoped(ctx context.Context, scope, cwd, name string, op
 	}
 
 	s.mu.RLock()
-	if s.records[rec.key] != rec || rec.store == nil {
+	current := s.records[rec.key]
+	if current == nil || current.store == nil {
 		root, processName := rec.root, rec.name
 		s.mu.RUnlock()
+		if opts.SessionID != "" {
+			return WaitResult{}, &CursorStaleError{Provided: opts.SessionID}
+		}
 		return WaitResult{}, &NotFoundError{Root: root, Name: processName}
 	}
+	if opts.SessionID != "" && current.sessionID != opts.SessionID {
+		s.mu.RUnlock()
+		return WaitResult{}, &CursorStaleError{Provided: opts.SessionID, Current: current.sessionID}
+	}
+	rec = current
 	store := rec.store
+	sessionID := rec.sessionID
 	initialObservation := s.processObservations[rec.key]
 	observed := rec.incarnation != 0 || rec.unresolved
 	after := opts.After
@@ -3866,7 +3960,7 @@ func (s *Supervisor) WaitScoped(ctx context.Context, scope, cwd, name string, op
 		if err != nil {
 			observed = observed || s.waitProcessObserved(rec, initialObservation)
 			if errors.Is(err, context.DeadlineExceeded) {
-				return WaitResult{Outcome: WaitTimedOut, Cursor: sub.Cursor(), ProcessObserved: observed}, nil
+				return WaitResult{Outcome: WaitTimedOut, Cursor: sub.Cursor(), SessionID: sessionID, ProcessObserved: observed}, nil
 			}
 			if errors.Is(err, output.ErrStoreClosed) {
 				// Removing a runtime record closes its output store. Keep this
@@ -3875,7 +3969,7 @@ func (s *Supervisor) WaitScoped(ctx context.Context, scope, cwd, name string, op
 				<-ctx.Done()
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					observed = observed || s.waitProcessObserved(rec, initialObservation)
-					return WaitResult{Outcome: WaitTimedOut, Cursor: sub.Cursor(), ProcessObserved: observed}, nil
+					return WaitResult{Outcome: WaitTimedOut, Cursor: sub.Cursor(), SessionID: sessionID, ProcessObserved: observed}, nil
 				}
 				return WaitResult{}, ctx.Err()
 			}
@@ -3884,7 +3978,7 @@ func (s *Supervisor) WaitScoped(ctx context.Context, scope, cwd, name string, op
 		observed = observed || s.waitProcessObserved(rec, initialObservation)
 		if event.Read != nil {
 			if opts.Match != nil && len(event.Read.Entries) != 0 {
-				return WaitResult{Outcome: WaitMatched, Cursor: sub.Cursor()}, nil
+				return WaitResult{Outcome: WaitMatched, Cursor: sub.Cursor(), SessionID: sessionID}, nil
 			}
 			continue
 		}
@@ -3900,7 +3994,7 @@ func (s *Supervisor) WaitScoped(ctx context.Context, scope, cwd, name string, op
 			exitResult = rec.result
 		}
 		s.mu.RUnlock()
-		return WaitResult{Outcome: WaitExited, Cursor: sub.Cursor(), Exit: &exitResult}, nil
+		return WaitResult{Outcome: WaitExited, Cursor: sub.Cursor(), SessionID: sessionID, Exit: &exitResult}, nil
 	}
 }
 
@@ -4390,6 +4484,7 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 func (r *record) snapshotLocked() Process {
 	model := Process{
 		Name:               r.name,
+		SessionID:          r.sessionID,
 		Source:             r.source,
 		Scope:              normalizedScope(r.scope),
 		Root:               r.root,

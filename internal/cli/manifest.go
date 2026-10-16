@@ -303,6 +303,7 @@ func mergeManifestProcesses(manifest manifestState, running []app.Process) []app
 // one NDJSON object without exposing daemon internals.
 type manifestLaunchResult struct {
 	Name                string               `json:"name"`
+	SessionID           string               `json:"session_id,omitempty"`
 	ProjectSelector     string               `json:"-"`
 	Outcome             string               `json:"outcome"`
 	Source              string               `json:"source"`
@@ -382,6 +383,7 @@ func manifestLaunchSkipped(ctx context.Context, client *daemon.Client, root stri
 func manifestLaunchResultFor(definition project.Definition, process app.Process, outcome string) manifestLaunchResult {
 	result := manifestLaunchResult{
 		Name:         process.Name,
+		SessionID:    process.SessionID,
 		Outcome:      outcome,
 		Source:       process.Source,
 		Argv:         append([]string(nil), process.Argv...),
@@ -470,7 +472,7 @@ func cliOrchestrateDefinition(definition project.Definition) orchestrate.Definit
 
 func cliOrchestrateProcess(process app.Process) orchestrate.Process {
 	shared := orchestrate.Process{
-		Name: process.Name, Source: process.Source, Root: process.Root, TTY: process.TTY,
+		Name: process.Name, SessionID: process.SessionID, Source: process.Source, Root: process.Root, TTY: process.TTY,
 		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
 		Start: process.Start, LaunchCursor: uint64(process.LaunchCursor), State: string(process.State),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
@@ -504,7 +506,7 @@ func cliOrchestrateProcess(process app.Process) orchestrate.Process {
 func cliAppProcess(process orchestrate.Process) app.Process {
 	process = orchestrate.NormalizeProcess(process)
 	result := app.Process{
-		Name: process.Name, Source: process.Source, Root: process.Root, TTY: process.TTY,
+		Name: process.Name, SessionID: process.SessionID, Source: process.Source, Root: process.Root, TTY: process.TTY,
 		PID: process.PID, PGID: process.PGID, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...),
 		Start: process.Start, LaunchCursor: output.Cursor(process.LaunchCursor), State: app.State(process.State),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,

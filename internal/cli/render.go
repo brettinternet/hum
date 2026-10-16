@@ -271,6 +271,7 @@ type listJSON struct {
 
 type listProcessJSON struct {
 	Name                string                   `json:"name"`
+	SessionID           string                   `json:"session_id"`
 	Source              string                   `json:"source"`
 	Scope               string                   `json:"scope"`
 	Root                string                   `json:"root"`
@@ -310,6 +311,7 @@ type listProcessJSON struct {
 // expose protocol-only fields.
 type statusJSON struct {
 	Name                string                    `json:"name"`
+	SessionID           string                    `json:"session_id"`
 	Source              string                    `json:"source,omitempty"`
 	Scope               string                    `json:"scope"`
 	ProjectRoot         string                    `json:"project_root,omitempty"`
@@ -349,6 +351,7 @@ func statusJSONFor(process app.Process) statusJSON {
 	}
 	result := statusJSON{
 		Name:               process.Name,
+		SessionID:          process.SessionID,
 		Source:             process.Source,
 		Scope:              scope,
 		ProjectRoot:        process.Root,
@@ -387,6 +390,7 @@ func statusJSONFor(process app.Process) statusJSON {
 
 type runResult struct {
 	Name        string           `json:"name"`
+	SessionID   string           `json:"session_id,omitempty"`
 	Source      string           `json:"source,omitempty"`
 	Argv        []string         `json:"argv,omitempty"`
 	Outcome     string           `json:"outcome,omitempty"`
@@ -440,6 +444,7 @@ func waitJSONFor(result app.WaitResult) protocol.WaitResponse {
 		OK:              true,
 		Outcome:         protocol.WaitOutcome(result.Outcome),
 		Cursor:          protocol.Cursor(result.Cursor),
+		SessionID:       result.SessionID,
 		ProcessObserved: result.ProcessObserved,
 	}
 	if result.Exit != nil {
@@ -515,6 +520,7 @@ func processJSON(process app.Process) listProcessJSON {
 	}
 	result := listProcessJSON{
 		Name:               process.Name,
+		SessionID:          process.SessionID,
 		Source:             process.Source,
 		Scope:              scope,
 		Root:               process.Root,
@@ -582,6 +588,7 @@ func outputJSON(result output.ReadResult) protocol.OutputResult {
 		})
 	}
 	return protocol.OutputResult{
+		SessionID:      result.SessionID,
 		Entries:        entries,
 		Next:           cursorJSON(result.Next),
 		Oldest:         cursorJSON(result.Oldest),
@@ -619,10 +626,10 @@ func eventJSON(name string, event output.Event) protocol.StreamEvent {
 		if event.Exit.SignalName != "" {
 			exit.Signal = &protocol.SignalInfo{Name: event.Exit.SignalName, Number: event.Exit.SignalNumber}
 		}
-		return protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventExit, Name: name, Exit: &exit, Time: event.Exit.Time}
+		return protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventExit, Name: name, SessionID: event.SessionID, Exit: &exit, Time: event.Exit.Time}
 	}
 	if event.Read == nil {
-		return protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventOutput, Name: name, Entries: []protocol.OutputEntry{}}
+		return protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventOutput, Name: name, SessionID: event.SessionID, Entries: []protocol.OutputEntry{}}
 	}
 	result := outputJSON(*event.Read)
 	eventType := protocol.EventOutput
@@ -635,6 +642,7 @@ func eventJSON(name string, event output.Event) protocol.StreamEvent {
 		Op:             protocol.OpEvent,
 		Type:           eventType,
 		Name:           name,
+		SessionID:      result.SessionID,
 		Entries:        result.Entries,
 		Next:           result.Next,
 		Oldest:         result.Oldest,
@@ -1601,6 +1609,9 @@ func renderStatusHumanWithPolicy(w io.Writer, process app.Process, colors colorP
 		"name: %s\nsource: %s\nproject_root: %s\ntty: %t\n",
 		status.Name, status.Source, status.ProjectRoot, status.TTY,
 	); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "session: %s\n", status.SessionID); err != nil {
 		return err
 	}
 	if status.PID != 0 {

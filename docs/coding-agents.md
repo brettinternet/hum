@@ -175,8 +175,12 @@ events {names: ["api"], failed: true} ──▶ events {names: ["api"]} (find pr
   ──▶ logs {name: "api", after: <launch log_cursor>}
 ```
 
-Log cursors only apply to the same retained session: `hum remove` and daemon replacement discard
-output but not event history. Compare log entry `time` to event `time` if a cursor may be stale.
+Pair every log cursor with its output `session_id`: process snapshots and logs/wait results return it,
+and lifecycle events put it in `log_session_id`. IDs survive stop/start, restart, and automatic
+relaunch, but change after `hum remove`, completed-record eviction, or daemon replacement. Pass both
+`after` and `session_id` to MCP `logs`/`wait`, or `--after-cursor` and `--session-id` to CLI logs/wait.
+MCP requires the ID whenever `after` is set; scripts should always pass it. A stale ID returns
+`cursor_stale`; timestamps do not establish cursor validity.
 
 ## Tips
 

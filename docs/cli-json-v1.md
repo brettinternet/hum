@@ -5,10 +5,10 @@ object has `schema_version: 1`.
 
 ```console
 $ hum status hi --json
-{"schema_version":1,"name":"hi","source":"ad_hoc","scope":"project","state":"exited","exit_status":0,"stop_grace":"10s",...}
+{"schema_version":1,"name":"hi","session_id":"a1b2...","source":"ad_hoc","scope":"project","state":"exited","exit_status":0,"stop_grace":"10s",...}
 
 $ hum logs api --tail 2 --json
-{"schema_version":1,"op":"output","ok":true,"entries":[{"cursor":1,"stream":"stdout","time":"...","text":"GET /health 200\n"},...],"next":2,"oldest":0,"latest":2}
+{"schema_version":1,"op":"output","ok":true,"session_id":"a1b2...","entries":[{"cursor":1,"stream":"stdout","time":"...","text":"GET /health 200\n"},...],"next":2,"oldest":0,"latest":2}
 ```
 
 Check support before relying on this contract. This call never resolves a project, reads a
@@ -58,17 +58,17 @@ Command-specific meanings are in [design.md](design.md).
 | Manifest creation | `init` | `schema_version`, `path`, `outcome`, `next_command`, `candidates` |
 | Aggregate snapshot | `list`, aggregate `status` | `schema_version`, `processes`; `warnings` optional |
 | Port lookup | `list --port PORT` | `schema_version`, `processes`; `incomplete` and `warnings` optional |
-| Single-process snapshot | named `status` | `schema_version`, `name`, `scope`, `tty`, `pid`, `pgid`, `cwd`, `argv`, `started_at`, `state`, `exit_status`, `restart_count`, `followers`, `restart`, `relaunches`, `stop_grace`, `stop_grace_inherited`, `next_cursor`; `ports` on running snapshots only |
-| Detached launch | detached `run` | `schema_version`, `name`, `pid`, `cursor`; launch metadata optional when unavailable |
-| Launch/restart record | `start`, `up`, `restart` | `schema_version`, `name`, `outcome`, `restart`, `relaunches`; other fields depend on the outcome |
+| Single-process snapshot | named `status` | `schema_version`, `name`, `session_id`, `scope`, `tty`, `pid`, `pgid`, `cwd`, `argv`, `started_at`, `state`, `exit_status`, `restart_count`, `followers`, `restart`, `relaunches`, `stop_grace`, `stop_grace_inherited`, `next_cursor`; `ports` on running snapshots only |
+| Detached launch | detached `run` | `schema_version`, `name`, `session_id`, `pid`, `cursor`; launch metadata optional when unavailable |
+| Launch/restart record | `start`, `up`, `restart` | `schema_version`, `name`, `session_id`, `outcome`, `restart`, `relaunches`; other fields depend on the outcome |
 | Stop/remove/down record | `stop`, `remove`, `down` | `schema_version`, `name`, `status`; `process` and `message` optional |
 | Signal acknowledgement | `signal` | `schema_version`, `name`, `status`, `signal` |
 | Input acknowledgement | `input` | `schema_version`, `name`, `bytes`, `launch_cursor` |
 | Shutdown result | `shutdown` | `schema_version`, `status` |
-| Wait result | `wait` | `schema_version`, `op`, `ok`, `outcome`, `cursor`, `process_observed`; `exit`, `message`, `error` depend on the outcome |
-| Bounded log result | single-name `logs` | `schema_version`, `op`, `ok`, `entries`; cursor bounds and truncation flags optional |
-| Event history | `events` | events: `schema_version`, `type`, `cursor`, `time`, `kind`, `name`, `event`; trailing metadata: `schema_version`, `type`, `next_cursor`, `truncated`, `has_more` |
-| Named stream record | aggregate or followed `logs`, `start`, `up` | `schema_version`, `op`, `type`; `name` for named records; other fields depend on `type` |
+| Wait result | `wait` | `schema_version`, `op`, `ok`, `outcome`, `cursor`, `session_id`, `process_observed`; `exit`, `message`, `error` depend on the outcome |
+| Bounded log result | single-name `logs` | `schema_version`, `op`, `ok`, `session_id`, `entries`; cursor bounds and truncation flags optional |
+| Event history | `events` | events: `schema_version`, `type`, `cursor`, `time`, `kind`, `name`, `event`; lifecycle launch and exit may include `log_cursor`, `log_session_id`; trailing metadata: `schema_version`, `type`, `next_cursor`, `truncated`, `has_more` |
+| Named stream record | aggregate or followed `logs`, `start`, `up` | `schema_version`, `op`, `type`; `name` for named records; output records include `session_id`; other fields depend on `type` |
 | Error before output | any covered command | `schema_version`, `error` |
 | Stream error after output | streaming commands | `schema_version`, `op`, `type` (`error`), `error`; `name` when the failure belongs to one process |
 
@@ -91,6 +91,7 @@ Values:
 | `processes`, `entries` | always arrays, even when empty |
 | logs `next` | last source cursor consumed by this read |
 | process `next_cursor` | next cursor to be assigned |
+| `session_id`, `log_session_id` | opaque output-session identity paired with log cursors |
 | timestamps | RFC 3339 strings |
 | durations | integer nanoseconds, unless documented as a duration string (such as `stop_grace`) |
 
@@ -103,13 +104,15 @@ never inspect sockets. See [design.md](design.md#port-observation) for scope, de
 limitations. On Windows, `pids` contains only the API's verified binding owner, not every inherited holder;
 inspection is always `partial` with a diagnostic, including empty results.
 
-Streams: `type` is a lifecycle outcome or `output` (`entries` and cursor metadata), `exit`
-(`cursor`, `exit`), `warning` (`warnings`), or `error` (`error`). Records arrive in observed order;
-each process's entries stay in ascending cursor order. Result order follows [design.md](design.md):
-lexical declaration order for `up`, caller order for `logs`.
+Streams: `type` is a lifecycle outcome or `output` (`session_id`, `entries` and cursor metadata),
+`exit` (`session_id`, `cursor`, `exit`), `warning` (`warnings`), or `error` (`error`). Records arrive
+in observed order; each process's entries stay in ascending cursor order. Result order follows
+[design.md](design.md): lexical declaration order for `up`, caller order for `logs`.
 
 Errors: `error` has string `code` and `message`, and optional `details`. CLI codes are `usage`,
-`daemon_unavailable`, `manifest_missing`, `manifest_invalid`, and `internal`. Without a default
+`daemon_unavailable`, `manifest_missing`, `manifest_invalid`, and `internal`. Daemon wire code
+`cursor_stale` means a cursor's `session_id` no longer identifies the current output session; its
+message names the current ID when available and suggests reading without a cursor. Without a default
 manifest, `manifest_missing` names the nearest-manifest search directory and project root when they
 differ, and suggests `hum init` or `hum run NAME -- COMMAND`. The nearest lookup never searches
 above the project root. Daemon errors keep their wire code; that does not make the daemon protocol
@@ -127,7 +130,7 @@ record:
 
 ```json
 {"schema_version":1,"type":"event","cursor":65,"time":"...","kind":"operation","name":"hi","event":"run","origin":"cli","outcome":"success","operation_id":"145e..."}
-{"schema_version":1,"type":"event","cursor":129,"time":"...","kind":"lifecycle","name":"hi","event":"exit","exit_code":0,"operation_id":"145e..."}
+{"schema_version":1,"type":"event","cursor":129,"time":"...","kind":"lifecycle","name":"hi","event":"exit","exit_code":0,"log_cursor":8,"log_session_id":"a1b2...","operation_id":"145e..."}
 {"schema_version":1,"type":"metadata","next_cursor":192,"truncated":false,"has_more":false}
 ```
 
@@ -135,15 +138,17 @@ record:
   fields and a directly attributable `operation_id`; operation events carry `origin`, `outcome`,
   and `operation_id`.
 - Lifecycle `launch` and `exit` records may include `log_cursor` (an output cursor, distinct from
-  the event `cursor`). For a launch, it points to the entry immediately before that incarnation's
-  output, usually the `NAME launched` marker; it is absent when there is no preceding entry. For an
-  exit, it points to the latest output entry at exit time; it is absent when there is no output.
-  Other events omit it. Cursor 0 is a valid value. Pass a launch `log_cursor` to
-  `hum logs NAME --after-cursor N` (MCP `logs` `after`) to read that incarnation's output; pass an
-  exit `log_cursor` to read output after the exit.
-- Log cursors only apply to the same retained session: `hum remove` or daemon replacement loses
-  output but not event history, and a new session restarts output cursors. Compare returned log
-  entry `time` with event `time` when in doubt.
+  the event `cursor`) and `log_session_id` (the output session that owns it). For a launch, the cursor
+  points to the entry immediately before that incarnation's output, usually the `NAME launched`
+  marker; it is absent when there is no preceding entry. For an exit, it points to the latest output
+  entry at exit time; it is absent when there is no output. Other events omit both fields. Cursor 0
+  is valid. Pair both fields when passing the cursor to `hum logs NAME --after-cursor N --session-id ID`
+  or MCP `logs` (`after` and `session_id`).
+- Session IDs remain stable across stop/start, restart, and automatic relaunch, and change after
+  `hum remove`, completed-record eviction, or daemon replacement. A CLI `--session-id` is optional
+  for manual paging but requires `--after-cursor`; scripts should always pass it. MCP requires
+  `session_id` whenever `after` is present. A stale ID returns `cursor_stale`; timestamps cannot
+  verify cursor validity.
 - Records are bounded and never truncated to terminal width.
 - `next_cursor` is the last returned cursor when more forward pages remain, otherwise the read's
   fixed high-water mark. `truncated` reports a cursor gap from eviction or discarded data.

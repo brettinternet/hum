@@ -195,7 +195,7 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 	if isErr || !strings.Contains(string(logsRaw), "stdout:live") {
 		t.Fatalf("logs=%s error=%v", logsRaw, isErr)
 	}
-	waitRaw, isErr := session.call(t, "wait", explicit, map[string]any{"name": "api", "after": 0, "match": "stdout:live", "timeout_ms": 3000})
+	waitRaw, isErr := session.call(t, "wait", explicit, map[string]any{"name": "api", "session_id": startedProcess["session_id"], "after": 0, "match": "stdout:live", "timeout_ms": 3000})
 	if isErr || !strings.Contains(string(waitRaw), `"outcome":"matched"`) {
 		t.Fatalf("wait=%s error=%v", waitRaw, isErr)
 	}
@@ -228,12 +228,19 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 		t.Fatalf("ad hoc run: %s", run.Stderr)
 	}
 	testutil.WaitForFile(t, adHocMarker+".started", lifecycleTimeout)
+	initialStatus, statusErr := session.call(t, "status", explicit, map[string]any{"name": "transient"})
+	var initialProcess struct {
+		SessionID string `json:"session_id"`
+	}
+	if statusErr || json.Unmarshal(initialStatus, &initialProcess) != nil || initialProcess.SessionID == "" {
+		t.Fatalf("initial ad hoc status=%s error=%v", initialStatus, statusErr)
+	}
 	// The marker is written before the fixture output. Wait for both
 	// idle-flushed partial fragments, the last entries on each stream, so
 	// sequential MCP and CLI status snapshots compare a stable next_cursor
 	// rather than racing output ingestion.
 	for _, fragment := range []string{"stdout:live-partial", "stderr:live-partial"} {
-		outputRaw, outputErr := session.call(t, "wait", explicit, map[string]any{"name": "transient", "after": 0, "match": fragment, "timeout_ms": 3000})
+		outputRaw, outputErr := session.call(t, "wait", explicit, map[string]any{"name": "transient", "session_id": initialProcess.SessionID, "after": 0, "match": fragment, "timeout_ms": 3000})
 		if outputErr || !strings.Contains(string(outputRaw), `"outcome":"matched"`) {
 			t.Fatalf("wait for ad hoc fixture output %q=%s error=%v", fragment, outputRaw, outputErr)
 		}
@@ -283,7 +290,7 @@ func TestMCPResolvedAndAdHocLifecycle(t *testing.T) {
 	if cliAdLogs.Code != 0 || !strings.Contains(cliAdLogs.Stdout, `"next":`) {
 		t.Fatalf("CLI bounded ad hoc logs: code=%d stdout=%q stderr=%q", cliAdLogs.Code, cliAdLogs.Stdout, cliAdLogs.Stderr)
 	}
-	adWaitRaw, isErr := session.call(t, "wait", explicit, map[string]any{"name": "transient", "after": 0, "match": "stdout:live", "timeout_ms": 3000})
+	adWaitRaw, isErr := session.call(t, "wait", explicit, map[string]any{"name": "transient", "session_id": initialProcess.SessionID, "after": 0, "match": "stdout:live", "timeout_ms": 3000})
 	cliAdWait := testutil.Run(t, hum, explicit, runtime.env, "wait", "transient", "--json", "--after-cursor", "0", "--match", "stdout:live", "--timeout", "3s")
 	if isErr || !strings.Contains(string(adWaitRaw), `"outcome":"matched"`) || cliAdWait.Code != 0 || !strings.Contains(cliAdWait.Stdout, `"outcome":"matched"`) {
 		t.Fatalf("ad hoc wait mismatch MCP=%s error=%v CLI=%q/%q", adWaitRaw, isErr, cliAdWait.Stdout, cliAdWait.Stderr)

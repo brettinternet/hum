@@ -252,6 +252,7 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 				&urfavecli.StringFlag{Name: "stream", Aliases: []string{"s"}, Value: "both", Usage: "stdout, stderr, system, or both; both includes all three"},
 				&urfavecli.IntFlag{Name: "tail", Aliases: []string{"n"}, HideDefault: true, Usage: "final N entries; omit for default"},
 				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "after cursor N; omit for the newest default window"},
+				&urfavecli.StringFlag{Name: "session-id", HideDefault: true, Usage: "cursor session ID; requires --after-cursor; omit to page without identity"},
 				&urfavecli.StringFlag{Name: "since", HideDefault: true, Usage: "newer than DURATION; omit for all"},
 				&urfavecli.IntFlag{Name: "limit-bytes", Aliases: []string{"b"}, HideDefault: true, Usage: "maximum bytes; omit for default"},
 				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "filter by REGEX; omit for all"},
@@ -273,6 +274,7 @@ func newCLICommands(version, commit, buildTime string, writer, errWriter io.Writ
 			Description:   "Wait for a process to exit or for its output to match a pattern. Use --timeout to limit how long to wait. Exit codes: 0 for a match or unfiltered exit; exit 1 for a request or usage error; exit 2 for timeout; exit 3 when process exit precedes --match.\n\nExamples:\n  hum wait api --match ready",
 			Flags: []urfavecli.Flag{
 				&urfavecli.Uint64Flag{Name: "after-cursor", Aliases: []string{"c"}, HideDefault: true, Usage: "after cursor N; omit for current launch"},
+				&urfavecli.StringFlag{Name: "session-id", HideDefault: true, Usage: "cursor session ID; requires --after-cursor; omit to wait without identity"},
 				&urfavecli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "matching REGEX; omit to wait for exit"},
 				&urfavecli.StringFlag{Name: "timeout", Aliases: []string{"t"}, DefaultText: "30s", Usage: "maximum wait duration"},
 				&urfavecli.BoolFlag{Name: "json", Aliases: []string{"j"}, DefaultText: "false", Usage: "write JSON; default is human-readable output"},
@@ -789,7 +791,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 			}
 			return startErr
 		}
-		result := runResult{Name: process.Name, PID: process.PID, Cursor: protocol.Cursor(process.LaunchCursor)}
+		result := runResult{Name: process.Name, SessionID: process.SessionID, PID: process.PID, Cursor: protocol.Cursor(process.LaunchCursor)}
 		if process.Source != "" && process.Source != "ad_hoc" {
 			result.Source, result.Argv, result.Outcome = process.Source, append([]string(nil), process.Argv...), "started"
 			if process.Readiness == nil || process.Readiness.State == app.ReadinessRunningUnverified {
@@ -1510,6 +1512,17 @@ func logsMatchContext(cmd *urfavecli.Command) (int, error) {
 
 func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
 	args := cmd.Args().Slice()
+	if cmd.IsSet("session-id") {
+		if !cmd.IsSet("after-cursor") {
+			return newCLIUsageError(errors.New("logs --session-id requires --after-cursor"))
+		}
+		if len(args) != 1 {
+			return newCLIUsageError(errors.New("logs --session-id requires exactly one process name"))
+		}
+		if cmd.String("session-id") == "" {
+			return newCLIUsageError(errors.New("session-id must not be empty"))
+		}
+	}
 	if len(args) != 1 {
 		return aggregateLogsCommand(ctx, cmd, version, buildTime, writer, errWriter, args)
 	}
@@ -1579,14 +1592,14 @@ func logsCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 	}
 	requestTail, maxEntries := logReadBounds(after, tail, cfg.ReadEntries, cmd.IsSet("tail"), cmd.Bool("follow"))
 	request := daemon.OutputRequest{
-		Name: name, Scope: selection.scope, Cwd: cwd, After: after, SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"), Context: contextEntries,
+		Name: name, Scope: selection.scope, Cwd: cwd, After: after, SessionID: cmd.String("session-id"), SinceUnixNano: sinceCutoffUnixNano(sinceCutoff), Tail: requestTail, Stream: protocol.Stream(stream), Match: cmd.String("match"), Context: contextEntries,
 		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 	if cmd.Bool("follow") {
 		signals := notifyFollowSignals()
 		defer signal.Stop(signals)
 		follower, err := client.Follow(ctx, daemon.FollowRequest{
-			Name: request.Name, Scope: request.Scope, Cwd: request.Cwd, After: request.After, SinceUnixNano: request.SinceUnixNano, Tail: request.Tail, Stream: request.Stream,
+			Name: request.Name, Scope: request.Scope, Cwd: request.Cwd, After: request.After, SessionID: request.SessionID, SinceUnixNano: request.SinceUnixNano, Tail: request.Tail, Stream: request.Stream,
 			Match: request.Match, MaxEntries: request.MaxEntries, MaxBytes: request.MaxBytes,
 		})
 		if err != nil {
@@ -2094,6 +2107,14 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		cursor := protocol.Cursor(cmd.Uint64("after-cursor"))
 		after = &cursor
 	}
+	if cmd.IsSet("session-id") {
+		if after == nil {
+			return newCLIUsageError(errors.New("wait --session-id requires --after-cursor"))
+		}
+		if cmd.String("session-id") == "" {
+			return newCLIUsageError(errors.New("session-id must not be empty"))
+		}
+	}
 
 	match := cmd.String("match")
 	if cmd.IsSet("match") {
@@ -2152,6 +2173,7 @@ func waitCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		Name:      name,
 		Cwd:       cwd,
 		After:     after,
+		SessionID: cmd.String("session-id"),
 		Match:     match,
 		TimeoutMS: timeoutMS,
 	})
@@ -2641,6 +2663,7 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 // replacement incarnation observed by this invocation.
 type restartOutputResult struct {
 	Name                string           `json:"name"`
+	SessionID           string           `json:"session_id,omitempty"`
 	Outcome             string           `json:"outcome"`
 	Readiness           string           `json:"readiness"`
 	ReadinessMatch      string           `json:"readiness_match,omitempty"`
@@ -2664,6 +2687,7 @@ type restartOutputResult struct {
 func restartOutputFromProcess(process app.Process, definition project.Definition, outcome, message string) restartOutputResult {
 	result := restartOutputResult{
 		Name:         process.Name,
+		SessionID:    process.SessionID,
 		Outcome:      outcome,
 		Readiness:    restartReadiness(process, definition),
 		PID:          process.PID,
@@ -2699,6 +2723,7 @@ func restartOutputFromProcess(process app.Process, definition project.Definition
 func restartOutputFromManifest(result manifestLaunchResult, process app.Process, message string) restartOutputResult {
 	output := restartOutputResult{
 		Name:           result.Name,
+		SessionID:      process.SessionID,
 		Outcome:        result.Outcome,
 		Readiness:      result.Readiness,
 		Message:        message,

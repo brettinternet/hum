@@ -11,6 +11,61 @@ import (
 	"time"
 )
 
+func TestCursorSessionProtocolRoundTrip(t *testing.T) {
+	process := Process{Name: "api", SessionID: "session-17", LaunchCursor: 4}
+	encoded, err := json.Marshal(process)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decodedProcess Process
+	if err := json.Unmarshal(encoded, &decodedProcess); err != nil {
+		t.Fatal(err)
+	}
+	if decodedProcess.SessionID != process.SessionID {
+		t.Fatalf("process session_id = %q, want %q", decodedProcess.SessionID, process.SessionID)
+	}
+
+	next := Cursor(4)
+	outputResponse := NewOutputResponse(OutputResult{SessionID: process.SessionID, Entries: []OutputEntry{}, Next: &next})
+	encoded, err = json.Marshal(outputResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decodedOutput OutputResponse
+	if err := json.Unmarshal(encoded, &decodedOutput); err != nil {
+		t.Fatal(err)
+	}
+	if decodedOutput.Result == nil || decodedOutput.Result.SessionID != process.SessionID {
+		t.Fatalf("output session_id = %#v, want %q", decodedOutput.Result, process.SessionID)
+	}
+
+	waitResponse := WaitResponse{Op: OpWait, OK: true, Outcome: WaitMatched, Cursor: 5, SessionID: process.SessionID}
+	encoded, err = json.Marshal(waitResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decodedWait WaitResponse
+	if err := json.Unmarshal(encoded, &decodedWait); err != nil {
+		t.Fatal(err)
+	}
+	if decodedWait.SessionID != process.SessionID {
+		t.Fatalf("wait session_id = %q, want %q", decodedWait.SessionID, process.SessionID)
+	}
+
+	event := StreamEvent{Op: OpEvent, Type: EventOutput, Name: "api", SessionID: process.SessionID, Entries: []OutputEntry{}}
+	encoded, err = json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decodedEvent StreamEvent
+	if err := json.Unmarshal(encoded, &decodedEvent); err != nil {
+		t.Fatal(err)
+	}
+	if decodedEvent.SessionID != process.SessionID {
+		t.Fatalf("stream session_id = %q, want %q", decodedEvent.SessionID, process.SessionID)
+	}
+}
+
 func TestExecutableReadinessRoundTrip(t *testing.T) {
 	if Version != 22 {
 		t.Fatalf("protocol version = %d, want aggregate port lookup version 22", Version)
@@ -406,24 +461,24 @@ func TestWaitProcessObservedRoundTrip(t *testing.T) {
 		{
 			name:             "timeout true",
 			value:            WaitResponse{Op: OpWait, OK: true, Outcome: WaitTimedOut, Cursor: 7, ProcessObserved: true},
-			wantJSON:         `{"op":"wait","ok":true,"outcome":"timed_out","cursor":7,"process_observed":true}`,
+			wantJSON:         `{"op":"wait","ok":true,"outcome":"timed_out","cursor":7,"session_id":"","process_observed":true}`,
 			wantProcessField: true,
 		},
 		{
 			name:             "timeout false",
 			value:            WaitResponse{Op: OpWait, OK: true, Outcome: WaitTimedOut, Cursor: 8},
-			wantJSON:         `{"op":"wait","ok":true,"outcome":"timed_out","cursor":8,"process_observed":false}`,
+			wantJSON:         `{"op":"wait","ok":true,"outcome":"timed_out","cursor":8,"session_id":"","process_observed":false}`,
 			wantProcessField: true,
 		},
 		{
 			name:     "successful match unchanged",
 			value:    NewWaitResponse(WaitMatched, 9, nil),
-			wantJSON: `{"op":"wait","ok":true,"outcome":"matched","cursor":9}`,
+			wantJSON: `{"op":"wait","ok":true,"outcome":"matched","cursor":9,"session_id":""}`,
 		},
 		{
 			name:     "successful exit unchanged",
 			value:    NewWaitResponse(WaitExited, 10, &Exit{Code: 17, Time: at}),
-			wantJSON: `{"op":"wait","ok":true,"outcome":"exited","cursor":10,"exit":{"code":17,"time":"2026-09-03T11:22:33Z"}}`,
+			wantJSON: `{"op":"wait","ok":true,"outcome":"exited","cursor":10,"session_id":"","exit":{"code":17,"time":"2026-09-03T11:22:33Z"}}`,
 		},
 	}
 	for _, tc := range cases {
@@ -508,17 +563,17 @@ func TestWaitRequestAndResponseShapes(t *testing.T) {
 		{
 			name:  "matched",
 			value: NewWaitResponse(WaitMatched, 7, nil),
-			want:  `{"op":"wait","ok":true,"outcome":"matched","cursor":7}`,
+			want:  `{"op":"wait","ok":true,"outcome":"matched","cursor":7,"session_id":""}`,
 		},
 		{
 			name:  "exited",
 			value: NewWaitResponse(WaitExited, 9, &Exit{Code: 17, Time: at}),
-			want:  `{"op":"wait","ok":true,"outcome":"exited","cursor":9,"exit":{"code":17,"time":"2026-09-03T11:22:33Z"}}`,
+			want:  `{"op":"wait","ok":true,"outcome":"exited","cursor":9,"session_id":"","exit":{"code":17,"time":"2026-09-03T11:22:33Z"}}`,
 		},
 		{
 			name:  "timed out",
 			value: NewWaitResponse(WaitTimedOut, 11, nil),
-			want:  `{"op":"wait","ok":true,"outcome":"timed_out","cursor":11,"process_observed":false}`,
+			want:  `{"op":"wait","ok":true,"outcome":"timed_out","cursor":11,"session_id":"","process_observed":false}`,
 		},
 	}
 	for _, tc := range responseCases {
@@ -554,7 +609,7 @@ func TestWaitRequestAndResponseShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"op":"wait","ok":false,"cursor":12,"error":{"code":"internal","message":"wait failed"}}`; got != want {
+	if got, want := string(encoded), `{"op":"wait","ok":false,"cursor":12,"session_id":"","error":{"code":"internal","message":"wait failed"}}`; got != want {
 		t.Fatalf("wait error JSON = %s, want %s", got, want)
 	}
 	var decodedError WaitResponse
@@ -665,7 +720,7 @@ func TestStatusGetRequestResponseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","scope":"project","project_root":"/work/project","tty":false,"pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0,"restart":"never","relaunches":0,"stop_grace":0,"stop_grace_inherited":false}}`+"\n"; got != want {
+	if got, want := string(responseLine), `{"op":"get","ok":true,"process":{"name":"api","session_id":"","scope":"project","project_root":"/work/project","tty":false,"pid":4321,"pgid":4321,"cwd":"/work/project","argv":["tool","--message","hello world",""],"start":"2026-09-03T11:22:33Z","launch_cursor":7,"next_cursor":19,"state":"running","exited_at":"0001-01-01T00:00:00Z","restart_count":2,"followers":0,"restart":"never","relaunches":0,"stop_grace":0,"stop_grace_inherited":false}}`+"\n"; got != want {
 		t.Fatalf("get response JSON = %s, want %s", got, want)
 	}
 

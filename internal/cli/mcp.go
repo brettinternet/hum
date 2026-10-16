@@ -204,6 +204,7 @@ func (c *mcpDaemonClient) Wait(ctx context.Context, request protocol.WaitRequest
 		return protocol.WaitResponse{}, err
 	}
 	response := protocol.NewWaitResponse(protocol.WaitOutcome(result.Outcome), protocol.Cursor(result.Cursor), mcpExit(result.Exit))
+	response.SessionID = result.SessionID
 	response.ProcessObserved = result.ProcessObserved
 	return response, nil
 }
@@ -243,7 +244,7 @@ func (c *mcpDaemonClient) Restart(ctx context.Context, request protocol.RestartR
 
 func mcpProcess(process app.Process) protocol.Process {
 	result := protocol.Process{
-		Name: process.Name, Source: process.Source, Scope: process.Scope, Root: process.Root, TTY: process.TTY, PID: process.PID, PGID: process.PGID,
+		Name: process.Name, SessionID: process.SessionID, Source: process.Source, Scope: process.Scope, Root: process.Root, TTY: process.TTY, PID: process.PID, PGID: process.PGID,
 		Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...), Start: process.Start,
 		LaunchCursor: protocol.Cursor(process.LaunchCursor), State: string(process.State), Exit: mcpExit(process.Exit),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
@@ -292,7 +293,7 @@ func mcpOutput(result output.ReadResult) protocol.OutputResult {
 	for _, entry := range result.Entries {
 		entries = append(entries, protocol.OutputEntry{Cursor: protocol.Cursor(entry.Cursor), Stream: mcpStream(entry.Stream), Time: entry.Time, Text: entry.Text})
 	}
-	return protocol.OutputResult{Entries: entries, Next: mcpCursor(result.Next), Oldest: mcpCursor(result.Oldest), Latest: mcpCursor(result.Latest), EvictedThrough: mcpCursor(result.EvictedThrough), Truncated: result.Truncated, More: result.More}
+	return protocol.OutputResult{SessionID: result.SessionID, Entries: entries, Next: mcpCursor(result.Next), Oldest: mcpCursor(result.Oldest), Latest: mcpCursor(result.Latest), EvictedThrough: mcpCursor(result.EvictedThrough), Truncated: result.Truncated, More: result.More}
 }
 func mcpStream(stream output.Stream) protocol.Stream {
 	switch stream {

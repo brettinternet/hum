@@ -5,9 +5,7 @@ package daemon
 
 import (
 	"bufio"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"hum/internal/app"
 	"hum/internal/protocol"
 )
 
@@ -576,14 +575,7 @@ func eventFailed(event protocol.HistoryEvent) bool {
 }
 
 // NewOperationID generates an opaque per-request identifier.
-func NewOperationID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		binary.LittleEndian.PutUint64(b[:8], uint64(time.Now().UnixNano()))
-		binary.LittleEndian.PutUint64(b[8:], uint64(os.Getpid()))
-	}
-	return fmt.Sprintf("%x", b[:])
-}
+func NewOperationID() string { return app.NewSessionID() }
 
 func (h *EventHistory) HighWater() (protocol.Cursor, error) {
 	h.mu.Lock()

@@ -39,6 +39,9 @@ type logsitEvent struct {
 	OK             bool            `json:"ok"`
 	Type           string          `json:"type"`
 	Name           string          `json:"name"`
+	SessionID      string          `json:"session_id"`
+	LogSessionID   string          `json:"log_session_id"`
+	Event          string          `json:"event"`
 	Entries        []logsitEntry   `json:"entries"`
 	Next           *uint64         `json:"next"`
 	Oldest         *uint64         `json:"oldest"`
@@ -73,6 +76,110 @@ type logsitHarness struct {
 	project string
 	env     []string
 	gates   []string
+}
+
+func TestLogCursorSession(t *testing.T) {
+	t.Parallel()
+	harness := logsitNewHarness(t)
+	firstGate := filepath.Join(harness.project, "cursor-session-first.release")
+	harness.gates = append(harness.gates, firstGate)
+	logsitStartDetached(t, harness, "api", harness.fixture, "burst", firstGate, "4")
+	first := logsitWaitOutput(t, harness, "api", []string{"--json"}, func(lines []logsitJSONLine) bool {
+		return len(lines) == 1 && lines[0].Event.SessionID != "" && lines[0].Event.Next != nil
+	})[0].Event
+	firstID, firstCursor := first.SessionID, *first.Next
+
+	removed := testutil.Run(t, harness.hum, harness.project, harness.env, "remove", "api", "--json")
+	if removed.Code != 0 {
+		t.Fatalf("remove first session: code=%d stdout=%q stderr=%q", removed.Code, removed.Stdout, removed.Stderr)
+	}
+	secondGate := filepath.Join(harness.project, "cursor-session-second.release")
+	harness.gates = append(harness.gates, secondGate)
+	logsitStartDetached(t, harness, "api", harness.fixture, "burst", secondGate, "4")
+	second := logsitWaitOutput(t, harness, "api", []string{"--json"}, func(lines []logsitJSONLine) bool {
+		return len(lines) == 1 && lines[0].Event.SessionID != "" && lines[0].Event.Next != nil
+	})[0].Event
+	if second.SessionID == firstID {
+		t.Fatalf("session ID reused after remove: %q", second.SessionID)
+	}
+
+	assertCursorSessionStale := func(label string, args ...string) {
+		t.Helper()
+		result := testutil.Run(t, harness.hum, harness.project, harness.env, args...)
+		if result.Code == 0 {
+			t.Fatalf("%s with stale session succeeded: stdout=%q", label, result.Stdout)
+		}
+		var envelope struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(result.Stdout), &envelope); err != nil || envelope.Error.Code != "cursor_stale" {
+			t.Fatalf("%s stale error = %q (decode %v), want cursor_stale", label, result.Stdout, err)
+		}
+	}
+	oldCursor := strconv.FormatUint(firstCursor, 10)
+	assertCursorSessionStale("logs after remove", "logs", "api", "--json", "--after-cursor", oldCursor, "--session-id", firstID)
+	assertCursorSessionStale("wait after remove", "wait", "api", "--json", "--after-cursor", oldCursor, "--session-id", firstID, "--timeout", "1s")
+
+	current := testutil.Run(t, harness.hum, harness.project, harness.env, "logs", "api", "--json", "--after-cursor", "0", "--session-id", second.SessionID)
+	if current.Code != 0 {
+		t.Fatalf("current-session logs: code=%d stdout=%q stderr=%q", current.Code, current.Stdout, current.Stderr)
+	}
+	var currentLogs logsitEvent
+	if err := json.Unmarshal([]byte(current.Stdout), &currentLogs); err != nil || currentLogs.SessionID != second.SessionID {
+		t.Fatalf("current-session logs = %q (decode %v), want session_id %q", current.Stdout, err, second.SessionID)
+	}
+	currentWait := testutil.Run(t, harness.hum, harness.project, harness.env, "wait", "api", "--json", "--after-cursor", "0", "--session-id", second.SessionID, "--match", "stdout:0001", "--timeout", "3s")
+	if currentWait.Code != 0 {
+		t.Fatalf("current-session wait: code=%d stdout=%q stderr=%q", currentWait.Code, currentWait.Stdout, currentWait.Stderr)
+	}
+	var waitResponse struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(currentWait.Stdout), &waitResponse); err != nil || waitResponse.SessionID != second.SessionID {
+		t.Fatalf("current-session wait = %q (decode %v), want session_id %q", currentWait.Stdout, err, second.SessionID)
+	}
+
+	shutdown := testutil.Run(t, harness.hum, harness.project, harness.env, "shutdown", "--stop-processes", "--json")
+	if shutdown.Code != 0 {
+		t.Fatalf("shutdown before fresh launch: code=%d stdout=%q stderr=%q", shutdown.Code, shutdown.Stdout, shutdown.Stderr)
+	}
+	thirdGate := filepath.Join(harness.project, "cursor-session-third.release")
+	harness.gates = append(harness.gates, thirdGate)
+	logsitStartDetached(t, harness, "api", harness.fixture, "burst", thirdGate, "4")
+	third := logsitWaitOutput(t, harness, "api", []string{"--json"}, func(lines []logsitJSONLine) bool {
+		return len(lines) == 1 && lines[0].Event.SessionID != "" && lines[0].Event.Next != nil
+	})[0].Event
+	if third.SessionID == second.SessionID {
+		t.Fatalf("session ID reused after daemon replacement: %q", third.SessionID)
+	}
+	assertCursorSessionStale("logs after daemon replacement",
+		"logs", "api", "--json", "--after-cursor", strconv.FormatUint(*second.Next, 10), "--session-id", second.SessionID)
+
+	status := testutil.Run(t, harness.hum, harness.project, harness.env, "status", "api", "--json")
+	if status.Code != 0 {
+		t.Fatalf("status after fresh launch: code=%d stdout=%q stderr=%q", status.Code, status.Stdout, status.Stderr)
+	}
+	var statusResponse struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(status.Stdout), &statusResponse); err != nil || statusResponse.SessionID != third.SessionID {
+		t.Fatalf("status session_id = %q, want %q (decode %v)", statusResponse.SessionID, third.SessionID, err)
+	}
+	events := testutil.Run(t, harness.hum, harness.project, harness.env, "events", "api", "--kind", "lifecycle", "--json")
+	if events.Code != 0 {
+		t.Fatalf("events after fresh launch: code=%d stdout=%q stderr=%q", events.Code, events.Stdout, events.Stderr)
+	}
+	var launchID string
+	for _, line := range logsitDecodeJSONLines(t, events.Stdout) {
+		if line.Event.Event == "launch" {
+			launchID = line.Event.LogSessionID
+		}
+	}
+	if launchID != statusResponse.SessionID {
+		t.Fatalf("launch log_session_id = %q, status session_id = %q", launchID, statusResponse.SessionID)
+	}
 }
 
 func TestLogsMatchContext(t *testing.T) {

@@ -256,8 +256,8 @@ func TestEventsLogCursor(t *testing.T) {
 	zero, last := protocol.Cursor(0), protocol.Cursor(812)
 	at := time.Unix(0, 0).UTC()
 	events := []protocol.HistoryEvent{
-		{Time: at, Name: "api", Kind: protocol.EventLifecycle, Event: "launch", LogCursor: &zero},
-		{Time: at, Name: "api", Kind: protocol.EventLifecycle, Event: "exit", Detail: "failed", LogCursor: &last},
+		{Time: at, Name: "api", Kind: protocol.EventLifecycle, Event: "launch", LogCursor: &zero, LogSessionID: "session-launch"},
+		{Time: at, Name: "api", Kind: protocol.EventLifecycle, Event: "exit", Detail: "failed", LogCursor: &last, LogSessionID: "session-exit"},
 		{Time: at, Name: "api", Kind: protocol.EventOperation, Event: "stop"},
 	}
 	var jsonOutput bytes.Buffer
@@ -265,8 +265,8 @@ func TestEventsLogCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	values := decodeEventOutput(t, jsonOutput.String())
-	if values[0]["log_cursor"] != float64(0) || values[1]["log_cursor"] != float64(812) {
-		t.Fatalf("JSON cursors = %#v", values)
+	if values[0]["log_cursor"] != float64(0) || values[1]["log_cursor"] != float64(812) || values[0]["log_session_id"] != "session-launch" || values[1]["log_session_id"] != "session-exit" {
+		t.Fatalf("JSON cursor identities = %#v", values)
 	}
 	if _, exists := values[2]["log_cursor"]; exists {
 		t.Fatalf("unexpected cursor on operation: %#v", values[2])

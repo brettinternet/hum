@@ -94,6 +94,7 @@ type ReadOptions struct {
 // cursor consumed by this read and can be passed directly as After for the
 // following read. It is nil when no entries are retained.
 type ReadResult struct {
+	SessionID      string
 	Entries        []Entry
 	Next           *Cursor
 	Oldest         *Cursor
@@ -115,8 +116,9 @@ type Exit struct {
 // set; an exit event is delivered only after output through the exit watermark
 // has been drained.
 type Event struct {
-	Read *ReadResult
-	Exit *Exit
+	SessionID string
+	Read      *ReadResult
+	Exit      *Exit
 }
 
 var (
@@ -144,7 +146,7 @@ func (e *FutureCursorError) Error() string {
 	if e == nil {
 		return ErrFutureCursor.Error()
 	}
-	return fmt.Sprintf("output cursor %d is in the future (next cursor %d)", e.After, e.Next)
+	return fmt.Sprintf("output cursor %d is beyond this session's latest cursor (next cursor %d) and may belong to an earlier session", e.After, e.Next)
 }
 
 func (e *FutureCursorError) Unwrap() error { return ErrFutureCursor }

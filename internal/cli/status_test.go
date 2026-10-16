@@ -21,6 +21,29 @@ import (
 	"hum/internal/protocol"
 )
 
+func TestCursorSessionNamedStatusJSONAndHuman(t *testing.T) {
+	const sessionID = "session-status"
+	process := app.Process{Name: "api", SessionID: sessionID, Scope: app.ScopeProject, State: app.StateRunning}
+	encoded, err := json.Marshal(statusJSONFor(process))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(encoded, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["session_id"] != sessionID {
+		t.Fatalf("status JSON session_id = %#v, want %q", response["session_id"], sessionID)
+	}
+	var human strings.Builder
+	if err := renderStatusHuman(&human, process); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(human.String(), "session: "+sessionID+"\n") {
+		t.Fatalf("named human status = %q, want session line", human.String())
+	}
+}
+
 func TestStatusRunningJSON(t *testing.T) {
 	projectRoot := stopShutdownTestProject(t)
 	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
@@ -523,7 +546,7 @@ func statusAssertExactFields(t *testing.T, text string) {
 		t.Fatalf("decode status JSON fields %q: %v", text, err)
 	}
 	want := map[string]struct{}{
-		"schema_version": {}, "name": {}, "scope": {}, "project_root": {}, "tty": {}, "pid": {}, "pgid": {}, "cwd": {},
+		"schema_version": {}, "session_id": {}, "name": {}, "scope": {}, "project_root": {}, "tty": {}, "pid": {}, "pgid": {}, "cwd": {},
 		"argv": {}, "started_at": {}, "state": {}, "exit_status": {}, "ports": {},
 		"restart_count": {}, "followers": {}, "restart": {}, "relaunches": {}, "stop_grace": {}, "stop_grace_inherited": {}, "next_cursor": {},
 	}

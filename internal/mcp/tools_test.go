@@ -1969,6 +1969,65 @@ func TestLogsSystemStream(t *testing.T) {
 	}
 }
 
+func TestCursorSessionMCPRequiresSessionAndReturnsIdentity(t *testing.T) {
+	const sessionID = "session-mcp"
+	cursor := protocol.Cursor(7)
+	client := &fakeClient{
+		output:     protocol.OutputResult{SessionID: sessionID, Entries: []protocol.OutputEntry{}, Next: &cursor},
+		waitResult: protocol.WaitResponse{Op: protocol.OpWait, OK: true, Outcome: protocol.WaitMatched, Cursor: cursor, SessionID: sessionID},
+	}
+	server, root, _ := newTestServer(t, nil, client)
+
+	for _, tool := range []string{"logs", "wait"} {
+		_, err := server.callTool(context.Background(), tool, args(root, "name", "api", "after", uint64(3)))
+		if err == nil || mapError(err).Code != "invalid_request" {
+			t.Fatalf("%s without session_id error = %v, want invalid_request", tool, err)
+		}
+	}
+	if len(client.outputs) != 0 || len(client.waits) != 0 {
+		t.Fatalf("MCP missing session_id contacted daemon: outputs=%#v waits=%#v", client.outputs, client.waits)
+	}
+
+	for _, tool := range []string{"logs", "wait"} {
+		arguments := args(root, "name", "api", "after", uint64(3), "session_id", sessionID)
+		params, err := json.Marshal(callToolParams{Name: tool, Arguments: arguments})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, rpcErr := server.handleRequest(context.Background(), rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"cursor-session"`), Method: "tools/call", Params: params})
+		if rpcErr != nil {
+			t.Fatalf("%s RPC: %#v", tool, rpcErr)
+		}
+		result, ok := value.(callToolResult)
+		if !ok || result.IsError {
+			t.Fatalf("%s RPC result = %#v", tool, value)
+		}
+		switch tool {
+		case "logs":
+			structured, ok := result.StructuredContent.(protocol.OutputResult)
+			if !ok || structured.SessionID != sessionID {
+				t.Fatalf("logs structuredContent = %#v, want session_id %q", result.StructuredContent, sessionID)
+			}
+		case "wait":
+			structured, ok := result.StructuredContent.(protocol.WaitResponse)
+			if !ok || structured.SessionID != sessionID {
+				t.Fatalf("wait structuredContent = %#v, want session_id %q", result.StructuredContent, sessionID)
+			}
+		}
+	}
+	if len(client.outputs) != 1 || client.outputs[0].SessionID != sessionID || len(client.waits) != 1 || client.waits[0].SessionID != sessionID {
+		t.Fatalf("MCP session forwarding: outputs=%#v waits=%#v", client.outputs, client.waits)
+	}
+
+	after := uint64(3)
+	if _, err := server.logs(context.Background(), Resolution{Scope: protocol.ScopeProject, Root: root}, commonInput{Name: "api", After: &after}); err == nil || len(client.outputs) != 1 {
+		t.Fatalf("logs handler accepted missing session ID or contacted daemon: err=%v outputs=%d", err, len(client.outputs))
+	}
+	if _, err := server.wait(context.Background(), Resolution{Scope: protocol.ScopeProject, Root: root}, commonInput{Name: "api", After: &after}); err == nil || len(client.waits) != 1 {
+		t.Fatalf("wait handler accepted missing session ID or contacted daemon: err=%v waits=%d", err, len(client.waits))
+	}
+}
+
 func TestLogsMatchContext(t *testing.T) {
 	cursor := protocol.Cursor(3)
 	client := &fakeClient{
@@ -2046,7 +2105,7 @@ func TestLogsDefaultNewestWindow(t *testing.T) {
 		t.Fatalf("default logs request = %#v, want newest default tail=%d", defaultRequest, protocol.DefaultReadEntries)
 	}
 
-	if _, err := s.callTool(context.Background(), "logs", args(root, "name", "raw", "after", 50)); err != nil {
+	if _, err := s.callTool(context.Background(), "logs", args(root, "name", "raw", "session_id", "test-session", "after", 50)); err != nil {
 		t.Fatal(err)
 	}
 	forwardRequest := client.outputs[len(client.outputs)-1]
@@ -2564,7 +2623,7 @@ func TestLogsSince(t *testing.T) {
 	client := &fakeClient{output: protocol.OutputResult{Entries: []protocol.OutputEntry{{Cursor: 2, Text: "since\n"}}}}
 	server, root, _ := newTestServer(t, nil, client)
 	before := time.Now().Add(-1234*time.Millisecond - 20*time.Millisecond)
-	value, err := server.callTool(context.Background(), "logs", args(root, "name", "api", "after", 1, "since_ms", 1234, "tail", 2, "max_entries", 2, "max_bytes", 32))
+	value, err := server.callTool(context.Background(), "logs", args(root, "name", "api", "session_id", "test-session", "after", 1, "since_ms", 1234, "tail", 2, "max_entries", 2, "max_bytes", 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2686,7 +2745,7 @@ func testMCPLogsSinceLive(t *testing.T) {
 		t.Fatalf("live MCP logs = %#v, never observed new entry", latest)
 	}
 
-	value, err := mcpServer.callTool(context.Background(), "logs", args(root, "name", "api", "since_ms", 1000, "after", uint64(0), "tail", 1, "max_entries", 1, "max_bytes", 64))
+	value, err := mcpServer.callTool(context.Background(), "logs", args(root, "name", "api", "since_ms", 1000, "session_id", started.SessionID, "after", uint64(0), "tail", 1, "max_entries", 1, "max_bytes", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2698,7 +2757,7 @@ func testMCPLogsSinceLive(t *testing.T) {
 		t.Fatalf("live MCP since next = %v, want new cursor %d", result.Next, newCursor)
 	}
 
-	value, err = mcpServer.callTool(context.Background(), "logs", args(root, "name", "api", "since_ms", 1000, "after", uint64(newCursor), "tail", 1, "max_entries", 1, "max_bytes", 64))
+	value, err = mcpServer.callTool(context.Background(), "logs", args(root, "name", "api", "since_ms", 1000, "session_id", started.SessionID, "after", uint64(newCursor), "tail", 1, "max_entries", 1, "max_bytes", 64))
 	if err != nil {
 		t.Fatal(err)
 	}

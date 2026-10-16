@@ -139,6 +139,9 @@ func writeEventsJSON(writer io.Writer, events []protocol.HistoryEvent, next prot
 		if event.LogCursor != nil {
 			value["log_cursor"] = *event.LogCursor
 		}
+		if event.LogSessionID != "" {
+			value["log_session_id"] = event.LogSessionID
+		}
 		if err := encoder.Encode(value); err != nil {
 			return err
 		}

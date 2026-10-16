@@ -5168,3 +5168,162 @@ func TestRemoveReleasesOutputReferences(t *testing.T) {
 		t.Fatalf("append to removed store = %v, want ErrStoreClosed", err)
 	}
 }
+
+func TestCursorSessionStableAcrossStopStartAndRestart(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StopGrace: 10 * time.Millisecond})
+	first, err := startShell(s, root, "stable", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SessionID == "" {
+		t.Fatal("initial process has no session ID")
+	}
+	if err := s.Stop(context.Background(), root, "stable"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := startShell(s, root, "stable", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SessionID != first.SessionID {
+		t.Fatalf("session ID after stop/start = %q, want stable %q", second.SessionID, first.SessionID)
+	}
+	third, err := s.Restart(context.Background(), root, "stable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.SessionID != first.SessionID {
+		t.Fatalf("session ID after restart = %q, want stable %q", third.SessionID, first.SessionID)
+	}
+}
+
+func TestCursorSessionChangesAfterRemoveAndCompletedEviction(t *testing.T) {
+	t.Run("remove", func(t *testing.T) {
+		root := makeProject(t, false)
+		s := testSupervisor(t, Options{})
+		first, err := startShell(s, root, "removed", "sleep 30")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Remove(context.Background(), root, "removed"); err != nil {
+			t.Fatal(err)
+		}
+		second, err := startShell(s, root, "removed", "sleep 30")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.SessionID == second.SessionID {
+			t.Fatalf("session ID reused after remove: %q", second.SessionID)
+		}
+	})
+
+	t.Run("completed eviction", func(t *testing.T) {
+		root := makeProject(t, false)
+		s := testSupervisor(t, Options{CompletedLimit: 1})
+		first, err := startShell(s, root, "evicted", "printf first")
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitExited(t, s, root, "evicted")
+		if _, err := startShell(s, root, "filler", "printf filler"); err != nil {
+			t.Fatal(err)
+		}
+		waitExited(t, s, root, "filler")
+		if _, err := s.Get(root, "evicted"); !errors.Is(err, ErrProcessNotFound) {
+			t.Fatalf("evicted session lookup error = %v, want ErrProcessNotFound", err)
+		}
+		second, err := startShell(s, root, "evicted", "printf second")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.SessionID == second.SessionID {
+			t.Fatalf("session ID reused after completed-record eviction: %q", second.SessionID)
+		}
+	})
+}
+
+func TestCursorSessionPersistsAcrossAutomaticRelaunch(t *testing.T) {
+	harness := newRelaunchTestHarness(t, []relaunchTestLaunch{{code: 1}, {code: 0}}, 20)
+	first, err := harness.s.Start(StartRequest{Name: "automatic", Source: "manifest", Root: harness.root, Cwd: harness.root, Argv: []string{"automatic"}, Restart: RestartOnFailure})
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.child(0).release()
+	waitForRelaunch(t, harness.s, harness.root, "automatic", func(model Process) bool { return model.NextLaunchAt != nil })
+	if !harness.timers.fire(time.Second) {
+		t.Fatal("missing automatic relaunch timer")
+	}
+	waitForRelaunchChildren(t, harness, 2)
+	second := waitForRelaunch(t, harness.s, harness.root, "automatic", func(model Process) bool { return model.State == StateRunning })
+	if second.SessionID != first.SessionID {
+		t.Fatalf("session ID changed across automatic relaunch: %q != %q", second.SessionID, first.SessionID)
+	}
+	harness.child(1).release()
+}
+
+func TestCursorSessionChecksOutputAndWaitBeforeReading(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StopGrace: 10 * time.Millisecond})
+	first, err := startShell(s, root, "cursor", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SessionID == "" {
+		t.Fatal("started process has no session ID")
+	}
+	initialStore, err := s.Output(root, "cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := initialStore.Append(output.Stdout, time.Now(), "prefix\\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := initialStore.Append(output.Stdout, time.Now(), "session-ready\\n"); err != nil {
+		t.Fatal(err)
+	}
+	cursor := output.Cursor(0)
+	result, err := s.WaitScoped(context.Background(), ScopeProject, root, "cursor", WaitOptions{
+		After: &cursor, SessionID: first.SessionID, Match: regexp.MustCompile("session-ready"),
+	})
+	if err != nil || result.Outcome != WaitMatched || result.SessionID != first.SessionID {
+		t.Fatalf("current-session wait = %+v, err %v", result, err)
+	}
+	store, sessionID, err := s.OutputSessionScoped(ScopeProject, root, "cursor", first.SessionID)
+	if err != nil || store == nil || sessionID != first.SessionID {
+		t.Fatalf("current-session output resolution = store %p, session %q, err %v", store, sessionID, err)
+	}
+	read, err := store.Read(output.ReadOptions{After: &cursor})
+	if err != nil || len(read.Entries) == 0 {
+		t.Fatalf("current-session output read = %+v, err %v", read, err)
+	}
+
+	// Hold the lookup result, then replace its record before asking for the read.
+	// The stale cursor must not be paired with the replacement store.
+	oldRecord, err := s.lookupScoped(ScopeProject, root, "cursor", "")
+	if err != nil || oldRecord.sessionID != first.SessionID {
+		t.Fatalf("initial record lookup = %#v, err %v", oldRecord, err)
+	}
+	if err := s.Remove(context.Background(), root, "cursor"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := startShell(s, root, "cursor", "printf 'replacement\\n'; sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SessionID == first.SessionID {
+		t.Fatalf("replacement reused old session ID %q", second.SessionID)
+	}
+	staleStore, currentID, err := s.OutputSessionScoped(ScopeProject, root, "cursor", first.SessionID)
+	var stale *CursorStaleError
+	if staleStore != nil || !errors.As(err, &stale) || stale.Current != second.SessionID || currentID != "" {
+		t.Fatalf("stale output resolution = store %p current %q err %v, want cursor_stale naming %q without a store", staleStore, currentID, err, second.SessionID)
+	}
+	if !strings.Contains(err.Error(), "read without a cursor") {
+		t.Fatalf("stale output guidance = %q", err)
+	}
+	_, err = s.WaitScoped(context.Background(), ScopeProject, root, "cursor", WaitOptions{After: &cursor, SessionID: first.SessionID})
+	if !errors.As(err, &stale) || stale.Current != second.SessionID {
+		t.Fatalf("stale wait error = %v, want current session %q", err, second.SessionID)
+	}
+}

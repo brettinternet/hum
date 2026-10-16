@@ -792,7 +792,7 @@ func (s *Server) recordLifecycle(event app.LifecycleEvent) {
 		}
 	}
 	s.eventOpsMu.Unlock()
-	s.queueHistoryEvent(event.Scope, event.Root, event.Cwd, protocol.HistoryEvent{Time: event.Time, Kind: protocol.EventLifecycle, Name: event.Name, Event: event.Event, Detail: event.Detail, OperationID: operation.id, ExitCode: event.ExitCode, Signal: event.Signal, LogCursor: (*protocol.Cursor)(event.LogCursor)})
+	s.queueHistoryEvent(event.Scope, event.Root, event.Cwd, protocol.HistoryEvent{Time: event.Time, Kind: protocol.EventLifecycle, Name: event.Name, Event: event.Event, Detail: event.Detail, OperationID: operation.id, ExitCode: event.ExitCode, Signal: event.Signal, LogCursor: (*protocol.Cursor)(event.LogCursor), LogSessionID: event.LogSessionID})
 }
 
 func (s *Server) appendHistory(scope, root, cwd, operationID, origin, operation, name, outcome, lifecycle string) {
@@ -1011,7 +1011,7 @@ func (s *Server) dispatchRequest(ctx context.Context, req *protocol.Request) (an
 		return protocol.GetResponse{Op: req.Op, OK: true, Process: &snapshot, Warnings: s.StartupWarnings()}, false
 	case protocol.OpOutput:
 		value := req.Output
-		store, err := s.supervisor.OutputScoped(value.Scope, value.Cwd, value.Name)
+		store, sessionID, err := s.supervisor.OutputSessionScoped(value.Scope, value.Cwd, value.Name, value.SessionID)
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
@@ -1023,6 +1023,7 @@ func (s *Server) dispatchRequest(ctx context.Context, req *protocol.Request) (an
 		if err != nil {
 			return dispatchError(req.Op, err), false
 		}
+		result.SessionID = sessionID
 		return protocolOutputResponse(req.Op, stripBoundedChildText(result)), false
 	case protocol.OpSignal:
 		value := req.Signal
@@ -1178,13 +1179,13 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 		_ = writeProtocolError(encoder, protocol.OpFollow, err)
 		return
 	}
-	sub, err := s.supervisor.SubscribeScoped(req.Scope, req.Cwd, req.Name, options)
+	sub, err := s.supervisor.SubscribeSessionScoped(req.Scope, req.Cwd, req.Name, options, req.SessionID)
 	if err != nil {
 		_ = writeProtocolError(encoder, protocol.OpFollow, err)
 		return
 	}
 	defer sub.Close()
-	if err := encoder.EncodeResponse(protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventReady, Name: req.Name, Ready: true}); err != nil {
+	if err := encoder.EncodeResponse(protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventReady, Name: req.Name, SessionID: sub.SessionID(), Ready: true}); err != nil {
 		return
 	}
 	followCtx, cancel := context.WithCancel(ctx)
@@ -1222,6 +1223,10 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 			}
 			return
 		}
+		event.SessionID = sub.SessionID()
+		if event.Read != nil {
+			event.Read.SessionID = sub.SessionID()
+		}
 		if event.Exit != nil {
 			if err := encoder.EncodeResponse(protocolStreamEventFromOutput(req.Name, event)); err != nil {
 				return
@@ -1234,7 +1239,7 @@ func (s *Server) handleFollow(ctx context.Context, conn net.Conn, encoder *proto
 				exitText = fmt.Sprintf("%s exited by signal\n", req.Name)
 			}
 			for _, text := range []string{exitText, fmt.Sprintf("%s waiting for next launch\n", req.Name)} {
-				message := protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventOutput, Name: req.Name, Entries: []protocol.OutputEntry{{Stream: protocol.StreamSystem, Time: event.Exit.Time, Text: text}}}
+				message := protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventOutput, Name: req.Name, SessionID: sub.SessionID(), Entries: []protocol.OutputEntry{{Stream: protocol.StreamSystem, Time: event.Exit.Time, Text: text}}}
 				if err := encoder.EncodeResponse(message); err != nil {
 					return
 				}
@@ -1483,6 +1488,8 @@ func stripBoundedChildText(result output.ReadResult) output.ReadResult {
 
 func errorCode(err error) string {
 	switch {
+	case errors.Is(err, app.ErrCursorStale):
+		return string(protocol.ErrorCursorStale)
 	case errors.Is(err, app.ErrProcessNotFound):
 		return string(protocol.ErrorNotFound)
 	case errors.Is(err, app.ErrNotRunning):

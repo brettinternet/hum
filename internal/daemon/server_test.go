@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"hum/internal/app"
+	"hum/internal/output"
 	"hum/internal/process"
 	"hum/internal/protocol"
 )
@@ -26,6 +27,17 @@ type serverPortLookupChild struct {
 func (c *serverPortLookupChild) InspectPorts(context.Context) process.PortsResult {
 	c.inspections.Add(1)
 	return c.result
+}
+
+func TestCursorSessionWireErrors(t *testing.T) {
+	stale := protocolWireError(&app.CursorStaleError{Provided: "old-session", Current: "new-session"})
+	if stale == nil || stale.Code != protocol.ErrorCursorStale || !strings.Contains(stale.Message, "new-session") || !strings.Contains(stale.Message, "read without a cursor") {
+		t.Fatalf("stale cursor wire error = %#v", stale)
+	}
+	future := protocolWireError(&output.FutureCursorError{After: 7, Next: 3})
+	if future == nil || future.Code != protocol.ErrorOutput || !strings.Contains(future.Message, "beyond this session's latest cursor") || !strings.Contains(future.Message, "may belong to an earlier session") {
+		t.Fatalf("future cursor without session wire error = %#v", future)
+	}
 }
 
 func TestPortLookupRoundTripAcrossScopes(t *testing.T) {

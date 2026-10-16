@@ -397,6 +397,153 @@ func TestWaitCLIPreLaunchSessionTimesOut(t *testing.T) {
 	}
 }
 
+func TestCursorSessionWaitFlagForwardingAndJSON(t *testing.T) {
+	const sessionID = "session-42"
+	response := protocol.WaitResponse{Op: protocol.OpWait, OK: true, Outcome: protocol.WaitMatched, Cursor: 4, SessionID: sessionID}
+	runtimeDir, requests := waitCLIStubDaemon(t, response)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	stdout, stderr, err := waitCLIRun(t, "wait", "api", "--after-cursor", "0", "--session-id", sessionID, "--json")
+	if err != nil || stderr != "" {
+		t.Fatalf("wait command: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	var result protocol.WaitResponse
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode wait JSON %q: %v", stdout, err)
+	}
+	if result.SessionID != sessionID {
+		t.Fatalf("wait session_id = %q, want %q", result.SessionID, sessionID)
+	}
+	select {
+	case request := <-requests:
+		if request.SessionID != sessionID || request.After == nil || *request.After != 0 {
+			t.Fatalf("wait request = %+v, want session %q and cursor 0", request, sessionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for captured wait request")
+	}
+}
+
+func TestCursorSessionFlagUsageBeforeDaemonContact(t *testing.T) {
+	runtimeDir := t.TempDir()
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	for _, args := range [][]string{
+		{"logs", "api", "--session-id", "old"},
+		{"logs", "api", "web", "--after-cursor", "2", "--session-id", "old"},
+		{"wait", "api", "--session-id", "old"},
+	} {
+		stdout, stderr, err := waitCLIRun(t, args...)
+		if err == nil || waitCLIExitCode(err) != 1 {
+			t.Fatalf("%v error = %v, want usage error (stdout=%q stderr=%q)", args, err, stdout, stderr)
+		}
+	}
+	paths := daemon.NewRuntimePaths(runtimeDir)
+	if _, err := os.Stat(paths.Socket); !os.IsNotExist(err) {
+		t.Fatalf("invalid session cursor contacted daemon; socket stat error = %v", err)
+	}
+	if _, err := os.Stat(paths.PID); !os.IsNotExist(err) {
+		t.Fatalf("invalid session cursor started daemon; pid stat error = %v", err)
+	}
+}
+
+func TestCursorSessionLogsAndFollowForwardFlag(t *testing.T) {
+	const sessionID = "session-logs"
+	for _, follow := range []bool{false, true} {
+		t.Run(map[bool]string{false: "bounded", true: "follow"}[follow], func(t *testing.T) {
+			runtimeDir, requests := cursorSessionCLIStubDaemon(t, sessionID)
+			t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+			args := []string{"logs", "api", "--after-cursor", "3", "--session-id", sessionID, "--json"}
+			if follow {
+				args = append(args, "--follow")
+			}
+			stdout, stderr, err := waitCLIRun(t, args...)
+			if err != nil || stderr != "" {
+				t.Fatalf("logs command: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+			}
+			select {
+			case request := <-requests:
+				if request.Op == protocol.OpOutput {
+					if request.Output == nil || request.Output.SessionID != sessionID || request.Output.After == nil || *request.Output.After != 3 {
+						t.Fatalf("bounded output request = %+v, want session %q and cursor 3", request.Output, sessionID)
+					}
+				} else if request.Op == protocol.OpFollow {
+					if request.Follow == nil || request.Follow.SessionID != sessionID || request.Follow.After == nil || *request.Follow.After != 3 {
+						t.Fatalf("follow request = %+v, want session %q and cursor 3", request.Follow, sessionID)
+					}
+				} else {
+					t.Fatalf("captured request op = %q, want output or follow", request.Op)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for captured logs request")
+			}
+		})
+	}
+}
+
+func cursorSessionCLIStubDaemon(t *testing.T, sessionID string) (string, <-chan protocol.Request) {
+	t.Helper()
+	runtimeDir, err := os.MkdirTemp("/tmp", "h-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", daemon.NewRuntimePaths(runtimeDir).Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan protocol.Request, 4)
+	serveDone := make(chan struct{})
+	var handlers sync.WaitGroup
+	go func() {
+		defer close(serveDone)
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			handlers.Add(1)
+			go func(conn net.Conn) {
+				defer handlers.Done()
+				defer conn.Close()
+				decoder, encoder := protocol.NewDecoder(conn), protocol.NewEncoder(conn)
+				request, decodeErr := decoder.DecodeRequest()
+				if decodeErr != nil || request.Op != protocol.OpHello {
+					return
+				}
+				if encoder.EncodeResponse(protocol.Hello{Op: protocol.OpHello, Version: protocol.Version}) != nil {
+					return
+				}
+				for {
+					request, decodeErr = decoder.DecodeRequest()
+					if decodeErr != nil {
+						return
+					}
+					requests <- request
+					switch request.Op {
+					case protocol.OpOutput:
+						cursor := protocol.Cursor(3)
+						_ = encoder.EncodeResponse(protocol.NewOutputResponse(protocol.OutputResult{SessionID: sessionID, Entries: []protocol.OutputEntry{}, Next: &cursor}))
+						return
+					case protocol.OpFollow:
+						_ = encoder.EncodeResponse(protocol.StreamEvent{Op: protocol.OpEvent, Type: protocol.EventReady, Name: "api", SessionID: sessionID, Ready: true})
+						return
+					case protocol.OpGet:
+						_ = encoder.EncodeResponse(protocol.NewGetResponse(protocol.Process{Name: "api", SessionID: sessionID, State: protocol.StateRunning}))
+					default:
+						_ = encoder.EncodeResponse(protocol.NewWireError(protocol.ErrorInvalidRequest, "unexpected request", nil))
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		<-serveDone
+		handlers.Wait()
+		_ = os.RemoveAll(runtimeDir)
+	})
+	return runtimeDir, requests
+}
+
 func waitCLIProtocolCursor(value protocol.Cursor) *protocol.Cursor {
 	return &value
 }

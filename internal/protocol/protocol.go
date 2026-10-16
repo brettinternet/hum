@@ -472,6 +472,7 @@ type WaitRequest struct {
 	Name      string    `json:"name"`
 	Cwd       string    `json:"cwd"`
 	After     *Cursor   `json:"after,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
 	Match     string    `json:"match,omitempty"`
 	TimeoutMS int64     `json:"timeout_ms"`
 }
@@ -490,9 +491,10 @@ func (r WaitRequest) MarshalJSON() ([]byte, error) {
 		Name      string    `json:"name"`
 		Cwd       string    `json:"cwd"`
 		After     *Cursor   `json:"after,omitempty"`
+		SessionID string    `json:"session_id,omitempty"`
 		Match     string    `json:"match,omitempty"`
 		TimeoutMS int64     `json:"timeout_ms"`
-	}{Op: OpWait, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, Match: r.Match, TimeoutMS: r.TimeoutMS})
+	}{Op: OpWait, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, SessionID: r.SessionID, Match: r.Match, TimeoutMS: r.TimeoutMS})
 }
 
 // UnmarshalJSON decodes a wait request and validates its operation when
@@ -504,6 +506,7 @@ func (r *WaitRequest) UnmarshalJSON(data []byte) error {
 		Name      string    `json:"name"`
 		Cwd       string    `json:"cwd"`
 		After     *Cursor   `json:"after"`
+		SessionID string    `json:"session_id"`
 		Match     string    `json:"match"`
 		TimeoutMS int64     `json:"timeout_ms"`
 	}
@@ -514,7 +517,7 @@ func (r *WaitRequest) UnmarshalJSON(data []byte) error {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
 	r.Op, r.Scope, r.Name, r.Cwd = OpWait, wire.Scope, wire.Name, wire.Cwd
-	r.After, r.Match, r.TimeoutMS = wire.After, wire.Match, wire.TimeoutMS
+	r.After, r.SessionID, r.Match, r.TimeoutMS = wire.After, wire.SessionID, wire.Match, wire.TimeoutMS
 	return nil
 }
 
@@ -532,18 +535,19 @@ const (
 // HistoryEvent is one bounded, response-safe durable service-history record.
 // It intentionally contains no argv, environment, output, input, or raw error.
 type HistoryEvent struct {
-	Cursor      Cursor    `json:"cursor"`
-	Time        time.Time `json:"time"`
-	Kind        EventKind `json:"kind"`
-	Name        string    `json:"name"`
-	Event       string    `json:"event"`
-	Detail      string    `json:"detail,omitempty"`
-	OperationID string    `json:"operation_id,omitempty"`
-	Origin      string    `json:"origin,omitempty"`
-	Outcome     string    `json:"outcome,omitempty"`
-	ExitCode    *int      `json:"exit_code,omitempty"`
-	Signal      string    `json:"signal,omitempty"`
-	LogCursor   *Cursor   `json:"log_cursor,omitempty"`
+	Cursor       Cursor    `json:"cursor"`
+	Time         time.Time `json:"time"`
+	Kind         EventKind `json:"kind"`
+	Name         string    `json:"name"`
+	Event        string    `json:"event"`
+	Detail       string    `json:"detail,omitempty"`
+	OperationID  string    `json:"operation_id,omitempty"`
+	Origin       string    `json:"origin,omitempty"`
+	Outcome      string    `json:"outcome,omitempty"`
+	ExitCode     *int      `json:"exit_code,omitempty"`
+	Signal       string    `json:"signal,omitempty"`
+	LogCursor    *Cursor   `json:"log_cursor,omitempty"`
+	LogSessionID string    `json:"log_session_id,omitempty"`
 }
 
 // EventRecord is a descriptive alias for HistoryEvent.
@@ -633,6 +637,7 @@ type OutputRequest struct {
 	Name          string    `json:"name"`
 	Cwd           string    `json:"cwd"`
 	After         *Cursor   `json:"after,omitempty"`
+	SessionID     string    `json:"session_id,omitempty"`
 	SinceMS       int64     `json:"since_ms,omitempty"`
 	SinceUnixNano int64     `json:"since_unix_nano,omitempty"`
 	Tail          int       `json:"tail,omitempty"`
@@ -655,6 +660,7 @@ func marshalOutputRequest(op Operation, r OutputRequest) ([]byte, error) {
 		Name          string    `json:"name"`
 		Cwd           string    `json:"cwd"`
 		After         *Cursor   `json:"after,omitempty"`
+		SessionID     string    `json:"session_id,omitempty"`
 		SinceMS       int64     `json:"since_ms,omitempty"`
 		SinceUnixNano int64     `json:"since_unix_nano,omitempty"`
 		Tail          int       `json:"tail,omitempty"`
@@ -663,7 +669,7 @@ func marshalOutputRequest(op Operation, r OutputRequest) ([]byte, error) {
 		Context       int       `json:"context,omitempty"`
 		MaxEntries    int       `json:"max_entries,omitempty"`
 		MaxBytes      int       `json:"max_bytes,omitempty"`
-	}{Op: op, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, Context: r.Context, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
+	}{Op: op, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, SessionID: r.SessionID, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, Context: r.Context, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
 }
 
 // MarshalJSON writes an output request with its stable operation.
@@ -678,6 +684,7 @@ func unmarshalOutputRequest(data []byte, r *OutputRequest, want Operation) error
 		Name          string    `json:"name"`
 		Cwd           string    `json:"cwd"`
 		After         *Cursor   `json:"after"`
+		SessionID     string    `json:"session_id"`
 		SinceMS       int64     `json:"since_ms"`
 		SinceUnixNano int64     `json:"since_unix_nano"`
 		Tail          int       `json:"tail"`
@@ -694,7 +701,7 @@ func unmarshalOutputRequest(data []byte, r *OutputRequest, want Operation) error
 		return &UnknownOperationError{Operation: wire.Op}
 	}
 	r.Op, r.Scope, r.Name, r.Cwd = want, wire.Scope, wire.Name, wire.Cwd
-	r.After, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = wire.After, wire.SinceMS, wire.SinceUnixNano, wire.Tail, wire.Stream, wire.Match
+	r.After, r.SessionID, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = wire.After, wire.SessionID, wire.SinceMS, wire.SinceUnixNano, wire.Tail, wire.Stream, wire.Match
 	r.Context, r.MaxEntries, r.MaxBytes = wire.Context, wire.MaxEntries, wire.MaxBytes
 	return nil
 }
@@ -711,6 +718,7 @@ type FollowRequest struct {
 	Name          string    `json:"name"`
 	Cwd           string    `json:"cwd"`
 	After         *Cursor   `json:"after,omitempty"`
+	SessionID     string    `json:"session_id,omitempty"`
 	UntilExit     bool      `json:"until_exit,omitempty"`
 	SinceMS       int64     `json:"since_ms,omitempty"`
 	SinceUnixNano int64     `json:"since_unix_nano,omitempty"`
@@ -734,6 +742,7 @@ func (r FollowRequest) MarshalJSON() ([]byte, error) {
 		Name          string    `json:"name"`
 		Cwd           string    `json:"cwd"`
 		After         *Cursor   `json:"after,omitempty"`
+		SessionID     string    `json:"session_id,omitempty"`
 		UntilExit     bool      `json:"until_exit,omitempty"`
 		SinceMS       int64     `json:"since_ms,omitempty"`
 		SinceUnixNano int64     `json:"since_unix_nano,omitempty"`
@@ -742,7 +751,7 @@ func (r FollowRequest) MarshalJSON() ([]byte, error) {
 		Match         string    `json:"match,omitempty"`
 		MaxEntries    int       `json:"max_entries,omitempty"`
 		MaxBytes      int       `json:"max_bytes,omitempty"`
-	}{Op: OpFollow, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, UntilExit: r.UntilExit, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
+	}{Op: OpFollow, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, After: r.After, SessionID: r.SessionID, UntilExit: r.UntilExit, SinceMS: r.SinceMS, SinceUnixNano: r.SinceUnixNano, Tail: r.Tail, Stream: r.Stream, Match: r.Match, MaxEntries: r.MaxEntries, MaxBytes: r.MaxBytes})
 }
 
 // UnmarshalJSON decodes a follow request.
@@ -758,7 +767,7 @@ func (r *FollowRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	r.Op, r.Scope, r.Name, r.Cwd = OpFollow, output.Scope, output.Name, output.Cwd
-	r.After, r.UntilExit, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = output.After, wire.UntilExit, output.SinceMS, output.SinceUnixNano, output.Tail, output.Stream, output.Match
+	r.After, r.SessionID, r.UntilExit, r.SinceMS, r.SinceUnixNano, r.Tail, r.Stream, r.Match = output.After, output.SessionID, wire.UntilExit, output.SinceMS, output.SinceUnixNano, output.Tail, output.Stream, output.Match
 	r.MaxEntries, r.MaxBytes = output.MaxEntries, output.MaxBytes
 	return nil
 }
@@ -1131,6 +1140,7 @@ type OutputEntry struct {
 // last source cursor consumed by a logs read; Process.NextCursor, by contrast,
 // is the next cursor that will be assigned to process output.
 type OutputResult struct {
+	SessionID      string        `json:"session_id"`
 	Entries        []OutputEntry `json:"entries"`
 	Next           *Cursor       `json:"next,omitempty"`
 	Oldest         *Cursor       `json:"oldest,omitempty"`
@@ -1184,6 +1194,7 @@ const (
 // the last source cursor consumed by a logs read.
 type Process struct {
 	Name               string          `json:"name"`
+	SessionID          string          `json:"session_id"`
 	Source             string          `json:"source,omitempty"`
 	Scope              string          `json:"scope"`
 	Root               string          `json:"project_root,omitempty"`
@@ -1370,6 +1381,7 @@ type WaitResponse struct {
 	OK              bool        `json:"ok"`
 	Outcome         WaitOutcome `json:"outcome,omitempty"`
 	Cursor          Cursor      `json:"cursor"`
+	SessionID       string      `json:"session_id"`
 	Exit            *Exit       `json:"exit,omitempty"`
 	ProcessObserved bool        `json:"process_observed,omitempty"`
 	Message         string      `json:"message,omitempty"`
@@ -1397,11 +1409,12 @@ func (r WaitResponse) MarshalJSON() ([]byte, error) {
 		OK              bool         `json:"ok"`
 		Outcome         *WaitOutcome `json:"outcome,omitempty"`
 		Cursor          Cursor       `json:"cursor"`
+		SessionID       string       `json:"session_id"`
 		Exit            *Exit        `json:"exit,omitempty"`
 		ProcessObserved *bool        `json:"process_observed,omitempty"`
 		Message         string       `json:"message,omitempty"`
 		Error           *WireError   `json:"error,omitempty"`
-	}{Op: OpWait, OK: r.OK, Outcome: outcome, Cursor: r.Cursor, Exit: r.Exit, ProcessObserved: processObserved, Message: r.Message, Error: r.Error})
+	}{Op: OpWait, OK: r.OK, Outcome: outcome, Cursor: r.Cursor, SessionID: r.SessionID, Exit: r.Exit, ProcessObserved: processObserved, Message: r.Message, Error: r.Error})
 }
 
 // UnmarshalJSON decodes a wait response and validates its operation when
@@ -1412,6 +1425,7 @@ func (r *WaitResponse) UnmarshalJSON(data []byte) error {
 		OK              bool        `json:"ok"`
 		Outcome         WaitOutcome `json:"outcome"`
 		Cursor          Cursor      `json:"cursor"`
+		SessionID       string      `json:"session_id"`
 		Exit            *Exit       `json:"exit"`
 		ProcessObserved bool        `json:"process_observed"`
 		Message         string      `json:"message"`
@@ -1423,7 +1437,7 @@ func (r *WaitResponse) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpWait {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.OK, r.Outcome, r.Cursor = OpWait, wire.OK, wire.Outcome, wire.Cursor
+	r.Op, r.OK, r.Outcome, r.Cursor, r.SessionID = OpWait, wire.OK, wire.Outcome, wire.Cursor, wire.SessionID
 	r.Exit, r.ProcessObserved, r.Message, r.Error = wire.Exit, wire.ProcessObserved, wire.Message, wire.Error
 	return nil
 }
@@ -1432,6 +1446,7 @@ func (r *WaitResponse) UnmarshalJSON(data []byte) error {
 type OutputResponse struct {
 	Op             Operation     `json:"op"`
 	OK             bool          `json:"ok"`
+	SessionID      string        `json:"session_id"`
 	Entries        []OutputEntry `json:"entries"`
 	Next           *Cursor       `json:"next,omitempty"`
 	Oldest         *Cursor       `json:"oldest,omitempty"`
@@ -1451,7 +1466,7 @@ func NewOutputResponse(result OutputResult) OutputResponse {
 }
 
 func (r *OutputResponse) setResult(result OutputResult) {
-	r.Entries, r.Next, r.Oldest, r.Latest = result.Entries, result.Next, result.Oldest, result.Latest
+	r.SessionID, r.Entries, r.Next, r.Oldest, r.Latest = result.SessionID, result.Entries, result.Next, result.Oldest, result.Latest
 	r.EvictedThrough, r.Truncated, r.More = result.EvictedThrough, result.Truncated, result.More
 	r.Result = &result
 }
@@ -1459,13 +1474,14 @@ func (r *OutputResponse) setResult(result OutputResult) {
 // MarshalJSON keeps output response metadata flat and stable while retaining a
 // convenient Result view for daemon callers.
 func (r OutputResponse) MarshalJSON() ([]byte, error) {
-	result := OutputResult{Entries: r.Entries, Next: r.Next, Oldest: r.Oldest, Latest: r.Latest, EvictedThrough: r.EvictedThrough, Truncated: r.Truncated, More: r.More}
+	result := OutputResult{SessionID: r.SessionID, Entries: r.Entries, Next: r.Next, Oldest: r.Oldest, Latest: r.Latest, EvictedThrough: r.EvictedThrough, Truncated: r.Truncated, More: r.More}
 	if r.Result != nil {
 		result = *r.Result
 	}
 	return json.Marshal(struct {
 		Op             Operation     `json:"op"`
 		OK             bool          `json:"ok"`
+		SessionID      string        `json:"session_id"`
 		Entries        []OutputEntry `json:"entries"`
 		Next           *Cursor       `json:"next,omitempty"`
 		Oldest         *Cursor       `json:"oldest,omitempty"`
@@ -1474,7 +1490,7 @@ func (r OutputResponse) MarshalJSON() ([]byte, error) {
 		Truncated      bool          `json:"truncated,omitempty"`
 		More           bool          `json:"more,omitempty"`
 		Error          *WireError    `json:"error,omitempty"`
-	}{Op: OpOutput, OK: r.OK, Entries: result.Entries, Next: result.Next, Oldest: result.Oldest, Latest: result.Latest, EvictedThrough: result.EvictedThrough, Truncated: result.Truncated, More: result.More, Error: r.Error})
+	}{Op: OpOutput, OK: r.OK, SessionID: result.SessionID, Entries: result.Entries, Next: result.Next, Oldest: result.Oldest, Latest: result.Latest, EvictedThrough: result.EvictedThrough, Truncated: result.Truncated, More: result.More, Error: r.Error})
 }
 
 // UnmarshalJSON decodes a flat output response and populates Result.
@@ -1482,6 +1498,7 @@ func (r *OutputResponse) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		Op             Operation     `json:"op"`
 		OK             bool          `json:"ok"`
+		SessionID      string        `json:"session_id"`
 		Entries        []OutputEntry `json:"entries"`
 		Next           *Cursor       `json:"next"`
 		Oldest         *Cursor       `json:"oldest"`
@@ -1494,10 +1511,10 @@ func (r *OutputResponse) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
-	r.Op, r.OK, r.Error = OpOutput, wire.OK, wire.Error
+	r.Op, r.OK, r.Error, r.SessionID = OpOutput, wire.OK, wire.Error, wire.SessionID
 	r.Entries, r.Next, r.Oldest, r.Latest = wire.Entries, wire.Next, wire.Oldest, wire.Latest
 	r.EvictedThrough, r.Truncated, r.More = wire.EvictedThrough, wire.Truncated, wire.More
-	r.Result = &OutputResult{Entries: r.Entries, Next: r.Next, Oldest: r.Oldest, Latest: r.Latest, EvictedThrough: r.EvictedThrough, Truncated: r.Truncated, More: r.More}
+	r.Result = &OutputResult{SessionID: r.SessionID, Entries: r.Entries, Next: r.Next, Oldest: r.Oldest, Latest: r.Latest, EvictedThrough: r.EvictedThrough, Truncated: r.Truncated, More: r.More}
 	return nil
 }
 
@@ -1620,6 +1637,7 @@ type StreamEvent struct {
 	Op             Operation        `json:"op"`
 	Type           EventType        `json:"type"`
 	Name           string           `json:"name,omitempty"`
+	SessionID      string           `json:"session_id"`
 	Entries        []OutputEntry    `json:"entries,omitempty"`
 	Next           *Cursor          `json:"next,omitempty"`
 	Oldest         *Cursor          `json:"oldest,omitempty"`
@@ -1648,7 +1666,7 @@ func NewOutputEvent(result OutputResult) StreamEvent {
 }
 
 func (e *StreamEvent) setResult(result OutputResult) {
-	e.Entries, e.Next, e.Oldest, e.Latest = result.Entries, result.Next, result.Oldest, result.Latest
+	e.SessionID, e.Entries, e.Next, e.Oldest, e.Latest = result.SessionID, result.Entries, result.Next, result.Oldest, result.Latest
 	e.EvictedThrough, e.Truncated, e.More = result.EvictedThrough, result.Truncated, result.More
 	e.Result = &result
 }
@@ -1685,6 +1703,10 @@ func (e StreamEvent) MarshalJSON() ([]byte, error) {
 	if e.Result != nil {
 		result = *e.Result
 	}
+	sessionID := e.SessionID
+	if result.SessionID != "" {
+		sessionID = result.SessionID
+	}
 	// A zero time carries no information; omit it rather than emitting the Go
 	// zero value so consumers can rely on time being present only when known.
 	var eventTime *time.Time
@@ -1695,6 +1717,7 @@ func (e StreamEvent) MarshalJSON() ([]byte, error) {
 		Op             Operation        `json:"op"`
 		Type           EventType        `json:"type"`
 		Name           string           `json:"name,omitempty"`
+		SessionID      string           `json:"session_id"`
 		Entries        []OutputEntry    `json:"entries,omitempty"`
 		Next           *Cursor          `json:"next,omitempty"`
 		Oldest         *Cursor          `json:"oldest,omitempty"`
@@ -1708,7 +1731,7 @@ func (e StreamEvent) MarshalJSON() ([]byte, error) {
 		Time           *time.Time       `json:"time,omitempty"`
 		Exit           *Exit            `json:"exit,omitempty"`
 		Error          *WireError       `json:"error,omitempty"`
-	}{Op: eventOperation, Type: e.Type, Name: e.Name, Entries: result.Entries, Next: result.Next, Oldest: result.Oldest, Latest: result.Latest, EvictedThrough: result.EvictedThrough, Truncated: result.Truncated, More: result.More, Cursor: e.Cursor, Ready: e.Ready, Warnings: e.Warnings, Time: eventTime, Exit: e.Exit, Error: e.Error})
+	}{Op: eventOperation, Type: e.Type, Name: e.Name, SessionID: sessionID, Entries: result.Entries, Next: result.Next, Oldest: result.Oldest, Latest: result.Latest, EvictedThrough: result.EvictedThrough, Truncated: result.Truncated, More: result.More, Cursor: e.Cursor, Ready: e.Ready, Warnings: e.Warnings, Time: eventTime, Exit: e.Exit, Error: e.Error})
 }
 
 // UnmarshalJSON decodes a streaming event and populates Result for output
@@ -1718,6 +1741,7 @@ func (e *StreamEvent) UnmarshalJSON(data []byte) error {
 		Op             Operation        `json:"op"`
 		Type           EventType        `json:"type"`
 		Name           string           `json:"name"`
+		SessionID      string           `json:"session_id"`
 		Entries        []OutputEntry    `json:"entries"`
 		Next           *Cursor          `json:"next"`
 		Oldest         *Cursor          `json:"oldest"`
@@ -1738,11 +1762,11 @@ func (e *StreamEvent) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != eventOperation {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	e.Op, e.Type, e.Name = eventOperation, wire.Type, wire.Name
+	e.Op, e.Type, e.Name, e.SessionID = eventOperation, wire.Type, wire.Name, wire.SessionID
 	e.Entries, e.Next, e.Oldest, e.Latest = wire.Entries, wire.Next, wire.Oldest, wire.Latest
 	e.EvictedThrough, e.Truncated, e.More = wire.EvictedThrough, wire.Truncated, wire.More
 	e.Cursor, e.Ready, e.Warnings, e.Time, e.Exit, e.Error = wire.Cursor, wire.Ready, wire.Warnings, wire.Time, wire.Exit, wire.Error
-	e.Result = &OutputResult{Entries: e.Entries, Next: e.Next, Oldest: e.Oldest, Latest: e.Latest, EvictedThrough: e.EvictedThrough, Truncated: e.Truncated, More: e.More}
+	e.Result = &OutputResult{SessionID: e.SessionID, Entries: e.Entries, Next: e.Next, Oldest: e.Oldest, Latest: e.Latest, EvictedThrough: e.EvictedThrough, Truncated: e.Truncated, More: e.More}
 	return nil
 }
 
@@ -1791,6 +1815,8 @@ const (
 	ErrorSupervisorClosed ErrorCode = "supervisor_closed"
 	// ErrorOutput reports a bounded-output failure.
 	ErrorOutput ErrorCode = "output_error"
+	// ErrorCursorStale reports an output cursor from a replaced session.
+	ErrorCursorStale ErrorCode = "cursor_stale"
 	// ErrorInternal reports an unexpected daemon failure.
 	ErrorInternal ErrorCode = "internal"
 	// ErrorActiveProcesses reports shutdown refusal while processes run.
@@ -1821,6 +1847,7 @@ const (
 	ErrorCodeInvalidSignal    = ErrorInvalidSignal
 	ErrorCodeSupervisorClosed = ErrorSupervisorClosed
 	ErrorCodeOutput           = ErrorOutput
+	ErrorCodeCursorStale      = ErrorCursorStale
 	ErrorCodeInternal         = ErrorInternal
 	ErrorCodeActiveProcesses  = ErrorActiveProcesses
 	ErrorCodeInputConflict    = ErrorInputConflict

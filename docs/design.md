@@ -85,11 +85,11 @@ hum run [--project DIR|-C DIR] <name> [--detach] [--tty] [--json] [-- <command> 
 hum [--project DIR|-C DIR] list [--all] [--full] [--json]
 hum [--project DIR|-C DIR] status [<name>] [--json]
 hum [--project DIR|-C DIR] attach <name> [--tail N]
-hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|system|both] [--tail N] [--after-cursor N]
+hum [--project DIR|-C DIR] logs [<name>...] [--stream stdout|stderr|system|both] [--tail N] [--after-cursor N] [--session-id ID]
            [--since DURATION] [--limit-bytes N] [--match REGEX] [--context N] [--follow] [--json]
 hum [--project DIR|-C DIR] events [<name>...] [--since DURATION] [--kind lifecycle|operation]
            [--failed] [--match REGEX] [--tail N] [--after-cursor N] [--full] [--json]
-hum [--project DIR|-C DIR] wait <name> [--after-cursor N] [--match REGEX] [--timeout DURATION] [--json]
+hum [--project DIR|-C DIR] wait <name> [--after-cursor N] [--session-id ID] [--match REGEX] [--timeout DURATION] [--json]
 hum [--project DIR|-C DIR] input <name> (--text TEXT | --base64 PADDED_VALUE) [--json]
 hum [--project DIR|-C DIR] signal <name> <signal> [--json]
 hum [--project DIR|-C DIR] restart <name>... [--no-wait] [--timeout DURATION] [--json]
@@ -232,6 +232,7 @@ the private daemon protocol; clients must not use the daemon socket.
 | `manifest_missing` | no default manifest; suggests `hum init` or `hum run NAME -- COMMAND` |
 | `manifest_invalid` | invalid manifest or project discovery configuration |
 | `internal` | unexpected local CLI failure |
+| `cursor_stale` | an output cursor belongs to a replaced or missing output session |
 
 ### Exit codes
 
@@ -738,8 +739,17 @@ Client and follower disconnects never stop children.
 
 ### Cursors and entries
 
-Each named session has one cursor sequence across stdout, stderr, and incarnations. An entry has a
-stream, timestamp, raw stored text, and cursor.
+Each named output session has one cursor sequence across stdout, stderr, and incarnations. An entry
+has a stream, timestamp, raw stored text, and cursor. Process snapshots and bounded or streamed output
+and wait results include `session_id`; lifecycle `launch` and `exit` history events include the same
+identity as `log_session_id` beside `log_cursor`. The ID stays stable across stop/start, restart, and
+automatic relaunch, but changes after remove, completed-record eviction, or daemon replacement.
+
+When paging, pass the returned `session_id` with `--after-cursor` (or MCP `session_id` with `after`).
+The CLI flag is optional for manual use but is valid only with `--after-cursor`; MCP requires it
+whenever `after` is present. A mismatched ID fails with `cursor_stale`, names the current session when
+one exists, and suggests reading without a cursor. Scripts should always pair a cursor with its
+session ID.
 
 | Field | Meaning |
 | --- | --- |
@@ -888,12 +898,13 @@ hum events --after-cursor 42 --json
   event words under the usual color policy. `--full` prints complete multi-line details and any
   `log_cursor` on the detail line.
 - Lifecycle `launch` carries an optional `log_cursor` immediately before its incarnation's output;
-  `exit` carries the latest output cursor at exit. Pass either to `hum logs NAME --after-cursor N`
-  (MCP `logs` `after`) to read entries after it. Omitted means no entry exists; 0 is a valid cursor.
-  Other events have no `log_cursor`.
-- Cursors do not carry across `hum remove` or daemon replacement: output is kept in memory and
-  lost, while event history survives and new sessions restart cursors. Compare returned log entry
-  `time` against event `time` when in doubt.
+  `exit` carries the latest output cursor at exit. Each carries `log_session_id` for the output session
+  to which that cursor belongs. Pass both to `hum logs NAME --after-cursor N --session-id ID` (MCP
+  `logs` `after` and `session_id`) to read entries after it. Omitted means no entry exists; 0 is valid.
+  Other events have neither field.
+- Cursors do not carry across `hum remove`, completed-record eviction, or daemon replacement: output
+  is kept in memory and lost, while event history survives and new sessions restart cursors. Use the
+  session ID to detect stale cursors; timestamps are not a substitute.
 
 Storage:
 

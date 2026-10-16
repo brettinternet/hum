@@ -602,7 +602,7 @@ func TestProcessStopGraceCLIOutput(t *testing.T) {
 func TestUncoloredOutputUnchanged(t *testing.T) {
 	t.Parallel()
 	process := app.Process{
-		Name: "api", Source: "manifest", Root: "/project", PID: 42, PGID: 42,
+		Name: "api", SessionID: "session-42", Source: "manifest", Root: "/project", PID: 42, PGID: 42,
 		Cwd: "/project", Argv: []string{"echo", "hello world"},
 		Start:        time.Date(2026, time.January, 1, 2, 3, 4, 0, time.UTC),
 		LaunchCursor: 3, NextCursor: 4, State: app.StateRunning,
@@ -643,7 +643,7 @@ func TestUncoloredOutputUnchanged(t *testing.T) {
 	if err := renderStatusHuman(&status, process); err != nil {
 		t.Fatal(err)
 	}
-	wantStatus := "name: api\nsource: manifest\nproject_root: /project\ntty: false\npid: 42\npgid: 42\ncwd: /project\nargv: echo 'hello world'\nstarted_at: 2026-01-01T02:03:04Z\nstate: running\nrestart: never\nstop_grace: 0s\nreadiness: ready\nready_cursor: 5\nrelaunches: 0\nrestart_count: 0\nfollowers: 0\nnext_cursor: 4\n"
+	wantStatus := "name: api\nsource: manifest\nproject_root: /project\ntty: false\nsession: session-42\npid: 42\npgid: 42\ncwd: /project\nargv: echo 'hello world'\nstarted_at: 2026-01-01T02:03:04Z\nstate: running\nrestart: never\nstop_grace: 0s\nreadiness: ready\nready_cursor: 5\nrelaunches: 0\nrestart_count: 0\nfollowers: 0\nnext_cursor: 4\n"
 	if status.String() != wantStatus {
 		t.Fatalf("uncolored status = %q, want %q", status.String(), wantStatus)
 	}
@@ -669,7 +669,7 @@ func TestUncoloredOutputUnchanged(t *testing.T) {
 	if strings.Contains(listJSONOutput.String(), "\x1b[") {
 		t.Fatalf("list JSON contains ANSI: %q", listJSONOutput.String())
 	}
-	wantListJSON := `{"schema_version":1,"processes":[{"name":"api","source":"manifest","scope":"project","root":"/project","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"start":"2026-01-01T02:03:04Z","launch_cursor":3,"next_cursor":4,"state":"running","exited_at":"0001-01-01T00:00:00Z","followers":0,"restart":"never","relaunches":0,"stop_grace":"0s","stop_grace_inherited":false,"readiness":"ready","ready_cursor":5}]}` + "\n"
+	wantListJSON := `{"schema_version":1,"processes":[{"name":"api","session_id":"session-42","source":"manifest","scope":"project","root":"/project","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"start":"2026-01-01T02:03:04Z","launch_cursor":3,"next_cursor":4,"state":"running","exited_at":"0001-01-01T00:00:00Z","followers":0,"restart":"never","relaunches":0,"stop_grace":"0s","stop_grace_inherited":false,"readiness":"ready","ready_cursor":5}]}` + "\n"
 	if listJSONOutput.String() != wantListJSON {
 		t.Fatalf("list JSON = %q, want %q", listJSONOutput.String(), wantListJSON)
 	}
@@ -680,7 +680,7 @@ func TestUncoloredOutputUnchanged(t *testing.T) {
 	if strings.Contains(statusJSONOutput.String(), "\x1b[") {
 		t.Fatalf("status JSON contains ANSI: %q", statusJSONOutput.String())
 	}
-	wantStatusJSON := `{"schema_version":1,"name":"api","source":"manifest","scope":"project","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"started_at":"2026-01-01T02:03:04Z","state":"running","readiness":"ready","ready_cursor":5,"exit_status":null,"restart_count":0,"followers":0,"restart":"never","relaunches":0,"stop_grace":"0s","stop_grace_inherited":false,"next_cursor":4}` + "\n"
+	wantStatusJSON := `{"schema_version":1,"name":"api","session_id":"session-42","source":"manifest","scope":"project","project_root":"/project","tty":false,"pid":42,"pgid":42,"cwd":"/project","argv":["echo","hello world"],"started_at":"2026-01-01T02:03:04Z","state":"running","readiness":"ready","ready_cursor":5,"exit_status":null,"restart_count":0,"followers":0,"restart":"never","relaunches":0,"stop_grace":"0s","stop_grace_inherited":false,"next_cursor":4}` + "\n"
 	if statusJSONOutput.String() != wantStatusJSON {
 		t.Fatalf("status JSON = %q, want %q", statusJSONOutput.String(), wantStatusJSON)
 	}

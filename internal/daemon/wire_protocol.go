@@ -131,7 +131,7 @@ func appProcessFromProtocol(item protocol.Process) app.Process {
 		scope = app.ScopeProject
 	}
 	result := app.Process{
-		Name: item.Name, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
+		Name: item.Name, SessionID: item.SessionID, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start,
 		LaunchCursor: output.Cursor(item.LaunchCursor), State: app.State(item.State), ExitCode: item.ExitCode, ExitedAt: item.ExitedAt,
 		RestartCount: item.RestartCount, Followers: item.Followers, Restart: app.RestartPolicy(item.Restart), StopGrace: item.StopGrace, StopGraceInherited: item.StopGraceInherited, Relaunches: item.Relaunches, NextLaunchAt: item.NextLaunchAt,
@@ -165,7 +165,7 @@ func protocolProcessFromApp(item app.Process) protocol.Process {
 	if scope == "" {
 		scope = app.ScopeProject
 	}
-	result := protocol.Process{Name: item.Name, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
+	result := protocol.Process{Name: item.Name, SessionID: item.SessionID, Source: item.Source, Scope: scope, Root: item.Root, TTY: item.TTY, PID: item.PID, PGID: item.PGID,
 		Cwd: item.Cwd, Argv: append([]string(nil), item.Argv...), Start: item.Start, LaunchCursor: protocol.Cursor(item.LaunchCursor), State: string(item.State),
 		ExitCode: item.ExitCode, ExitedAt: item.ExitedAt, RestartCount: item.RestartCount, Followers: item.Followers, Restart: string(item.Restart), StopGrace: item.StopGrace, StopGraceInherited: item.StopGraceInherited, Relaunches: item.Relaunches, NextLaunchAt: item.NextLaunchAt}
 	if item.Readiness != nil {
@@ -200,12 +200,12 @@ func protocolReadResult(result output.ReadResult) protocol.OutputResult {
 	for _, item := range result.Entries {
 		entries = append(entries, protocol.OutputEntry{Cursor: protocol.Cursor(item.Cursor), Stream: protocol.Stream(streamName(item.Stream)), Time: item.Time, Text: item.Text})
 	}
-	return protocol.OutputResult{Entries: entries, Next: protocolCursor(result.Next), Oldest: protocolCursor(result.Oldest), Latest: protocolCursor(result.Latest), EvictedThrough: protocolCursor(result.EvictedThrough), Truncated: result.Truncated, More: result.More}
+	return protocol.OutputResult{SessionID: result.SessionID, Entries: entries, Next: protocolCursor(result.Next), Oldest: protocolCursor(result.Oldest), Latest: protocolCursor(result.Latest), EvictedThrough: protocolCursor(result.EvictedThrough), Truncated: result.Truncated, More: result.More}
 }
 
 func protocolOutputResponse(op protocol.Operation, result output.ReadResult) protocol.OutputResponse {
 	value := protocolReadResult(result)
-	return protocol.OutputResponse{Op: op, OK: true, Entries: value.Entries, Next: value.Next, Oldest: value.Oldest, Latest: value.Latest, EvictedThrough: value.EvictedThrough, Truncated: value.Truncated, More: value.More, Result: &value}
+	return protocol.OutputResponse{Op: op, OK: true, SessionID: value.SessionID, Entries: value.Entries, Next: value.Next, Oldest: value.Oldest, Latest: value.Latest, EvictedThrough: value.EvictedThrough, Truncated: value.Truncated, More: value.More, Result: &value}
 }
 
 func protocolStreamEventFromOutput(name string, event output.Event) protocol.StreamEvent {
@@ -217,7 +217,7 @@ func protocolStreamEventFromOutput(name string, event output.Event) protocol.Str
 		} else if result.Next != nil && len(result.Entries) == 0 {
 			kind = protocol.EventCursor
 		}
-		return protocol.StreamEvent{Op: protocol.OpEvent, Type: kind, Name: name, Entries: result.Entries, Next: result.Next, Oldest: result.Oldest, Latest: result.Latest, EvictedThrough: result.EvictedThrough, Truncated: result.Truncated, More: result.More, Result: &result}
+		return protocol.StreamEvent{Op: protocol.OpEvent, Type: kind, Name: name, SessionID: result.SessionID, Entries: result.Entries, Next: result.Next, Oldest: result.Oldest, Latest: result.Latest, EvictedThrough: result.EvictedThrough, Truncated: result.Truncated, More: result.More, Result: &result}
 	}
 	if event.Exit != nil {
 		exit := &protocol.Exit{Code: event.Exit.Code, Time: event.Exit.Time}
@@ -230,7 +230,7 @@ func protocolStreamEventFromOutput(name string, event output.Event) protocol.Str
 }
 
 func protocolWaitResponse(result app.WaitResult) protocol.WaitResponse {
-	response := protocol.WaitResponse{Op: protocol.OpWait, OK: true, Outcome: protocol.WaitOutcome(result.Outcome), Cursor: protocol.Cursor(result.Cursor)}
+	response := protocol.WaitResponse{Op: protocol.OpWait, OK: true, Outcome: protocol.WaitOutcome(result.Outcome), Cursor: protocol.Cursor(result.Cursor), SessionID: result.SessionID}
 	if result.Outcome == app.WaitTimedOut {
 		response.ProcessObserved = result.ProcessObserved
 	}
@@ -247,7 +247,7 @@ func outputResultFromProtocol(response *protocol.OutputResponse) output.ReadResu
 	if response == nil {
 		return output.ReadResult{}
 	}
-	return output.ReadResult{Entries: entriesFromProtocol(response.Entries), Next: cursorFromProtocol(response.Next), Oldest: cursorFromProtocol(response.Oldest), Latest: cursorFromProtocol(response.Latest), EvictedThrough: cursorFromProtocol(response.EvictedThrough), Truncated: response.Truncated, More: response.More}
+	return output.ReadResult{SessionID: response.SessionID, Entries: entriesFromProtocol(response.Entries), Next: cursorFromProtocol(response.Next), Oldest: cursorFromProtocol(response.Oldest), Latest: cursorFromProtocol(response.Latest), EvictedThrough: cursorFromProtocol(response.EvictedThrough), Truncated: response.Truncated, More: response.More}
 }
 
 func entriesFromProtocol(items []protocol.OutputEntry) []output.Entry {
@@ -368,7 +368,7 @@ func waitOptionsFromProtocol(req protocol.WaitRequest) (app.WaitOptions, time.Du
 	if req.TimeoutMS > protocol.MaxDurationMilliseconds {
 		return app.WaitOptions{}, 0, fmt.Errorf("%w: wait timeout exceeds server maximum", app.ErrInvalidRequest)
 	}
-	options := app.WaitOptions{}
+	options := app.WaitOptions{SessionID: req.SessionID}
 	if req.After != nil {
 		cursor := output.Cursor(*req.After)
 		options.After = &cursor

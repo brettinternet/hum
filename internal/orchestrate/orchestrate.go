@@ -97,6 +97,7 @@ type Exit struct {
 // orchestrator. It intentionally contains no daemon or output-store handles.
 type Process struct {
 	Name               string
+	SessionID          string
 	Source             string
 	Root               string
 	TTY                bool
