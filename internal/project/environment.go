@@ -149,10 +149,7 @@ func parseEnvironmentValue(raw string) (string, error) {
 				}
 				break
 			}
-			if c == '$' && i+1 < len(raw) && (isEnvNameStart(raw[i+1]) || raw[i+1] == '{' || raw[i+1] == '(') {
-				return "", errors.New("unsupported expansion; single-quote a literal or use an external loader")
-			}
-			if c == '`' {
+			if isUnsupportedEnvironmentExpansionAt(raw, i) {
 				return "", errors.New("unsupported expansion; single-quote a literal or use an external loader")
 			}
 			if c == '\\' {
@@ -192,12 +189,21 @@ func parseEnvironmentValue(raw string) (string, error) {
 		}
 	}
 	for i := 0; i < len(raw); i++ {
-		if raw[i] == '$' && i+1 < len(raw) && (isEnvNameStart(raw[i+1]) || raw[i+1] == '{' || raw[i+1] == '(') || raw[i] == '`' {
+		if isUnsupportedEnvironmentExpansionAt(raw, i) {
 			return "", errors.New("unsupported expansion; single-quote a literal or use an external loader")
 		}
 	}
 	return raw, nil
 }
+
+func isUnsupportedEnvironmentExpansionAt(raw string, index int) bool {
+	if raw[index] == '`' {
+		return true
+	}
+	return raw[index] == '$' && index+1 < len(raw) &&
+		(isEnvNameStart(raw[index+1]) || raw[index+1] == '{' || raw[index+1] == '(')
+}
+
 func isEnvNameStart(c byte) bool { return c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' }
 func envFileError(path string, line int, message string) error {
 	return fmt.Errorf("%s:%d: %s", path, line, message)
