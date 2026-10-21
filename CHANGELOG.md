@@ -2,6 +2,16 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.18.3](https://github.com/brettinternet/hum/compare/v0.18.2...v0.18.3) - 2026-10-21
+
+### Fixed
+
+- **security:** Upgrade Go to 1.27.3
+
+### Changed
+
+- **project:** Centralize env expansion detection (#16)
+
 ## [v0.18.1](https://github.com/brettinternet/hum/compare/v0.18.0...v0.18.1) - 2026-10-16
 
 ### Documentation
