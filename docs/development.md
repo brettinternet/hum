@@ -94,7 +94,7 @@ Do not assert help or documentation wording with phrase or prose checks.
 
 | Tool | Version |
 | --- | --- |
-| Go | 1.27.2 |
+| Go | 1.27.3 |
 | Staticcheck | `f1838cc308e5` (source build; Go 1.27.2 export-format support) |
 | govulncheck | 1.8.0 |
 
