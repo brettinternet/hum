@@ -9,7 +9,7 @@ mise install
 task init      # toolchain, dependencies, Git hooks
 ```
 
-`mise.toml` pins Go, git-cliff, Staticcheck, Task, Lefthook, gitleaks, govulncheck, and Backlog.md.
+`mise.toml` pins Go, git-cliff, Staticcheck, Task, Lefthook, gitleaks, govulncheck, and `bl`.
 
 ## Build and run
 

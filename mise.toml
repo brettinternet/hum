@@ -10,7 +10,7 @@ task = "3.53.1"
 worktrunk = "0.79.0"
 staticcheck = "0.7.0-0.dev.0.20261009221906-f1838cc308e5"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.8.0"
-"github:MrLesk/Backlog.md" = { version = "1.52.0", bin = "backlog" }
+"github:brettinternet/backlog" = "latest"
 
 "github:brettinternet/hum" = {
   version = "latest",

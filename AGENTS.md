@@ -12,14 +12,27 @@
 - Run `task check` only for cross-project changes, before a release, or when explicitly requested. Run the full `task ci` gate independently before pushing.
 - Run relevant project-specific checks when they exist.
 
-## Backlog.md
+## Backlog
 
-- `backlog/` is the only project task queue. Task files are provider-owned: read and mutate them
-  with the `backlog` CLI. Never edit task Markdown directly and never create a second queue beside
-  it.
+- `backlog/` is the only project task queue. Task files are provider-owned: read and change them
+  only through `bl` (CLI or MCP), for example `bl show HUM-12 --json`. Never edit task Markdown
+  directly and never create a second queue beside it.
+- Pick and claim work in one step, in a stable session for the whole loop:
+
+  ```sh
+  bl next --claim --start --session SESSION --json
+  ```
+
+  Status is not a claim. Renew with `bl heartbeat --session SESSION` at least once per half TTL.
+  Finish with `bl done ID --session SESSION`. If stopping incomplete, persist progress and run
+  `bl release ID --session SESSION`.
+- Read `bl instructions` and `bl instructions workflow` before acting. Use `bl note ID TEXT`,
+  `bl ac ID check N --evidence TEXT`, and pass `--if-version VERSION` (from the last `show`/write)
+  to writes that depend on that read.
 - A task is only ready when its outcome, scope, non-goals, and modified-file contract are explicit
   and each acceptance criterion names a locally executable command and its expected result. Code
   presence, future CI, and "should work" are not evidence.
+- Run `task ci` and satisfy the Definition of Done before `bl done`.
 - Never skip, delete, or weaken a test to make the gate green. Stop and escalate instead.
 
 ## Git and GitHub

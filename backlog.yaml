@@ -1,0 +1,90 @@
+version: 1
+project:
+    name: hum
+sources:
+    - id: tasks
+      type: native
+      path: backlog
+      prefix: HUM
+statuses:
+    - key: draft
+      name: Draft
+      category: backlog
+    - key: todo
+      name: To Do
+      category: todo
+    - key: in-progress
+      name: In Progress
+      category: active
+    - key: done
+      name: Done
+      category: done
+workflow:
+    start: in-progress
+    done: done
+milestones:
+    - key: m-0
+      name: Initial CLI supervisor
+      description: A secure local daemon and CLI for shared, bounded supervision of long-running development processes on macOS and Linux. Excludes PTY, Windows, authentication, web UI, persistence, plugins, and MCP implementation.
+      archived: true
+    - key: m-1
+      name: Project manifest and agent adapters
+      description: A committed per-project process manifest so humans and agents start, restart, and inspect development processes by name, plus a stdio MCP adapter that delegates to the same application services. Builds on the m-0 CLI supervisor; excludes PTY, Windows, authentication, web UI, persistence, and plugins.
+    - key: m-2
+      name: Interactive sessions
+      description: Durable named supervision sessions that terminals and agents attach to across process incarnations, plus opt-in pseudo-terminal sessions so TTY-gated devtools prompt normally and can be answered from an attached run or a one-shot input write. Builds on the m-1 manifest and MCP adapter; keeps clean pipe-based logs as the default and excludes multiplexing, scrollback, tty by default, and Windows.
+    - key: m-3
+      name: Dependable multi-process stacks
+      description: Declared start ordering gated on readiness and opt-in relaunch after unexpected exit, so hum up brings a whole dev stack to a known state and keeps it there while every launch, exit, and backoff remains visible to attached terminals and agents. Builds on the m-2 interactive sessions; keeps exact-argv launches, bounded output, and the pipe-based default; excludes port or HTTP health checks, environment values or files, persistence across daemon replacement, restart of explicitly stopped processes, and Windows.
+    - key: m-4
+      name: Polish and ergonomics
+      description: Human ergonomics, MCP protocol conformance, and structural cleanups surfaced by the September 2026 implementation audit.
+    - key: m-5
+      name: External integrations and distribution
+      description: 'Ship Hum to more surfaces without widening its trust boundary: agent and terminal-workspace plugins, a versioned machine-output contract, editor tooling for the manifest, and package-manager distribution. The daemon socket stays private; the public boundary is the CLI process interface.'
+labels:
+    - cli
+    - daemon
+    - process
+    - output
+    - protocol
+    - config
+    - integration
+    - security
+    - docs
+    - tooling
+    - human
+    - device
+    - credential
+    - blocked
+    - escalated
+    - container
+    - deferred
+    - herdr
+    - plugin
+    - json
+    - contract
+    - architecture
+    - events
+    - product-boundary
+    - mcp
+ready:
+    statuses:
+        - todo
+    satisfiedBy:
+        - done
+        - canceled
+    excludeLabels:
+        - blocked
+        - deferred
+    skipContainers: true
+defaults:
+    dod:
+        - task ci passes on the final commit
+        - Every checked acceptance criterion has an AC#N evidence line in Implementation Notes naming the command and its result
+        - An independent verifier pass returned PASS for every acceptance criterion
+        - The diff touches only the paths declared in the task's modified-file list, or the deviation is justified in Implementation Notes
+        - No test was deleted, skipped, or weakened
+        - No protected gate file was modified unless the owner labelled this task tooling
+coordination:
+    worklease: {}
