@@ -267,8 +267,8 @@ func (r *ring) readBounded(opts ReadOptions, result ReadResult, start, maxEntrie
 		if output == nil {
 			// Valid entries are nonempty, so MaxBytes is also an entry-count
 			// bound for the result backing slice.
-			capacity := minInt(maxEntries, maxBytes)
-			capacity = minInt(capacity, r.count-start)
+			capacity := min(maxEntries, maxBytes)
+			capacity = min(capacity, r.count-start)
 			output = make([]Entry, 0, capacity)
 		}
 		output = append(output, entry)
@@ -319,7 +319,7 @@ func (r *ring) readTail(opts ReadOptions, result ReadResult, start, maxEntries, 
 
 	// Valid entries are nonempty, so MaxBytes also bounds the tail result's
 	// entry capacity.
-	tailResultCapacity := minInt(minInt(maxEntries, maxBytes), len(selected))
+	tailResultCapacity := min(maxEntries, maxBytes, len(selected))
 	var tailResult []Entry
 	usedBytes := 0
 	for _, offset := range selected {
@@ -440,7 +440,7 @@ func (r *ring) readSelectedBounded(opts ReadOptions, result ReadResult, start in
 			break
 		}
 		if entries == nil {
-			capacity := minInt(minInt(maxEntries, maxBytes), len(selected))
+			capacity := min(maxEntries, maxBytes, len(selected))
 			entries = make([]Entry, 0, capacity)
 		}
 		entries = append(entries, entry)
@@ -460,7 +460,7 @@ func (r *ring) readSelectedBounded(opts ReadOptions, result ReadResult, start in
 
 func (r *ring) readSelectedTail(opts ReadOptions, result ReadResult, start int, selected []bool, maxEntries, maxBytes int) (ReadResult, error) {
 	next := r.entries[(r.head+r.count-1)%len(r.entries)].Cursor
-	selectedOffsets := make([]int, 0, minInt(opts.Tail, len(selected)))
+	selectedOffsets := make([]int, 0, min(opts.Tail, len(selected)))
 	for offset := r.count - 1; offset >= start && len(selectedOffsets) < opts.Tail; offset-- {
 		if selected[offset-start] {
 			selectedOffsets = append(selectedOffsets, offset)
@@ -471,7 +471,7 @@ func (r *ring) readSelectedTail(opts ReadOptions, result ReadResult, start int, 
 		return result, nil
 	}
 
-	capacity := minInt(minInt(maxEntries, maxBytes), len(selectedOffsets))
+	capacity := min(maxEntries, maxBytes, len(selectedOffsets))
 	entries := make([]Entry, 0, capacity)
 	usedBytes := 0
 	for _, offset := range selectedOffsets {
@@ -598,11 +598,4 @@ func maxRetainedEntries(limit int) int {
 
 func maxRetainedEntriesForCharge(limit, charge int) int {
 	return limit / charge
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
