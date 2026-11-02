@@ -222,24 +222,25 @@ func diagnoseExecutables(ctx context.Context, manifest manifestState, add func(s
 		if definition.TTY && !ttySupported() {
 			add("process.tty", doctorFail, "TTY mode is unsupported on this operating system", map[string]any{"process": definition.Name})
 		}
-		if len(definition.Argv) == 0 || definition.Argv[0] == "" {
-			add("process.executable", doctorFail, "process command is empty", map[string]any{"process": definition.Name})
-		} else if _, err := processpkg.ResolveExecutable(definition.Argv[0], env, definition.Cwd); err != nil {
-			add("process.executable", doctorFail, "process executable is unavailable", map[string]any{"process": definition.Name})
-		} else {
-			add("process.executable", doctorPass, "process executable is available", map[string]any{"process": definition.Name})
-		}
+		diagnoseExecutable("process.executable", "process", "process command is empty", definition.Argv, env, definition.Cwd, definition.Name, add)
 		if definition.Ready == nil || len(definition.Ready.Exec) == 0 {
 			continue
 		}
-		if definition.Ready.Exec[0] == "" {
-			add("ready.executable", doctorFail, "readiness executable is empty", map[string]any{"process": definition.Name})
-		} else if _, err := processpkg.ResolveExecutable(definition.Ready.Exec[0], env, definition.Cwd); err != nil {
-			add("ready.executable", doctorFail, "readiness executable is unavailable", map[string]any{"process": definition.Name})
-		} else {
-			add("ready.executable", doctorPass, "readiness executable is available", map[string]any{"process": definition.Name})
-		}
+		diagnoseExecutable("ready.executable", "readiness", "readiness executable is empty", definition.Ready.Exec, env, definition.Cwd, definition.Name, add)
 	}
+}
+
+func diagnoseExecutable(checkName, kind, emptyMessage string, argv, env []string, cwd, process string, add func(string, string, string, map[string]any)) {
+	details := map[string]any{"process": process}
+	if len(argv) == 0 || argv[0] == "" {
+		add(checkName, doctorFail, emptyMessage, details)
+		return
+	}
+	if _, err := processpkg.ResolveExecutable(argv[0], env, cwd); err != nil {
+		add(checkName, doctorFail, kind+" executable is unavailable", details)
+		return
+	}
+	add(checkName, doctorPass, kind+" executable is available", details)
 }
 
 func newDoctorResult(checks []doctorCheck) doctorResult {
