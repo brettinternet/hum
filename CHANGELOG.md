@@ -2,6 +2,24 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.19.0](https://github.com/brettinternet/hum/compare/v0.18.3...v0.19.0) - 2026-11-03
+
+### Added
+
+- **readiness:** Include body excerpt in failed HTTP diagnostics
+
+### Fixed
+
+- **mcp:** Flatten tool input schemas to plain objects
+
+### Changed
+
+- **cli:** Consolidate doctor executable checks (#21)
+
+### Documentation
+
+- Remove demo window decorations
+
 ## [v0.18.3](https://github.com/brettinternet/hum/compare/v0.18.2...v0.18.3) - 2026-10-21
 
 ### Fixed
