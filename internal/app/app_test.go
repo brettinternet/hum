@@ -815,8 +815,41 @@ func TestReadinessHTTPNetworkSemantics(t *testing.T) {
 		target := httptest.NewServer(http.RedirectHandler("/final", http.StatusTemporaryRedirect))
 		defer target.Close()
 		diagnostic, err := runNetworkReadinessProbe(context.Background(), "http", target.URL, 64)
-		if err == nil || diagnostic != "status 307" {
+		if err == nil || diagnostic != `status 307: <a href="/final">Temporary Redirect</a>.` {
 			t.Fatalf("redirect result=%q err=%v", diagnostic, err)
+		}
+	})
+	t.Run("failure body excerpt is collapsed to one line", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("PendingMigrationError at GET /_health/alive\r\n\n\tThere are pending migrations\x1b[0m  for repo\n"))
+		}))
+		defer server.Close()
+		diagnostic, err := runNetworkReadinessProbe(context.Background(), "http", server.URL, 1024)
+		if want := "status 503: PendingMigrationError at GET /_health/alive There are pending migrations [0m for repo"; err == nil || diagnostic != want {
+			t.Fatalf("excerpt result=%q err=%v, want %q", diagnostic, err, want)
+		}
+	})
+	t.Run("unbounded or stalled failure body is bounded by size and deadline", func(t *testing.T) {
+		for name, prefix := range map[string]string{"large": strings.Repeat("x", 4*readinessBodyExcerptBytes), "stalled": "partial"} {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(prefix))
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+			}))
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			started := time.Now()
+			diagnostic, err := runNetworkReadinessProbe(ctx, "http", server.URL, 64)
+			elapsed := time.Since(started)
+			cancel()
+			server.Close()
+			if err == nil || !strings.HasPrefix(diagnostic, "status 503: ") || len(diagnostic) > 64 || elapsed > 500*time.Millisecond {
+				t.Fatalf("%s body result=%q err=%v elapsed=%s", name, diagnostic, err, elapsed)
+			}
+			if name == "stalled" && diagnostic != "status 503: partial" {
+				t.Fatalf("stalled body diagnostic=%q", diagnostic)
+			}
 		}
 	})
 	t.Run("proxy is ignored and body is not retained", func(t *testing.T) {

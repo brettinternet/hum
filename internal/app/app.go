@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 
 	"hum/internal/output"
 	"hum/internal/process"
@@ -1058,12 +1059,31 @@ func runNetworkReadinessProbe(parent context.Context, method, target string, max
 	if err != nil {
 		return capProbeDiagnostic("dial: "+networkProbeError(err), maxBytes), err
 	}
+	defer resp.Body.Close()
 	status := resp.StatusCode
-	_ = resp.Body.Close()
 	if status < 200 || status >= 300 {
-		return capProbeDiagnostic(fmt.Sprintf("status %d", status), maxBytes), fmt.Errorf("readiness status %d", status)
+		diagnostic := fmt.Sprintf("status %d", status)
+		// A partial read on deadline or reset still yields the bytes received.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, readinessBodyExcerptBytes))
+		if excerpt := oneLineExcerpt(body); excerpt != "" {
+			diagnostic += ": " + excerpt
+		}
+		return capProbeDiagnostic(diagnostic, maxBytes), fmt.Errorf("readiness status %d", status)
 	}
 	return "", nil
+}
+
+const readinessBodyExcerptBytes = 256
+
+// oneLineExcerpt replaces control characters and collapses whitespace runs so a
+// response body prefix fits on one diagnostic line.
+func oneLineExcerpt(body []byte) string {
+	return strings.Join(strings.Fields(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, string(body))), " ")
 }
 
 func networkProbeError(err error) string {
