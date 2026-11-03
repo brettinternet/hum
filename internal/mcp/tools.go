@@ -269,7 +269,7 @@ type toolDefinition struct {
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {
 	if _, ok := properties["scope"]; !ok {
-		properties["scope"] = map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}, "default": protocol.ScopeProject, "description": "project (default) or global for machine-wide sessions."}
+		properties["scope"] = map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}, "default": protocol.ScopeProject, "description": "project (default) requires project_root; global is machine-wide and forbids project_root."}
 	}
 	schema := map[string]any{"type": "object", "additionalProperties": false, "properties": properties, "required": required}
 	if _, hasRoot := properties["project_root"]; hasRoot {
@@ -279,11 +279,10 @@ func objectSchema(properties map[string]any, required ...string) map[string]any 
 				filtered = append(filtered, field)
 			}
 		}
+		// project_root depends on scope. Clients reject top-level composition
+		// keywords, so the rule lives in the scope and project_root descriptions
+		// and runtime validation enforces it.
 		schema["required"] = filtered
-		schema["allOf"] = []any{
-			map[string]any{"if": map[string]any{"properties": map[string]any{"scope": map[string]any{"const": protocol.ScopeProject}}}, "then": map[string]any{"required": []string{"project_root"}}},
-			map[string]any{"if": map[string]any{"required": []string{"scope"}, "properties": map[string]any{"scope": map[string]any{"const": protocol.ScopeGlobal}}}, "then": map[string]any{"not": map[string]any{"required": []string{"project_root"}}}},
-		}
 	}
 	return schema
 }
@@ -295,7 +294,7 @@ func stringProperty(description string) map[string]any {
 var readinessMethods = []string{"match", "exec", "http", "tcp", "exit"}
 
 func (s *Server) toolDefinitions() []toolDefinition {
-	root := stringProperty("Absolute project directory; resolves to its Git root.")
+	root := stringProperty("Absolute project directory; resolves to its Git root. Omit with global scope; else required.")
 	nameResolved := stringProperty("Declared process name or retained session name.")
 	nameExisting := stringProperty("Session name, including ad-hoc sessions.")
 	manifest := map[string]any{"type": "string", "minLength": 1, "description": "Manifest path in project_root. Default: .hum.yaml, then hum.yaml."}
@@ -405,19 +404,15 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
 	output := objectSchema(map[string]any{"session_id": map[string]any{"type": "string"}, "entries": map[string]any{"type": []string{"array", "null"}, "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}, "oldest": map[string]any{"type": "integer", "minimum": 0}, "latest": map[string]any{"type": "integer", "minimum": 0}, "evicted_through": map[string]any{"type": "integer", "minimum": 0}, "truncated": map[string]any{"type": "boolean"}, "more": map[string]any{"type": "boolean"}}, "session_id", "entries")
 	wait := objectSchema(map[string]any{"op": map[string]any{"type": "string"}, "ok": map[string]any{"type": "boolean"}, "outcome": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "integer", "minimum": 0}, "session_id": map[string]any{"type": "string"}, "exit": exit, "process_observed": map[string]any{"type": "boolean"}, "message": map[string]any{"type": "string"}}, "op", "ok", "cursor", "session_id")
-	inputText := map[string]any{"type": "string", "minLength": 1, "description": "Exact UTF-8 text. No newline is added."}
+	inputText := map[string]any{"type": "string", "minLength": 1, "description": "Exact UTF-8 text. No newline is added. Provide exactly one of text or base64."}
 	inputBase64 := map[string]any{
 		"type": "string", "minLength": 1, "maxLength": 43692,
 		"pattern":         "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
-		"contentEncoding": "base64", "description": "Padded standard base64 without whitespace; 1-32768 decoded bytes.",
+		"contentEncoding": "base64", "description": "Padded base64 without whitespace; 1-32768 decoded bytes. Provide exactly one of text or base64.",
 	}
 	inputSchema := objectSchema(map[string]any{
 		"project_root": root, "name": nameExisting, "text": inputText, "base64": inputBase64,
 	}, "project_root", "name")
-	inputSchema["oneOf"] = []any{
-		objectSchema(map[string]any{"project_root": root, "name": nameExisting, "text": inputText}, "project_root", "name", "text"),
-		objectSchema(map[string]any{"project_root": root, "name": nameExisting, "base64": inputBase64}, "project_root", "name", "base64"),
-	}
 	inputResult := objectSchema(map[string]any{
 		"name":          map[string]any{"type": "string"},
 		"bytes":         map[string]any{"type": "integer", "minimum": 1},
@@ -433,16 +428,11 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"name":         nameExisting,
 		"signal":       stringProperty("Signal name (SIG prefix optional) or positive number."),
 	}, "project_root", "name", "signal")
-	removeAll := map[string]any{"type": "boolean", "description": "Remove every session in the scope. Required when name is omitted."}
 	removeSchema := objectSchema(map[string]any{
 		"project_root": root,
-		"name":         nameExisting,
-		"all":          removeAll,
+		"name":         stringProperty("Session name, including ad-hoc sessions. Provide name or all: true, not both."),
+		"all":          map[string]any{"type": "boolean", "description": "true removes every session in the scope. Provide name or all: true, not both."},
 	}, "project_root")
-	removeSchema["oneOf"] = []any{
-		map[string]any{"required": []string{"name"}, "not": map[string]any{"required": []string{"all"}}},
-		map[string]any{"required": []string{"all"}, "properties": map[string]any{"all": map[string]any{"const": true, "description": removeAll["description"]}}, "not": map[string]any{"required": []string{"name"}}},
-	}
 	collectionResults := func(items map[string]any) map[string]any {
 		return objectSchema(map[string]any{"results": map[string]any{"type": "array", "items": items}, "warnings": startupWarningsSchema}, "results")
 	}
@@ -461,7 +451,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}, "processes")
 	upSchema := objectSchema(waitProps, "project_root")
 	upSchema["required"] = []string{"project_root"}
-	delete(upSchema, "allOf")
+	upSchema["properties"].(map[string]any)["project_root"] = stringProperty("Absolute project directory; resolves to its Git root.")
 	upSchema["properties"].(map[string]any)["scope"] = map[string]any{"type": "string", "const": protocol.ScopeProject, "default": protocol.ScopeProject, "description": "Only project scope is supported."}
 	upSchema["properties"].(map[string]any)["names"] = map[string]any{
 		"type": "array", "minItems": 1, "maxItems": 2000, "uniqueItems": true,
@@ -470,34 +460,9 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}
 	listSchema := objectSchema(map[string]any{
 		"project_root": root, "manifest": manifest,
-		"all":  map[string]any{"type": "boolean", "description": "List every scope, not just this project."},
-		"port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535, "description": "Find Hum listeners on this TCP port in every scope."},
+		"all":  map[string]any{"type": "boolean", "description": "List every scope, not just this project. Cannot be combined with global scope."},
+		"port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535, "description": "Find Hum listeners on this TCP port in every scope. Not with global scope or all: false."},
 	}, "project_root")
-	listSchema["allOf"] = append(listSchema["allOf"].([]any), map[string]any{
-		"not": map[string]any{"anyOf": []any{
-			map[string]any{
-				"required": []string{"scope", "all"},
-				"properties": map[string]any{
-					"scope": map[string]any{"const": protocol.ScopeGlobal},
-					"all":   map[string]any{"const": true},
-				},
-			},
-			map[string]any{
-				"required": []string{"port", "scope"},
-				"properties": map[string]any{
-					"port":  map[string]any{"type": "integer"},
-					"scope": map[string]any{"const": protocol.ScopeGlobal},
-				},
-			},
-			map[string]any{
-				"required": []string{"port", "all"},
-				"properties": map[string]any{
-					"port": map[string]any{"type": "integer"},
-					"all":  map[string]any{"const": false},
-				},
-			},
-		}},
-	})
 	logsSchema := objectSchema(map[string]any{
 		"project_root": root,
 		"name":         nameExisting,
@@ -513,7 +478,6 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	}, "project_root", "name")
 	logsSchema["dependentRequired"] = map[string]any{"context": []string{"match"}, "after": []string{"session_id"}}
 	event := objectSchema(map[string]any{
-		"scope":        map[string]any{"type": "string", "enum": []string{protocol.ScopeProject, protocol.ScopeGlobal}, "description": "project (default) or global for machine-wide sessions."},
 		"project_root": root, "names": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 2000, "description": "Only events for these process names."},
 		"since_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": protocol.MaxDurationMilliseconds, "description": "Only events from the last N ms."},
 		"kinds":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{string(protocol.EventLifecycle), string(protocol.EventOperation)}}, "description": "Only these event kinds."},

@@ -719,21 +719,8 @@ func TestToolSchemas(t *testing.T) {
 			if !contains(req, "project_root") {
 				t.Errorf("up does not require project_root")
 			}
-			if _, ok := d.InputSchema["allOf"]; ok {
-				t.Errorf("up advertises unsupported global scope rules")
-			}
-		} else {
-			if contains(req, "project_root") {
-				t.Errorf("%s unconditionally requires project_root", d.Name)
-			}
-			rules, ok := d.InputSchema["allOf"].([]any)
-			wantRules := 2
-			if d.Name == "list" {
-				wantRules = 3
-			}
-			if !ok || len(rules) != wantRules {
-				t.Errorf("%s scope rules = %#v, want %d", d.Name, d.InputSchema["allOf"], wantRules)
-			}
+		} else if contains(req, "project_root") {
+			t.Errorf("%s unconditionally requires project_root", d.Name)
 		}
 		props := d.InputSchema["properties"].(map[string]any)
 		if _, ok := props["project_root"]; !ok {
@@ -765,18 +752,6 @@ func TestToolSchemas(t *testing.T) {
 	}
 	if inputDefinition.InputSchema["additionalProperties"] != false {
 		t.Fatal("input schema is not closed")
-	}
-	branches, ok := inputDefinition.InputSchema["oneOf"].([]any)
-	if !ok || len(branches) != 2 {
-		t.Fatalf("input schema oneOf = %#v", inputDefinition.InputSchema["oneOf"])
-	}
-	textBranch := branches[0].(map[string]any)["properties"].(map[string]any)
-	base64Branch := branches[1].(map[string]any)["properties"].(map[string]any)
-	if _, ok := textBranch["base64"]; ok {
-		t.Fatal("text input branch accepts base64")
-	}
-	if _, ok := base64Branch["text"]; ok {
-		t.Fatal("base64 input branch accepts text")
 	}
 	statusProperties := defs[4].OutputSchema["properties"].(map[string]any)
 	exited := protocol.Process{
@@ -816,7 +791,7 @@ func TestToolSchemas(t *testing.T) {
 }
 
 // assertSchemaPropertiesDescribed fails if any property in a tool's input
-// schema, including properties nested under oneOf branches, lacks a
+// schema lacks a
 // non-empty description. An agent choosing arguments only ever sees this
 // schema, so every property needs its own explanation.
 func assertSchemaPropertiesDescribed(t *testing.T, toolName string, schema map[string]any) {
@@ -834,10 +809,18 @@ func assertSchemaPropertiesDescribed(t *testing.T, toolName string, schema map[s
 			}
 		}
 	}
-	if branches, ok := schema["oneOf"].([]any); ok {
-		for _, branch := range branches {
-			if branchSchema, ok := branch.(map[string]any); ok {
-				assertSchemaPropertiesDescribed(t, toolName, branchSchema)
+}
+
+// Tool-calling clients drop or reject top-level composition keywords, which
+// leaves agents guessing every argument, so each input must be a plain object.
+func TestToolInputSchemasArePlainObjects(t *testing.T) {
+	for _, definition := range NewServer(Options{}).toolDefinitions() {
+		if definition.InputSchema["type"] != "object" {
+			t.Errorf("%s input type = %#v, want object", definition.Name, definition.InputSchema["type"])
+		}
+		for _, keyword := range []string{"allOf", "anyOf", "oneOf", "not", "if", "then", "else"} {
+			if _, ok := definition.InputSchema[keyword]; ok {
+				t.Errorf("%s input schema has top-level %s", definition.Name, keyword)
 			}
 		}
 	}
@@ -1100,6 +1083,15 @@ func TestRejectsUnsupportedAggregateInputs(t *testing.T) {
 		{name: "global list all", tool: "list", raw: json.RawMessage(`{"scope":"global","all":true}`)},
 		{name: "empty scope down", tool: "down", raw: args(root, "scope", "")},
 		{name: "ambiguous remove", tool: "remove", raw: args(root, "name", "", "all", true)},
+		{name: "remove name and all", tool: "remove", raw: args(root, "name", "alpha", "all", true)},
+		{name: "remove neither", tool: "remove", raw: args(root)},
+		{name: "remove all false", tool: "remove", raw: args(root, "all", false)},
+		{name: "project scope without root", tool: "status", raw: json.RawMessage(`{"name":"alpha"}`)},
+		{name: "global scope with root", tool: "status", raw: args(root, "scope", "global", "name", "alpha")},
+		{name: "input both payloads", tool: "input", raw: args(root, "name", "alpha", "text", "x", "base64", "eA==")},
+		{name: "input no payload", tool: "input", raw: args(root, "name", "alpha")},
+		{name: "global list port", tool: "list", raw: json.RawMessage(`{"scope":"global","port":3000}`)},
+		{name: "list port all false", tool: "list", raw: args(root, "port", 3000, "all", false)},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -1131,9 +1123,12 @@ func TestMCPScopeSchema(t *testing.T) {
 		if _, ok := scope["enum"]; !ok {
 			t.Errorf("%s scope schema does not advertise project/global", definition.Name)
 		}
-		rules, ok := definition.InputSchema["allOf"].([]any)
-		if !ok || len(rules) < 2 {
-			t.Errorf("%s schema lacks conditional project_root rules", definition.Name)
+		root := properties["project_root"].(map[string]any)
+		if !strings.Contains(scope["description"].(string), "requires project_root") || !strings.Contains(scope["description"].(string), "forbids project_root") {
+			t.Errorf("%s scope description omits the project_root rule: %q", definition.Name, scope["description"])
+		}
+		if !strings.Contains(root["description"].(string), "Omit with global scope; else required.") {
+			t.Errorf("%s project_root description omits the scope rule: %q", definition.Name, root["description"])
 		}
 	}
 }
@@ -2218,41 +2213,15 @@ func TestInputTool(t *testing.T) {
 	if !ok || contains(inputRequired, "project_root") || !contains(inputRequired, "name") {
 		t.Fatalf("input required fields = %#v", inputDefinition.InputSchema["required"])
 	}
-	branches, ok := inputDefinition.InputSchema["oneOf"].([]any)
-	if !ok || len(branches) != 2 {
-		t.Fatalf("input oneOf = %#v", inputDefinition.InputSchema["oneOf"])
+	properties := inputDefinition.InputSchema["properties"].(map[string]any)
+	textProperty := properties["text"].(map[string]any)
+	base64Property := properties["base64"].(map[string]any)
+	if textProperty["minLength"] != 1 || base64Property["pattern"] != "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$" || !strings.Contains(base64Property["description"].(string), "without whitespace") {
+		t.Fatalf("input payload properties = %#v", properties)
 	}
-	for index, branch := range branches {
-		branchSchema, ok := branch.(map[string]any)
-		if !ok || branchSchema["additionalProperties"] != false {
-			t.Fatalf("input branch %d = %#v", index, branch)
-		}
-		required, ok := branchSchema["required"].([]string)
-		if !ok || contains(required, "project_root") || !contains(required, "name") {
-			t.Fatalf("input branch %d required = %#v", index, branchSchema["required"])
-		}
-		if rules, ok := branchSchema["allOf"].([]any); !ok || len(rules) != 2 {
-			t.Fatalf("input branch %d lacks conditional root rules", index)
-		}
-		properties, ok := branchSchema["properties"].(map[string]any)
-		if !ok {
-			t.Fatalf("input branch %d properties = %#v", index, branchSchema["properties"])
-		}
-		if index == 0 {
-			if !contains(required, "text") || properties["text"].(map[string]any)["minLength"] != 1 {
-				t.Fatalf("text branch = %#v", branchSchema)
-			}
-			if _, exists := properties["base64"]; exists {
-				t.Fatal("text branch accepts base64")
-			}
-		} else {
-			base64Property := properties["base64"].(map[string]any)
-			if !contains(required, "base64") || base64Property["pattern"] != "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$" || !strings.Contains(base64Property["description"].(string), "without whitespace") {
-				t.Fatalf("base64 branch = %#v", branchSchema)
-			}
-			if _, exists := properties["text"]; exists {
-				t.Fatal("base64 branch accepts text")
-			}
+	for _, property := range []map[string]any{textProperty, base64Property} {
+		if !strings.Contains(property["description"].(string), "exactly one of text or base64") {
+			t.Fatalf("input payload description omits exclusivity: %q", property["description"])
 		}
 	}
 	outputProperties, ok := inputDefinition.OutputSchema["properties"].(map[string]any)
