@@ -92,6 +92,7 @@ func (mcpResolver) ResolveManifest(ctx context.Context, root, filename string) (
 			Name: definition.Name, Environment: definition.Environment, Source: definition.Source,
 			Argv: append([]string(nil), definition.Argv...), Cwd: definition.Cwd,
 			Ready: readinessConfig(definition), After: append([]string{}, definition.After...), TTY: definition.TTY, Restart: restartPolicy(definition),
+			StopGrace: definition.StopGrace,
 		})
 	}
 	return mcpserver.Resolution{Root: rootPath, Definitions: definitions}, nil

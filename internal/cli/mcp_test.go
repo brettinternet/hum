@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"hum/internal/app"
 	"hum/internal/project"
@@ -137,7 +138,7 @@ func TestMCPResolverNearestManifest(t *testing.T) {
 	if err := os.MkdirAll(start, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(manifestDir, "hum.yaml"), []byte("version: 1\nprocesses:\n  web:\n    argv: [web]\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(manifestDir, "hum.yaml"), []byte("version: 1\nprocesses:\n  web:\n    argv: [web]\n    stop_grace: 30s\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	resolution, err := (mcpResolver{}).Resolve(context.Background(), start)
@@ -149,8 +150,8 @@ func TestMCPResolverNearestManifest(t *testing.T) {
 		t.Fatalf("MCP nearest resolution = %+v, err=%v; want Git root %s and one nested definition", resolution, err, canonicalRoot)
 	}
 	definition := resolution.Definitions[0]
-	if definition.Name != "web" || definition.Source != "manifest:apps/web/hum.yaml" || definition.Cwd != manifestDir {
-		t.Fatalf("MCP nearest definition = %+v, want nested manifest identity and cwd", definition)
+	if definition.Name != "web" || definition.Source != "manifest:apps/web/hum.yaml" || definition.Cwd != manifestDir || definition.StopGrace == nil || *definition.StopGrace != 30*time.Second {
+		t.Fatalf("MCP nearest definition = %+v, want nested manifest identity, cwd, and stop_grace", definition)
 	}
 }
 
