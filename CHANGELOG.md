@@ -2,6 +2,12 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.19.1](https://github.com/brettinternet/hum/compare/v0.19.0...v0.19.1) - 2026-11-04
+
+### Fixed
+
+- **mcp:** Carry manifest stop_grace into MCP definitions
+
 ## [v0.19.0](https://github.com/brettinternet/hum/compare/v0.18.3...v0.19.0) - 2026-11-03
 
 ### Added
