@@ -1,7 +1,6 @@
 package output
 
 import (
-	"bytes"
 	"errors"
 	"sync"
 	"testing"
@@ -378,7 +377,7 @@ func equalStrings(got, want []string) bool {
 		return false
 	}
 	for i := range got {
-		if !bytes.Equal([]byte(got[i]), []byte(want[i])) {
+		if got[i] != want[i] {
 			return false
 		}
 	}
