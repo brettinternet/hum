@@ -287,6 +287,31 @@ func TestEventsLogCursor(t *testing.T) {
 	}
 }
 
+func TestEventsExitStatus(t *testing.T) {
+	failed, clean, killed := 1, 0, -1
+	cursor := protocol.Cursor(9)
+	at := time.Unix(0, 0).UTC()
+	events := []protocol.HistoryEvent{
+		{Time: at, Name: "web", Kind: protocol.EventLifecycle, Event: "exit", ExitCode: &failed, LogCursor: &cursor},
+		{Time: at, Name: "job", Kind: protocol.EventLifecycle, Event: "exit", Detail: "done", ExitCode: &clean},
+		{Time: at, Name: "api", Kind: protocol.EventLifecycle, Event: "exit", ExitCode: &killed, Signal: "SIGTERM"},
+	}
+	stamp := at.Local().Format("15:04:05")
+	var compact, full bytes.Buffer
+	if err := writeEventsHuman(&compact, events, false, colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("TIME NAME EVENT DETAIL\n%s web exit code=1\n%s job exit code=0 done\n%s api exit signal=SIGTERM\n", stamp, stamp, stamp); compact.String() != want {
+		t.Fatalf("compact output = %q, want %q", compact.String(), want)
+	}
+	if err := writeEventsHuman(&full, events, true, colorPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("TIME NAME EVENT DETAIL\n%s web exit\ncode=1 log_cursor=9\n%s job exit\ncode=0 done\n%s api exit\nsignal=SIGTERM\n", stamp, stamp, stamp); full.String() != want {
+		t.Fatalf("full output = %q, want %q", full.String(), want)
+	}
+}
+
 func TestEventsJSON(t *testing.T) {
 	exitCode := 7
 	events := []protocol.HistoryEvent{

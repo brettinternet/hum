@@ -176,6 +176,9 @@ func writeEventsHuman(writer io.Writer, events []protocol.HistoryEvent, full boo
 		name := compactEventText(event.Name)
 		kind := compactEventText(event.Event)
 		detail := output.StripTerminalControl(event.Detail)
+		if status := eventExitStatus(event); status != "" {
+			detail = strings.TrimSpace(status + " " + detail)
+		}
 		if full {
 			if _, err := fmt.Fprintf(writer, "%s %s %s\n", timestamp, name, colors.apply(eventStyle(event), kind)); err != nil {
 				return err
@@ -210,6 +213,20 @@ func writeEventsHuman(writer io.Writer, events []protocol.HistoryEvent, full boo
 		}
 	}
 	return nil
+}
+
+// eventExitStatus names how an exit ended; a signal outranks the -1 code it implies.
+func eventExitStatus(event protocol.HistoryEvent) string {
+	if event.Event != "exit" {
+		return ""
+	}
+	if event.Signal != "" {
+		return "signal=" + compactEventText(event.Signal)
+	}
+	if event.ExitCode != nil {
+		return fmt.Sprintf("code=%d", *event.ExitCode)
+	}
+	return ""
 }
 
 func eventStyle(event protocol.HistoryEvent) ansiStyle {
