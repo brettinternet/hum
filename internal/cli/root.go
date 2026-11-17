@@ -799,56 +799,14 @@ func unknownCommandError(root *urfavecli.Command, name string) error {
 	return newCLIUsageError(newUserFacingError(message + " Run hum --help to list commands."))
 }
 
-// suggestCommandName returns the closest command name to the typed name, or
-// an empty string when nothing is close enough to be a plausible typo.
+// suggestCommandName returns the closest visible command name to the typed
+// name, or an empty string when nothing is close enough to be a plausible typo.
 func suggestCommandName(commands []*urfavecli.Command, typed string) string {
-	typed = strings.ToLower(typed)
-	if typed == "" {
-		return ""
-	}
-	limit := 1
-	if len(typed) >= 4 {
-		limit = 2
-	}
-	best, bestDistance := "", limit+1
-	prefixMatches := 0
-	prefixMatch := ""
+	var names []string
 	for _, command := range commands {
-		if command == nil || command.Hidden {
-			continue
-		}
-		for _, candidate := range command.Names() {
-			if strings.HasPrefix(candidate, typed) {
-				prefixMatches++
-				prefixMatch = candidate
-			}
-			if distance := editDistance(typed, candidate); distance < bestDistance {
-				best, bestDistance = candidate, distance
-			}
+		if command != nil && !command.Hidden {
+			names = append(names, command.Names()...)
 		}
 	}
-	if prefixMatches == 1 {
-		return prefixMatch
-	}
-	return best
-}
-
-func editDistance(a, b string) int {
-	previous := make([]int, len(b)+1)
-	current := make([]int, len(b)+1)
-	for j := range previous {
-		previous[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		current[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			current[j] = min(previous[j]+1, current[j-1]+1, previous[j-1]+cost)
-		}
-		previous, current = current, previous
-	}
-	return previous[len(b)]
+	return project.SuggestName(typed, names)
 }

@@ -759,7 +759,11 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		return fmt.Errorf("process %q: %w", name, err)
 	}
 	if len(argv) == 0 && !declared && (getErr != nil || len(current.Argv) == 0) {
-		return newCLIUsageError(errors.New("run " + name + " requires a command after --"))
+		message := "run " + name + " requires a command after --"
+		if suggestion := project.SuggestName(name, manifestNames(manifest)); suggestion != "" {
+			message += "." + didYouMean(suggestion)
+		}
+		return newCLIUsageError(errors.New(message))
 	}
 	launch := func(attached bool) (app.Process, error) {
 		requestCtx := ctx
@@ -1205,6 +1209,7 @@ func statusCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 		}
 		definition, declared := manifest.byName[name]
 		if !declared {
+			err = suggestDeclaredName(err, manifest, name)
 			return wrapUserFacingError(err, crossScopeNotFoundMessage(err, "status "+name))
 		}
 		// A declared process that has never launched has no daemon record yet;
@@ -2412,6 +2417,17 @@ func signalCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTi
 	return err
 }
 
+// stopSuggestion asks the daemon for the closest retained name when a stop
+// target is not active, so a typo is not mistaken for an idle process. A
+// retained target has no suggestion because the lookup succeeds.
+func stopSuggestion(ctx context.Context, client *daemon.Client, scope, cwd string, result stopResult) string {
+	if result.Status != "not_running" {
+		return ""
+	}
+	_, err := client.Get(ctx, daemon.GetRequest{Name: result.Name, Scope: scope, Cwd: cwd})
+	return notFoundSuggestion(err)
+}
+
 func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer io.Writer) error {
 	names := cmd.Args().Slice()
 	if len(names) == 0 {
@@ -2495,6 +2511,10 @@ func stopCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 		}
 		if cmd.Bool("json") {
 			if err := encodeJSON(writer, result); err != nil {
+				return err
+			}
+		} else if suggestion := stopSuggestion(ctx, client, selection.scope, cwd, result); suggestion != "" {
+			if _, err := fmt.Fprintf(writer, "%s not running.%s\n", name, didYouMean(suggestion)); err != nil {
 				return err
 			}
 		} else if err := renderStopHuman(writer, result); err != nil {
@@ -3001,8 +3021,13 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 				if encodeErr := encodeJSON(writer, result); encodeErr != nil {
 					return encodeErr
 				}
-			} else if writeErr := renderRestartOutputHuman(writer, result); writeErr != nil {
-				return writeErr
+			} else {
+				if suggestion := notFoundSuggestion(suggestDeclaredName(restartErr, manifest, name)); suggestion != "" {
+					result.Message += "." + didYouMean(suggestion)
+				}
+				if writeErr := renderRestartOutputHuman(writer, result); writeErr != nil {
+					return writeErr
+				}
 			}
 			break
 		}
@@ -3148,6 +3173,25 @@ func startCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTim
 	return manifestLaunchCommand(ctx, cmd, version, buildTime, writer, names)
 }
 
+// unknownNamesError appends a suggestion when exactly one requested name is
+// undeclared, so the hint is never ambiguous about which name it corrects.
+func unknownNamesError(err error, manifest manifestState, requested []string) error {
+	var unknown []string
+	for _, name := range requested {
+		if _, declared := manifest.byName[name]; !declared {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) != 1 {
+		return err
+	}
+	suggestion := project.SuggestName(unknown[0], manifestNames(manifest))
+	if suggestion == "" {
+		return err
+	}
+	return fmt.Errorf("%w.%s", err, didYouMean(suggestion))
+}
+
 func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime string, writer, errWriter io.Writer) error {
 	followSince := time.Now()
 	requestedNames := cmd.Args().Slice()
@@ -3199,7 +3243,7 @@ func upCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime s
 		}
 		selectedDefinitions, selectErr := orchestrate.SelectWithPrerequisites(sharedDefinitions, requestedNames)
 		if selectErr != nil {
-			return newCLIUsageError(selectErr)
+			return newCLIUsageError(unknownNamesError(selectErr, manifest, requestedNames))
 		}
 		for _, definition := range selectedDefinitions {
 			names = append(names, definition.Name)
@@ -3462,18 +3506,25 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	}
 	defer client.Close()
 	client.SetEventOperation(cmd.Name, daemon.NewOperationID(), "cli")
-	if manifest.missing && !ordered {
+	if !ordered {
+		scope := app.ScopeProject
+		if manifest.selector == "--global" {
+			scope = app.ScopeGlobal
+		}
 		for _, name := range names {
 			if _, declared := manifest.byName[name]; declared {
 				continue
 			}
-			retained, retainedErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: app.ScopeProject, Cwd: manifest.root})
-			if retainedErr != nil || len(retained.Argv) == 0 {
+			retained, retainedErr := client.Get(ctx, daemon.GetRequest{Name: name, Scope: scope, Cwd: manifest.root})
+			if manifest.missing && (retainedErr != nil || len(retained.Argv) == 0) {
 				missing := noCandidateErr
 				if missing == nil {
 					missing = &project.ManifestMissingError{Start: manifest.missingStart, Root: manifest.root}
 				}
 				return projectGuidanceError(missing, manifest.selector)
+			}
+			if isNotFound(retainedErr) {
+				return unresolvedNameError(suggestDeclaredName(retainedErr, manifest, name), name)
 			}
 		}
 	}

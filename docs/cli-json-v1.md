@@ -125,7 +125,11 @@ message names the current ID when available and suggests reading without a curso
 manifest, `manifest_missing` names the nearest-manifest search directory and project root when they
 differ, and suggests `hum init` or `hum run NAME -- COMMAND`. The nearest lookup never searches
 above the project root. Daemon errors keep their wire code; that does not make the daemon protocol
-public.
+public. A `not_found` error may carry an optional string `details.suggestion`: the closest
+declared or retained process name in the requested scope, never one from another scope. Hum never
+acts on it. `start` returns `not_found` before launching anything when a name has neither a
+declaration nor a retained session. MCP not_found errors carry the same field, as does an MCP
+`up` `invalid_request` that names exactly one undeclared process.
 
 ```console
 $ hum up --json

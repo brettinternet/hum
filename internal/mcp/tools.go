@@ -717,6 +717,50 @@ func findDefinition(resolution Resolution, name string) (Definition, bool) {
 	return Definition{}, false
 }
 
+// withDefinitionSuggestion adds the closest declared name to not_found
+// details when the daemon offered no close retained name in the scope.
+func withDefinitionSuggestion(resolution Resolution, name string, details any) any {
+	values, _ := details.(map[string]any)
+	if suggestion, _ := values["suggestion"].(string); suggestion != "" {
+		return details
+	}
+	suggestion := project.SuggestName(name, definitionNames(resolution))
+	if suggestion == "" {
+		return details
+	}
+	if values == nil {
+		values = map[string]any{}
+	}
+	values["suggestion"] = suggestion
+	return values
+}
+
+// unknownNameDetails suggests a declared name when exactly one requested name
+// is undeclared, so the hint is never ambiguous about which name it corrects.
+func unknownNameDetails(resolution Resolution, requested []string) any {
+	var unknown []string
+	for _, name := range requested {
+		if _, declared := findDefinition(resolution, name); !declared {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) != 1 {
+		return nil
+	}
+	if suggestion := project.SuggestName(unknown[0], definitionNames(resolution)); suggestion != "" {
+		return map[string]any{"suggestion": suggestion}
+	}
+	return nil
+}
+
+func definitionNames(resolution Resolution) []string {
+	names := make([]string, 0, len(resolution.Definitions))
+	for _, definition := range resolution.Definitions {
+		names = append(names, definition.Name)
+	}
+	return names
+}
+
 func effectiveRestart(policy string) string {
 	return orchestrate.EffectiveRestart(policy)
 }
@@ -1347,7 +1391,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 				return nil, &ToolError{Code: "manifest_missing", Message: (&project.ManifestMissingError{Root: resolution.Root}).Error()}
 			}
 			mapped := mapError(err)
-			return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process definition or retained session %q not found", input.Name), Details: mapped.Details}
+			return nil, &ToolError{Code: string(protocol.ErrorNotFound), Message: fmt.Sprintf("process definition or retained session %q not found", input.Name), Details: withDefinitionSuggestion(resolution, input.Name, mapped.Details)}
 		}
 		// A retained record does not have a resolved Definition, so retain its
 		// readiness expression before Start replaces the incarnation. The daemon
@@ -1463,7 +1507,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		}
 		selected, err := orchestrate.SelectWithPrerequisites(sharedDefinitions, input.Names)
 		if err != nil {
-			return nil, &ToolError{Code: "invalid_request", Message: err.Error()}
+			return nil, &ToolError{Code: "invalid_request", Message: err.Error(), Details: unknownNameDetails(resolution, input.Names)}
 		}
 		definitions = make([]Definition, 0, len(selected))
 		selectedNames = make([]string, 0, len(selected))
@@ -2148,7 +2192,11 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 			if resolution.ManifestMissing {
 				return nil, &ToolError{Code: "manifest_missing", Message: (&project.ManifestMissingError{Root: resolution.Root}).Error()}
 			}
-			return nil, mapError(getErr)
+			mapped := mapError(getErr)
+			if mapped.Code == string(protocol.ErrorNotFound) {
+				mapped.Details = withDefinitionSuggestion(resolution, name, mapped.Details)
+			}
+			return nil, mapped
 		} else {
 			definition = Definition{Name: name, Source: process.Source, Cwd: process.Cwd, Argv: append([]string(nil), process.Argv...)}
 		}

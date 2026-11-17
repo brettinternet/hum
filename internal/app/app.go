@@ -793,6 +793,8 @@ type NotFoundError struct {
 	Root        string
 	Name        string
 	OtherScopes []ScopeMatch
+	// Suggestion is the closest retained name in the requested scope, if any.
+	Suggestion string
 }
 
 func (e *NotFoundError) Error() string {
@@ -2891,9 +2893,14 @@ func (s *Supervisor) lookupScoped(scope, cwd, name, rootHint string) (*record, e
 	s.mu.RLock()
 	rec := s.records[key]
 	var otherScopes []ScopeMatch
+	var sameScope []string
 	if rec == nil {
 		for _, candidate := range s.records {
-			if candidate.name != name || normalizedScope(candidate.scope) == scope && (scope == ScopeGlobal || candidate.root == root) {
+			inScope := normalizedScope(candidate.scope) == scope && (scope == ScopeGlobal || candidate.root == root)
+			if inScope {
+				sameScope = append(sameScope, candidate.name)
+			}
+			if candidate.name != name || inScope {
 				continue
 			}
 			match := ScopeMatch{Scope: normalizedScope(candidate.scope), ProjectRoot: candidate.root}
@@ -2908,7 +2915,8 @@ func (s *Supervisor) lookupScoped(scope, cwd, name, rootHint string) (*record, e
 			}
 			return otherScopes[i].ProjectRoot < otherScopes[j].ProjectRoot
 		})
-		return nil, &NotFoundError{Root: root, Name: name, OtherScopes: otherScopes}
+		sort.Strings(sameScope)
+		return nil, &NotFoundError{Root: root, Name: name, OtherScopes: otherScopes, Suggestion: projectpkg.SuggestName(name, sameScope)}
 	}
 	return rec, nil
 }

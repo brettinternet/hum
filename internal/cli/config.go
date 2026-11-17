@@ -289,14 +289,15 @@ func crossScopeNotFoundMessage(err error, action string) string {
 	if !errors.As(err, &wire) || wire == nil {
 		return err.Error()
 	}
-	message := wire.Message
+	message := wire.Message + "."
 	var details map[string]any
 	if value, ok := wire.Details.(map[string]any); ok {
 		details = value
 	}
 	if details == nil {
-		return message + ". Run hum list --all to see every scope."
+		return message + " Run hum list --all to see every scope."
 	}
+	message += didYouMean(notFoundSuggestion(err))
 	matches, _ := details["other_scopes"].([]any)
 	lines := make([]string, 0, len(matches))
 	for _, value := range matches {
@@ -315,9 +316,71 @@ func crossScopeNotFoundMessage(err error, action string) string {
 		}
 	}
 	if len(lines) == 0 {
-		return message + ". Run hum list --all to see every scope."
+		return message + " Run hum list --all to see every scope."
 	}
-	return message + ". Other scopes:\n  " + strings.Join(lines, "\n  ") + "\nRun hum list --all to see every scope."
+	return message + " Other scopes:\n  " + strings.Join(lines, "\n  ") + "\nRun hum list --all to see every scope."
+}
+
+// didYouMean renders a name suggestion as a sentence to append to a message.
+func didYouMean(suggestion string) string {
+	if suggestion == "" {
+		return ""
+	}
+	return fmt.Sprintf(" Did you mean %q?", suggestion)
+}
+
+// notFoundSuggestion returns the suggestion carried in a not_found error's
+// details, or "".
+func notFoundSuggestion(err error) string {
+	var wire *daemon.WireError
+	if !isNotFound(err) || !errors.As(err, &wire) {
+		return ""
+	}
+	details, _ := wire.Details.(map[string]any)
+	suggestion, _ := details["suggestion"].(string)
+	return suggestion
+}
+
+// suggestDeclaredName adds the closest declared name to a not_found error's
+// details when the daemon found no close retained name in the scope.
+func suggestDeclaredName(err error, manifest manifestState, name string) error {
+	var wire *daemon.WireError
+	if !isNotFound(err) || !errors.As(err, &wire) {
+		return err
+	}
+	if notFoundSuggestion(err) != "" {
+		return err
+	}
+	if suggestion := project.SuggestName(name, manifestNames(manifest)); suggestion != "" {
+		details, _ := wire.Details.(map[string]any)
+		if details == nil {
+			details = map[string]any{}
+		}
+		details["suggestion"] = suggestion
+		wire.Details = details
+	}
+	return err
+}
+
+// unresolvedNameError reports a launch name that has neither a declaration
+// nor a retained session, keeping the daemon's not_found details.
+func unresolvedNameError(err error, name string) error {
+	message := fmt.Sprintf("process definition or retained session %q not found", name)
+	wireErr := protocol.NewWireError(protocol.ErrorNotFound, message, nil)
+	var wire *daemon.WireError
+	if errors.As(err, &wire) {
+		wireErr.Details = wire.Details
+	}
+	return wrapUserFacingError(wireErr, message+"."+didYouMean(notFoundSuggestion(err)))
+}
+
+// manifestNames lists declared process names in declaration order.
+func manifestNames(manifest manifestState) []string {
+	names := make([]string, 0, len(manifest.defs))
+	for _, definition := range manifest.defs {
+		names = append(names, definition.Name)
+	}
+	return names
 }
 
 func isNameInUse(err error) bool {

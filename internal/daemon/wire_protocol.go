@@ -67,6 +67,9 @@ func protocolWireError(err error) *protocol.WireError {
 		if len(notFound.OtherScopes) != 0 {
 			details["other_scopes"] = notFound.OtherScopes
 		}
+		if notFound.Suggestion != "" {
+			details["suggestion"] = notFound.Suggestion
+		}
 		return protocol.NewWireError(protocol.ErrorNotFound, notFound.Error(), details)
 	}
 	return protocol.NewWireError(protocol.ErrorCode(errorCode(err)), err.Error(), nil)

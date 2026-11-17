@@ -3,9 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRootCommandNoArgsShowsHelp(t *testing.T) {
@@ -104,5 +108,75 @@ func TestRootGlobalFlagsDocumentDefaultsAndEnv(t *testing.T) {
 		if !strings.Contains(help, want) {
 			t.Errorf("help missing %q:\n%s", want, help)
 		}
+	}
+}
+
+// TestProcessNotFoundSuggestsClosestName proves a mistyped process name gets
+// a "Did you mean" hint drawn only from the requested project, in human
+// output and as details.suggestion in a JSON not_found error.
+func TestProcessNotFoundSuggestsClosestName(t *testing.T) {
+	projectRoot := stopShutdownTestProject(t)
+	server, runtimeDir := stopShutdownTestServer(t, 200*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The test binary with no matching tests exits at once on every platform,
+	// leaving a retained record without a long-lived child.
+	argv := []string{executable, "-test.run=^$"}
+	manifest := "version: 1\nprocesses:\n  web:\n    argv: [" + strings.Join([]string{`"` + filepath.ToSlash(executable) + `"`, `"-test.run=^$"`}, ", ") + "]\n"
+	if err := os.WriteFile(filepath.Join(projectRoot, "hum.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	otherRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(otherRoot, "hum.yaml"), []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stopShutdownStartProcess(t, server, projectRoot, "web", argv)
+	stopShutdownStartProcess(t, server, otherRoot, "api", argv)
+
+	humanOutput := func(args ...string) string {
+		t.Helper()
+		stdout, _, err := stopShutdownRun(t, args...)
+		if err != nil {
+			return stdout + err.Error()
+		}
+		return stdout
+	}
+	for _, command := range []string{"logs", "status", "stop"} {
+		if got := humanOutput(command, "wbe"); !strings.Contains(got, `Did you mean "web"?`) {
+			t.Errorf("hum %s wbe = %q, want suggestion of web", command, got)
+		}
+		// "apo" is one edit from "api", which is retained only in another project.
+		for _, name := range []string{"zzzz", "apo"} {
+			if got := humanOutput(command, name); strings.Contains(got, "Did you mean") {
+				t.Errorf("hum %s %s = %q, want no suggestion", command, name, got)
+			}
+		}
+	}
+
+	startJSONError := func(name string) (string, map[string]any) {
+		t.Helper()
+		stdout, _, err := stopShutdownRun(t, "start", name, "--json")
+		if err == nil {
+			t.Fatalf("hum start %s --json succeeded: %q", name, stdout)
+		}
+		var document struct {
+			Error struct {
+				Code    string         `json:"code"`
+				Details map[string]any `json:"details"`
+			} `json:"error"`
+		}
+		if decodeErr := json.Unmarshal([]byte(stdout), &document); decodeErr != nil {
+			t.Fatalf("hum start %s --json stdout %q: %v", name, stdout, decodeErr)
+		}
+		return document.Error.Code, document.Error.Details
+	}
+	if code, details := startJSONError("wbe"); code != "not_found" || details["suggestion"] != "web" {
+		t.Errorf("hum start wbe --json error = %s %v, want not_found with suggestion web", code, details)
+	}
+	if code, details := startJSONError("apo"); code != "not_found" || details["suggestion"] != nil {
+		t.Errorf("hum start apo --json error = %s %v, want not_found without suggestion", code, details)
 	}
 }

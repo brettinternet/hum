@@ -221,6 +221,8 @@ type fakeClient struct {
 	readinessDiagnostic    string
 	retainReadinessOnStart bool
 	sessionID              string
+	// notFoundDetails are the details a daemon attaches to a Get miss.
+	notFoundDetails map[string]any
 }
 
 func fakeCompletedExitReadiness(process protocol.Process) protocol.Process {
@@ -285,7 +287,11 @@ func (f *fakeClient) Get(_ context.Context, req protocol.GetRequest) (protocol.P
 	f.gets = append(f.gets, req)
 	p, ok := f.processes[req.Name]
 	if !ok {
-		return protocol.Process{}, protocol.NewWireError(protocol.ErrorNotFound, "not found", nil)
+		var details any
+		if f.notFoundDetails != nil {
+			details = f.notFoundDetails
+		}
+		return protocol.Process{}, protocol.NewWireError(protocol.ErrorNotFound, "not found", details)
 	}
 	if f.waitResult.Outcome == protocol.WaitExited && f.waited[req.Name] {
 		// Mirror a daemon that has already recorded the child's exit by the
@@ -3160,4 +3166,38 @@ func TestLaunchFailureRecentOutput(t *testing.T) {
 			t.Fatalf("success read output: %#v", client.outputs)
 		}
 	})
+}
+
+// TestNotFoundSuggestsClosestName proves MCP not_found errors carry
+// details.suggestion: forwarded from the daemon for a retained-session lookup,
+// and computed from declarations for an undeclared definition.
+func TestNotFoundSuggestsClosestName(t *testing.T) {
+	suggestion := func(t *testing.T, err error) any {
+		t.Helper()
+		mapped := mapError(err)
+		if mapped == nil || mapped.Code != string(protocol.ErrorNotFound) {
+			t.Fatalf("error = %v, want not_found", err)
+		}
+		details, _ := mapped.Details.(map[string]any)
+		return details["suggestion"]
+	}
+	retained := &fakeClient{notFoundDetails: map[string]any{"scope": "project", "suggestion": "web"}}
+	server, root, _ := newTestServer(t, nil, retained)
+	_, err := server.callTool(context.Background(), "status", args(root, "name", "wbe"))
+	if got := suggestion(t, err); got != "web" {
+		t.Errorf("status wbe suggestion = %v, want web", got)
+	}
+
+	definitions := []Definition{{Name: "web", Source: "manifest", Argv: []string{"web"}}}
+	server, root, _ = newTestServer(t, definitions, &fakeClient{})
+	for _, tool := range []string{"start", "restart"} {
+		_, err = server.callTool(context.Background(), tool, args(root, "name", "wbe"))
+		if got := suggestion(t, err); got != "web" {
+			t.Errorf("%s wbe suggestion = %v, want web", tool, got)
+		}
+		_, err = server.callTool(context.Background(), tool, args(root, "name", "zzzz"))
+		if got := suggestion(t, err); got != nil {
+			t.Errorf("%s zzzz suggestion = %v, want none", tool, got)
+		}
+	}
 }

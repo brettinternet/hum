@@ -1066,4 +1066,7 @@ hum list --all                         # every scope, including a global group
   directory.
 - `list --all` shows a `global` group with `hum --global` selectors. Project misses suggest a global
   match, such as `hum --global logs proxy`.
+- A mistyped name gets `Did you mean "web"?` from the closest retained or declared name in the
+  requested scope, using the same rule as command typos; JSON and MCP carry it as
+  `details.suggestion`. Hum never acts on a suggestion.
 - JSON records carry `scope` (`project` or `global`); global records omit `project_root`.

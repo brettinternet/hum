@@ -157,16 +157,20 @@ func TestStartUndefinedNameHumanError(t *testing.T) {
 		t.Fatalf("write hum.yaml: %v", err)
 	}
 
+	// An unresolvable name fails as not_found before anything launches.
 	stdout, _, err := ergonomicsRunAt(t, project, context.Background(), "start", "definitely-not-a-thing")
-	if err == nil {
-		t.Fatalf("expected hum start to fail for an undefined name")
+	if err == nil || !isNotFound(err) {
+		t.Fatalf("hum start of an undefined name error = %v, want typed not_found", err)
 	}
-	want := `error definitely-not-a-thing: no process definition or retained launch specification for "definitely-not-a-thing"` + "\n"
-	if stdout != want {
-		t.Fatalf("start undefined name stdout = %q, want %q", stdout, want)
+	want := `process definition or retained session "definitely-not-a-thing" not found.`
+	if err.Error() != want {
+		t.Fatalf("start undefined name error = %q, want %q", err.Error(), want)
 	}
-	if strings.Contains(stdout, "(manifest: )") {
-		t.Fatalf("start undefined name output retains the empty parenthetical: %q", stdout)
+	if stdout != "" {
+		t.Fatalf("start undefined name stdout = %q, want empty", stdout)
+	}
+	if strings.Contains(err.Error(), "(manifest: )") {
+		t.Fatalf("start undefined name output retains the empty parenthetical: %q", err.Error())
 	}
 }
 
