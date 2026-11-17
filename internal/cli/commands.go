@@ -3009,7 +3009,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 		if process.Name == "" {
 			process.Name = name
 		}
-		if definition.Ready == nil && process.Readiness != nil && (process.Readiness.State == app.ReadinessStarting || process.Readiness.State == app.ReadinessReady) {
+		if definition.Ready == nil && process.Readiness != nil && (orchestrate.ReadinessPending(process.Readiness.State) || process.Readiness.State == app.ReadinessReady) {
 			definition.Ready = &project.ReadyDefinition{Match: process.Readiness.Match}
 		}
 		if definition.Ready != nil && process.Readiness == nil && (process.State == app.StateRunning || definition.Ready.Exit != nil) {
@@ -3846,7 +3846,7 @@ func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client
 			}(index, state)
 			continue
 		}
-		if state.process.Readiness == nil || state.process.Readiness.State != app.ReadinessStarting {
+		if state.process.Readiness == nil || !orchestrate.ReadinessPending(state.process.Readiness.State) {
 			continue
 		}
 		waits.Add(1)

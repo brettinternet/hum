@@ -1298,6 +1298,34 @@ func TestReadinessHTTPAndTCPMCPStartStatusList(t *testing.T) {
 	}
 }
 
+func TestReadinessTimedOutMCPStatus(t *testing.T) {
+	root := t.TempDir()
+	definitions := []Definition{{Name: "slow", Source: "manifest", Argv: []string{"server"}, Cwd: root, Ready: &protocol.ReadinessConfig{Method: "match", Match: "Listening", Timeout: 2 * time.Second}}}
+	timedOut := protocol.Process{Name: "slow", Source: "manifest", Cwd: root, State: "running", PID: 42, Readiness: &protocol.Readiness{Method: "match", Match: "Listening", State: protocol.ReadinessTimedOut, Diagnostic: "no output matched within 2s"}}
+	client := &fakeClient{processes: map[string]protocol.Process{"slow": timedOut}, keepStarting: true}
+	server, resolvedRoot, _ := newTestServer(t, definitions, client)
+	resolution := Resolution{Root: resolvedRoot, Scope: protocol.ScopeProject, Definitions: definitions}
+	status, err := server.status(context.Background(), resolution, "slow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := server.list(context.Background(), resolution, commonInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]any{"status": status, "list": list} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"state":"timed_out"`, `"diagnostic":"no output matched within 2s"`} {
+			if !strings.Contains(string(encoded), want) {
+				t.Errorf("MCP %s missing %s: %s", name, want, encoded)
+			}
+		}
+	}
+}
+
 func TestExecutableReadiness(t *testing.T) {
 	root := t.TempDir()
 	argv := []string{"probe", "--service", "api"}

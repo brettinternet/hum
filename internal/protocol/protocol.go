@@ -1186,6 +1186,7 @@ const (
 	ReadinessStarting          = "starting"
 	ReadinessReady             = "ready"
 	ReadinessRunningUnverified = "running_unverified"
+	ReadinessTimedOut          = "timed_out"
 )
 
 // Process is the response-safe process snapshot. It deliberately has no Env

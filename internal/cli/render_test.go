@@ -574,6 +574,43 @@ func TestStatusJSONRetainsReadinessDetails(t *testing.T) {
 	}
 }
 
+func TestReadinessTimedOutStatus(t *testing.T) {
+	process := app.Process{
+		Name: "slow", Source: "manifest", Root: "/project", Cwd: "/project", State: app.StateRunning, PID: 42,
+		Argv: []string{"server"}, Readiness: &app.Readiness{State: app.ReadinessTimedOut, Method: "match", Match: "Listening", Diagnostic: "no output matched within 2s"},
+	}
+	var summary bytes.Buffer
+	if err := renderStatusSummaryHuman(&summary, []app.Process{process}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summary.String(), " timed_out ") {
+		t.Fatalf("aggregate status = %q, want timed_out", summary.String())
+	}
+	var named bytes.Buffer
+	if err := renderStatusHuman(&named, process); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"readiness: timed_out\n", "readiness_diagnostic: no output matched within 2s\n"} {
+		if !strings.Contains(named.String(), want) {
+			t.Errorf("named status missing %q: %q", want, named.String())
+		}
+	}
+	for name, value := range map[string]any{
+		"named":     statusJSONFor(process),
+		"aggregate": listJSON{Processes: []listProcessJSON{processJSON(process)}},
+	} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"readiness":"timed_out"`, `"readiness_diagnostic":"no output matched within 2s"`} {
+			if !strings.Contains(string(encoded), want) {
+				t.Errorf("%s status JSON missing %s: %s", name, want, encoded)
+			}
+		}
+	}
+}
+
 func TestProcessStopGraceCLIOutput(t *testing.T) {
 	process := app.Process{Name: "api", Source: "manifest", State: app.StateRunning, StopGrace: 2 * time.Second, StopGraceInherited: true}
 	var human bytes.Buffer

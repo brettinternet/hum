@@ -616,7 +616,7 @@ func cliSharedLaunchResult(definition project.Definition, result manifestLaunchR
 			// match-only record while a CLI up operation is refreshing it.
 			previous := snapshot.Readiness
 			snapshot.Readiness = nil
-			if result.ReadinessConfigured || result.Readiness == app.ReadinessStarting || result.Readiness == app.ReadinessReady {
+			if result.ReadinessConfigured || orchestrate.ReadinessPending(result.Readiness) || result.Readiness == app.ReadinessReady {
 				readiness := &app.Readiness{
 					Method: result.ReadinessMethod, Target: result.ReadinessTarget, Argv: append([]string(nil), result.ReadinessArgv...),
 					Interval: result.ReadinessInterval, State: result.Readiness,

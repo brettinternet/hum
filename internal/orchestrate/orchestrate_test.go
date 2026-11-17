@@ -103,6 +103,65 @@ func TestExecutableReadiness(t *testing.T) {
 	})
 }
 
+// TestReadinessTimedOutClientWaitOutlastsManifest proves a client --timeout
+// longer than the manifest timeout keeps waiting after the daemon reports
+// timed_out, so a late match or probe success still succeeds.
+func TestReadinessTimedOutClientWaitOutlastsManifest(t *testing.T) {
+	root := t.TempDir()
+	for _, method := range []string{"match", "exec"} {
+		t.Run(method, func(t *testing.T) {
+			ready := &ReadinessConfig{Method: method, Match: "Listening"}
+			readiness := &Readiness{Method: method, Match: "Listening", State: ReadinessStarting}
+			if method == "exec" {
+				ready = &ReadinessConfig{Method: method, Argv: []string{"probe"}}
+				readiness = &Readiness{Method: method, Argv: []string{"probe"}, State: ReadinessStarting}
+			}
+			definition := Definition{Name: "slow", Source: "manifest", Cwd: root, Argv: []string{"slow"}, Ready: ready}
+			launched := Process{Name: "slow", Source: "manifest", Cwd: root, PID: 41, State: "running", LaunchCursor: 3, Readiness: readiness, StopGraceInherited: true}
+			var mu sync.Mutex
+			gets := 0
+			current := func() Process {
+				process := launched
+				copy := *launched.Readiness
+				process.Readiness = &copy
+				switch {
+				case gets < 3:
+					process.Readiness.State, process.Readiness.Diagnostic = ReadinessTimedOut, "no output matched within 2s"
+				default:
+					now := time.Now()
+					process.Readiness.State, process.Readiness.Time, process.Readiness.Cursor = ReadinessReady, now, uint64Pointer(9)
+				}
+				return process
+			}
+			waits := 0
+			result, err := WaitForReadiness(context.Background(), root, definition, launched, "started", 5*time.Second, ReadinessOperations{
+				Get: func(context.Context, string, string) (Process, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					gets++
+					return NormalizeProcess(current()), nil
+				},
+				Wait: func(context.Context, WaitRequest) (WaitResult, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					waits++
+					gets = 3
+					return WaitResult{Outcome: WaitMatched, Cursor: 9}, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Outcome != "started" || result.Process == nil || result.Process.Readiness == nil || result.Process.Readiness.State != ReadinessReady {
+				t.Fatalf("result = %#v, want started with ready readiness", result)
+			}
+			if method == "match" && waits != 1 {
+				t.Fatalf("match waits = %d, want one", waits)
+			}
+		})
+	}
+}
+
 func TestReadinessHTTPDrift(t *testing.T) {
 	root := t.TempDir()
 	definition := Definition{Name: "web", Source: "manifest", Cwd: root, Argv: []string{"web"}, Ready: &ReadinessConfig{Method: "http", Target: "http://127.0.0.1:1/readyz"}}

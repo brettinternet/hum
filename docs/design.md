@@ -303,7 +303,9 @@ migrate ──exit 0──▶ api               a dependent launches only when e
   explicit `start`, or `restart` reruns it and waits for completion. Completion does not survive
   daemon replacement.
 - Each timeout starts at that process's own launch or first running observation, so independent
-  roots overlap and the critical path sets the total wait. A CLI timeout overrides the manifest.
+  roots overlap and the critical path sets the total wait. A CLI timeout overrides the manifest
+  for the client's wait only: with a longer `--timeout`, status may already show `timed_out` while
+  `up` keeps waiting, and a late match still lets `up` succeed.
 - `up NAME...` selects those declarations plus their transitive `after` prerequisites and reports
   only that subgraph. With no names, `up` covers every declaration.
 - `up` attempts every entry, emits results in lexical order, and leaves successful children
@@ -635,6 +637,11 @@ Readiness gates startup, `after`, and launch commands. It is not health monitori
 - A launch records its readiness expression, launch cursor, and first matching cursor even when
   nobody is waiting. State moves from `starting` to `ready` and survives output eviction.
   A relaunch resets readiness at the new launch cursor, so old output never satisfies it.
+- The daemon owns each launch's manifest `timeout`. When it passes, state becomes `timed_out` with
+  a diagnostic (the last probe result, `no output matched within DURATION`, or `process did not
+  exit within DURATION`) and a `startup_failure` "readiness timeout" event. Probes stop; a later
+  matching line or successful exit still moves the launch to `ready`. Start, restart, and relaunch
+  reset it to `starting`.
 - Processes without `ready`, including discovered definitions, report `running_unverified` and are
   never ready.
 - Ad-hoc records have no readiness. Terminal manifest records keep their method, matcher or exec

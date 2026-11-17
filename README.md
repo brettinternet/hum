@@ -144,7 +144,7 @@ A process listed in `after` waits until this check passes:
 | a TCP port accepts | `ready: {tcp: "127.0.0.1:5432"}` |
 | the process itself exits 0 | `ready: {exit: 0}` |
 
-`exec`, `http`, and `tcp` checks retry every `interval` (1s); every check gives up after `timeout` (30s). They run only at startup; Hum does not monitor health. HTTP and TCP targets must use an IP address or `localhost`.
+`exec`, `http`, and `tcp` checks retry every `interval` (1s). Every method gives up after `timeout` (30s); `hum status` then shows readiness `timed_out` with the reason. They run only at startup; Hum does not monitor health. HTTP and TCP targets must use an IP address or `localhost`.
 
 Use `exit: 0` for setup steps such as migrations:
 

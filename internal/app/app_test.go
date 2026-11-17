@@ -693,8 +693,8 @@ func TestReadinessTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if timedOut.Readiness == nil || timedOut.Readiness.State != ReadinessStarting || !strings.Contains(timedOut.Readiness.Diagnostic, "dial:") {
-		t.Fatalf("TCP timeout readiness = %#v, want starting with last dial diagnostic", timedOut.Readiness)
+	if timedOut.Readiness == nil || timedOut.Readiness.State != ReadinessTimedOut || !strings.Contains(timedOut.Readiness.Diagnostic, "dial:") {
+		t.Fatalf("TCP timeout readiness = %#v, want timed_out with last dial diagnostic", timedOut.Readiness)
 	}
 }
 
@@ -785,6 +785,86 @@ func TestReadinessHTTPTimeoutRetainsDiagnostic(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("HTTP timeout diagnostic was not retained")
+}
+
+// TestReadinessTimedOut proves every readiness method reports a daemon-owned
+// timeout instead of staying "starting" forever.
+func TestReadinessTimedOut(t *testing.T) {
+	refused, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedAddress := refused.Addr().String()
+	_ = refused.Close()
+	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
+	defer unavailable.Close()
+	const timeout = 150 * time.Millisecond
+	cases := []struct {
+		name       string
+		ready      ReadinessConfig
+		diagnostic string
+	}{
+		{name: "match", ready: ReadinessConfig{Method: "match", Match: "Listening"}, diagnostic: "no output matched within 150ms"},
+		{name: "http", ready: ReadinessConfig{Method: "http", Target: unavailable.URL, Interval: 20 * time.Millisecond}, diagnostic: "503"},
+		{name: "tcp", ready: ReadinessConfig{Method: "tcp", Target: refusedAddress, Interval: 20 * time.Millisecond}, diagnostic: "dial:"},
+		{name: "exec", ready: ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo not yet; exit 1"}, Interval: 20 * time.Millisecond}, diagnostic: "not yet"},
+		{name: "exit", ready: ReadinessConfig{Method: "exit"}, diagnostic: "process did not exit within 150ms"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := makeProject(t, false)
+			s := testSupervisor(t, Options{})
+			var mu sync.Mutex
+			var failures []string
+			s.SetLifecycleHook(func(event LifecycleEvent) {
+				if event.Event == "startup_failure" {
+					mu.Lock()
+					failures = append(failures, event.Detail)
+					mu.Unlock()
+				}
+			})
+			ready := tc.ready
+			ready.Timeout = timeout
+			if _, err := s.Start(StartRequest{Name: "slow", Source: "manifest", Root: root, Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 5"}, Env: []string{"PATH=/usr/bin:/bin"}, Ready: &ready}); err != nil {
+				t.Fatal(err)
+			}
+			got := waitForReadinessState(t, s, root, "slow", ReadinessTimedOut)
+			if !strings.Contains(got.Readiness.Diagnostic, tc.diagnostic) {
+				t.Fatalf("timed out readiness = %#v, want diagnostic containing %q", got.Readiness, tc.diagnostic)
+			}
+			// The state is published before its lifecycle event.
+			var gotFailures []string
+			for deadline := time.Now().Add(time.Second); ; time.Sleep(time.Millisecond) {
+				mu.Lock()
+				gotFailures = append([]string(nil), failures...)
+				mu.Unlock()
+				if len(gotFailures) != 0 || time.Now().After(deadline) {
+					break
+				}
+			}
+			if len(gotFailures) != 1 || gotFailures[0] != "readiness timeout" {
+				t.Fatalf("startup_failure details = %q, want one readiness timeout", gotFailures)
+			}
+			if tc.name == "match" {
+				store, err := s.Output(root, "slow")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Append(output.Stdout, time.Now(), "Listening late"); err != nil {
+					t.Fatal(err)
+				}
+				waitForReadinessState(t, s, root, "slow", ReadinessReady)
+			}
+			restarted, err := s.Restart(context.Background(), root, "slow")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if restarted.Readiness == nil || restarted.Readiness.State != ReadinessStarting || restarted.Readiness.Diagnostic != "" {
+				t.Fatalf("restarted readiness = %#v, want starting without diagnostic", restarted.Readiness)
+			}
+			waitForReadinessState(t, s, root, "slow", ReadinessTimedOut)
+		})
+	}
 }
 
 func TestReadinessHTTPNetworkSemantics(t *testing.T) {

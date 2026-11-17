@@ -197,6 +197,9 @@ const (
 	ReadinessStarting          = "starting"
 	ReadinessReady             = "ready"
 	ReadinessRunningUnverified = "running_unverified"
+	// ReadinessTimedOut reports that the manifest readiness timeout passed
+	// without success. A later match still moves the launch to ready.
+	ReadinessTimedOut = "timed_out"
 )
 
 // StartRequest describes one direct-argv launch. Env is copied and is never
@@ -849,13 +852,17 @@ func ValidateName(name string) error {
 // observe is called by output.Store while its lock is held and therefore must
 // never call back into Store.
 type readinessTracker struct {
-	pattern  *regexp.Regexp
-	after    output.Cursor
-	hasAfter bool
-	onReady  func(time.Time)
+	pattern   *regexp.Regexp
+	after     output.Cursor
+	hasAfter  bool
+	onReady   func(time.Time)
+	onTimeout func()
 
 	mu       sync.Mutex
 	ready    bool
+	timedOut bool
+	closed   bool
+	timer    *time.Timer
 	done     atomic.Bool // set once ready so later appends skip the strip and match
 	cursor   output.Cursor
 	at       time.Time
@@ -863,18 +870,38 @@ type readinessTracker struct {
 	observer *output.AppendObserver
 }
 
-func newReadinessTracker(store *output.Store, pattern *regexp.Regexp, after output.Cursor, hasAfter bool, onReady ...func(time.Time)) *readinessTracker {
-	if store == nil || pattern == nil {
+// newReadinessTracker owns one incarnation's readiness deadline and, given a
+// pattern, observes output after the launch cursor. Once timeout passes
+// without a match it reports timed out and calls onTimeout, but keeps
+// observing so a late match still becomes ready.
+func newReadinessTracker(store *output.Store, pattern *regexp.Regexp, after output.Cursor, hasAfter bool, timeout time.Duration, onReady func(time.Time), onTimeout func()) *readinessTracker {
+	if store == nil || pattern == nil && timeout <= 0 {
 		return nil
 	}
 	tracker := &readinessTracker{
-		pattern: pattern, after: after, hasAfter: hasAfter,
+		pattern: pattern, after: after, hasAfter: hasAfter, onReady: onReady, onTimeout: onTimeout,
 	}
-	if len(onReady) != 0 {
-		tracker.onReady = onReady[0]
+	if pattern != nil {
+		tracker.observer = store.ObserveAppend(tracker.observe)
 	}
-	tracker.observer = store.ObserveAppend(tracker.observe)
+	if timeout > 0 {
+		tracker.mu.Lock()
+		tracker.timer = time.AfterFunc(timeout, tracker.expire)
+		tracker.mu.Unlock()
+	}
 	return tracker
+}
+
+func (t *readinessTracker) expire() {
+	t.mu.Lock()
+	expired := !t.ready && !t.closed
+	if expired {
+		t.timedOut = true
+	}
+	t.mu.Unlock()
+	if expired && t.onTimeout != nil {
+		t.onTimeout()
+	}
 }
 
 func (t *readinessTracker) observe(entry output.Entry) {
@@ -902,13 +929,13 @@ func (t *readinessTracker) observe(entry output.Entry) {
 	}
 }
 
-func (t *readinessTracker) snapshot() (bool, output.Cursor, time.Time) {
+func (t *readinessTracker) snapshot() (bool, bool, output.Cursor, time.Time) {
 	if t == nil {
-		return false, 0, time.Time{}
+		return false, false, 0, time.Time{}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.ready, t.cursor, t.at
+	return t.ready, t.timedOut, t.cursor, t.at
 }
 
 func (t *readinessTracker) close() {
@@ -916,6 +943,12 @@ func (t *readinessTracker) close() {
 		return
 	}
 	t.once.Do(func() {
+		t.mu.Lock()
+		t.closed = true
+		if t.timer != nil {
+			t.timer.Stop()
+		}
+		t.mu.Unlock()
 		if t.observer != nil {
 			t.observer.Close()
 		}
@@ -932,19 +965,39 @@ type executableReadinessTracker struct {
 	maxBytes   int
 	mu         sync.RWMutex
 	ready      bool
+	timedOut   bool
 	at         time.Time
 	diagnostic string
 	cancel     context.CancelFunc
 	done       chan struct{}
 }
 
-func (t *executableReadinessTracker) snapshot() (bool, time.Time, string) {
+func (t *executableReadinessTracker) snapshot() executableReadiness {
 	if t == nil {
-		return false, time.Time{}, ""
+		return executableReadiness{}
 	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.ready, t.at, t.diagnostic
+	return executableReadiness{ready: t.ready, timedOut: t.timedOut, at: t.at, diagnostic: t.diagnostic}
+}
+
+// executableReadiness is the retained result of one incarnation's probes.
+type executableReadiness struct {
+	ready      bool
+	timedOut   bool
+	at         time.Time
+	diagnostic string
+}
+
+func (r executableReadiness) state() string {
+	switch {
+	case r.ready:
+		return ReadinessReady
+	case r.timedOut:
+		return ReadinessTimedOut
+	default:
+		return ReadinessStarting
+	}
 }
 func (t *executableReadinessTracker) stop() {
 	if t != nil && t.cancel != nil {
@@ -973,58 +1026,84 @@ func (s *Supervisor) startExecutableReadiness(rec *record, incarnation uint64) {
 	go func() {
 		defer close(tracker.done)
 		defer cancel()
-		first := true
-		for {
-			if !first {
-				timer := time.NewTimer(tracker.interval)
-				select {
-				case <-parent.Done():
-					timer.Stop()
-					return
-				case <-timer.C:
-				}
-			}
-			first = false
-			var diagnostic string
-			var exitErr error
-			if tracker.method == "exec" {
-				diagnostic, exitErr = runReadinessProbe(parent, argv, cwd, env, limit)
-			} else {
-				diagnostic, exitErr = runNetworkReadinessProbe(parent, tracker.method, tracker.target, limit)
-			}
-			if exitErr == nil {
-				tracker.mu.Lock()
-				tracker.ready = true
-				tracker.at = s.now()
-				readyAt := tracker.at
-				tracker.diagnostic = ""
-				tracker.mu.Unlock()
-				s.emitLifecycle(rec, "ready", "method="+tracker.method, readyAt, nil)
-				return
-			}
-			// Cancellation is lifecycle control, not a failed probe attempt;
-			// preserve the last completed diagnostic while stopping a run.
-			if parent.Err() != nil {
-				if errors.Is(parent.Err(), context.DeadlineExceeded) {
-					if diagnostic != "" {
-						tracker.mu.Lock()
-						tracker.diagnostic = diagnostic
-						tracker.mu.Unlock()
-					}
-					s.emitLifecycle(rec, "startup_failure", "readiness timeout", s.now(), nil)
-				}
-				return
-			}
+		if s.probeUntilReady(parent, tracker, cwd, env) {
+			s.emitLifecycle(rec, "ready", "method="+tracker.method, tracker.snapshot().at, nil)
+			return
+		}
+		// Cancellation is lifecycle control; only the manifest deadline is a
+		// readiness timeout, wherever in the probe loop it expired.
+		if errors.Is(parent.Err(), context.DeadlineExceeded) {
 			tracker.mu.Lock()
-			tracker.diagnostic = diagnostic
+			tracker.timedOut = true
 			tracker.mu.Unlock()
-			select {
-			case <-parent.Done():
-				return
-			default:
-			}
+			s.emitLifecycle(rec, "startup_failure", "readiness timeout", s.now(), nil)
 		}
 	}()
+}
+
+// probeUntilReady runs probes at the tracker interval until one succeeds or
+// parent ends. A probe interrupted by parent preserves the last completed
+// diagnostic unless the deadline itself produced the diagnostic.
+func (s *Supervisor) probeUntilReady(parent context.Context, tracker *executableReadinessTracker, cwd string, env []string) bool {
+	for first := true; ; first = false {
+		if !first {
+			timer := time.NewTimer(tracker.interval)
+			select {
+			case <-parent.Done():
+				timer.Stop()
+				return false
+			case <-timer.C:
+			}
+		}
+		var diagnostic string
+		var exitErr error
+		if tracker.method == "exec" {
+			diagnostic, exitErr = runReadinessProbe(parent, tracker.argv, cwd, env, tracker.maxBytes)
+		} else {
+			diagnostic, exitErr = runNetworkReadinessProbe(parent, tracker.method, tracker.target, tracker.maxBytes)
+		}
+		if exitErr == nil {
+			tracker.mu.Lock()
+			tracker.ready = true
+			tracker.at = s.now()
+			tracker.diagnostic = ""
+			tracker.mu.Unlock()
+			return true
+		}
+		if parent.Err() != nil && (diagnostic == "" || !errors.Is(parent.Err(), context.DeadlineExceeded)) {
+			return false
+		}
+		tracker.mu.Lock()
+		tracker.diagnostic = diagnostic
+		tracker.mu.Unlock()
+		if parent.Err() != nil {
+			return false
+		}
+	}
+}
+
+// newLaunchReadinessTracker starts match or exit readiness for one
+// incarnation and reports its ready and timeout transitions as lifecycle
+// events. Probe methods own their deadline in startExecutableReadiness.
+func (s *Supervisor) newLaunchReadinessTracker(rec *record, store *output.Store, config *ReadinessConfig, pattern *regexp.Regexp, after output.Cursor, hasAfter bool) *readinessTracker {
+	if config == nil || config.Method != "match" && config.Method != "exit" {
+		return nil
+	}
+	return newReadinessTracker(store, pattern, after, hasAfter, config.Timeout, func(at time.Time) {
+		s.emitLifecycle(rec, "ready", "method=match", at, nil)
+	}, func() {
+		s.emitLifecycle(rec, "startup_failure", "readiness timeout", s.now(), nil)
+	})
+}
+
+// executableReadinessLocked reports probe readiness from the active tracker,
+// or from the result retained after the incarnation's tracker stopped.
+func (r *record) executableReadinessLocked() *Readiness {
+	result := r.execReadiness
+	if r.execTracker != nil {
+		result = r.execTracker.snapshot()
+	}
+	return &Readiness{Method: r.readyConfig.Method, Target: r.readyConfig.Target, Argv: append([]string(nil), r.readyConfig.Argv...), Interval: r.readyConfig.Interval, State: result.state(), Time: result.at, Diagnostic: result.diagnostic}
 }
 
 func runNetworkReadinessProbe(parent context.Context, method, target string, maxBytes int) (string, error) {
@@ -1277,9 +1356,7 @@ type record struct {
 	// Exec readiness is retained independently of the active probe tracker.
 	// Reconciliation clears the tracker after an incarnation exits, but
 	// terminal snapshots still need its bounded last diagnostic.
-	execReady      bool
-	execReadyAt    time.Time
-	execDiagnostic string
+	execReadiness executableReadiness
 
 	child         Child
 	pid           int
@@ -1354,9 +1431,7 @@ func (s *Supervisor) transitionRunningLocked(rec *record, child Child, startedAt
 	s.processObservations[rec.key]++
 	rec.tracker = tracker
 	rec.exitReady = false
-	rec.execReady = false
-	rec.execReadyAt = time.Time{}
-	rec.execDiagnostic = ""
+	rec.execReadiness = executableReadiness{}
 }
 
 // transitionTerminalLocked records the immutable result for one incarnation.
@@ -2150,6 +2225,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 	env := append([]string{}, rec.env...)
 	launchCwd := rec.cwd
 	pattern := rec.readyPattern
+	launchReady := rec.readyConfig
 	source := rec.source
 	tty := rec.tty
 	var ttySize *TTYSize
@@ -2192,10 +2268,8 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 				launchBoundary = markerErr == nil
 				launchHasEntry = launchHasEntry || markerErr == nil
 			}
-			if markerErr == nil && source != "" && pattern != nil {
-				tracker = newReadinessTracker(store, pattern, launchCursor, launchBoundary, func(at time.Time) {
-					s.emitLifecycle(rec, "ready", "method=match", at, nil)
-				})
+			if markerErr == nil && source != "" {
+				tracker = s.newLaunchReadinessTracker(rec, store, launchReady, pattern, launchCursor, launchBoundary)
 			}
 		})
 		return markerErr
@@ -2512,8 +2586,8 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 	if err != nil {
 		return Process{}, fmt.Errorf("restart marker: %w", err)
 	}
-	if rec.source != "" && rec.readyPattern != nil {
-		launchTracker = newReadinessTracker(store, rec.readyPattern, launchCursor, true)
+	if rec.source != "" {
+		launchTracker = s.newLaunchReadinessTracker(rec, store, rec.readyConfig, rec.readyPattern, launchCursor, true)
 	}
 	startedAt := s.now()
 	var processTTYSize *process.TTYSize
@@ -2646,7 +2720,7 @@ func (s *Supervisor) reconcile(rec *record) {
 	if execTracker != nil {
 		execTracker.stop()
 		<-execTracker.done
-		rec.execReady, rec.execReadyAt, rec.execDiagnostic = execTracker.snapshot()
+		rec.execReadiness = execTracker.snapshot()
 	}
 	rec.execTracker = nil
 	terminalProcess := rec.snapshotLocked()
@@ -4543,20 +4617,19 @@ func (r *record) snapshotLocked() Process {
 			model.Readiness = &Readiness{State: ReadinessRunningUnverified}
 		case r.readyConfig.Method == "exit":
 			model.Readiness = &Readiness{Method: "exit", State: ReadinessStarting}
+			if _, timedOut, _, _ := r.tracker.snapshot(); timedOut {
+				model.Readiness.State, model.Readiness.Diagnostic = ReadinessTimedOut, fmt.Sprintf("process did not exit within %s", r.readyConfig.Timeout)
+			}
 		case r.readyConfig.Method == "exec" || r.readyConfig.Method == "http" || r.readyConfig.Method == "tcp":
-			ready, at, diagnostic := r.execTracker.snapshot()
-			if r.execTracker == nil {
-				ready, at, diagnostic = r.execReady, r.execReadyAt, r.execDiagnostic
-			}
-			model.Readiness = &Readiness{Method: r.readyConfig.Method, Target: r.readyConfig.Target, Argv: append([]string(nil), r.readyConfig.Argv...), Interval: r.readyConfig.Interval, State: ReadinessStarting, Time: at, Diagnostic: diagnostic}
-			if ready {
-				model.Readiness.State = ReadinessReady
-			}
+			model.Readiness = r.executableReadinessLocked()
 		default:
-			ready, cursor, at := r.tracker.snapshot()
-			if ready {
+			ready, timedOut, cursor, at := r.tracker.snapshot()
+			switch {
+			case ready:
 				model.Readiness = &Readiness{Method: "match", State: ReadinessReady, Cursor: &cursor, Time: at, Match: r.readyConfig.Match}
-			} else {
+			case timedOut:
+				model.Readiness = &Readiness{Method: "match", State: ReadinessTimedOut, Match: r.readyConfig.Match, Diagnostic: fmt.Sprintf("no output matched within %s", r.readyConfig.Timeout)}
+			default:
 				model.Readiness = &Readiness{Method: "match", State: ReadinessStarting, Match: r.readyConfig.Match}
 			}
 		}
@@ -4574,15 +4647,7 @@ func (r *record) snapshotLocked() Process {
 			}
 			model.Readiness = &Readiness{Method: "exit", State: state, Time: at}
 		} else if r.readyConfig.Method == "exec" || r.readyConfig.Method == "http" || r.readyConfig.Method == "tcp" {
-			ready, at, diagnostic := r.execTracker.snapshot()
-			if r.execTracker == nil {
-				ready, at, diagnostic = r.execReady, r.execReadyAt, r.execDiagnostic
-			}
-			state := ReadinessStarting
-			if ready {
-				state = ReadinessReady
-			}
-			model.Readiness = &Readiness{Method: r.readyConfig.Method, Target: r.readyConfig.Target, Argv: append([]string(nil), r.readyConfig.Argv...), Interval: r.readyConfig.Interval, State: state, Time: at, Diagnostic: diagnostic}
+			model.Readiness = r.executableReadinessLocked()
 		} else if r.relaunchPending || r.relaunchExhausted {
 			model.Readiness = &Readiness{Method: "match", State: ReadinessStarting, Match: r.readyConfig.Match}
 		}

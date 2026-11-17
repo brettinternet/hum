@@ -125,6 +125,8 @@ func readinessStyle(readiness string) ansiStyle {
 		return ansiGreen
 	case app.ReadinessStarting:
 		return ansiYellow
+	case app.ReadinessTimedOut:
+		return ansiRed
 	default:
 		return ""
 	}

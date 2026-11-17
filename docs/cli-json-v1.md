@@ -83,6 +83,9 @@ Readiness: `readiness_method` is `match`, `exec`, `http`, `tcp`, or `exit`. `htt
 carry the literal `readiness_target`, which never expands variables. `ready: {exit: 0}` reports a
 successful exit as readiness `ready` and outcome `completed`; a nonzero exit, signal, or stop is
 `exited_before_ready`.
+`readiness` is `starting`, `ready`, `timed_out`, or `running_unverified`. `timed_out` means the
+manifest `timeout` passed without success; `readiness_diagnostic` says why, and a later match or
+successful exit can still become `ready`.
 
 `recent_output`: `start`, `up`, and `restart` records with outcome `exited_before_ready`,
 `timed_out`, or `recovery_exhausted` carry the failed launch's final output when any was retained:

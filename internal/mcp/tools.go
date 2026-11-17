@@ -1378,7 +1378,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 				}
 			}
 		}
-		if !input.NoWait && process.Readiness != nil && (process.Readiness.State == protocol.ReadinessStarting || process.Readiness.State == protocol.ReadinessReady) {
+		if !input.NoWait && process.Readiness != nil && (orchestrate.ReadinessPending(process.Readiness.State) || process.Readiness.State == protocol.ReadinessReady) {
 			method := process.Readiness.Method
 			if method == "" {
 				method = "match"
@@ -2184,7 +2184,7 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 	if process.Name == "" {
 		process.Name = name
 	}
-	if definition.Ready == nil && process.Readiness != nil && (process.Readiness.State == protocol.ReadinessStarting || process.Readiness.State == protocol.ReadinessReady) {
+	if definition.Ready == nil && process.Readiness != nil && (orchestrate.ReadinessPending(process.Readiness.State) || process.Readiness.State == protocol.ReadinessReady) {
 		definition.Ready = &protocol.ReadinessConfig{Match: process.Readiness.Match}
 	}
 	if definition.Ready != nil && process.Readiness == nil && (process.State == "running" || definition.Ready.Method == "exit") {

@@ -26,6 +26,7 @@ const (
 	ReadinessStarting          = "starting"
 	ReadinessReady             = "ready"
 	ReadinessRunningUnverified = "running_unverified"
+	ReadinessTimedOut          = "timed_out"
 )
 
 const (
@@ -712,7 +713,9 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 		return result, nil
 	case ReadinessRunningUnverified:
 		return result, nil
-	case ReadinessStarting:
+	case ReadinessStarting, ReadinessTimedOut:
+		// The manifest deadline is daemon-owned; a longer client wait keeps
+		// waiting because a late match still becomes ready.
 		// Continue below using the expression recorded on this incarnation.
 	default:
 		return result, nil
@@ -782,7 +785,7 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 		return result, nil
 	case ReadinessRunningUnverified:
 		return result, nil
-	case ReadinessStarting:
+	case ReadinessStarting, ReadinessTimedOut:
 		if process.Readiness.Match != recordedMatch {
 			return result, nil
 		}
@@ -816,7 +819,7 @@ func WaitForReadiness(ctx context.Context, root string, definition Definition, p
 			return ResultForProcess(definition, current, initialOutcome), true, true, nil
 		case ReadinessRunningUnverified:
 			return ResultForProcess(definition, current, initialOutcome), true, true, nil
-		case ReadinessStarting:
+		case ReadinessStarting, ReadinessTimedOut:
 			if current.Readiness.Match != recordedMatch {
 				return ResultForProcess(definition, current, initialOutcome), true, true, nil
 			}
@@ -955,12 +958,19 @@ func ProgressWaitsForReadiness(definition Definition, result Result) bool {
 		return false
 	}
 	if readinessMethod(definition.Ready) == "exit" {
-		return result.Process.Readiness != nil && result.Process.Readiness.State == ReadinessStarting
+		return result.Process.Readiness != nil && ReadinessPending(result.Process.Readiness.State)
 	}
 	if result.Process.State != "running" {
 		return false
 	}
-	return result.Process.Readiness != nil && result.Process.Readiness.State == ReadinessStarting || result.Outcome == "started" && result.Process.Readiness == nil
+	return result.Process.Readiness != nil && ReadinessPending(result.Process.Readiness.State) || result.Outcome == "started" && result.Process.Readiness == nil
+}
+
+// ReadinessPending reports a configured readiness that has not succeeded for
+// the current incarnation. A timed-out launch is still pending to a client
+// whose own wait outlasts the manifest timeout.
+func ReadinessPending(state string) bool {
+	return state == ReadinessStarting || state == ReadinessTimedOut
 }
 
 // ResultSatisfiesGate reports whether a prerequisite may release its direct
