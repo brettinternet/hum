@@ -2,6 +2,27 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.20.0](https://github.com/brettinternet/hum/compare/v0.19.2...v0.20.0) - 2026-11-17
+
+### Added
+
+- **cli:** Show exit codes and pending relaunches in aggregate status and list
+- **up:** Warn when a kept process's manifest environment changed
+- Suggest closest process name on not found
+- **up:** Show failed launch's recent output
+- **logs:** Interleave multi-process human logs by time
+
+### Fixed
+
+- **readiness:** Wait for daemon timeout diagnostic when client deadline fires first
+- **doctor:** Name the process in human check lines
+- **readiness:** Report timed_out when startup readiness gives up
+- **events:** Show exit code or signal in human output
+
+### Documentation
+
+- **worktrees:** Stop processes in Worktrunk pre-remove hook
+
 ## [v0.19.2](https://github.com/brettinternet/hum/compare/v0.19.1...v0.19.2) - 2026-11-17
 
 ### Fixed
