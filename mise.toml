@@ -2,14 +2,14 @@
 staticcheck = "go:honnef.co/go/tools/cmd/staticcheck"
 
 [tools]
-go = "1.27.3"
+go = "1.27.4"
 git-cliff = "2.14.2"
 gitleaks = "8.30.1"
-lefthook = "2.1.14"
-task = "3.53.1"
-worktrunk = "0.79.0"
-staticcheck = "0.7.0-0.dev.0.20261009221906-f1838cc308e5"
-"go:golang.org/x/vuln/cmd/govulncheck" = "1.8.0"
+lefthook = "2.2.2"
+task = "3.54.0"
+worktrunk = "0.82.0"
+staticcheck = "0.8.2"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
 "github:brettinternet/backlog" = "latest"
 
 "github:brettinternet/hum" = {
