@@ -9,7 +9,7 @@ mise install
 task init      # toolchain, dependencies, Git hooks
 ```
 
-`mise.toml` pins Go, git-cliff, Staticcheck, Task, Lefthook, gitleaks, govulncheck, and `bl`.
+`mise.toml` pins Go, git-cliff, Staticcheck, Task, Lefthook, betterleaks, govulncheck, and `bl`.
 
 ## Build and run
 
@@ -39,7 +39,7 @@ Use the smallest check that covers your change.
 | `task test` | `go test ./...` |
 | `task check` | changelog generation, Go formatting, `go vet ./...`, Staticcheck |
 | `task coverage` | all tests with coverage; profile at `/tmp/hum-coverage.out` |
-| `task security` | gitleaks over full history, plus `govulncheck ./...` (fails only on reachable vulnerabilities) |
+| `task security` | betterleaks over full history, plus `govulncheck ./...` (fails only on reachable vulnerabilities) |
 | `task stress` | repeated race-enabled daemon and child-process tests in shuffled order |
 | `task changelog` | preview or regenerate `CHANGELOG.md` |
 | `task ci` | the full gate: security, checks, tests, race tests, and release smoke tests |

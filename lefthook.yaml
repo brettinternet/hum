@@ -11,7 +11,7 @@ pre-commit:
       stage_fixed: true
       tags: [fix]
     - name: Check for secret leaks
-      run: mise exec gitleaks -- gitleaks git --pre-commit --redact --staged --verbose --no-banner
+      run: mise exec betterleaks -- betterleaks git --pre-commit --redact --staged --verbose --no-banner
 
 commit-msg:
   jobs:

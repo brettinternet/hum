@@ -40,7 +40,7 @@ tasks:
   security:
     desc: Scan repository history for secrets and Go code for reachable vulnerabilities
     cmds:
-      - mise exec gitleaks -- gitleaks git --redact --verbose --no-banner
+      - mise exec betterleaks -- betterleaks git --redact --verbose --no-banner
       - mise exec go:golang.org/x/vuln/cmd/govulncheck -- govulncheck ./...
 
   check:
