@@ -765,26 +765,39 @@ func TestReadinessHTTPLifecycleCancellationAndIncarnationIsolation(t *testing.T)
 	}
 }
 
+// TestReadinessHTTPTimeoutRetainsDiagnostic proves a deadline that interrupts
+// a probe keeps the last completed probe's diagnostic, and reports the deadline
+// only when no probe completed.
 func TestReadinessHTTPTimeoutRetainsDiagnostic(t *testing.T) {
-	root := makeProject(t, false)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
-	defer server.Close()
-	s := testSupervisor(t, Options{MaxLineBytes: 32})
-	if _, err := s.Start(StartRequest{Name: "http-timeout", Source: "manifest", Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 5"}, Ready: &ReadinessConfig{Method: "http", Target: server.URL, Timeout: 100 * time.Millisecond}}); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		current, err := s.Get(root, "http-timeout")
-		if err == nil && current.Readiness != nil && current.Readiness.Diagnostic != "" {
-			if !strings.Contains(current.Readiness.Diagnostic, "context deadline exceeded") {
-				t.Fatalf("diagnostic=%q", current.Readiness.Diagnostic)
+	for _, tc := range []struct {
+		name       string
+		answered   int32
+		diagnostic string
+	}{
+		{name: "never answers", answered: 0, diagnostic: "context deadline exceeded"},
+		{name: "answers then hangs", answered: 1, diagnostic: "status 503"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := makeProject(t, false)
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if requests.Add(1) <= tc.answered {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			s := testSupervisor(t, Options{MaxLineBytes: 32})
+			if _, err := s.Start(StartRequest{Name: "http-timeout", Source: "manifest", Cwd: root, Argv: []string{"/bin/sh", "-c", "sleep 5"}, Ready: &ReadinessConfig{Method: "http", Target: server.URL, Interval: 10 * time.Millisecond, Timeout: 300 * time.Millisecond}}); err != nil {
+				t.Fatal(err)
 			}
-			return
-		}
-		time.Sleep(time.Millisecond)
+			got := waitForReadinessState(t, s, root, "http-timeout", ReadinessTimedOut)
+			if !strings.Contains(got.Readiness.Diagnostic, tc.diagnostic) {
+				t.Fatalf("diagnostic=%q, want %q", got.Readiness.Diagnostic, tc.diagnostic)
+			}
+		})
 	}
-	t.Fatal("HTTP timeout diagnostic was not retained")
 }
 
 // TestReadinessTimedOut proves every readiness method reports a daemon-owned

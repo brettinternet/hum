@@ -1052,8 +1052,10 @@ func (s *Supervisor) startExecutableReadiness(rec *record, incarnation uint64) {
 
 // probeUntilReady runs probes at the tracker interval until one succeeds or
 // parent ends. A probe interrupted by parent preserves the last completed
-// diagnostic unless the deadline itself produced the diagnostic.
+// probe's diagnostic; the deadline's own diagnostic is kept only when no probe
+// completed, such as a target that never responds.
 func (s *Supervisor) probeUntilReady(parent context.Context, tracker *executableReadinessTracker, cwd string, env []string) bool {
+	completed := false
 	for first := true; ; first = false {
 		if !first {
 			timer := time.NewTimer(tracker.interval)
@@ -1079,7 +1081,7 @@ func (s *Supervisor) probeUntilReady(parent context.Context, tracker *executable
 			tracker.mu.Unlock()
 			return true
 		}
-		if parent.Err() != nil && (diagnostic == "" || !errors.Is(parent.Err(), context.DeadlineExceeded)) {
+		if parent.Err() != nil && (completed || diagnostic == "" || !errors.Is(parent.Err(), context.DeadlineExceeded)) {
 			return false
 		}
 		tracker.mu.Lock()
@@ -1088,6 +1090,7 @@ func (s *Supervisor) probeUntilReady(parent context.Context, tracker *executable
 		if parent.Err() != nil {
 			return false
 		}
+		completed = true
 	}
 }
 

@@ -642,8 +642,9 @@ Readiness gates startup, `after`, and launch commands. It is not health monitori
   nobody is waiting. State moves from `starting` to `ready` and survives output eviction.
   A relaunch resets readiness at the new launch cursor, so old output never satisfies it.
 - The daemon owns each launch's manifest `timeout`. When it passes, state becomes `timed_out` with
-  a diagnostic (the last probe result, `no output matched within DURATION`, or `process did not
-  exit within DURATION`) and a `startup_failure` "readiness timeout" event. Probes stop; a later
+  a diagnostic (the last completed probe's result, the deadline itself when no probe completed,
+  `no output matched within DURATION`, or `process did not exit within DURATION`) and a
+  `startup_failure` "readiness timeout" event. Probes stop; a later
   matching line or successful exit still moves the launch to `ready`. Start, restart, and relaunch
   reset it to `starting`.
 - Processes without `ready`, including discovered definitions, report `running_unverified` and are
