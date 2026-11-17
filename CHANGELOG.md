@@ -2,6 +2,12 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.19.2](https://github.com/brettinternet/hum/compare/v0.19.1...v0.19.2) - 2026-11-17
+
+### Fixed
+
+- **input:** Report success when a child exits after consuming input
+
 ## [v0.19.1](https://github.com/brettinternet/hum/compare/v0.19.0...v0.19.1) - 2026-11-04
 
 ### Fixed
