@@ -141,8 +141,9 @@ Start the stack and confirm it is up:
 up ──▶ status
 ```
 
-If `up` reports `exited_before_ready`, `timed_out`, or `skipped` (with `blocked_by`), read the
-failing process's logs before changing anything:
+If `up` reports `exited_before_ready` or `timed_out`, its `recent_output` holds the failed
+launch's final lines; often that is enough to diagnose. If it is not, or `up` reports `skipped`
+(with `blocked_by`), read the failing process's logs before changing anything:
 
 ```text
 logs {name, stream: "stderr", tail: 50} ──▶ fix ──▶ restart {name}

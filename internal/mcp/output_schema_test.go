@@ -167,6 +167,24 @@ func TestOutputSchemasAcceptStructuredContent(t *testing.T) {
 		})
 	}
 
+	t.Run("recent output", func(t *testing.T) {
+		next := protocol.Cursor(3)
+		client := &fakeClient{sessionID: "session", waitResult: protocol.NewWaitResponse(protocol.WaitExited, 2, &protocol.Exit{Code: 1}), output: protocol.OutputResult{
+			SessionID: "session", Next: &next, Entries: []protocol.OutputEntry{{Cursor: 2, Stream: protocol.StreamStderr, Time: time.Now(), Text: "boom"}},
+		}}
+		server, root, _ := newTestServer(t, []Definition{{Name: "api", Source: "manifest", Cwd: ".", Argv: []string{"api"}, Ready: &protocol.ReadinessConfig{Match: "ready"}}}, client)
+		for _, name := range []string{"start", "restart", "up"} {
+			fields := map[string]any{}
+			if name != "up" {
+				fields["name"] = "api"
+			}
+			checkToolResult(t, server, root, name, fields)
+		}
+		if len(client.outputs) == 0 {
+			t.Fatal("failure results did not read recent output")
+		}
+	})
+
 	// Every other advertised tool gets a successful call; use a running TTY
 	// session so input and signal exercise their result schemas too.
 	client := &fakeClient{processes: map[string]protocol.Process{

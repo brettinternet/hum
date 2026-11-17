@@ -220,6 +220,7 @@ type fakeClient struct {
 	readyBeforeWait        bool
 	readinessDiagnostic    string
 	retainReadinessOnStart bool
+	sessionID              string
 }
 
 func fakeCompletedExitReadiness(process protocol.Process) protocol.Process {
@@ -248,6 +249,7 @@ func (f *fakeClient) Start(_ context.Context, req protocol.StartRequest) (protoc
 	if req.StopGrace != nil {
 		p.StopGrace = *req.StopGrace
 	}
+	p.SessionID = f.sessionID
 	if req.Ready == nil && f.retainReadinessOnStart {
 		if retained := f.processes[req.Name].Readiness; retained != nil {
 			copy := *retained
@@ -374,6 +376,9 @@ func (f *fakeClient) Restart(_ context.Context, req protocol.RestartRequest) (pr
 	}
 	p.State = "running"
 	p.RestartCount++
+	if f.sessionID != "" {
+		p.SessionID = f.sessionID
+	}
 	if req.Update {
 		p.Source, p.Root, p.Cwd = req.Source, req.Root, req.Cwd
 		p.StopGraceInherited = req.StopGrace == nil
@@ -3043,4 +3048,88 @@ func TestManifestSelection(t *testing.T) {
 	if _, err := server.callTool(context.Background(), "list", json.RawMessage(`{"scope":"global","manifest":"hum.dev.yaml"}`)); mapError(err).Code != "invalid_request" {
 		t.Fatalf("global manifest error = %v", err)
 	}
+}
+
+func TestLaunchFailureRecentOutput(t *testing.T) {
+	ready := &protocol.ReadinessConfig{Match: "ready"}
+	next := protocol.Cursor(12)
+	output := protocol.OutputResult{SessionID: "session-new", Next: &next, Entries: []protocol.OutputEntry{
+		{Cursor: 10, Stream: protocol.StreamStderr, Text: "Error: Cannot find module vite\n"},
+		{Cursor: 11, Stream: protocol.StreamStdout, Text: "exiting\n"},
+	}}
+	recentOf := func(t *testing.T, value any) map[string]any {
+		t.Helper()
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if list, ok := decoded.([]any); ok {
+			decoded = list[0]
+		}
+		recent, _ := decoded.(map[string]any)["recent_output"].(map[string]any)
+		return recent
+	}
+	for _, test := range []struct {
+		name     string
+		tool     string
+		wait     protocol.WaitResponse
+		existing bool
+	}{
+		{name: "up timed out", tool: "up", wait: protocol.NewWaitResponse(protocol.WaitTimedOut, 9, nil)},
+		{name: "start exited", tool: "start", wait: protocol.NewWaitResponse(protocol.WaitExited, 9, &protocol.Exit{Code: 1})},
+		{name: "restart exited", tool: "restart", wait: protocol.NewWaitResponse(protocol.WaitExited, 9, &protocol.Exit{Code: 1}), existing: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &fakeClient{sessionID: "session-new", output: output, waitResult: test.wait, keepStarting: test.wait.Outcome == protocol.WaitTimedOut}
+			if test.existing {
+				client.processes = map[string]protocol.Process{"web": {Name: "web", Source: "hum.yaml", State: protocol.StateRunning, SessionID: "session-old", LaunchCursor: 7}}
+			}
+			server, root, _ := newTestServer(t, []Definition{{Name: "web", Source: "hum.yaml", Argv: []string{"web"}, Cwd: "/tmp", Ready: ready}}, client)
+			callArgs := args(root, "name", "web")
+			if test.tool == "up" {
+				callArgs = args(root)
+			}
+			value, err := server.callTool(context.Background(), test.tool, callArgs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recent := recentOf(t, value)
+			entries, _ := recent["entries"].([]any)
+			if recent["session_id"] != "session-new" || recent["next"] != float64(12) || len(entries) != 2 {
+				t.Fatalf("recent_output = %#v", recent)
+			}
+			if len(client.outputs) != 1 {
+				t.Fatalf("output reads = %#v, want one", client.outputs)
+			}
+			read := client.outputs[0]
+			if read.SessionID != "session-new" || read.After == nil || *read.After != 7 || read.Stream != protocol.StreamBoth ||
+				read.Tail != 5 || read.MaxEntries != 5 || read.MaxBytes != 2048 {
+				t.Fatalf("output read = %#v, want new session after launch cursor 7 bounded to 5 entries and 2 KiB", read)
+			}
+		})
+	}
+	t.Run("success omits recent output", func(t *testing.T) {
+		client := &fakeClient{sessionID: "session-new", output: output}
+		server, root, _ := newTestServer(t, []Definition{{Name: "web", Source: "hum.yaml", Argv: []string{"web"}, Cwd: "/tmp", Ready: ready}}, client)
+		for _, tool := range []string{"up", "start"} {
+			callArgs := args(root, "name", "web")
+			if tool == "up" {
+				callArgs = args(root)
+			}
+			value, err := server.callTool(context.Background(), tool, callArgs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recent := recentOf(t, value); recent != nil {
+				t.Fatalf("%s success recent_output = %#v", tool, recent)
+			}
+		}
+		if len(client.outputs) != 0 {
+			t.Fatalf("success read output: %#v", client.outputs)
+		}
+	})
 }

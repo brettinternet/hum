@@ -1234,3 +1234,71 @@ func indexOf(values []string, value string) int {
 	}
 	return len(values)
 }
+
+func TestOrchestrateUpRecentOutput(t *testing.T) {
+	root := t.TempDir()
+	// fresh exits during start on a new store (launch cursor 0); stale times out
+	// after an earlier launch whose output ends at cursor 5; ready succeeds.
+	definitions := []Definition{
+		{Name: "fresh", Source: "manifest", Cwd: root, Argv: []string{"fresh"}, Ready: &ReadinessConfig{Match: "ready"}},
+		{Name: "ready", Source: "manifest", Cwd: root, Argv: []string{"ready"}, Ready: &ReadinessConfig{Match: "ready"}},
+		{Name: "stale", Source: "manifest", Cwd: root, Argv: []string{"stale"}, Ready: &ReadinessConfig{Match: "ready"}},
+		{Name: "unreadable", Source: "manifest", Cwd: root, Argv: []string{"unreadable"}, Ready: &ReadinessConfig{Match: "ready"}},
+	}
+	launchCursors := map[string]uint64{"fresh": 0, "ready": 2, "stale": 5, "unreadable": 1}
+	var mu sync.Mutex
+	requests := make(map[string]RecentOutputRequest)
+	results, err := OrchestrateUp(context.Background(), UpOptions{Root: root, Definitions: definitions}, UpOperations{
+		Start: func(_ context.Context, definition Definition) (StartResult, error) {
+			process := Process{Name: definition.Name, SessionID: "session-" + definition.Name, Cwd: root, State: "running", LaunchCursor: launchCursors[definition.Name], Readiness: &Readiness{State: ReadinessStarting, Match: "ready"}}
+			outcome := "started"
+			if definition.Name == "fresh" {
+				outcome = "exited_before_ready"
+				process.State = "exited"
+			}
+			return StartResult{Result: Result{Name: definition.Name, Outcome: outcome, Process: &process}, Process: process, ObservedAt: time.Now()}, nil
+		},
+		Readiness: func(_ context.Context, definition Definition, process Process, _ string, _ time.Duration) (Result, error) {
+			outcome := "timed_out"
+			if definition.Name == "ready" {
+				outcome = "started"
+				process.Readiness = &Readiness{State: ReadinessReady, Match: "ready"}
+			}
+			return Result{Name: definition.Name, Outcome: outcome, Process: &process}, nil
+		},
+		RecentOutput: func(_ context.Context, request RecentOutputRequest) (*RecentOutput, error) {
+			mu.Lock()
+			requests[request.Name] = request
+			mu.Unlock()
+			if request.Name == "unreadable" {
+				return nil, errors.New("output unavailable")
+			}
+			return &RecentOutput{SessionID: request.SessionID, Entries: []OutputEntry{{Cursor: 6, Stream: "stderr", Text: request.Name + " failed\n"}}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]Result)
+	for _, result := range results {
+		byName[result.Name] = result
+	}
+	for _, name := range []string{"fresh", "stale"} {
+		recent := byName[name].RecentOutput
+		if recent == nil || recent.SessionID != "session-"+name || len(recent.Entries) != 1 || recent.Entries[0].Text != name+" failed\n" {
+			t.Errorf("%s (%s) recent output = %+v", name, byName[name].Outcome, recent)
+		}
+	}
+	if request := requests["fresh"]; request.After != nil || request.SessionID != "session-fresh" {
+		t.Errorf("fresh request = %+v, want whole session from cursor 0", request)
+	}
+	if request := requests["stale"]; request.After == nil || *request.After != 5 || request.SessionID != "session-stale" {
+		t.Errorf("stale request = %+v, want entries after earlier launch cursor 5", request)
+	}
+	if _, ok := requests["ready"]; ok || byName["ready"].RecentOutput != nil {
+		t.Errorf("successful launch read output: request=%v result=%+v", ok, byName["ready"].RecentOutput)
+	}
+	if unreadable := byName["unreadable"]; unreadable.Outcome != "timed_out" || unreadable.RecentOutput != nil || unreadable.Error != nil {
+		t.Errorf("failed output read changed result: %+v", unreadable)
+	}
+}

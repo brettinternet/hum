@@ -148,6 +148,71 @@ type Result struct {
 	ExistingState string
 	ChangedFields []string
 	Guidance      string
+	RecentOutput  *RecentOutput
+}
+
+// Bounds for the output excerpt attached to a failed launch.
+const (
+	RecentOutputEntries = 5
+	RecentOutputBytes   = 2 * 1024
+)
+
+// RecentOutput is the final retained output of a failed launch. Its JSON shape
+// is shared by CLI JSON v1 and MCP launch results; entries use the logs entry
+// shape, and Next continues a logs read after the excerpt.
+type RecentOutput struct {
+	SessionID string        `json:"session_id"`
+	Entries   []OutputEntry `json:"entries"`
+	Next      *uint64       `json:"next,omitempty"`
+}
+
+// OutputEntry is one stripped retained output line.
+type OutputEntry struct {
+	Cursor uint64    `json:"cursor"`
+	Stream string    `json:"stream"`
+	Time   time.Time `json:"time"`
+	Text   string    `json:"text"`
+}
+
+// RecentOutputRequest asks an adapter for at most RecentOutputEntries final
+// entries and RecentOutputBytes of text from both streams. After is the
+// strict-exclusive launch boundary; nil reads from the session's first entry.
+type RecentOutputRequest struct {
+	Name      string
+	SessionID string
+	After     *uint64
+}
+
+// RecentOutputReader performs one bounded, stripped output read.
+type RecentOutputReader func(context.Context, RecentOutputRequest) (*RecentOutput, error)
+
+// WithRecentOutput attaches the failed launch's final output to an
+// exited_before_ready, timed_out, or recovery_exhausted result. The excerpt is
+// diagnostic only: a failed or empty read leaves the result unchanged.
+func WithRecentOutput(ctx context.Context, result Result, read RecentOutputReader) Result {
+	if read == nil || result.Process == nil || result.RecentOutput != nil {
+		return result
+	}
+	switch result.Outcome {
+	case "exited_before_ready", "timed_out", "recovery_exhausted":
+	default:
+		return result
+	}
+	request := RecentOutputRequest{Name: result.Name, SessionID: result.Process.SessionID}
+	if request.Name == "" {
+		request.Name = result.Process.Name
+	}
+	// A fresh session's launch cursor zero may be its own first entry; a
+	// nonzero cursor is the launch marker or the previous launch's last entry.
+	if cursor := result.Process.LaunchCursor; cursor != 0 {
+		request.After = &cursor
+	}
+	recent, err := read(ctx, request)
+	if err != nil || recent == nil || len(recent.Entries) == 0 {
+		return result
+	}
+	result.RecentOutput = recent
+	return result
 }
 
 // StartResult carries the initial result and process used by the up scheduler.
@@ -194,6 +259,9 @@ type UpOperations struct {
 	IsNotFound func(error) bool
 	List       func(context.Context) ([]Process, error)
 	OnProgress func(ProgressEvent)
+	// RecentOutput, when set, attaches an output excerpt to failed launches
+	// before their progress event is emitted.
+	RecentOutput RecentOutputReader
 }
 
 // UpOptions controls one invocation of Up.
@@ -1430,6 +1498,7 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 			if result.Error == nil && result.Process != nil && (result.Outcome == "started" || result.Outcome == "already_running") && successfulExitCompletion(definition, *result.Process) {
 				result.Outcome = "completed"
 			}
+			result = WithRecentOutput(ctx, result, ops.RecentOutput)
 			if ops.OnProgress != nil {
 				ops.OnProgress(ProgressEvent{Definition: definition, Result: result})
 			}
@@ -1465,6 +1534,7 @@ func OrchestrateUp(ctx context.Context, options UpOptions, ops UpOperations) ([]
 						if waitErr != nil {
 							result = ErrorResult(definition, waitErr)
 						}
+						result = WithRecentOutput(ctx, result, ops.RecentOutput)
 					}
 				}
 			}

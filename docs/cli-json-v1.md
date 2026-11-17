@@ -84,6 +84,12 @@ carry the literal `readiness_target`, which never expands variables. `ready: {ex
 successful exit as readiness `ready` and outcome `completed`; a nonzero exit, signal, or stop is
 `exited_before_ready`.
 
+`recent_output`: `start`, `up`, and `restart` records with outcome `exited_before_ready`,
+`timed_out`, or `recovery_exhausted` carry the failed launch's final output when any was retained:
+`session_id`, `entries` (at most 5, at most 2 KiB of text, terminal control stripped), and optional
+`next`. Entries never come from an earlier launch. Other outcomes, attached `up`, and failed reads
+omit the field.
+
 Values:
 
 | Field | Format |

@@ -304,34 +304,35 @@ func mergeManifestProcesses(manifest manifestState, running []app.Process) []app
 // Error is deliberately a string so every result remains easy to consume as
 // one NDJSON object without exposing daemon internals.
 type manifestLaunchResult struct {
-	Name                string               `json:"name"`
-	SessionID           string               `json:"session_id,omitempty"`
-	ProjectSelector     string               `json:"-"`
-	Outcome             string               `json:"outcome"`
-	Source              string               `json:"source"`
-	Argv                []string             `json:"argv"`
-	State               string               `json:"state,omitempty"`
-	PID                 *int                 `json:"pid,omitempty"`
-	LaunchCursor        *uint64              `json:"launch_cursor,omitempty"`
-	Readiness           string               `json:"readiness,omitempty"`
-	ReadinessMatch      string               `json:"readiness_match,omitempty"`
-	ReadinessConfigured bool                 `json:"-"`
-	ReadinessMethod     string               `json:"readiness_method,omitempty"`
-	ReadinessTarget     string               `json:"readiness_target,omitempty"`
-	ReadinessArgv       []string             `json:"readiness_argv,omitempty"`
-	ReadinessInterval   time.Duration        `json:"readiness_interval,omitempty"`
-	ReadinessDiagnostic string               `json:"readiness_diagnostic,omitempty"`
-	ReadyCursor         *uint64              `json:"ready_cursor,omitempty"`
-	BlockedBy           []string             `json:"blocked_by,omitempty"`
-	ExistingState       string               `json:"existing_state,omitempty"`
-	ChangedFields       []string             `json:"changed_fields,omitempty"`
-	Guidance            string               `json:"guidance,omitempty"`
-	Restart             string               `json:"restart"`
-	Relaunches          int                  `json:"relaunches"`
-	NextLaunchAt        *time.Time           `json:"next_launch_at,omitempty"`
-	Error               string               `json:"error,omitempty"`
-	ExitCode            *int                 `json:"exit_code,omitempty"`
-	Signal              *protocol.SignalInfo `json:"signal,omitempty"`
+	Name                string                    `json:"name"`
+	SessionID           string                    `json:"session_id,omitempty"`
+	ProjectSelector     string                    `json:"-"`
+	Outcome             string                    `json:"outcome"`
+	Source              string                    `json:"source"`
+	Argv                []string                  `json:"argv"`
+	State               string                    `json:"state,omitempty"`
+	PID                 *int                      `json:"pid,omitempty"`
+	LaunchCursor        *uint64                   `json:"launch_cursor,omitempty"`
+	Readiness           string                    `json:"readiness,omitempty"`
+	ReadinessMatch      string                    `json:"readiness_match,omitempty"`
+	ReadinessConfigured bool                      `json:"-"`
+	ReadinessMethod     string                    `json:"readiness_method,omitempty"`
+	ReadinessTarget     string                    `json:"readiness_target,omitempty"`
+	ReadinessArgv       []string                  `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration             `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string                    `json:"readiness_diagnostic,omitempty"`
+	ReadyCursor         *uint64                   `json:"ready_cursor,omitempty"`
+	BlockedBy           []string                  `json:"blocked_by,omitempty"`
+	ExistingState       string                    `json:"existing_state,omitempty"`
+	ChangedFields       []string                  `json:"changed_fields,omitempty"`
+	Guidance            string                    `json:"guidance,omitempty"`
+	Restart             string                    `json:"restart"`
+	Relaunches          int                       `json:"relaunches"`
+	NextLaunchAt        *time.Time                `json:"next_launch_at,omitempty"`
+	Error               string                    `json:"error,omitempty"`
+	ExitCode            *int                      `json:"exit_code,omitempty"`
+	Signal              *protocol.SignalInfo      `json:"signal,omitempty"`
+	RecentOutput        *orchestrate.RecentOutput `json:"recent_output,omitempty"`
 }
 
 // MarshalJSON keeps a configured empty readiness matcher visible. The matcher
@@ -550,6 +551,7 @@ func cliManifestLaunchResult(definition project.Definition, shared orchestrate.R
 	result.ExistingState = shared.ExistingState
 	result.ChangedFields = append([]string(nil), shared.ChangedFields...)
 	result.Guidance = shared.Guidance
+	result.RecentOutput = shared.RecentOutput
 	if shared.Error != nil {
 		result.Error = shared.Error.Error()
 	}
@@ -561,6 +563,7 @@ func cliSharedLaunchResult(definition project.Definition, result manifestLaunchR
 		Name: result.Name, Outcome: result.Outcome,
 		BlockedBy: append([]string(nil), result.BlockedBy...), ExistingState: result.ExistingState,
 		ChangedFields: append([]string(nil), result.ChangedFields...), Guidance: result.Guidance,
+		RecentOutput: result.RecentOutput,
 	}
 	if shared.Name == "" {
 		shared.Name = definition.Name
@@ -642,7 +645,37 @@ func cliSharedLaunchResult(definition project.Definition, result manifestLaunchR
 	return shared
 }
 
-func cliReadinessResult(client *daemon.Client, ctx context.Context, cwd string, definition project.Definition, process app.Process, initialOutcome string, timeout time.Duration) (manifestLaunchResult, error) {
+// cliRecentOutputReader reads a failed launch's excerpt through the same
+// stripped, bounded output read used by hum logs.
+func cliRecentOutputReader(client *daemon.Client, scope, root string) orchestrate.RecentOutputReader {
+	return func(ctx context.Context, request orchestrate.RecentOutputRequest) (*orchestrate.RecentOutput, error) {
+		read := daemon.OutputRequest{
+			Name: request.Name, Scope: scope, Cwd: root, SessionID: request.SessionID, Stream: protocol.StreamBoth,
+			Tail: orchestrate.RecentOutputEntries, MaxEntries: orchestrate.RecentOutputEntries, MaxBytes: orchestrate.RecentOutputBytes,
+		}
+		if request.After != nil {
+			after := protocol.Cursor(*request.After)
+			read.After = &after
+		}
+		result, err := client.Output(ctx, read)
+		if err != nil {
+			return nil, err
+		}
+		recent := &orchestrate.RecentOutput{SessionID: result.SessionID, Entries: make([]orchestrate.OutputEntry, 0, len(result.Entries))}
+		for _, entry := range result.Entries {
+			recent.Entries = append(recent.Entries, orchestrate.OutputEntry{Cursor: uint64(entry.Cursor), Stream: streamName(entry.Stream), Time: entry.Time, Text: entry.Text})
+		}
+		if result.Next != nil {
+			next := uint64(*result.Next)
+			recent.Next = &next
+		}
+		return recent, nil
+	}
+}
+
+// cliReadinessResult waits for one launch. A non-nil read attaches the
+// launch's recent output when the wait fails.
+func cliReadinessResult(client *daemon.Client, ctx context.Context, cwd string, definition project.Definition, process app.Process, initialOutcome string, timeout time.Duration, read orchestrate.RecentOutputReader) (manifestLaunchResult, error) {
 	shared, err := orchestrate.WaitForReadiness(ctx, cwd, cliOrchestrateDefinition(definition), cliOrchestrateProcess(process), initialOutcome, timeout, orchestrate.ReadinessOperations{
 		Get: func(ctx context.Context, name, lookupCwd string) (orchestrate.Process, error) {
 			current, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: lookupCwd})
@@ -671,7 +704,7 @@ func cliReadinessResult(client *daemon.Client, ctx context.Context, cwd string, 
 	if err != nil {
 		return manifestLaunchResult{}, err
 	}
-	return cliManifestLaunchResult(definition, shared), nil
+	return cliManifestLaunchResult(definition, orchestrate.WithRecentOutput(ctx, shared, read)), nil
 }
 
 // manifestProgressDriftDetail renders the changed_fields and restart

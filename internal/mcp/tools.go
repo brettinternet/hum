@@ -365,7 +365,9 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	statusProcessProperties["ports"] = ports
 	statusProcess := objectSchema(statusProcessProperties, process["required"].([]string)...)
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}, "details": map[string]any{}}, "code", "message")
-	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
+	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
+	recentOutput := objectSchema(map[string]any{"session_id": map[string]any{"type": "string"}, "entries": map[string]any{"type": "array", "maxItems": orchestrate.RecentOutputEntries, "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}}, "session_id", "entries")
+	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "recent_output": recentOutput, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
 	restart := objectSchema(map[string]any{
 		"name":                 map[string]any{"type": "string"},
 		"session_id":           map[string]any{"type": "string"},
@@ -399,9 +401,9 @@ func (s *Server) toolDefinitions() []toolDefinition {
 		"readiness_argv":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"readiness_interval":   map[string]any{"type": "integer", "minimum": 0},
 		"readiness_diagnostic": map[string]any{"type": "string"},
+		"recent_output":        recentOutput,
 	}, "name", "outcome", "readiness", "pid", "launch_cursor")
 	stop := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "state": map[string]any{"type": "string"}, "error": toolError}, "name", "state")
-	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
 	output := objectSchema(map[string]any{"session_id": map[string]any{"type": "string"}, "entries": map[string]any{"type": []string{"array", "null"}, "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}, "oldest": map[string]any{"type": "integer", "minimum": 0}, "latest": map[string]any{"type": "integer", "minimum": 0}, "evicted_through": map[string]any{"type": "integer", "minimum": 0}, "truncated": map[string]any{"type": "boolean"}, "more": map[string]any{"type": "boolean"}}, "session_id", "entries")
 	wait := objectSchema(map[string]any{"op": map[string]any{"type": "string"}, "ok": map[string]any{"type": "boolean"}, "outcome": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "integer", "minimum": 0}, "session_id": map[string]any{"type": "string"}, "exit": exit, "process_observed": map[string]any{"type": "boolean"}, "message": map[string]any{"type": "string"}}, "op", "ok", "cursor", "session_id")
 	inputText := map[string]any{"type": "string", "minLength": 1, "description": "Exact UTF-8 text. No newline is added. Provide exactly one of text or base64."}
@@ -829,7 +831,7 @@ func protocolProcess(process orchestrate.Process) protocol.Process {
 }
 
 func mcpLaunchResult(definition Definition, shared orchestrate.Result) launchResult {
-	result := launchResult{Name: shared.Name, Outcome: shared.Outcome, BlockedBy: append([]string(nil), shared.BlockedBy...), ExistingState: shared.ExistingState, ChangedFields: append([]string(nil), shared.ChangedFields...), Guidance: shared.Guidance}
+	result := launchResult{Name: shared.Name, Outcome: shared.Outcome, BlockedBy: append([]string(nil), shared.BlockedBy...), ExistingState: shared.ExistingState, ChangedFields: append([]string(nil), shared.ChangedFields...), Guidance: shared.Guidance, RecentOutput: shared.RecentOutput}
 	if result.Name == "" {
 		result.Name = definition.Name
 	}
@@ -1283,6 +1285,40 @@ func (s *Server) mcpWaitForReadiness(ctx context.Context, client Client, resolut
 	return result, shared.Outcome, nil
 }
 
+// mcpRecentOutputReader reads a failed launch's excerpt through the same
+// stripped, bounded output read used by the logs tool.
+func mcpRecentOutputReader(client Client, resolution Resolution) orchestrate.RecentOutputReader {
+	return func(ctx context.Context, request orchestrate.RecentOutputRequest) (*orchestrate.RecentOutput, error) {
+		read := protocol.OutputRequest{
+			Op: protocol.OpOutput, Name: request.Name, Scope: resolution.Scope, Cwd: resolution.Root, SessionID: request.SessionID, Stream: protocol.StreamBoth,
+			Tail: orchestrate.RecentOutputEntries, MaxEntries: orchestrate.RecentOutputEntries, MaxBytes: orchestrate.RecentOutputBytes,
+		}
+		if request.After != nil {
+			after := protocol.Cursor(*request.After)
+			read.After = &after
+		}
+		result, err := client.Output(ctx, read)
+		if err != nil {
+			return nil, err
+		}
+		recent := &orchestrate.RecentOutput{SessionID: result.SessionID, Entries: make([]orchestrate.OutputEntry, 0, len(result.Entries))}
+		for _, entry := range result.Entries {
+			recent.Entries = append(recent.Entries, orchestrate.OutputEntry{Cursor: uint64(entry.Cursor), Stream: string(entry.Stream), Time: entry.Time, Text: entry.Text})
+		}
+		if result.Next != nil {
+			next := uint64(*result.Next)
+			recent.Next = &next
+		}
+		return recent, nil
+	}
+}
+
+// mcpRecentOutput returns the excerpt for a failed start or restart wait.
+func mcpRecentOutput(ctx context.Context, client Client, resolution Resolution, name, outcome string, process protocol.Process) *orchestrate.RecentOutput {
+	shared := orchestrateProcess(process)
+	return orchestrate.WithRecentOutput(ctx, orchestrate.Result{Name: name, Outcome: outcome, Process: &shared}, mcpRecentOutputReader(client, resolution)).RecentOutput
+}
+
 func mcpTimeoutMilliseconds(timeout time.Duration) (int64, error) {
 	milliseconds := timeout / time.Millisecond
 	if milliseconds <= 0 {
@@ -1364,7 +1400,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 			}
 		}
 		process = normalizeProcess(process)
-		return launchResult{Name: input.Name, Outcome: outcome, Process: &process}, nil
+		return launchResult{Name: input.Name, Outcome: outcome, Process: &process, RecentOutput: mcpRecentOutput(ctx, client, resolution, input.Name, outcome, process)}, nil
 	}
 	prepared, err := s.prepareEnvironments(resolution, definition.Name)
 	if err != nil {
@@ -1397,18 +1433,19 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		}
 	}
 	process = normalizeProcess(process)
-	return launchResult{Name: definition.Name, Outcome: outcome, Process: &process}, nil
+	return launchResult{Name: definition.Name, Outcome: outcome, Process: &process, RecentOutput: mcpRecentOutput(ctx, client, resolution, definition.Name, outcome, process)}, nil
 }
 
 type launchResult struct {
-	Name          string            `json:"name"`
-	Outcome       string            `json:"outcome"`
-	Process       *protocol.Process `json:"process,omitempty"`
-	Error         *ToolError        `json:"error,omitempty"`
-	BlockedBy     []string          `json:"blocked_by,omitempty"`
-	ExistingState string            `json:"existing_state,omitempty"`
-	ChangedFields []string          `json:"changed_fields,omitempty"`
-	Guidance      string            `json:"guidance,omitempty"`
+	Name          string                    `json:"name"`
+	Outcome       string                    `json:"outcome"`
+	Process       *protocol.Process         `json:"process,omitempty"`
+	Error         *ToolError                `json:"error,omitempty"`
+	BlockedBy     []string                  `json:"blocked_by,omitempty"`
+	ExistingState string                    `json:"existing_state,omitempty"`
+	ChangedFields []string                  `json:"changed_fields,omitempty"`
+	Guidance      string                    `json:"guidance,omitempty"`
+	RecentOutput  *orchestrate.RecentOutput `json:"recent_output,omitempty"`
 }
 
 func (s *Server) up(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
@@ -1531,7 +1568,8 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 			process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Scope: resolution.Scope, Name: name, Cwd: root})
 			return orchestrateProcess(process), err
 		},
-		IsNotFound: func(err error) bool { return mapError(err).Code == string(protocol.ErrorNotFound) },
+		IsNotFound:   func(err error) bool { return mapError(err).Code == string(protocol.ErrorNotFound) },
+		RecentOutput: mcpRecentOutputReader(client, resolution),
 		List: func(ctx context.Context) ([]orchestrate.Process, error) {
 			processes, err := client.List(ctx, protocol.ListRequest{Op: protocol.OpList, Scope: resolution.Scope, Cwd: resolution.Root, IncludeCompleted: true})
 			if err != nil {
@@ -1991,38 +2029,39 @@ func (s *Server) signal(ctx context.Context, resolution Resolution, input common
 }
 
 type restartResult struct {
-	Name                string           `json:"name"`
-	SessionID           string           `json:"session_id"`
-	Outcome             string           `json:"outcome"`
-	Readiness           string           `json:"readiness"`
-	ReadinessMatch      string           `json:"readiness_match,omitempty"`
-	ReadinessMethod     string           `json:"readiness_method,omitempty"`
-	ReadinessTarget     string           `json:"readiness_target,omitempty"`
-	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
-	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
-	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
-	PID                 int              `json:"pid"`
-	LaunchCursor        protocol.Cursor  `json:"launch_cursor"`
-	Message             string           `json:"message,omitempty"`
-	Source              string           `json:"source,omitempty"`
-	Root                string           `json:"root"`
-	TTY                 bool             `json:"tty"`
-	PGID                int              `json:"pgid"`
-	Cwd                 string           `json:"cwd"`
-	Argv                []string         `json:"argv"`
-	Start               time.Time        `json:"start"`
-	NextCursor          *protocol.Cursor `json:"next_cursor,omitempty"`
-	State               string           `json:"state"`
-	Exit                *protocol.Exit   `json:"exit,omitempty"`
-	ExitCode            int              `json:"exit_code,omitempty"`
-	ExitedAt            time.Time        `json:"exited_at,omitempty"`
-	RestartCount        int              `json:"restart_count,omitempty"`
-	Followers           int              `json:"followers"`
-	Restart             string           `json:"restart"`
-	Relaunches          int              `json:"relaunches"`
-	StopGrace           time.Duration    `json:"stop_grace"`
-	StopGraceInherited  bool             `json:"stop_grace_inherited"`
-	NextLaunchAt        *time.Time       `json:"next_launch_at,omitempty"`
+	Name                string                    `json:"name"`
+	SessionID           string                    `json:"session_id"`
+	Outcome             string                    `json:"outcome"`
+	Readiness           string                    `json:"readiness"`
+	ReadinessMatch      string                    `json:"readiness_match,omitempty"`
+	ReadinessMethod     string                    `json:"readiness_method,omitempty"`
+	ReadinessTarget     string                    `json:"readiness_target,omitempty"`
+	ReadinessArgv       []string                  `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration             `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string                    `json:"readiness_diagnostic,omitempty"`
+	PID                 int                       `json:"pid"`
+	LaunchCursor        protocol.Cursor           `json:"launch_cursor"`
+	Message             string                    `json:"message,omitempty"`
+	Source              string                    `json:"source,omitempty"`
+	Root                string                    `json:"root"`
+	TTY                 bool                      `json:"tty"`
+	PGID                int                       `json:"pgid"`
+	Cwd                 string                    `json:"cwd"`
+	Argv                []string                  `json:"argv"`
+	Start               time.Time                 `json:"start"`
+	NextCursor          *protocol.Cursor          `json:"next_cursor,omitempty"`
+	State               string                    `json:"state"`
+	Exit                *protocol.Exit            `json:"exit,omitempty"`
+	ExitCode            int                       `json:"exit_code,omitempty"`
+	ExitedAt            time.Time                 `json:"exited_at,omitempty"`
+	RestartCount        int                       `json:"restart_count,omitempty"`
+	Followers           int                       `json:"followers"`
+	Restart             string                    `json:"restart"`
+	Relaunches          int                       `json:"relaunches"`
+	StopGrace           time.Duration             `json:"stop_grace"`
+	StopGraceInherited  bool                      `json:"stop_grace_inherited"`
+	NextLaunchAt        *time.Time                `json:"next_launch_at,omitempty"`
+	RecentOutput        *orchestrate.RecentOutput `json:"recent_output,omitempty"`
 }
 
 func restartResultForProcess(process protocol.Process, name, outcome, message string) restartResult {
@@ -2184,7 +2223,9 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 	case "timed_out":
 		message = "readiness timed out"
 	}
-	return restartResultForProcess(process, name, outcome, message), nil
+	result := restartResultForProcess(process, name, outcome, message)
+	result.RecentOutput = mcpRecentOutput(ctx, client, resolution, name, outcome, process)
+	return result, nil
 }
 
 func (s *Server) stop(ctx context.Context, resolution Resolution, name string) (any, error) {

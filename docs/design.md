@@ -363,7 +363,11 @@ Startup progress (stderr):
   entered `starting`, one ready, early-exit, or timeout line. Child output is separate.
 - Errors read `hum up: NAME: error: MESSAGE`. Blocked lines list sorted direct blockers and say
   whether a record is running, exited, or `not launched`.
-- Timeout and early-exit lines include `inspect retained logs: hum logs NAME`.
+- Timeout and early-exit lines include `inspect retained logs: hum logs NAME`. When the failed
+  launch retained output, its final lines (at most 5 entries, 2 KiB, terminal control stripped,
+  never from an earlier launch) are indented between the progress line and that hint. Recovery
+  exhaustion gets the same excerpt and hint. Attached `up` already streamed the output and adds
+  none.
 - Progress never changes scheduling, exit precedence, timeouts, or child lifetime.
 - `up --json` writes no progress and keeps stderr empty on success. `up --no-wait`, `start`, and
   MCP `up` keep their bounded output.
@@ -987,6 +991,7 @@ Behavior matches the CLI:
   rejected before daemon contact.
 - `restart` accepts `no_wait` and positive per-name `timeout_ms` and returns `name`, `outcome`,
   `readiness`, `pid`, `launch_cursor`, and optional `message`.
+- `up`, `start`, and `restart` failure results carry the CLI's `recent_output` excerpt.
 - `input` accepts one non-empty `text` or `base64` and returns `name`, decoded `bytes`, and
   `launch_cursor`.
 - `signal` returns the same result object and errors as the CLI.

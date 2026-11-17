@@ -1222,7 +1222,8 @@ processes:
 	if up.Cmd.ProcessState == nil || up.Cmd.ProcessState.ExitCode() != 2 {
 		t.Fatalf("up exit code = %v, want 2; stdout=%q stderr=%q", up.Cmd.ProcessState, up.Stdout(), up.Stderr())
 	}
-	if !strings.Contains(up.Stderr(), "hum up: slow: readiness timed out; inspect retained logs: hum logs slow") {
+	// Only the timed-out declaration's final output joins its progress line.
+	if !strings.Contains(up.Stderr(), "hum up: slow: readiness timed out\n    slow-child-output\n  inspect retained logs: hum logs slow\n") || strings.Contains(up.Stderr(), "fast-child-output") {
 		t.Fatalf("timeout progress = %q", up.Stderr())
 	}
 	lines := strings.Split(strings.TrimSpace(up.Stdout()), "\n")
@@ -1261,10 +1262,10 @@ processes:
 	if timeout.Code != 2 || timeout.Err == nil {
 		t.Fatalf("timeout up = code %d err=%v stdout=%q stderr=%q, want exit 2", timeout.Code, timeout.Err, timeout.Stdout, timeout.Stderr)
 	}
-	if !strings.Contains(timeout.Stderr, "hum up: probe: readiness timed out; inspect retained logs: hum logs probe") {
+	if !strings.Contains(timeout.Stderr, "hum up: probe: readiness timed out\n    timeout-child-output\n  inspect retained logs: hum logs probe\n") {
 		t.Fatalf("timeout progress = %q", timeout.Stderr)
 	}
-	if strings.Contains(timeout.Stderr, "timeout-child-output") || !strings.Contains(timeout.Stdout, "timed out") {
+	if !strings.Contains(timeout.Stdout, "timed out") {
 		t.Fatalf("timeout output = stdout %q stderr %q", timeout.Stdout, timeout.Stderr)
 	}
 	logs := testutil.Run(t, hum, projectRoot, env, "logs", "probe", "--json", "--stream", "stdout")
@@ -1287,10 +1288,11 @@ processes:
 	if early.Code != 3 || early.Err == nil {
 		t.Fatalf("early-exit up = code %d err=%v stdout=%q stderr=%q, want exit 3", early.Code, early.Err, early.Stdout, early.Stderr)
 	}
-	if !strings.Contains(early.Stderr, "hum up: probe: exited before readiness; inspect retained logs: hum logs probe") {
+	// The excerpt holds only this launch's output, not the timed-out launch's.
+	if !strings.Contains(early.Stderr, "hum up: probe: exited before readiness\n    early-child-output\n  inspect retained logs: hum logs probe\n") || strings.Contains(early.Stderr, "timeout-child-output") {
 		t.Fatalf("early-exit progress = %q", early.Stderr)
 	}
-	if strings.Contains(early.Stderr, "early-child-output") || !strings.Contains(early.Stdout, "exited before ready") {
+	if !strings.Contains(early.Stdout, "exited before ready") {
 		t.Fatalf("early-exit output = stdout %q stderr %q", early.Stdout, early.Stderr)
 	}
 	earlyLogs := testutil.Run(t, hum, projectRoot, env, "logs", "probe", "--json", "--stream", "stdout")

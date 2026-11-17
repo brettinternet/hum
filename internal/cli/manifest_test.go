@@ -1144,7 +1144,7 @@ func TestManifestReadinessSurvivesExitAfterMatch(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	result, err := cliReadinessResult(client, ctx, "/tmp/project", definition, process, "started", time.Second)
+	result, err := cliReadinessResult(client, ctx, "/tmp/project", definition, process, "started", time.Second, nil)
 	if err != nil {
 		t.Fatalf("manifest readiness: %v", err)
 	}
@@ -1255,7 +1255,7 @@ func TestManifestReadinessRefreshesExitedSnapshot(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	result, err := cliReadinessResult(client, ctx, "/tmp/project", definition, process, "started", time.Second)
+	result, err := cliReadinessResult(client, ctx, "/tmp/project", definition, process, "started", time.Second, nil)
 	if err != nil {
 		t.Fatalf("manifest readiness: %v", err)
 	}
@@ -2535,5 +2535,68 @@ func TestManifestMissingResolution(t *testing.T) {
 	wire := classifyJSONError(err)
 	if wire.Code != jsonErrorManifestMissing || !strings.Contains(wire.Message, root) {
 		t.Fatalf("JSON error = %#v, want manifest_missing with root", wire)
+	}
+}
+
+func TestUpProgressRecentOutput(t *testing.T) {
+	if runCLIIsolatedTest(t) {
+		return
+	}
+	definitions := []project.Definition{
+		{Name: "api", Argv: []string{"api"}, Ready: &project.ReadyDefinition{Match: "ready"}},
+		{Name: "web", Argv: []string{"web"}, Ready: &project.ReadyDefinition{Match: "ready"}},
+	}
+	manifest := manifestState{defs: definitions, byName: make(map[string]project.Definition)}
+	for _, definition := range definitions {
+		manifest.byName[definition.Name] = definition
+	}
+	outcomes := map[string]string{"api": "timed_out", "web": "exited_before_ready"}
+	recent := map[string][]orchestrate.OutputEntry{
+		"api": {{Cursor: 8, Stream: "stdout", Text: "compiling\n"}, {Cursor: 9, Stream: "stdout", Text: "still compiling\n"}},
+		"web": {{Cursor: 4, Stream: "stderr", Text: "Error: Cannot find module vite\n"}},
+	}
+	var mu sync.Mutex
+	requests := make(map[string]orchestrate.RecentOutputRequest)
+	ops := manifestUpScheduleOps{
+		start: func(_ context.Context, definition project.Definition) (manifestLaunchResult, app.Process, time.Time) {
+			result := manifestLaunchResult{Name: definition.Name, Argv: definition.Argv, Outcome: "started", Readiness: app.ReadinessStarting}
+			return result, app.Process{Name: definition.Name, SessionID: "session-" + definition.Name, LaunchCursor: 3, State: app.StateRunning}, time.Now()
+		},
+		readiness: func(_ context.Context, definition project.Definition, _ app.Process, _ string, _ time.Duration) (manifestLaunchResult, error) {
+			return manifestLaunchResult{Name: definition.Name, Outcome: outcomes[definition.Name], Readiness: app.ReadinessStarting}, nil
+		},
+		recentOutput: func(_ context.Context, request orchestrate.RecentOutputRequest) (*orchestrate.RecentOutput, error) {
+			mu.Lock()
+			requests[request.Name] = request
+			mu.Unlock()
+			return &orchestrate.RecentOutput{SessionID: request.SessionID, Entries: recent[request.Name]}, nil
+		},
+	}
+	var progress manifestProgressCapture
+	renderer := newManifestProgressRenderer(&progress, len(definitions))
+	results, err := manifestUpScheduleWithOps(context.Background(), &urfavecli.Command{}, manifest, []string{"api", "web"}, time.Second, renderer, ops)
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	for _, want := range []string{
+		"hum up: web: exited before readiness\n    Error: Cannot find module vite\n  inspect retained logs: hum logs web\n",
+		"hum up: api: readiness timed out\n    compiling\n    still compiling\n  inspect retained logs: hum logs api\n",
+	} {
+		if !strings.Contains(progress.String(), want) {
+			t.Errorf("progress missing %q:\n%s", want, progress.String())
+		}
+	}
+	for _, result := range results {
+		if result.RecentOutput == nil || result.RecentOutput.SessionID != "session-"+result.Name {
+			t.Errorf("%s recent output = %+v", result.Name, result.RecentOutput)
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil || !strings.Contains(string(encoded), `"recent_output":{"session_id":"session-`+result.Name+`","entries":[{"cursor":`) {
+			t.Errorf("%s JSON = %s, %v", result.Name, encoded, err)
+		}
+		request := requests[result.Name]
+		if request.SessionID != "session-"+result.Name || request.After == nil || *request.After != 3 {
+			t.Errorf("%s recent output request = %+v, want session scope after launch cursor 3", result.Name, request)
+		}
 	}
 }

@@ -2719,26 +2719,27 @@ func downCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime
 // use restart for launch inspection; the outcome/readiness fields describe the
 // replacement incarnation observed by this invocation.
 type restartOutputResult struct {
-	Name                string           `json:"name"`
-	SessionID           string           `json:"session_id,omitempty"`
-	Outcome             string           `json:"outcome"`
-	Readiness           string           `json:"readiness"`
-	ReadinessMatch      string           `json:"readiness_match,omitempty"`
-	ReadinessMethod     string           `json:"readiness_method,omitempty"`
-	ReadinessTarget     string           `json:"readiness_target,omitempty"`
-	ReadinessArgv       []string         `json:"readiness_argv,omitempty"`
-	ReadinessInterval   time.Duration    `json:"readiness_interval,omitempty"`
-	ReadinessDiagnostic string           `json:"readiness_diagnostic,omitempty"`
-	PID                 int              `json:"pid"`
-	LaunchCursor        protocol.Cursor  `json:"launch_cursor"`
-	Message             string           `json:"message,omitempty"`
-	Source              string           `json:"source,omitempty"`
-	Argv                []string         `json:"argv"`
-	Restarts            int              `json:"restarts"`
-	Restart             string           `json:"restart"`
-	Relaunches          int              `json:"relaunches"`
-	NextLaunchAt        *time.Time       `json:"next_launch_at,omitempty"`
-	ReadyCursor         *protocol.Cursor `json:"ready_cursor,omitempty"`
+	Name                string                    `json:"name"`
+	SessionID           string                    `json:"session_id,omitempty"`
+	Outcome             string                    `json:"outcome"`
+	Readiness           string                    `json:"readiness"`
+	ReadinessMatch      string                    `json:"readiness_match,omitempty"`
+	ReadinessMethod     string                    `json:"readiness_method,omitempty"`
+	ReadinessTarget     string                    `json:"readiness_target,omitempty"`
+	ReadinessArgv       []string                  `json:"readiness_argv,omitempty"`
+	ReadinessInterval   time.Duration             `json:"readiness_interval,omitempty"`
+	ReadinessDiagnostic string                    `json:"readiness_diagnostic,omitempty"`
+	PID                 int                       `json:"pid"`
+	LaunchCursor        protocol.Cursor           `json:"launch_cursor"`
+	Message             string                    `json:"message,omitempty"`
+	Source              string                    `json:"source,omitempty"`
+	Argv                []string                  `json:"argv"`
+	Restarts            int                       `json:"restarts"`
+	Restart             string                    `json:"restart"`
+	Relaunches          int                       `json:"relaunches"`
+	NextLaunchAt        *time.Time                `json:"next_launch_at,omitempty"`
+	ReadyCursor         *protocol.Cursor          `json:"ready_cursor,omitempty"`
+	RecentOutput        *orchestrate.RecentOutput `json:"recent_output,omitempty"`
 }
 
 func restartOutputFromProcess(process app.Process, definition project.Definition, outcome, message string) restartOutputResult {
@@ -2792,7 +2793,7 @@ func restartOutputFromManifest(result manifestLaunchResult, process app.Process,
 		NextLaunchAt:   result.NextLaunchAt,
 		ReadinessMatch: result.ReadinessMatch, ReadinessMethod: result.ReadinessMethod, ReadinessTarget: result.ReadinessTarget,
 		ReadinessArgv: append([]string(nil), result.ReadinessArgv...), ReadinessInterval: result.ReadinessInterval,
-		ReadinessDiagnostic: result.ReadinessDiagnostic,
+		ReadinessDiagnostic: result.ReadinessDiagnostic, RecentOutput: result.RecentOutput,
 	}
 	if result.PID != nil {
 		output.PID = *result.PID
@@ -2886,7 +2887,7 @@ func renderRestartOutputHuman(writer io.Writer, result restartOutputResult) erro
 	if result.Message != "" {
 		line += " message=" + result.Message
 	}
-	_, err := fmt.Fprintln(writer, line)
+	_, err := fmt.Fprintln(writer, line+recentOutputHuman(result.RecentOutput))
 	return err
 }
 
@@ -3057,7 +3058,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 				}
 				return process.Start
 			}())
-			waited, waitErr := cliReadinessResult(client, ctx, cwd, definition, process, "restarted", timeout)
+			waited, waitErr := cliReadinessResult(client, ctx, cwd, definition, process, "restarted", timeout, cliRecentOutputReader(client, selection.scope, cwd))
 			if waitErr != nil {
 				result = restartOutputFromProcess(process, definition, "error", waitErr.Error())
 				results = append(results, result)
@@ -3496,7 +3497,7 @@ func manifestLaunchCommandWithStateMode(ctx context.Context, cmd *urfavecli.Comm
 	}
 	launched := &upLaunchRecorder{}
 	if ordered {
-		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, timeoutOverride, preserveRecovery, progress, launched)
+		results, err = manifestUpSchedule(ctx, cmd, client, cwd, manifest, names, timeoutOverride, preserveRecovery, followSession != nil, progress, launched)
 		if err == nil && cmd.Args().Len() == 0 {
 			var removed []manifestLaunchResult
 			removed, err = removedManifestResults(ctx, client, manifest)
@@ -3762,11 +3763,15 @@ type manifestLaunchState struct {
 	observedAt time.Time
 }
 
-func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd string, manifest manifestState, name string, preserveRecovery bool, onStart func(string)) (project.Definition, manifestLaunchResult, app.Process) {
-	scope := app.ScopeProject
+func manifestScope(manifest manifestState) string {
 	if manifest.selector == "--global" {
-		scope = app.ScopeGlobal
+		return app.ScopeGlobal
 	}
+	return app.ScopeProject
+}
+
+func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd string, manifest manifestState, name string, preserveRecovery bool, onStart func(string)) (project.Definition, manifestLaunchResult, app.Process) {
+	scope := manifestScope(manifest)
 	definition, ok := manifest.byName[name]
 	if !ok {
 		definition = undefinedManifestDefinition(name)
@@ -3795,6 +3800,7 @@ func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd st
 }
 
 func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, timeoutOverride time.Duration) ([]manifestLaunchResult, error) {
+	recentOutput := cliRecentOutputReader(client, manifestScope(manifest), manifest.root)
 	states := make([]manifestLaunchState, len(names))
 	var launches sync.WaitGroup
 	for index, name := range names {
@@ -3832,7 +3838,7 @@ func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client
 					return
 				}
 				timeout = manifestRemainingTimeout(timeout, state.observedAt)
-				result, waitErr := cliReadinessResult(client, ctx, cwd, state.definition, state.process, state.result.Outcome, timeout)
+				result, waitErr := cliReadinessResult(client, ctx, cwd, state.definition, state.process, state.result.Outcome, timeout, recentOutput)
 				if waitErr != nil {
 					result = manifestLaunchError(state.definition, waitErr)
 				}
@@ -3852,7 +3858,7 @@ func manifestStartConcurrent(ctx context.Context, cmd *urfavecli.Command, client
 				return
 			}
 			timeout = manifestRemainingTimeout(timeout, state.observedAt)
-			result, waitErr := cliReadinessResult(client, ctx, cwd, state.definition, state.process, state.result.Outcome, timeout)
+			result, waitErr := cliReadinessResult(client, ctx, cwd, state.definition, state.process, state.result.Outcome, timeout, recentOutput)
 			if waitErr != nil {
 				result = manifestLaunchError(state.definition, waitErr)
 			}
@@ -3883,14 +3889,15 @@ func manifestRemainingTimeout(timeout time.Duration, observedAt time.Time) time.
 }
 
 type manifestUpScheduleOps struct {
-	start      func(context.Context, project.Definition) (manifestLaunchResult, app.Process, time.Time)
-	readiness  func(context.Context, project.Definition, app.Process, string, time.Duration) (manifestLaunchResult, error)
-	skipped    func(context.Context, project.Definition, []string) manifestLaunchResult
-	get        func(context.Context, string, string) (orchestrate.Process, error)
-	isNotFound func(error) bool
+	start        func(context.Context, project.Definition) (manifestLaunchResult, app.Process, time.Time)
+	readiness    func(context.Context, project.Definition, app.Process, string, time.Duration) (manifestLaunchResult, error)
+	skipped      func(context.Context, project.Definition, []string) manifestLaunchResult
+	get          func(context.Context, string, string) (orchestrate.Process, error)
+	isNotFound   func(error) bool
+	recentOutput orchestrate.RecentOutputReader
 }
 
-func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, timeoutOverride time.Duration, preserveRecovery bool, progress *manifestProgressRenderer, launched *upLaunchRecorder) ([]manifestLaunchResult, error) {
+func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, cwd string, manifest manifestState, names []string, timeoutOverride time.Duration, preserveRecovery, attached bool, progress *manifestProgressRenderer, launched *upLaunchRecorder) ([]manifestLaunchResult, error) {
 	ops := manifestUpScheduleOps{
 		start: func(ctx context.Context, definition project.Definition) (manifestLaunchResult, app.Process, time.Time) {
 			observedAt := time.Now()
@@ -3903,7 +3910,7 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 			return result, process, observedAt
 		},
 		readiness: func(ctx context.Context, definition project.Definition, process app.Process, outcome string, timeout time.Duration) (manifestLaunchResult, error) {
-			return cliReadinessResult(client, ctx, cwd, definition, process, outcome, timeout)
+			return cliReadinessResult(client, ctx, cwd, definition, process, outcome, timeout, nil)
 		},
 		skipped: func(ctx context.Context, definition project.Definition, blocked []string) manifestLaunchResult {
 			return manifestLaunchSkipped(ctx, client, manifest.root, definition, blocked)
@@ -3913,6 +3920,10 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 			return cliOrchestrateProcess(process), err
 		},
 		isNotFound: isNotFound,
+	}
+	// Attached up already streams each declaration's output.
+	if !attached {
+		ops.recentOutput = cliRecentOutputReader(client, manifestScope(manifest), manifest.root)
 	}
 	return manifestUpScheduleWithOps(ctx, cmd, manifest, names, timeoutOverride, progress, ops)
 }
@@ -3947,8 +3958,9 @@ func manifestUpScheduleWithOps(ctx context.Context, cmd *urfavecli.Command, mani
 			projectDefinition := manifest.byName[definition.Name]
 			return cliSharedLaunchResult(projectDefinition, ops.skipped(ctx, projectDefinition, blocked), nil)
 		},
-		Get:        ops.get,
-		IsNotFound: ops.isNotFound,
+		Get:          ops.get,
+		IsNotFound:   ops.isNotFound,
+		RecentOutput: ops.recentOutput,
 		OnProgress: func(event orchestrate.ProgressEvent) {
 			if progress == nil {
 				return

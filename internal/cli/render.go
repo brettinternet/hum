@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"hum/internal/app"
+	"hum/internal/orchestrate"
 	"hum/internal/output"
 	"hum/internal/project"
 	"hum/internal/protocol"
@@ -1184,9 +1185,9 @@ func manifestProgressInitialLineWithPolicy(definition project.Definition, result
 		if result.Signal != nil {
 			line += "; exit: " + signalHumanText(result.Signal.Name, result.Signal.Number)
 		}
-		return line + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return line + manifestProgressReadinessDiagnostic(result) + manifestProgressLogsHint(result)
 	case "timed_out":
-		return prefix + colors.apply(ansiRed, "readiness timed out") + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return prefix + colors.apply(ansiRed, "readiness timed out") + manifestProgressReadinessDiagnostic(result) + manifestProgressLogsHint(result)
 	case "completed":
 		return prefix + colors.apply(ansiGreen, "completed")
 	case "started", "already_running":
@@ -1202,6 +1203,12 @@ func manifestProgressInitialLineWithPolicy(definition project.Definition, result
 		return prefix + colors.apply(ansiGreen, "started") + "; readiness unverified"
 	case "definition_drift":
 		return prefix + manifestProgressDriftDetailWithPolicy(result, colors)
+	case "recovery_exhausted":
+		line := prefix + colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressText(result.Outcome))
+		if result.RecentOutput == nil {
+			return line
+		}
+		return line + manifestProgressLogsHint(result)
 	default:
 		return prefix + colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressText(result.Outcome))
 	}
@@ -1223,9 +1230,9 @@ func manifestProgressTerminalLineWithPolicy(result manifestLaunchResult, colors 
 		if result.Signal != nil {
 			line += "; exit: " + signalHumanText(result.Signal.Name, result.Signal.Number)
 		}
-		return line + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return line + manifestProgressReadinessDiagnostic(result) + manifestProgressLogsHint(result)
 	case "timed_out":
-		return prefix + colors.apply(ansiRed, "readiness timed out") + manifestProgressReadinessDiagnostic(result) + "; inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+		return prefix + colors.apply(ansiRed, "readiness timed out") + manifestProgressReadinessDiagnostic(result) + manifestProgressLogsHint(result)
 	case "completed":
 		return prefix + colors.apply(ansiGreen, "completed")
 	case "started", "already_running":
@@ -1237,9 +1244,39 @@ func manifestProgressTerminalLineWithPolicy(result manifestLaunchResult, colors 
 		return prefix + colors.apply(ansiGreen, "started") + "; readiness unverified"
 	case "definition_drift":
 		return prefix + manifestProgressDriftDetailWithPolicy(result, colors)
+	case "recovery_exhausted":
+		line := prefix + colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressText(result.Outcome))
+		if result.RecentOutput == nil {
+			return line
+		}
+		return line + manifestProgressLogsHint(result)
 	default:
 		return prefix + colors.apply(manifestOutcomeStyle(result.Outcome), manifestProgressText(result.Outcome))
 	}
+}
+
+// manifestProgressLogsHint keeps the hum logs hint on the failure line, or
+// moves it beneath the failed launch's recent output.
+func manifestProgressLogsHint(result manifestLaunchResult) string {
+	hint := "inspect retained logs: " + manifestProgressText(projectCommand(result.ProjectSelector, "logs "+result.Name))
+	excerpt := recentOutputHuman(result.RecentOutput)
+	if excerpt == "" {
+		return "; " + hint
+	}
+	return excerpt + "\n  " + hint
+}
+
+// recentOutputHuman renders each excerpt entry on its own indented line.
+func recentOutputHuman(recent *orchestrate.RecentOutput) string {
+	if recent == nil {
+		return ""
+	}
+	var lines strings.Builder
+	for _, entry := range recent.Entries {
+		lines.WriteString("\n    ")
+		lines.WriteString(manifestProgressText(strings.TrimRight(entry.Text, "\r\n")))
+	}
+	return lines.String()
 }
 
 func manifestProgressReadinessDiagnostic(result manifestLaunchResult) string {
@@ -1486,7 +1523,7 @@ func renderManifestLaunchHumanWithPolicy(w io.Writer, result manifestLaunchResul
 	if result.Signal != nil {
 		line += " exit: " + signalHumanText(result.Signal.Name, result.Signal.Number)
 	}
-	_, err := fmt.Fprintln(w, line)
+	_, err := fmt.Fprintln(w, line+recentOutputHuman(result.RecentOutput))
 	return err
 }
 
