@@ -664,6 +664,10 @@ func readinessBeforeDeadline(readiness *Readiness, deadline time.Time) bool {
 	return !time.Now().After(deadline)
 }
 
+// readinessTimeoutGrace bounds how long a timed-out client wait lets the
+// daemon's own readiness deadline catch up.
+const readinessTimeoutGrace = 250 * time.Millisecond
+
 func durationTimeout(duration time.Duration) time.Duration {
 	if duration <= 0 {
 		return 0
@@ -720,7 +724,32 @@ func waitForReadiness(ctx context.Context, root string, definition Definition, p
 		return ResultForProcess(definition, current, outcome), nil
 	}
 	markExited := func() (Result, error) { return refresh("exited_before_ready") }
-	markTimedOut := func() (Result, error) { return refresh("timed_out") }
+	// The daemon owns the readiness deadline and its diagnostic, but its timer
+	// starts after the launch time this wait counts from. Give it a bounded
+	// grace to publish timed_out so the result carries the diagnostic.
+	markTimedOut := func() (Result, error) {
+		grace := time.Now().Add(readinessTimeoutGrace)
+		for {
+			current, err := getCurrent()
+			if err != nil {
+				if ops.IsNotFound != nil && ops.IsNotFound(err) {
+					result.Outcome = "timed_out"
+					return result, nil
+				}
+				return result, err
+			}
+			if current.State != "running" || current.Readiness == nil || current.Readiness.State != ReadinessStarting || !time.Now().Before(grace) {
+				return ResultForProcess(definition, current, "timed_out"), nil
+			}
+			timer := time.NewTimer(10 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ResultForProcess(definition, current, "timed_out"), nil
+			case <-timer.C:
+			}
+		}
+	}
 
 	if readinessMethod(definition.Ready) == "exit" {
 		return waitForExitReadiness(ctx, definition, initialProcess, initialOutcome, deadline, getCurrent)

@@ -1617,7 +1617,7 @@ processes:
 		"hum up: fast: ready",
 		"hum up: plain: started; readiness unverified",
 		"hum up: slow: started; waiting for readiness",
-		"hum up: slow: readiness timed out; inspect retained logs: hum logs slow",
+		"hum up: slow: readiness timed out; readiness diagnostic: no output matched within 2s; inspect retained logs: hum logs slow",
 	}
 	for _, want := range wantLines {
 		found := false
@@ -1637,7 +1637,7 @@ processes:
 		if line == "hum up: fast: ready" {
 			fastReadyPosition = index
 		}
-		if line == "hum up: slow: readiness timed out; inspect retained logs: hum logs slow" {
+		if line == "hum up: slow: readiness timed out; readiness diagnostic: no output matched within 2s; inspect retained logs: hum logs slow" {
 			slowTimeoutPosition = index
 		}
 	}
