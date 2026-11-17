@@ -1223,7 +1223,7 @@ processes:
 		t.Fatalf("up exit code = %v, want 2; stdout=%q stderr=%q", up.Cmd.ProcessState, up.Stdout(), up.Stderr())
 	}
 	// Only the timed-out declaration's final output joins its progress line.
-	if !strings.Contains(up.Stderr(), "hum up: slow: readiness timed out\n    slow-child-output\n  inspect retained logs: hum logs slow\n") || strings.Contains(up.Stderr(), "fast-child-output") {
+	if !strings.Contains(up.Stderr(), "hum up: slow: readiness timed out; readiness diagnostic: no output matched within 2s\n    slow-child-output\n  inspect retained logs: hum logs slow\n") || strings.Contains(up.Stderr(), "fast-child-output") {
 		t.Fatalf("timeout progress = %q", up.Stderr())
 	}
 	lines := strings.Split(strings.TrimSpace(up.Stdout()), "\n")
