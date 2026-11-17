@@ -3655,8 +3655,13 @@ func (s *Supervisor) writeInput(ctx context.Context, lease *InputLease, cursor o
 		return ErrInputClosed
 	case <-incarnationDone:
 		if !operation.legacy {
-			<-result
+			outcome := <-result
 			<-operation.done
+			// The child may consume a full write and exit before select
+			// observes the result; both channels are then ready.
+			if outcome.err == nil && outcome.n == len(data) {
+				return nil
+			}
 		}
 		return InputStoppedError{}
 	}

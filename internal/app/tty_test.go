@@ -94,6 +94,44 @@ func (c *cancelableTTYLeaseChild) WriteContext(ctx context.Context, data []byte)
 	return len(data), nil
 }
 
+// exitAfterWriteTTYLeaseChild accepts a write, exits, and reports success only
+// after the supervisor has observed the exit.
+type exitAfterWriteTTYLeaseChild struct {
+	*ttyLeaseChild
+}
+
+func (c *exitAfterWriteTTYLeaseChild) WriteContext(ctx context.Context, data []byte) (int, error) {
+	n, _ := c.ttyLeaseChild.Write(data)
+	c.exit()
+	<-ctx.Done()
+	return n, nil
+}
+
+func TestTTYInputWriteSucceedsWhenChildExitsAfterConsuming(t *testing.T) {
+	root := makeProject(t, false)
+	child := &exitAfterWriteTTYLeaseChild{ttyLeaseChild: &ttyLeaseChild{pid: 9050, done: make(chan struct{}), result: process.Result{ExitCode: 0, ExitedAt: time.Now()}}}
+	s, err := New(Options{StartProcess: func(process.Spec) (Child, error) { return child, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown(context.Background())
+	started, err := s.Start(StartRequest{Name: "prompt", Cwd: root, Argv: []string{"prompt"}, TTY: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.AcquireInput(root, "prompt", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if _, err := lease.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Write(context.Background(), started.LaunchCursor, []byte("hello\n")); err != nil {
+		t.Fatalf("consumed write before exit = %v, want success", err)
+	}
+}
+
 func TestTTYSessionInput(t *testing.T) {
 	root := makeProject(t, false)
 	children := []*ttyLeaseChild{}
