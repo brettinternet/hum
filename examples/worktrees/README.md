@@ -29,4 +29,6 @@ wt hook pre-start                                # once, for the main checkout
 wt switch --create feature -x hum -- up --detach # writes .env.local, then starts
 ```
 
+Its `pre-remove` hook runs `hum down`, so `wt remove` and `wt merge` stop the worktree's processes before deleting the checkout.
+
 Two branches can hash to the same port. If a launch reports `address already in use`, inspect the machine-wide Hum groups from either worktree with `hum list --port 8810`. The result shows the owning project selector; incomplete inspections are called out separately. Hum never reports non-Hum holders. Then edit one worktree's `.env.local` if needed.
