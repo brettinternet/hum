@@ -165,6 +165,10 @@ Human-readable output is the default.
 
 A declaration without a daemon record shows as stopped, even with no daemon running.
 
+In aggregate `status` and `list`, an exited `STATE` names its exit code or signal (`exited 2`,
+`exited SIGTERM`). Aggregate `RESTART` shows a pending relaunch as `on-failure 3/5` and a spent
+budget as `on-failure exhausted`.
+
 Color applies only when stdout is a terminal, `TERM` is not `dumb`, and `NO_COLOR` is unset (an
 empty `NO_COLOR` also disables it). Piped output and JSON never contain ANSI styling.
 

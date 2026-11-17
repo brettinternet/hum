@@ -211,7 +211,7 @@ func TestLifecycleColorMapping(t *testing.T) {
 		ansiBoldString("NAME"), ansiBoldString("STATE"),
 		ansiGreenString("running"), ansiGreenString("ready"),
 		ansiYellowString("starting"), ansiCyanString("stopped"),
-		ansiDimString("exited"), ansiRedString("exited"),
+		ansiDimString("exited 0"), ansiRedString("exited 7"),
 	} {
 		if !strings.Contains(list.String(), want) {
 			t.Errorf("colored list missing %q: %q", want, list.String())
@@ -229,7 +229,7 @@ func TestLifecycleColorMapping(t *testing.T) {
 	if err := renderStatusSummaryHumanWithPolicy(&summary, processes, colors); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{ansiBoldString("READINESS"), ansiGreenString("running"), ansiGreenString("ready"), ansiCyanString("stopped"), ansiRedString("exited")} {
+	for _, want := range []string{ansiBoldString("READINESS"), ansiGreenString("running"), ansiGreenString("ready"), ansiCyanString("stopped"), ansiRedString("exited 7")} {
 		if !strings.Contains(summary.String(), want) {
 			t.Errorf("colored status summary missing %q: %q", want, summary.String())
 		}

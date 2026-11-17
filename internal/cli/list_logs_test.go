@@ -221,7 +221,7 @@ func TestListStatusTerminalStates(t *testing.T) {
 		argv []string
 	}{
 		{name: "zero", argv: []string{"/bin/sh", "-c", "exit 0"}},
-		{name: "failed", argv: []string{"/bin/sh", "-c", "exit 7"}},
+		{name: "failed", argv: []string{"/bin/sh", "-c", "exit 2"}},
 		{name: "signal", argv: []string{"/bin/sh", "-c", "kill -TERM $$"}},
 	} {
 		stopShutdownStartProcess(t, server, projectRoot, item.name, item.argv)
@@ -255,7 +255,7 @@ func TestListStatusTerminalStates(t *testing.T) {
 		name string
 		code int
 	}{
-		{name: "zero", code: 0}, {name: "failed", code: 7}, {name: "signal", code: -1},
+		{name: "zero", code: 0}, {name: "failed", code: 2}, {name: "signal", code: -1},
 	} {
 		process := byName[test.name]
 		if process.State != string(app.StateExited) || process.Exit == nil || process.Exit.Code != test.code {
@@ -272,9 +272,15 @@ func TestListStatusTerminalStates(t *testing.T) {
 			t.Fatalf("human list = %q, missing %q", human, want)
 		}
 	}
-	for _, want := range []string{"stopped", "exited"} {
-		if !strings.Contains(human, want) {
-			t.Fatalf("human list = %q, missing state %q", human, want)
+	summary, stderr, err := stopShutdownRun(t, "status")
+	if err != nil || stderr != "" {
+		t.Fatalf("human status: err=%v stderr=%q output=%q", err, stderr, summary)
+	}
+	for _, output := range []string{human, summary} {
+		for _, want := range []string{"stopped", "exited 0 ", "exited 2 ", "exited SIGTERM "} {
+			if !strings.Contains(output, want) {
+				t.Fatalf("human aggregate output = %q, missing state %q", output, want)
+			}
 		}
 	}
 
@@ -286,7 +292,7 @@ func TestListStatusTerminalStates(t *testing.T) {
 		{name: "stopped", state: string(app.StateStopped)},
 		{name: "declared", state: string(app.StateStopped)},
 		{name: "zero", state: string(app.StateExited), code: intPointer(0)},
-		{name: "failed", state: string(app.StateExited), code: intPointer(7)},
+		{name: "failed", state: string(app.StateExited), code: intPointer(2)},
 		{name: "signal", state: string(app.StateExited), code: intPointer(-1)},
 	} {
 		output, stderr, err := stopShutdownRun(t, "status", test.name, "--json")

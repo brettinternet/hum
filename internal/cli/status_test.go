@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -317,6 +318,23 @@ func TestStatusExitedAndSignaled(t *testing.T) {
 			if !strings.Contains(strings.ToLower(human), want) {
 				t.Errorf("signaled human status = %q, missing %q", human, want)
 			}
+		}
+	})
+
+	t.Run("aggregate human status shows pending and exhausted relaunches", func(t *testing.T) {
+		next := time.Now().Add(time.Second)
+		var summary bytes.Buffer
+		if err := renderStatusSummaryHuman(&summary, []app.Process{
+			{Name: "flappy", Source: "manifest", State: app.StateExited, ExitCode: 2, Restart: app.RestartOnFailure, Relaunches: 2, NextLaunchAt: &next},
+			{Name: "spent", Source: "manifest", State: app.StateExited, ExitCode: 2, Restart: app.RestartOnFailure, Relaunches: 5},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		want := "NAME    STATE     PID  READINESS  RESTART               FOLLOWERS\n" +
+			"flappy  exited 2  -    -          on-failure 3/5        0\n" +
+			"spent   exited 2  -    -          on-failure exhausted  0\n"
+		if summary.String() != want {
+			t.Fatalf("status summary = %q, want %q", summary.String(), want)
 		}
 	})
 }

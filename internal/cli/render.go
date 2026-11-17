@@ -119,6 +119,34 @@ func processStateStyle(state app.State, exitCode int) ansiStyle {
 	}
 }
 
+// processStateText names the state for aggregate tables, adding the exit code
+// or terminating signal so terminal records stay distinguishable without color.
+func processStateText(process app.Process) string {
+	if process.State != app.StateExited {
+		return string(process.State)
+	}
+	if process.Exit != nil && process.Exit.Signal != nil {
+		return "exited " + process.Exit.Signal.Name
+	}
+	return "exited " + strconv.Itoa(process.ExitCode)
+}
+
+// processRestartText adds the pending relaunch attempt, or exhaustion, to the
+// restart policy. Exhaustion is classified as in orchestrate.RecoveryOutcome.
+func processRestartText(process app.Process) string {
+	policy := string(effectiveProcessRestart(process))
+	if process.State != app.StateExited || policy != string(app.RestartOnFailure) {
+		return policy
+	}
+	if process.NextLaunchAt != nil {
+		return fmt.Sprintf("%s %d/%d", policy, process.Relaunches+1, orchestrate.AutomaticRelaunchLimit)
+	}
+	if process.Relaunches >= orchestrate.AutomaticRelaunchLimit {
+		return policy + " exhausted"
+	}
+	return policy
+}
+
 func readinessStyle(readiness string) ansiStyle {
 	switch readiness {
 	case app.ReadinessReady, app.ReadinessRunningUnverified:
@@ -195,7 +223,7 @@ func buildListTable(processes []app.Process, all, full bool) listTable {
 				pid = "PID " + pid
 			}
 		}
-		state := styledListCell(string(process.State), processStateStyle(process.State, process.ExitCode))
+		state := styledListCell(processStateText(process), processStateStyle(process.State, process.ExitCode))
 		row := listRow{plainListCell(process.Name), state, plainListCell(pid)}
 		if full {
 			row = append(row, plainListCell("source="+process.Source), plainListCell("argv="+shellJoin(process.Argv)))
@@ -1044,10 +1072,10 @@ func renderStatusSummaryHumanWithPolicy(w io.Writer, processes []app.Process, po
 		}
 		table.rows = append(table.rows, listRow{
 			plainListCell(process.Name),
-			styledListCell(string(process.State), processStateStyle(process.State, process.ExitCode)),
+			styledListCell(processStateText(process), processStateStyle(process.State, process.ExitCode)),
 			plainListCell(pid),
 			styledListCell(readiness, readinessStyle(readiness)),
-			plainListCell(string(effectiveProcessRestart(process))),
+			plainListCell(processRestartText(process)),
 			plainListCell(strconv.Itoa(process.Followers)),
 		})
 	}
