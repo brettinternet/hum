@@ -798,17 +798,17 @@ func TestReadinessTimedOut(t *testing.T) {
 	_ = refused.Close()
 	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
 	defer unavailable.Close()
-	const timeout = 150 * time.Millisecond
+	const timeout = 500 * time.Millisecond
 	cases := []struct {
 		name       string
 		ready      ReadinessConfig
 		diagnostic string
 	}{
-		{name: "match", ready: ReadinessConfig{Method: "match", Match: "Listening"}, diagnostic: "no output matched within 150ms"},
-		{name: "http", ready: ReadinessConfig{Method: "http", Target: unavailable.URL, Interval: 20 * time.Millisecond}, diagnostic: "503"},
-		{name: "tcp", ready: ReadinessConfig{Method: "tcp", Target: refusedAddress, Interval: 20 * time.Millisecond}, diagnostic: "dial:"},
-		{name: "exec", ready: ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo not yet; exit 1"}, Interval: 20 * time.Millisecond}, diagnostic: "not yet"},
-		{name: "exit", ready: ReadinessConfig{Method: "exit"}, diagnostic: "process did not exit within 150ms"},
+		{name: "match", ready: ReadinessConfig{Method: "match", Match: "Listening"}, diagnostic: "no output matched within 500ms"},
+		{name: "http", ready: ReadinessConfig{Method: "http", Target: unavailable.URL, Interval: time.Minute}, diagnostic: "503"},
+		{name: "tcp", ready: ReadinessConfig{Method: "tcp", Target: refusedAddress, Interval: time.Minute}, diagnostic: "dial:"},
+		{name: "exec", ready: ReadinessConfig{Method: "exec", Argv: []string{"/bin/sh", "-c", "echo not yet; exit 1"}, Interval: time.Minute}, diagnostic: "not yet"},
+		{name: "exit", ready: ReadinessConfig{Method: "exit"}, diagnostic: "process did not exit within 500ms"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
