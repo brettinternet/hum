@@ -1807,9 +1807,21 @@ func aggregateLogsFollowRequest(request daemon.OutputRequest, name string) daemo
 	}
 }
 
+// aggregateLogRead is one name's successful retained read, held so human output
+// can interleave every name's entries before printing the cursor trailers.
+type aggregateLogRead struct {
+	name   string
+	result output.ReadResult
+}
+
+// aggregateLogsRead reads each name independently. JSON emits one event per name
+// in name order. Human output prints error and not-launched lines first, then
+// every name's entries merged by time, then each name's cursor trailer.
 func aggregateLogsRead(ctx context.Context, cmd *urfavecli.Command, client *daemon.Client, request daemon.OutputRequest, names []string, manifest manifestState, writer, errWriter io.Writer) error {
-	renderer := newAggregateLogRenderer(writer, errWriter, cmd.Bool("json"))
+	jsonOutput := cmd.Bool("json")
+	renderer := newAggregateLogRenderer(writer, errWriter, jsonOutput)
 	var firstErr error
+	var reads []aggregateLogRead
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -1837,14 +1849,65 @@ func aggregateLogsRead(ctx context.Context, cmd *urfavecli.Command, client *daem
 			}
 			continue
 		}
+		if !jsonOutput {
+			reads = append(reads, aggregateLogRead{name: name, result: result})
+			continue
+		}
 		if err := renderer.writeEvent(name, output.Event{Read: &result}); err != nil {
 			return err
 		}
-		if err := renderer.writeCursor(name, result); err != nil {
+	}
+	if err := writeInterleavedLogEntries(writer, renderer.colors, reads, request.Context > 0); err != nil {
+		return err
+	}
+	for _, read := range reads {
+		if err := renderer.writeCursor(read.name, read.result); err != nil {
 			return err
 		}
 	}
 	return firstErr
+}
+
+// writeInterleavedLogEntries prints every name's entries in time order, ties
+// broken by name, then cursor. With match context, a run of consecutive cursors
+// from one name is a context group: it stays contiguous and is placed by its
+// first entry's time. A stream filter can hide the entries that join a group,
+// so such a group may be placed as several runs.
+func writeInterleavedLogEntries(w io.Writer, colors colorPolicy, reads []aggregateLogRead, grouped bool) error {
+	type run struct {
+		name    string
+		entries []output.Entry
+	}
+	var runs []run
+	for _, read := range reads {
+		entries := read.result.Entries
+		for len(entries) > 0 {
+			size := 1
+			for grouped && size < len(entries) && entries[size].Cursor == entries[size-1].Cursor+1 {
+				size++
+			}
+			runs = append(runs, run{name: read.name, entries: entries[:size]})
+			entries = entries[size:]
+		}
+	}
+	sort.SliceStable(runs, func(i, j int) bool {
+		a, b := runs[i].entries[0], runs[j].entries[0]
+		if !a.Time.Equal(b.Time) {
+			return a.Time.Before(b.Time)
+		}
+		if runs[i].name != runs[j].name {
+			return runs[i].name < runs[j].name
+		}
+		return a.Cursor < b.Cursor
+	})
+	for _, run := range runs {
+		for _, entry := range run.entries {
+			if err := writeAggregateLogEntry(w, colors, run.name, entry); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type aggregateLogsFollowOptions struct {

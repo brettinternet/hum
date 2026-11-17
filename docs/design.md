@@ -480,7 +480,11 @@ Several names:
   sessions, and membership does not change later.
 - `--after-cursor` is rejected before daemon startup for more than one name.
 - Filters, tail, context, and limits apply per name. Human entries are atomic `[NAME]`-prefixed
-  writes; JSON uses named NDJSON events. A single name keeps the single-process output shape.
+  writes; JSON uses named NDJSON events in name order. A single name keeps the single-process
+  output shape.
+- Human reads without `--follow` print error and not-launched lines in name order, then every
+  name's entries in time order (ties by name, then cursor), then each name's cursor line in name
+  order. A `--match --context` group stays contiguous and is placed by its first entry's time.
 - Aggregate follow opens one follower per name, serializes writes, reports per-session errors by
   name without stopping the others, and cancels everything on daemon loss or output failure.
   Ctrl+C closes all followers and never signals a process.

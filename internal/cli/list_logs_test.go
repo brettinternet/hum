@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -368,6 +369,43 @@ func TestLogsMultipleNames(t *testing.T) {
 	}
 	if !strings.Contains(humanErr, "[first] next cursor:") || !strings.Contains(humanErr, "[second] next cursor:") {
 		t.Fatalf("aggregate human stderr = %q, want one cursor trailer per name", humanErr)
+	}
+
+	// Handshake files force first-0 < second-0 < first-1 < second-1 in time,
+	// so per-name blocks and time order disagree.
+	interleaveProject := hum006ListLogsProject(t, "aggregate-interleave")
+	secondWrote, firstWrote := filepath.Join(interleaveProject, "second-0"), filepath.Join(interleaveProject, "first-1")
+	waitFor := func(path string) string {
+		return fmt.Sprintf("while [ ! -f '%s' ]; do sleep 0.01; done", path)
+	}
+	for _, item := range []struct{ name, script string }{
+		{"first", fmt.Sprintf("printf 'first-0\\n'; %s; printf 'first-1\\n'; sleep 0.1; touch '%s'", waitFor(secondWrote), firstWrote)},
+		{"second", fmt.Sprintf("printf 'second-0\\n'; sleep 0.1; touch '%s'; %s; printf 'second-1\\n'", secondWrote, waitFor(firstWrote))},
+	} {
+		if stdout, stderr, err := hum006ListLogsRunAt(t, interleaveProject, context.Background(), "run", item.name, "--detach", "--", "/bin/sh", "-c", item.script); err != nil {
+			t.Fatalf("start %s: %v (stdout=%q stderr=%q)", item.name, err, stdout, stderr)
+		}
+	}
+	hum006ListLogsWaitForText(t, interleaveProject, "second", "second-1\n")
+	for _, test := range []struct {
+		label string
+		args  []string
+		want  string
+	}{
+		{"time order", nil, "[first] first-0\n[second] second-0\n[first] first-1\n[second] second-1\n"},
+		{"context groups", []string{"--match=-1", "--context", "1"}, "[first] first-0\n[first] first-1\n[second] second-0\n[second] second-1\n"},
+	} {
+		args := append([]string{"logs", "second", "first", "--stream", "stdout"}, test.args...)
+		stdout, stderr, err := hum006ListLogsRunAt(t, interleaveProject, context.Background(), args...)
+		if err != nil {
+			t.Fatalf("%s logs: %v (stderr=%q)", test.label, err, stderr)
+		}
+		if stdout != test.want {
+			t.Fatalf("%s stdout = %q, want %q", test.label, stdout, test.want)
+		}
+		if !regexp.MustCompile(`^\[second\] next cursor: \d+\n\[first\] next cursor: \d+\n$`).MatchString(stderr) {
+			t.Fatalf("%s stderr = %q, want cursor trailers after entries in name order", test.label, stderr)
+		}
 	}
 
 	manifestProject := hum006ListLogsProject(t, "aggregate-manifest")
