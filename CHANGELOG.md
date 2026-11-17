@@ -2,6 +2,12 @@
 
 Notable changes to hum are documented here. This file is generated from conventional commits by [git-cliff](https://git-cliff.org/).
 
+## [v0.20.1](https://github.com/brettinternet/hum/compare/v0.20.0...v0.20.1) - 2026-11-17
+
+### Fixed
+
+- **readiness:** Keep last probe diagnostic when the deadline interrupts a probe
+
 ## [v0.20.0](https://github.com/brettinternet/hum/compare/v0.19.2...v0.20.0) - 2026-11-17
 
 ### Added
