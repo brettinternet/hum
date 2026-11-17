@@ -449,6 +449,15 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 	}
 	assertDoctorCheck(t, result, "process.executable", doctorPass)
 	assertDoctorCheck(t, result, "ready.executable", doctorPass)
+	_, human, _, err := runDoctorTest(t, context.Background(), projectRoot)
+	if err != nil {
+		t.Fatalf("human doctor: %v", err)
+	}
+	for _, want := range []string{"process.executable           app: process executable is available", "ready.executable             app: readiness executable is available"} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("human doctor missing %q:\n%s", want, human)
+		}
+	}
 	if strings.Contains(stdout+stderr, "private-value") || strings.Contains(stdout+stderr, "TOKEN") {
 		t.Fatalf("doctor exposed composed environment: stdout=%q stderr=%q", stdout, stderr)
 	}
@@ -579,6 +588,12 @@ func TestDoctorProjectEnvironmentAndExecutableContract(t *testing.T) {
 	var exit urfavecli.ExitCoder
 	if !errors.As(err, &exit) || exit.ExitCode() != 1 || failed.Summary.Fail != 3 {
 		t.Fatalf("multiple executable failures: err=%v result=%+v", err, failed)
+	}
+	_, failedHuman, _, _ := runDoctorTest(t, context.Background(), projectRoot)
+	for _, want := range []string{"process.executable           one: process executable is unavailable", "process.executable           two: process executable is unavailable", "ready.executable             two: readiness executable is unavailable"} {
+		if !strings.Contains(failedHuman, want) {
+			t.Fatalf("human doctor missing %q:\n%s", want, failedHuman)
+		}
 	}
 
 	strictCases := []struct {

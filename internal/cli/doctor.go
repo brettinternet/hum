@@ -268,7 +268,11 @@ func writeDoctorHuman(writer io.Writer, result doctorResult) error {
 func writeDoctorHumanWithPolicy(writer io.Writer, result doctorResult, colors colorPolicy) error {
 	for _, check := range result.Checks {
 		status := colors.apply(doctorStatusStyle(check.Status), check.Status)
-		if _, err := fmt.Fprintf(writer, "%s %-28s %s\n", status, check.Name, check.Message); err != nil {
+		message := check.Message
+		if process, ok := check.Details["process"].(string); ok && process != "" {
+			message = process + ": " + message
+		}
+		if _, err := fmt.Fprintf(writer, "%s %-28s %s\n", status, check.Name, message); err != nil {
 			return err
 		}
 	}
