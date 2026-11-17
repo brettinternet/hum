@@ -29,6 +29,7 @@ type manifestState struct {
 	defs             []project.Definition
 	byName           map[string]project.Definition
 	environments     map[string][]string
+	envFingerprints  map[string]string
 	skippedEnvFiles  []string
 	baseline         []string
 	selector         string
@@ -122,7 +123,7 @@ func prepareManifestEnvironments(manifest *manifestState, names []string, baseli
 			}
 		}
 	}
-	prepared, skipped, err := project.PrepareEnvironmentsWithSkipped(selected, baseline)
+	snapshot, err := project.PrepareManifestEnvironments(selected, baseline)
 	if err != nil {
 		return &project.ConfigurationError{Source: manifestDisplayName(*manifest), Err: err}
 	}
@@ -132,17 +133,28 @@ func prepareManifestEnvironments(manifest *manifestState, names []string, baseli
 		}
 		request := protocol.StartRequest{
 			Op: protocol.OpStart, Name: definition.Name, Root: manifest.root,
-			Argv: definition.Argv, Cwd: definition.Cwd, Env: prepared[definition.Name],
+			Argv: definition.Argv, Cwd: definition.Cwd, Env: snapshot.Environments[definition.Name],
 			Source: definition.Source, Ready: readinessConfig(definition), TTY: definition.TTY,
 			Restart: protocolRestartPolicy(definition), StopGrace: definition.StopGrace,
+			EnvFingerprint: snapshot.Fingerprints[definition.Name],
 		}
 		if _, err := protocol.MarshalLine(request); err != nil {
 			return &project.ConfigurationError{Source: manifestDisplayName(*manifest), Err: fmt.Errorf("composed environment request is too large")}
 		}
 	}
-	manifest.environments = prepared
-	manifest.skippedEnvFiles = skipped
+	manifest.environments = snapshot.Environments
+	manifest.envFingerprints = snapshot.Fingerprints
+	if manifestScope(*manifest) == protocol.ScopeGlobal {
+		manifest.envFingerprints = nil
+	}
+	manifest.skippedEnvFiles = snapshot.SkippedOptionalFiles
 	return nil
+}
+
+// manifestEnvFingerprint is empty for a definition whose environment was not
+// prepared, so its record never reports an environment change.
+func manifestEnvFingerprint(manifest manifestState, name string) string {
+	return manifest.envFingerprints[name]
 }
 
 func manifestEnvironment(manifest manifestState, definition project.Definition) []string {
@@ -325,6 +337,7 @@ type manifestLaunchResult struct {
 	BlockedBy           []string                  `json:"blocked_by,omitempty"`
 	ExistingState       string                    `json:"existing_state,omitempty"`
 	ChangedFields       []string                  `json:"changed_fields,omitempty"`
+	EnvironmentChanged  bool                      `json:"environment_changed,omitempty"`
 	Guidance            string                    `json:"guidance,omitempty"`
 	Restart             string                    `json:"restart"`
 	Relaunches          int                       `json:"relaunches"`
@@ -480,7 +493,7 @@ func cliOrchestrateProcess(process app.Process) orchestrate.Process {
 		Start: process.Start, LaunchCursor: uint64(process.LaunchCursor), State: string(process.State),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
 		Followers: process.Followers, Restart: string(process.Restart), StopGrace: process.StopGrace, StopGraceInherited: process.StopGraceInherited, Relaunches: process.Relaunches,
-		NextLaunchAt: process.NextLaunchAt,
+		NextLaunchAt: process.NextLaunchAt, EnvironmentChanged: process.EnvironmentChanged,
 	}
 	if process.NextCursor != 0 {
 		cursor := uint64(process.NextCursor)
@@ -514,7 +527,7 @@ func cliAppProcess(process orchestrate.Process) app.Process {
 		Start: process.Start, LaunchCursor: output.Cursor(process.LaunchCursor), State: app.State(process.State),
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
 		Followers: process.Followers, Restart: app.RestartPolicy(process.Restart), StopGrace: process.StopGrace, StopGraceInherited: process.StopGraceInherited, Relaunches: process.Relaunches,
-		NextLaunchAt: process.NextLaunchAt,
+		NextLaunchAt: process.NextLaunchAt, EnvironmentChanged: process.EnvironmentChanged,
 	}
 	if process.NextCursor != nil {
 		result.NextCursor = output.Cursor(*process.NextCursor)
@@ -550,6 +563,7 @@ func cliManifestLaunchResult(definition project.Definition, shared orchestrate.R
 	result.BlockedBy = append([]string(nil), shared.BlockedBy...)
 	result.ExistingState = shared.ExistingState
 	result.ChangedFields = append([]string(nil), shared.ChangedFields...)
+	result.EnvironmentChanged = shared.EnvironmentChanged
 	result.Guidance = shared.Guidance
 	result.RecentOutput = shared.RecentOutput
 	if shared.Error != nil {
@@ -563,7 +577,7 @@ func cliSharedLaunchResult(definition project.Definition, result manifestLaunchR
 		Name: result.Name, Outcome: result.Outcome,
 		BlockedBy: append([]string(nil), result.BlockedBy...), ExistingState: result.ExistingState,
 		ChangedFields: append([]string(nil), result.ChangedFields...), Guidance: result.Guidance,
-		RecentOutput: result.RecentOutput,
+		RecentOutput: result.RecentOutput, EnvironmentChanged: result.EnvironmentChanged,
 	}
 	if shared.Name == "" {
 		shared.Name = definition.Name
@@ -786,14 +800,14 @@ func manifestTimeoutMS(timeout time.Duration) (int64, error) {
 	return int64(milliseconds), nil
 }
 
-func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root string, definition project.Definition, env []string, preserveRecovery bool, onStart func(string)) (manifestLaunchResult, app.Process, bool, error) {
+func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root string, definition project.Definition, env []string, envFingerprint string, preserveRecovery bool, onStart func(string)) (manifestLaunchResult, app.Process, bool, error) {
 	lookupRoot := root
 	if lookupRoot == "" {
 		lookupRoot = cwd
 	}
 	shared := orchestrate.Ensure(ctx, lookupRoot, cliOrchestrateDefinition(definition), env, preserveRecovery, orchestrate.EnsureOperations{
 		Get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
-			current, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: root})
+			current, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: root, EnvFingerprint: envFingerprint})
 			return cliOrchestrateProcess(current), err
 		},
 		Start: func(ctx context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
@@ -808,6 +822,7 @@ func ensureManifestStart(ctx context.Context, client *daemon.Client, cwd, root s
 				Name: request.Name, Source: request.Source, Root: request.Root, Cwd: request.Cwd,
 				Argv: append([]string(nil), request.Argv...), Env: append([]string(nil), request.Env...),
 				Ready: ready, TTY: request.TTY, Restart: request.Restart, StopGrace: request.StopGrace,
+				EnvFingerprint: envFingerprint,
 			})
 			return cliOrchestrateProcess(current), err
 		},

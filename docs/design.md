@@ -658,6 +658,21 @@ A running, completed setup, or recovery-capable manifest record whose definition
 | argv, canonical cwd, TTY, normalized `restart`, `stop_grace` | environment |
 | readiness method (`readiness_exec`, `readiness_http`, `readiness_tcp`, `readiness_exit`), match, exec argv, HTTP/TCP target | readiness `timeout`, exec `interval` |
 
+Environment changes never block or replace a record. When `start` or `up` keeps a record
+(`already_running`, `completed`, `recovery_pending`, `recovery_exhausted`, `definition_drift`) whose
+manifest environment changed since its declared launch or `restart`, the CLI JSON and MCP results
+add `environment_changed: true` with `guidance: "hum restart NAME"`, and human progress appends
+`environment changed; run hum restart NAME`. Outcome, exit code, and dependency gating are
+unchanged.
+
+- The comparison covers the manifest's contribution only: `inherit`, and the final keys and values
+  from environment files and `processes.NAME.env`, including `null` removals. Caller-inherited
+  variables are excluded, so a different shell never reports a change.
+- Clients send a SHA-256 fingerprint of that versioned, canonical contribution with declared
+  `start`, `up`, `restart`, and declared `run`. The daemon keeps it in memory only.
+- Records without a fingerprint never report: ad-hoc `run`, global scope, records retained across
+  a daemon restart, and launches from clients or daemons that predate the field.
+
 ### Environment
 
 ```yaml
@@ -888,7 +903,9 @@ takes one `Options.Environment` snapshot (falling back to `os.Environ`) per requ
 Privacy:
 
 - Environment names and values are never returned or listed in metadata, status, JSON, or MCP, and
-  protocol responses forbid an `env` key. There is no environment hash or drift field.
+  protocol responses forbid an `env` key. The environment fingerprint is request-only and memory-only;
+  it never appears in responses, events, logs, or state. Only the boolean `environment_changed` is
+  returned (see [Definition drift](#definition-drift)).
 - Diagnostics may name a valid key, path, process, and line, never a value, raw input, or a decode
   error containing one. YAML syntax errors report only the line number and never forward parser
   text.

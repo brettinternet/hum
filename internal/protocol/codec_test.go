@@ -20,9 +20,9 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 	stopGrace := 2 * time.Second
 	requests := []any{
 		Hello{Op: OpHello, Version: 22},
-		StartRequest{Op: OpStart, Scope: ScopeProject, Name: "start", Argv: []string{"tool", "--flag"}, Cwd: "/work", Root: "/project", Env: []string{"A=B"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace, Attached: true, Origin: "cli"},
+		StartRequest{Op: OpStart, Scope: ScopeProject, Name: "start", Argv: []string{"tool", "--flag"}, Cwd: "/work", Root: "/project", Env: []string{"A=B"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace, Attached: true, Origin: "cli", EnvFingerprint: "fp-start"},
 		ListRequest{Op: OpList, Scope: ScopeGlobal, Cwd: "/work", All: true, IncludeCompleted: true},
-		GetRequest{Op: OpGet, Scope: ScopeProject, Name: "get", Cwd: "/work", Ports: true},
+		GetRequest{Op: OpGet, Scope: ScopeProject, Name: "get", Cwd: "/work", Ports: true, EnvFingerprint: "fp-get"},
 		OutputRequest{Op: OpOutput, Scope: ScopeProject, Name: "output", Cwd: "/work", SessionID: "session-1", After: &cursor, SinceMS: 11, Tail: 12, Stream: StreamStdout, Match: "needle", Context: 2, MaxEntries: 13, MaxBytes: 14},
 		EventsRequest{Op: OpEvents, Scope: ScopeProject, Root: "/project", Cwd: "/work", Names: []string{"api"}, SinceUnixNano: stamp.UnixNano(), Kinds: []EventKind{EventLifecycle, EventOperation}, Failed: true, Match: "api", Tail: 12, AfterCursor: &cursor, MaxBytes: 14},
 		OutputRequest{Op: OpOutput, Scope: ScopeProject, Name: "output-absolute", Cwd: "/work", SinceUnixNano: stamp.UnixNano()},
@@ -31,7 +31,7 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 		WaitRequest{Op: OpWait, Scope: ScopeProject, Name: "wait", Cwd: "/work", SessionID: "session-1", After: &cursor, Match: "wait", TimeoutMS: 18},
 		SignalRequest{Op: OpSignal, Scope: ScopeGlobal, Name: "signal", Cwd: "/work", Signal: "SIGTERM", Control: true, Origin: "mcp"},
 		StopRequest{Op: OpStop, Scope: ScopeProject, Name: "stop", Cwd: "/work", Origin: "cli"},
-		RestartRequest{Op: OpRestart, Scope: ScopeProject, Name: "restart", Cwd: "/work", Root: "/project", Update: true, Argv: []string{"new"}, Env: []string{"C=D"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace, Origin: "mcp"},
+		RestartRequest{Op: OpRestart, Scope: ScopeProject, Name: "restart", Cwd: "/work", Root: "/project", Update: true, Argv: []string{"new"}, Env: []string{"C=D"}, Source: "manifest", Ready: ready, TTY: true, TTYSize: tty, Restart: RestartOnFailure, StopGrace: &stopGrace, Origin: "mcp", EnvFingerprint: "fp-restart"},
 		RemoveRequest{Op: OpRemove, Scope: ScopeGlobal, Name: "remove", Cwd: "/work", Origin: "mcp"},
 		ShutdownRequest{Op: OpShutdown, Force: true},
 		InputAttachRequest{Op: OpInputAttach, ID: "operation-1", EventOperation: "input", Origin: "mcp", Scope: ScopeProject, Name: "input", Cwd: "/work", Root: "/project", TTY: true, Argv: []string{"shell"}, Source: "manifest", Ready: ready, Columns: 100, Rows: 30},
@@ -93,7 +93,7 @@ func TestProtocolRoundTripAllFields(t *testing.T) {
 	}
 	requireEveryFieldPopulated(t, requests, nil)
 
-	process := Process{Name: "process", SessionID: "session-1", Source: "manifest", Scope: ScopeProject, Root: "/project", TTY: true, PID: 41, PGID: 42, Cwd: "/work", Argv: []string{"tool"}, Start: stamp, LaunchCursor: cursor, NextCursor: &next, State: StateExited, Exit: &Exit{Code: -1, Time: stamp, Error: "failed", Signal: &SignalInfo{Name: "SIGTERM", Number: 15}}, ExitCode: -1, ExitedAt: stamp, RestartCount: 2, Followers: 3, Restart: RestartOnFailure, StopGrace: stopGrace, StopGraceInherited: true, Relaunches: 4, NextLaunchAt: &stamp, Readiness: &Readiness{Method: "exec", Target: "http://127.0.0.1:1", Argv: []string{"probe", "ready"}, Interval: 250 * time.Millisecond, State: ReadinessReady, Cursor: &cursor, Time: stamp, Match: "ready", Diagnostic: "status 1"}, Ports: &PortInspection{State: "partial", Listeners: []PortEndpoint{{Transport: "tcp", Address: "127.0.0.1", Port: 8080, PIDs: []int{41, 42}}}, Diagnostic: "one member disappeared"}}
+	process := Process{Name: "process", SessionID: "session-1", Source: "manifest", Scope: ScopeProject, Root: "/project", TTY: true, PID: 41, PGID: 42, Cwd: "/work", Argv: []string{"tool"}, Start: stamp, LaunchCursor: cursor, NextCursor: &next, State: StateExited, Exit: &Exit{Code: -1, Time: stamp, Error: "failed", Signal: &SignalInfo{Name: "SIGTERM", Number: 15}}, ExitCode: -1, ExitedAt: stamp, RestartCount: 2, Followers: 3, Restart: RestartOnFailure, StopGrace: stopGrace, StopGraceInherited: true, Relaunches: 4, EnvironmentChanged: true, NextLaunchAt: &stamp, Readiness: &Readiness{Method: "exec", Target: "http://127.0.0.1:1", Argv: []string{"probe", "ready"}, Interval: 250 * time.Millisecond, State: ReadinessReady, Cursor: &cursor, Time: stamp, Match: "ready", Diagnostic: "status 1"}, Ports: &PortInspection{State: "partial", Listeners: []PortEndpoint{{Transport: "tcp", Address: "127.0.0.1", Port: 8080, PIDs: []int{41, 42}}}, Diagnostic: "one member disappeared"}}
 	entries := []OutputEntry{{Cursor: cursor, Stream: StreamStdout, Time: stamp, Text: "output"}}
 	wireError := NewWireError(ErrorInvalidRequest, "bad", map[string]any{"client": 18, "daemon": 19})
 	responses := []any{

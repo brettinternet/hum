@@ -38,7 +38,7 @@ func TestMCPManifestEnvironmentContract(t *testing.T) {
 			calls++
 			return []string{"PATH=/bin", "TOKEN=baseline-secret"}
 		}})
-		prepared, err := server.prepareEnvironments(resolution)
+		prepared, _, err := server.prepareEnvironments(resolution)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -51,7 +51,7 @@ func TestMCPManifestEnvironmentContract(t *testing.T) {
 		value := "only"
 		spec := &project.EnvironmentSpec{Inherit: false, Values: map[string]*string{"ONLY": &value, "TOKEN": nil}, BaseDir: root, Root: root}
 		server := NewServer(Options{Environment: func() []string { return []string{"TOKEN=baseline-secret"} }})
-		prepared, err := server.prepareEnvironments(Resolution{Root: root, Definitions: []Definition{{Name: "isolated", Environment: spec}}})
+		prepared, _, err := server.prepareEnvironments(Resolution{Root: root, Definitions: []Definition{{Name: "isolated", Environment: spec}}})
 		if err != nil || !reflect.DeepEqual(prepared["isolated"], []string{"ONLY=only"}) {
 			t.Fatalf("prepared=%v error=%v", prepared, err)
 		}
@@ -66,7 +66,7 @@ func TestMCPManifestEnvironmentContract(t *testing.T) {
 			group.Add(1)
 			go func() {
 				defer group.Done()
-				_, err := server.prepareEnvironments(resolution)
+				_, _, err := server.prepareEnvironments(resolution)
 				errors <- err
 			}()
 		}
@@ -223,6 +223,15 @@ type fakeClient struct {
 	sessionID              string
 	// notFoundDetails are the details a daemon attaches to a Get miss.
 	notFoundDetails map[string]any
+	// envFingerprints mirrors the daemon's in-memory environment fingerprints.
+	envFingerprints map[string]string
+}
+
+func (f *fakeClient) recordEnvFingerprint(name, fingerprint string) {
+	if f.envFingerprints == nil {
+		f.envFingerprints = map[string]string{}
+	}
+	f.envFingerprints[name] = fingerprint
 }
 
 func fakeCompletedExitReadiness(process protocol.Process) protocol.Process {
@@ -247,6 +256,7 @@ func (f *fakeClient) Start(_ context.Context, req protocol.StartRequest) (protoc
 	if err := f.startErr[req.Name]; err != nil {
 		return protocol.Process{}, err
 	}
+	f.recordEnvFingerprint(req.Name, req.EnvFingerprint)
 	p := protocol.Process{Name: req.Name, Source: req.Source, Root: req.Root, Cwd: req.Cwd, Argv: append([]string(nil), req.Argv...), State: "running", LaunchCursor: 7, Restart: req.Restart, StopGraceInherited: req.StopGrace == nil}
 	if req.StopGrace != nil {
 		p.StopGrace = *req.StopGrace
@@ -309,6 +319,8 @@ func (f *fakeClient) Get(_ context.Context, req protocol.GetRequest) (protocol.P
 	if p.Readiness != nil && !f.keepStarting && (f.readyBeforeWait || f.waited[req.Name]) {
 		p.Readiness = &protocol.Readiness{Method: p.Readiness.Method, Target: p.Readiness.Target, Argv: append([]string(nil), p.Readiness.Argv...), Interval: p.Readiness.Interval, State: protocol.ReadinessReady, Cursor: p.NextCursor, Match: p.Readiness.Match, Diagnostic: p.Readiness.Diagnostic}
 	}
+	recorded := f.envFingerprints[req.Name]
+	p.EnvironmentChanged = req.EnvFingerprint != "" && recorded != "" && recorded != req.EnvFingerprint
 	return p, nil
 }
 func (f *fakeClient) Output(_ context.Context, req protocol.OutputRequest) (protocol.OutputResult, error) {
@@ -386,6 +398,7 @@ func (f *fakeClient) Restart(_ context.Context, req protocol.RestartRequest) (pr
 		p.SessionID = f.sessionID
 	}
 	if req.Update {
+		f.recordEnvFingerprint(req.Name, req.EnvFingerprint)
 		p.Source, p.Root, p.Cwd = req.Source, req.Root, req.Cwd
 		p.StopGraceInherited = req.StopGrace == nil
 		if req.StopGrace != nil {
@@ -3199,5 +3212,64 @@ func TestNotFoundSuggestsClosestName(t *testing.T) {
 		if got := suggestion(t, err); got != nil {
 			t.Errorf("%s zzzz suggestion = %v, want none", tool, got)
 		}
+	}
+}
+
+func TestMCPEnvironmentChanged(t *testing.T) {
+	root := t.TempDir()
+	writeEnv := func(value string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET_KEY="+value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec := &project.EnvironmentSpec{Inherit: true, Files: []project.EnvironmentFileSpec{{Path: ".env", Required: true}}, Values: map[string]*string{}, BaseDir: root, Root: root}
+	resolution := Resolution{Root: root, Definitions: []Definition{{Name: "api", Source: "manifest:hum.yaml", Argv: []string{"api"}, Cwd: root, Environment: spec}}}
+	client := &fakeClient{processes: map[string]protocol.Process{}, startErr: map[string]error{}}
+	caller := "one"
+	server := NewServer(Options{
+		Resolver:      fakeResolver{resolution: resolution},
+		Environment:   func() []string { return []string{"CALLER_ONLY=" + caller} },
+		ClientFactory: func(context.Context, bool) (Client, error) { return client, nil },
+	})
+	call := func(tool string, wantChanged bool, extra ...any) string {
+		t.Helper()
+		value, err := server.callTool(context.Background(), tool, args(root, append([]any{"no_wait", true}, extra...)...))
+		if err != nil {
+			t.Fatalf("%s: %v", tool, err)
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(encoded)
+		for _, leak := range []string{"SECRET_KEY", "first-secret", "second-secret", "env_fingerprint", client.envFingerprints["api"]} {
+			if leak != "" && strings.Contains(text, leak) {
+				t.Fatalf("%s response exposed %q: %s", tool, leak, text)
+			}
+		}
+		changed := strings.Contains(text, `"environment_changed":true`)
+		if changed != wantChanged || (changed && !strings.Contains(text, `"guidance":"hum restart api"`)) {
+			t.Fatalf("%s environment_changed=%v, want %v: %s", tool, changed, wantChanged, text)
+		}
+		if strings.Count(text, "environment_changed") > 1 {
+			t.Fatalf("%s repeated the flag on the nested process: %s", tool, text)
+		}
+		return text
+	}
+
+	writeEnv("first-secret")
+	call("up", false)
+	caller = "two"
+	call("up", false)
+	writeEnv("second-secret")
+	if text := call("up", true); !strings.Contains(text, `"outcome":"already_running"`) {
+		t.Fatalf("up did not keep the process: %s", text)
+	}
+	call("start", true, "name", "api")
+	call("restart", false, "name", "api")
+	call("up", false)
+	if len(client.starts) != 1 {
+		t.Fatalf("starts=%d, want the changed process kept", len(client.starts))
 	}
 }

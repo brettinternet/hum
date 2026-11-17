@@ -87,6 +87,10 @@ successful exit as readiness `ready` and outcome `completed`; a nonzero exit, si
 manifest `timeout` passed without success; `readiness_diagnostic` says why, and a later match or
 successful exit can still become `ready`.
 
+`environment_changed`: `start` and `up` records that kept an existing process whose manifest
+environment changed carry `environment_changed: true` and `guidance` (`hum restart NAME`). The
+outcome is unchanged; omitted otherwise. See [design.md](design.md#definition-drift).
+
 `recent_output`: `start`, `up`, and `restart` records with outcome `exited_before_ready`,
 `timed_out`, or `recovery_exhausted` carry the failed launch's final output when any was retained:
 `session_id`, `entries` (at most 5, at most 2 KiB of text, terminal control stripped), and optional

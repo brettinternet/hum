@@ -2,6 +2,9 @@ package project
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -217,18 +220,35 @@ type PreparedEnvironment struct {
 	skippedOptionalFiles []string
 }
 
+// PreparedEnvironments is one invocation's composed environments, keyed by
+// definition name, with the optional files skipped while reading them.
+// Fingerprints identify each definition's manifest contribution; they are
+// request-only and never reported.
+type PreparedEnvironments struct {
+	Environments         map[string][]string
+	Fingerprints         map[string]string
+	SkippedOptionalFiles []string
+}
+
 // PrepareEnvironments validates and loads each unique file once, then composes
 // a target environment for every definition. It also checks encoded protocol
 // request size without exposing values in diagnostics.
 func PrepareEnvironments(definitions []Definition, baseline []string) (map[string][]string, error) {
-	environments, _, err := PrepareEnvironmentsWithSkipped(definitions, baseline)
-	return environments, err
+	prepared, err := PrepareManifestEnvironments(definitions, baseline)
+	return prepared.Environments, err
 }
 
 // PrepareEnvironmentsWithSkipped prepares the same environment snapshot as
 // PrepareEnvironments and also reports optional files skipped during that
 // snapshot, using the paths as written relative to their manifests.
 func PrepareEnvironmentsWithSkipped(definitions []Definition, baseline []string) (map[string][]string, []string, error) {
+	prepared, err := PrepareManifestEnvironments(definitions, baseline)
+	return prepared.Environments, prepared.SkippedOptionalFiles, err
+}
+
+// PrepareManifestEnvironments prepares one environment snapshot and the
+// fingerprint of each definition's manifest contribution to it.
+func PrepareManifestEnvironments(definitions []Definition, baseline []string) (PreparedEnvironments, error) {
 	prepared := &PreparedEnvironment{
 		baseline: append([]string(nil), baseline...),
 		files:    map[string][]EnvironmentAssignment{},
@@ -243,7 +263,7 @@ func PrepareEnvironmentsWithSkipped(definitions []Definition, baseline []string)
 			filename := fileSpec.Path
 			lexical, err := lexicalEnvironmentFilePath(definition.Environment.BaseDir, definition.Environment.Root, filename)
 			if err != nil {
-				return nil, nil, err
+				return PreparedEnvironments{}, err
 			}
 			if !fileSpec.Required && environmentFileAbsent(lexical) {
 				ref := environmentFileRef(definition.Environment, filename)
@@ -255,7 +275,7 @@ func PrepareEnvironmentsWithSkipped(definitions []Definition, baseline []string)
 			}
 			canonical, err := resolveEnvironmentFile(definition.Environment.BaseDir, definition.Environment.Root, filename)
 			if err != nil {
-				return nil, nil, err
+				return PreparedEnvironments{}, err
 			}
 			prepared.paths[environmentFileRef(definition.Environment, filename)] = canonical
 			if _, ok := prepared.files[canonical]; ok {
@@ -263,42 +283,47 @@ func PrepareEnvironmentsWithSkipped(definitions []Definition, baseline []string)
 			}
 			info, err := os.Stat(canonical)
 			if err != nil {
-				return nil, nil, fmt.Errorf("environment file %q: %w", filename, err)
+				return PreparedEnvironments{}, fmt.Errorf("environment file %q: %w", filename, err)
 			}
 			if !info.Mode().IsRegular() {
-				return nil, nil, fmt.Errorf("environment file %q is not a regular file", filename)
+				return PreparedEnvironments{}, fmt.Errorf("environment file %q is not a regular file", filename)
 			}
 			if info.Size() > maxEnvironmentFileBytes {
-				return nil, nil, fmt.Errorf("environment file %q exceeds the 1 MiB limit", filename)
+				return PreparedEnvironments{}, fmt.Errorf("environment file %q exceeds the 1 MiB limit", filename)
 			}
 			file, err := os.Open(canonical)
 			if err != nil {
-				return nil, nil, fmt.Errorf("environment file %q: %w", filename, err)
+				return PreparedEnvironments{}, fmt.Errorf("environment file %q: %w", filename, err)
 			}
 			data, readErr := io.ReadAll(io.LimitReader(file, maxEnvironmentFileBytes+1))
 			_ = file.Close()
 			if readErr != nil {
-				return nil, nil, fmt.Errorf("environment file %q: %w", filename, readErr)
+				return PreparedEnvironments{}, fmt.Errorf("environment file %q: %w", filename, readErr)
 			}
 			if len(data) > maxEnvironmentFileBytes {
-				return nil, nil, fmt.Errorf("environment file %q exceeds the 1 MiB limit", filename)
+				return PreparedEnvironments{}, fmt.Errorf("environment file %q exceeds the 1 MiB limit", filename)
 			}
 			assignments, parseErr := ParseEnvironmentFile(filename, data)
 			if parseErr != nil {
-				return nil, nil, parseErr
+				return PreparedEnvironments{}, parseErr
 			}
 			prepared.files[canonical] = assignments
 		}
 	}
-	result := make(map[string][]string, len(definitions))
+	result := PreparedEnvironments{
+		Environments:         make(map[string][]string, len(definitions)),
+		Fingerprints:         make(map[string]string, len(definitions)),
+		SkippedOptionalFiles: prepared.skippedOptionalFiles,
+	}
 	for _, definition := range definitions {
 		env, err := prepared.compose(definition.Environment)
 		if err != nil {
-			return nil, nil, err
+			return PreparedEnvironments{}, err
 		}
-		result[definition.Name] = env
+		result.Environments[definition.Name] = env
+		result.Fingerprints[definition.Name] = prepared.fingerprint(definition.Environment)
 	}
-	return result, prepared.skippedOptionalFiles, nil
+	return result, nil
 }
 
 // HasEnvironmentConfiguration reports whether a specification changes the
@@ -325,6 +350,62 @@ func (p *PreparedEnvironment) compose(spec *EnvironmentSpec) ([]string, error) {
 		}
 	}
 	return p.composeMap(values, opaque, spec)
+}
+
+// environmentFingerprintVersion versions the canonical fingerprint encoding.
+const environmentFingerprintVersion = "hum-env-fingerprint-v1"
+
+// fingerprint hashes a definition's manifest contribution: the inherit flag
+// and the final keys set or removed by its files and values. Inherited
+// caller variables are excluded, so the same manifest yields the same value
+// from any shell. A nil specification hashes like an empty one.
+func (p *PreparedEnvironment) fingerprint(spec *EnvironmentSpec) string {
+	inherit := true
+	contribution := map[string]*string{}
+	if spec != nil {
+		inherit = spec.Inherit
+		for _, fileSpec := range spec.Files {
+			canonical, ok := p.paths[environmentFileRef(spec, fileSpec.Path)]
+			if !ok {
+				continue
+			}
+			for _, entry := range p.files[canonical] {
+				value := entry.Value
+				contribution[entry.Key] = &value
+			}
+		}
+		for key, value := range spec.Values {
+			contribution[key] = value
+		}
+	}
+	keys := make([]string, 0, len(contribution))
+	for key := range contribution {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	hash := sha256.New()
+	writeField := func(field string) {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(field)))
+		hash.Write(length[:])
+		hash.Write([]byte(field))
+	}
+	writeField(environmentFingerprintVersion)
+	if inherit {
+		writeField("inherit")
+	} else {
+		writeField("replace")
+	}
+	for _, key := range keys {
+		writeField(key)
+		if value := contribution[key]; value == nil {
+			writeField("unset")
+		} else {
+			writeField("set")
+			writeField(*value)
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 type positionedEnvironmentEntry struct {

@@ -1361,3 +1361,36 @@ func TestOrchestrateUpRecentOutput(t *testing.T) {
 		t.Errorf("failed output read changed result: %+v", unreadable)
 	}
 }
+
+func TestEnsureKeepsEnvironmentChangedProcess(t *testing.T) {
+	root := t.TempDir()
+	definition := Definition{Name: "web", Source: "manifest:hum.yaml", Cwd: root, Argv: []string{"server"}}
+	process := Process{Name: "web", Source: "manifest:hum.yaml", Root: root, Cwd: root, Argv: []string{"server"}, State: "running", StopGraceInherited: true, EnvironmentChanged: true}
+	for name, edit := range map[string]func(*Definition){"already_running": func(*Definition) {}, "definition_drift": func(d *Definition) { d.Argv = []string{"changed"} }} {
+		t.Run(name, func(t *testing.T) {
+			changed := definition
+			edit(&changed)
+			result := Ensure(context.Background(), root, changed, nil, false, EnsureOperations{
+				Get: func(context.Context, string, string) (Process, error) { return process, nil },
+				Start: func(context.Context, StartRequest) (Process, error) {
+					return Process{}, errors.New("kept process relaunched")
+				},
+			})
+			if !result.Already || result.Result.Outcome != name || !result.Result.EnvironmentChanged || result.Result.Guidance != "hum restart web" {
+				t.Fatalf("result=%#v, want kept %s with environment_changed and restart guidance", result.Result, name)
+			}
+		})
+	}
+	settled, err := WaitForReadiness(context.Background(), root, Definition{Name: "web", Ready: &ReadinessConfig{Match: "ready"}}, process, "already_running", time.Second, ReadinessOperations{
+		Get: func(context.Context, string, string) (Process, error) {
+			current := process
+			current.EnvironmentChanged = false
+			current.Readiness = &Readiness{Method: "match", Match: "ready", State: "ready"}
+			return current, nil
+		},
+		Wait: func(context.Context, WaitRequest) (WaitResult, error) { return WaitResult{Outcome: "matched"}, nil },
+	})
+	if err != nil || !settled.EnvironmentChanged || settled.Guidance != "hum restart web" {
+		t.Fatalf("settled=%#v err=%v, want readiness to keep the warning", settled, err)
+	}
+}

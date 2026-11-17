@@ -944,7 +944,7 @@ func (s *Server) dispatchRequest(ctx context.Context, req *protocol.Request) (an
 		}
 		operationID := reqOperationID(req)
 		endOperation := s.beginEventOperation(value.Scope, value.Root, value.Cwd, value.Name, operationID, value.Origin)
-		launched, err := s.supervisor.Start(app.StartRequest{Name: value.Name, Scope: value.Scope, Source: value.Source, Root: value.Root, Argv: value.Argv, Cwd: value.Cwd, Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), StopGrace: value.StopGrace, Attached: value.Attached})
+		launched, err := s.supervisor.Start(app.StartRequest{Name: value.Name, Scope: value.Scope, Source: value.Source, Root: value.Root, Argv: value.Argv, Cwd: value.Cwd, Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), StopGrace: value.StopGrace, Attached: value.Attached, EnvFingerprint: value.EnvFingerprint})
 		if err != nil || launched.Readiness == nil {
 			endOperation()
 		}
@@ -999,7 +999,7 @@ func (s *Server) dispatchRequest(ctx context.Context, req *protocol.Request) (an
 		if value.Ports {
 			item, err = s.supervisor.GetPortsScoped(ctx, value.Scope, value.Cwd, value.Name)
 		} else {
-			item, err = s.supervisor.GetScoped(value.Scope, value.Cwd, value.Name)
+			item, err = s.supervisor.GetEnvironmentScoped(value.Scope, value.Cwd, value.Name, value.EnvFingerprint)
 		}
 		if err != nil {
 			return dispatchError(req.Op, err), false
@@ -1091,7 +1091,7 @@ func (s *Server) dispatchRequest(ctx context.Context, req *protocol.Request) (an
 		if value.TTYSize != nil {
 			size = &app.TTYSize{Columns: value.TTYSize.Columns, Rows: value.TTYSize.Rows}
 		}
-		options := app.RestartOptions{Update: value.Update, Source: value.Source, Root: value.Root, Cwd: value.Cwd, Argv: append([]string(nil), value.Argv...), Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), StopGrace: value.StopGrace, Scope: value.Scope}
+		options := app.RestartOptions{Update: value.Update, Source: value.Source, Root: value.Root, Cwd: value.Cwd, Argv: append([]string(nil), value.Argv...), Env: append([]string(nil), value.Env...), Ready: appReadinessConfigFromProtocol(value.Ready), TTY: value.TTY, TTYSize: size, Restart: app.RestartPolicy(value.Restart), StopGrace: value.StopGrace, Scope: value.Scope, EnvFingerprint: value.EnvFingerprint}
 		operationID := reqOperationID(req)
 		endOperation := s.beginEventOperation(value.Scope, value.Root, value.Cwd, value.Name, operationID, value.Origin)
 		launched, err := s.supervisor.RestartScoped(context.Background(), value.Scope, value.Cwd, value.Name, options)

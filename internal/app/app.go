@@ -222,6 +222,9 @@ type StartRequest struct {
 	// supervisor default when this request admits a new record.
 	StopGrace *time.Duration
 	Attached  bool
+	// EnvFingerprint identifies the manifest environment contribution. It is
+	// kept only in memory and never appears in a snapshot.
+	EnvFingerprint string
 
 	// The following fields are supervisor-internal. They let the timer claim a
 	// relaunch through the ordinary launch path without exposing a second API.
@@ -269,6 +272,8 @@ type Process struct {
 	NextLaunchAt       *time.Time
 	Readiness          *Readiness
 	Ports              *process.PortsResult
+	// EnvironmentChanged is set only by GetEnvironmentScoped.
+	EnvironmentChanged bool
 }
 
 // WaitOutcome describes the terminal state observed by Wait.
@@ -319,6 +324,8 @@ type RestartOptions struct {
 	TTYSize   *TTYSize
 	Restart   RestartPolicy
 	StopGrace *time.Duration
+	// EnvFingerprint replaces the retained fingerprint on an update.
+	EnvFingerprint string
 }
 
 // Options configures a Supervisor. A zero OutputLimits value delegates to the
@@ -1321,6 +1328,9 @@ type record struct {
 	sessionID string
 	argv      []string
 	env       []string
+	// envFingerprint is the launch request's manifest environment
+	// fingerprint. Memory-only; empty records never report a change.
+	envFingerprint string
 
 	readyConfig         *ReadinessConfig
 	readyPattern        *regexp.Regexp
@@ -2185,6 +2195,7 @@ func (s *Supervisor) Start(req StartRequest) (Process, error) {
 		rec.source = req.Source
 		rec.argv = append([]string(nil), req.Argv...)
 		rec.env = append([]string{}, req.Env...)
+		rec.envFingerprint = req.EnvFingerprint
 		rec.readyConfig, rec.readyPattern = readyConfig, readyPattern
 		if !automatic {
 			rec.restart = restartPolicyForSource(req.Source, req.Restart)
@@ -2545,6 +2556,7 @@ func (s *Supervisor) RestartScoped(ctx context.Context, scope, cwd, name string,
 		rec.source = update.Source
 		rec.argv = append([]string(nil), updatedArgv...)
 		rec.env = append([]string(nil), updatedEnv...)
+		rec.envFingerprint = update.EnvFingerprint
 		rec.readyConfig = updatedReady
 		rec.readyPattern = updatedPattern
 		rec.restart = restartPolicyForSource(update.Source, update.Restart)
@@ -2863,6 +2875,7 @@ func (s *Supervisor) evictLocked() {
 		// Clearing these references is part of retention, not merely an
 		// optimization: env and output may contain secrets and unbounded bytes.
 		rec.env = nil
+		rec.envFingerprint = ""
 		rec.store = nil
 		rec.child = nil
 	}
@@ -2928,6 +2941,13 @@ func (s *Supervisor) Get(cwd, name string) (Process, error) {
 }
 
 func (s *Supervisor) GetScoped(scope, cwd, name string) (Process, error) {
+	return s.GetEnvironmentScoped(scope, cwd, name, "")
+}
+
+// GetEnvironmentScoped returns a snapshot that reports EnvironmentChanged
+// when both fingerprint and the record's launch fingerprint are present and
+// differ. The fingerprint itself never leaves the supervisor.
+func (s *Supervisor) GetEnvironmentScoped(scope, cwd, name, fingerprint string) (Process, error) {
 	rec, err := s.lookupScoped(scope, cwd, name, "")
 	if err != nil {
 		return Process{}, err
@@ -2937,7 +2957,9 @@ func (s *Supervisor) GetScoped(scope, cwd, name string) (Process, error) {
 	if s.records[rec.key] != rec {
 		return Process{}, &NotFoundError{Root: rec.root, Name: rec.name}
 	}
-	return rec.snapshotLocked(), nil
+	snapshot := rec.snapshotLocked()
+	snapshot.EnvironmentChanged = fingerprint != "" && rec.envFingerprint != "" && rec.envFingerprint != fingerprint
+	return snapshot, nil
 }
 
 const (
@@ -3385,6 +3407,7 @@ func (s *Supervisor) PrepareTTYScoped(scope string, req StartRequest) error {
 		rec.argv = append([]string(nil), req.Argv...)
 		rec.source = req.Source
 		rec.env = append([]string(nil), req.Env...)
+		rec.envFingerprint = ""
 		rec.readyConfig, rec.readyPattern = readyConfig, readyPattern
 	}
 	if req.TTYSize != nil {

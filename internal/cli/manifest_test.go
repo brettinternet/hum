@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -2598,5 +2599,83 @@ func TestUpProgressRecentOutput(t *testing.T) {
 		if request.SessionID != "session-"+result.Name || request.After == nil || *request.After != 3 {
 			t.Errorf("%s recent output request = %+v, want session scope after launch cursor 3", result.Name, request)
 		}
+	}
+}
+
+func TestManifestEnvironmentChangedWarning(t *testing.T) {
+	root := stopShutdownTestProject(t)
+	_, runtimeDir := stopShutdownTestServer(t, 100*time.Millisecond)
+	t.Setenv("HUM_RUNTIME_DIR", runtimeDir)
+	writeManifestCLITestFile(t, root, "version: 1\nenvironment:\n  files: [.env]\nprocesses:\n  api:\n    argv: [/bin/sh, -c, 'sleep 30']\n")
+	writeEnv := func(value string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET_KEY="+value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var transcript strings.Builder
+	run := func(wantChanged bool, args ...string) (string, string) {
+		t.Helper()
+		stdout, stderr, err := stopShutdownRun(t, args...)
+		transcript.WriteString(stdout + stderr)
+		if err != nil {
+			t.Fatalf("%v: %v (stdout=%q stderr=%q)", args, err, stdout, stderr)
+		}
+		if got := strings.Contains(stdout, `"environment_changed":true`) || strings.Contains(stderr, "environment changed"); got != wantChanged {
+			t.Fatalf("%v environment_changed=%v, want %v (stdout=%q stderr=%q)", args, got, wantChanged, stdout, stderr)
+		}
+		return stdout, stderr
+	}
+
+	writeEnv("first-secret")
+	t.Setenv("HUM_TEST_CALLER_ONLY", "one")
+	run(false, "up", "--json")
+	t.Setenv("HUM_TEST_CALLER_ONLY", "two")
+	run(false, "up", "--json")
+
+	writeEnv("second-secret")
+	stdout, _ := run(true, "up", "--json")
+	results := manifestCLILaunchResults(t, stdout)
+	if len(results) != 1 || results[0].Outcome != "already_running" || results[0].Guidance != "hum restart api" {
+		t.Fatalf("up results=%+v, want kept process with restart guidance", results)
+	}
+	stdout, _ = run(true, "start", "--json", "api")
+	if results = manifestCLILaunchResults(t, stdout); len(results) != 1 || results[0].Outcome != "already_running" || !results[0].EnvironmentChanged {
+		t.Fatalf("start results=%+v", results)
+	}
+	if _, stderr := run(true, "up"); !strings.Contains(stderr, "hum up: api: already running; readiness unverified; environment changed; run hum restart api") {
+		t.Fatalf("human up progress=%q", stderr)
+	}
+	run(false, "restart", "--json", "api")
+	run(false, "up", "--json")
+	run(false, "logs", "api")
+	run(false, "status", "--json", "api")
+
+	leaks := []string{"SECRET_KEY", "first-secret", "second-secret", "env_fingerprint"}
+	fingerprint := regexp.MustCompile(`[0-9a-f]{64}`)
+	check := func(source, text string) {
+		t.Helper()
+		for _, leak := range leaks {
+			if strings.Contains(text, leak) {
+				t.Fatalf("%s exposes %q", source, leak)
+			}
+		}
+		if match := fingerprint.FindString(text); match != "" {
+			t.Fatalf("%s exposes a digest %q", source, match)
+		}
+	}
+	check("command output", transcript.String())
+	if err := filepath.WalkDir(runtimeDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || entry.Type()&os.ModeSocket != 0 {
+			return err
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		check(path, string(data))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

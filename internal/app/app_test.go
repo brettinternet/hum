@@ -5452,3 +5452,35 @@ func TestCursorSessionChecksOutputAndWaitBeforeReading(t *testing.T) {
 		t.Fatalf("stale follow created a record: lookup err %v", err)
 	}
 }
+
+func TestGetReportsEnvironmentChangedUntilRestart(t *testing.T) {
+	root := makeProject(t, false)
+	s := testSupervisor(t, Options{StopGrace: 10 * time.Millisecond})
+	argv := []string{"/bin/sh", "-c", "sleep 30"}
+	if _, err := s.Start(StartRequest{Name: "api", Cwd: root, Argv: argv, Env: []string{"TOKEN=old"}, EnvFingerprint: "fp-old"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(StartRequest{Name: "plain", Cwd: root, Argv: argv}); err != nil {
+		t.Fatal(err)
+	}
+	changed := func(name, fingerprint string) bool {
+		t.Helper()
+		process, err := s.GetEnvironmentScoped(ScopeProject, root, name, fingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return process.EnvironmentChanged
+	}
+	if !changed("api", "fp-new") || changed("api", "fp-old") || changed("api", "") {
+		t.Fatal("differing fingerprint must report, matching or absent must not")
+	}
+	if changed("plain", "fp-new") {
+		t.Fatal("record without a fingerprint reported an environment change")
+	}
+	if _, err := s.Restart(context.Background(), root, "api", RestartOptions{Update: true, Cwd: root, Argv: argv, Env: []string{"TOKEN=new"}, EnvFingerprint: "fp-new"}); err != nil {
+		t.Fatal(err)
+	}
+	if changed("api", "fp-new") || !changed("api", "fp-old") {
+		t.Fatal("restart did not adopt the new fingerprint")
+	}
+}

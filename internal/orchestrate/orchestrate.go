@@ -121,6 +121,9 @@ type Process struct {
 	StopGrace          time.Duration
 	StopGraceInherited bool
 	Readiness          *Readiness
+	// EnvironmentChanged reports that the record launched with a different
+	// manifest environment than the caller's current one.
+	EnvironmentChanged bool
 }
 
 // WaitRequest is the adapter-neutral readiness wait request.
@@ -150,6 +153,9 @@ type Result struct {
 	ChangedFields []string
 	Guidance      string
 	RecentOutput  *RecentOutput
+	// EnvironmentChanged is an additive warning on a kept record; it never
+	// changes Outcome or gating.
+	EnvironmentChanged bool
 }
 
 // Bounds for the output excerpt attached to a failed launch.
@@ -429,7 +435,22 @@ func ResultForProcess(definition Definition, process Process, outcome string) Re
 	if process.State == "running" && process.Readiness == nil && definition.Ready == nil {
 		process.Readiness = &Readiness{State: ReadinessRunningUnverified}
 	}
-	return Result{Name: definition.Name, Outcome: outcome, Process: &process}
+	return withEnvironmentChanged(Result{Name: definition.Name, Outcome: outcome, Process: &process})
+}
+
+// withEnvironmentChanged lifts a kept record's environment change onto its
+// result with restart guidance.
+func withEnvironmentChanged(result Result) Result {
+	if result.Process != nil && result.Process.EnvironmentChanged {
+		result.EnvironmentChanged = true
+		result.Guidance = RestartGuidance(result.Name)
+	}
+	return result
+}
+
+// RestartGuidance is the command that applies a changed definition.
+func RestartGuidance(name string) string {
+	return fmt.Sprintf("hum restart %s", name)
 }
 
 // ErrorResult creates a stable error outcome for a definition.
@@ -538,11 +559,11 @@ func successfulExitCompletion(definition Definition, process Process) bool {
 // identity no longer matches its current definition.
 func DefinitionDriftResult(root string, definition Definition, process Process) Result {
 	process = NormalizeProcess(process)
-	return Result{
+	return withEnvironmentChanged(Result{
 		Name: definition.Name, Outcome: "definition_drift", Process: &process,
 		ChangedFields: DefinitionChangedFields(root, definition, process),
-		Guidance:      fmt.Sprintf("hum restart %s", definition.Name),
-	}
+		Guidance:      RestartGuidance(definition.Name),
+	})
 }
 
 // RecoveryOutcome classifies a retained exited manifest process without
@@ -661,6 +682,17 @@ type ReadinessOperations struct {
 // polls close the refresh-to-subscribe race without changing nil-after cursor
 // semantics for first-launch output.
 func WaitForReadiness(ctx context.Context, root string, definition Definition, process Process, initialOutcome string, timeout time.Duration, ops ReadinessOperations) (Result, error) {
+	result, err := waitForReadiness(ctx, root, definition, process, initialOutcome, timeout, ops)
+	// Readiness refreshes do not carry the caller's fingerprint, so keep the
+	// kept record's environment warning on the settled result.
+	if process.EnvironmentChanged && result.Process != nil {
+		result.Process.EnvironmentChanged = true
+		result = withEnvironmentChanged(result)
+	}
+	return result, err
+}
+
+func waitForReadiness(ctx context.Context, root string, definition Definition, process Process, initialOutcome string, timeout time.Duration, ops ReadinessOperations) (Result, error) {
 	initialProcess := NormalizeProcess(process)
 	result := ResultForProcess(definition, initialProcess, initialOutcome)
 	deadline := time.Now().Add(durationTimeout(timeout))

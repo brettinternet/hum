@@ -367,7 +367,7 @@ func (s *Server) toolDefinitions() []toolDefinition {
 	toolError := objectSchema(map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}, "details": map[string]any{}}, "code", "message")
 	outputEntry := objectSchema(map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "stream": map[string]any{"type": "string"}, "time": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}}, "cursor", "stream", "time", "text")
 	recentOutput := objectSchema(map[string]any{"session_id": map[string]any{"type": "string"}, "entries": map[string]any{"type": "array", "maxItems": orchestrate.RecentOutputEntries, "items": outputEntry}, "next": map[string]any{"type": "integer", "minimum": 0}}, "session_id", "entries")
-	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "recent_output": recentOutput, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
+	launch := objectSchema(map[string]any{"name": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}, "process": process, "error": toolError, "recent_output": recentOutput, "blocked_by": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "existing_state": map[string]any{"type": "string", "enum": []string{"running", "stopped", "exited"}}, "changed_fields": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "environment_changed": map[string]any{"type": "boolean"}, "guidance": map[string]any{"type": "string"}}, "name", "outcome")
 	restart := objectSchema(map[string]any{
 		"name":                 map[string]any{"type": "string"},
 		"session_id":           map[string]any{"type": "string"},
@@ -820,7 +820,7 @@ func orchestrateProcess(process protocol.Process) orchestrate.Process {
 		Start: process.Start, LaunchCursor: uint64(process.LaunchCursor), State: process.State,
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
 		Followers: process.Followers, Restart: process.Restart, StopGrace: process.StopGrace, StopGraceInherited: process.StopGraceInherited, Relaunches: process.Relaunches,
-		NextLaunchAt: process.NextLaunchAt,
+		NextLaunchAt: process.NextLaunchAt, EnvironmentChanged: process.EnvironmentChanged,
 	}
 	if process.NextCursor != nil {
 		cursor := uint64(*process.NextCursor)
@@ -851,7 +851,7 @@ func protocolProcess(process orchestrate.Process) protocol.Process {
 		Start: process.Start, LaunchCursor: protocol.Cursor(process.LaunchCursor), State: process.State,
 		ExitCode: process.ExitCode, ExitedAt: process.ExitedAt, RestartCount: process.RestartCount,
 		Followers: process.Followers, Restart: process.Restart, StopGrace: process.StopGrace, StopGraceInherited: process.StopGraceInherited, Relaunches: process.Relaunches,
-		NextLaunchAt: process.NextLaunchAt,
+		NextLaunchAt: process.NextLaunchAt, EnvironmentChanged: process.EnvironmentChanged,
 	}
 	if process.NextCursor != nil {
 		cursor := protocol.Cursor(*process.NextCursor)
@@ -875,12 +875,14 @@ func protocolProcess(process orchestrate.Process) protocol.Process {
 }
 
 func mcpLaunchResult(definition Definition, shared orchestrate.Result) launchResult {
-	result := launchResult{Name: shared.Name, Outcome: shared.Outcome, BlockedBy: append([]string(nil), shared.BlockedBy...), ExistingState: shared.ExistingState, ChangedFields: append([]string(nil), shared.ChangedFields...), Guidance: shared.Guidance, RecentOutput: shared.RecentOutput}
+	result := launchResult{Name: shared.Name, Outcome: shared.Outcome, BlockedBy: append([]string(nil), shared.BlockedBy...), ExistingState: shared.ExistingState, ChangedFields: append([]string(nil), shared.ChangedFields...), Guidance: shared.Guidance, RecentOutput: shared.RecentOutput, EnvironmentChanged: shared.EnvironmentChanged}
 	if result.Name == "" {
 		result.Name = definition.Name
 	}
 	if shared.Process != nil {
 		process := protocolProcess(*shared.Process)
+		// The launch result carries the warning; the process schema does not.
+		process.EnvironmentChanged = false
 		result.Process = &process
 	}
 	if shared.Error != nil {
@@ -914,7 +916,9 @@ func (s *Server) environment() []string {
 	return append([]string(nil), os.Environ()...)
 }
 
-func (s *Server) prepareEnvironments(resolution Resolution, names ...string) (map[string][]string, error) {
+// prepareEnvironments returns each selected definition's environment and,
+// for project scope, its manifest environment fingerprint.
+func (s *Server) prepareEnvironments(resolution Resolution, names ...string) (map[string][]string, map[string]string, error) {
 	wanted := map[string]bool{}
 	if len(names) != 0 {
 		for _, name := range names {
@@ -928,10 +932,11 @@ func (s *Server) prepareEnvironments(resolution Resolution, names ...string) (ma
 		}
 		definitions = append(definitions, project.Definition{Name: definition.Name, Environment: definition.Environment})
 	}
-	prepared, err := project.PrepareEnvironments(definitions, s.environment())
+	snapshot, err := project.PrepareManifestEnvironments(definitions, s.environment())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	prepared := snapshot.Environments
 	for _, definition := range definitions {
 		if !project.HasEnvironmentConfiguration(definition.Environment) {
 			continue
@@ -944,10 +949,13 @@ func (s *Server) prepareEnvironments(resolution Resolution, names ...string) (ma
 			Restart: resolved.Restart, StopGrace: resolved.StopGrace,
 		}
 		if _, err := protocol.MarshalLine(request); err != nil {
-			return nil, errors.New("composed environment request is too large")
+			return nil, nil, errors.New("composed environment request is too large")
 		}
 	}
-	return prepared, nil
+	if resolution.Scope == protocol.ScopeGlobal {
+		return prepared, nil, nil
+	}
+	return prepared, snapshot.Fingerprints, nil
 }
 
 func positiveTimeout(value int64) (int64, error) {
@@ -1258,10 +1266,10 @@ func (s *Server) callTool(ctx context.Context, name string, raw json.RawMessage)
 		panic("unreachable")
 	}
 }
-func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution Resolution, definition Definition, env []string, preserveRecovery bool) (protocol.Process, bool, string, error) {
+func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution Resolution, definition Definition, env []string, envFingerprint string, preserveRecovery bool) (protocol.Process, bool, string, error) {
 	shared := orchestrate.Ensure(ctx, resolution.Root, mcpDefinition(definition), env, preserveRecovery, orchestrate.EnsureOperations{
 		Get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
-			current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Scope: resolution.Scope, Name: name, Cwd: root})
+			current, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Scope: resolution.Scope, Name: name, Cwd: root, EnvFingerprint: envFingerprint})
 			return orchestrateProcess(current), err
 		},
 		Start: func(ctx context.Context, request orchestrate.StartRequest) (orchestrate.Process, error) {
@@ -1269,7 +1277,7 @@ func (s *Server) ensureDefinition(ctx context.Context, client Client, resolution
 			if request.Ready != nil {
 				ready = &protocol.ReadinessConfig{Method: request.Ready.Method, Target: request.Ready.Target, Match: request.Ready.Match, Argv: append([]string(nil), request.Ready.Argv...), Interval: request.Ready.Interval, Timeout: request.Ready.Timeout}
 			}
-			current, err := client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Scope: resolution.Scope, Name: request.Name, Argv: append([]string(nil), request.Argv...), Cwd: request.Cwd, Root: request.Root, Env: append([]string(nil), request.Env...), Source: request.Source, Ready: ready, TTY: request.TTY, Restart: request.Restart, StopGrace: request.StopGrace})
+			current, err := client.Start(ctx, protocol.StartRequest{Op: protocol.OpStart, Scope: resolution.Scope, Name: request.Name, Argv: append([]string(nil), request.Argv...), Cwd: request.Cwd, Root: request.Root, Env: append([]string(nil), request.Env...), Source: request.Source, Ready: ready, TTY: request.TTY, Restart: request.Restart, StopGrace: request.StopGrace, EnvFingerprint: envFingerprint})
 			return orchestrateProcess(current), err
 		},
 		IsNotFound:  func(err error) bool { return mapError(err).Code == string(protocol.ErrorNotFound) },
@@ -1446,7 +1454,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		process = normalizeProcess(process)
 		return launchResult{Name: input.Name, Outcome: outcome, Process: &process, RecentOutput: mcpRecentOutput(ctx, client, resolution, input.Name, outcome, process)}, nil
 	}
-	prepared, err := s.prepareEnvironments(resolution, definition.Name)
+	prepared, fingerprints, err := s.prepareEnvironments(resolution, definition.Name)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -1460,7 +1468,7 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		return nil, mapError(err)
 	}
 	defer client.Close()
-	process, already, classification, err := s.ensureDefinition(ctx, client, resolution, definition, env, false)
+	process, already, classification, err := s.ensureDefinition(ctx, client, resolution, definition, env, fingerprints[definition.Name], false)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -1477,19 +1485,27 @@ func (s *Server) start(ctx context.Context, resolution Resolution, input commonI
 		}
 	}
 	process = normalizeProcess(process)
-	return launchResult{Name: definition.Name, Outcome: outcome, Process: &process, RecentOutput: mcpRecentOutput(ctx, client, resolution, definition.Name, outcome, process)}, nil
+	result := launchResult{Name: definition.Name, Outcome: outcome, Process: &process, RecentOutput: mcpRecentOutput(ctx, client, resolution, definition.Name, outcome, process)}
+	if process.EnvironmentChanged {
+		process.EnvironmentChanged = false
+		result.EnvironmentChanged, result.Guidance = true, orchestrate.RestartGuidance(definition.Name)
+	}
+	return result, nil
 }
 
 type launchResult struct {
-	Name          string                    `json:"name"`
-	Outcome       string                    `json:"outcome"`
-	Process       *protocol.Process         `json:"process,omitempty"`
-	Error         *ToolError                `json:"error,omitempty"`
-	BlockedBy     []string                  `json:"blocked_by,omitempty"`
-	ExistingState string                    `json:"existing_state,omitempty"`
-	ChangedFields []string                  `json:"changed_fields,omitempty"`
-	Guidance      string                    `json:"guidance,omitempty"`
-	RecentOutput  *orchestrate.RecentOutput `json:"recent_output,omitempty"`
+	Name          string            `json:"name"`
+	Outcome       string            `json:"outcome"`
+	Process       *protocol.Process `json:"process,omitempty"`
+	Error         *ToolError        `json:"error,omitempty"`
+	BlockedBy     []string          `json:"blocked_by,omitempty"`
+	ExistingState string            `json:"existing_state,omitempty"`
+	ChangedFields []string          `json:"changed_fields,omitempty"`
+	// EnvironmentChanged reports a kept process whose manifest environment
+	// differs from the current manifest.
+	EnvironmentChanged bool                      `json:"environment_changed,omitempty"`
+	Guidance           string                    `json:"guidance,omitempty"`
+	RecentOutput       *orchestrate.RecentOutput `json:"recent_output,omitempty"`
 }
 
 func (s *Server) up(ctx context.Context, resolution Resolution, input commonInput) (any, error) {
@@ -1543,7 +1559,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 		}
 		return results, nil
 	}
-	prepared, prepErr := s.prepareEnvironments(resolution, selectedNames...)
+	prepared, fingerprints, prepErr := s.prepareEnvironments(resolution, selectedNames...)
 	if prepErr != nil {
 		return nil, mapError(prepErr)
 	}
@@ -1570,7 +1586,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 				return orchestrate.StartResult{Result: orchestrate.ErrorResult(definition, errors.New("definition not found"))}, nil
 			}
 			observedAt := time.Now()
-			process, already, classification, startErr := s.ensureDefinition(ctx, client, resolution, projectDefinition, prepared[projectDefinition.Name], true)
+			process, already, classification, startErr := s.ensureDefinition(ctx, client, resolution, projectDefinition, prepared[projectDefinition.Name], fingerprints[projectDefinition.Name], true)
 			if startErr != nil {
 				return orchestrate.StartResult{Result: orchestrate.ErrorResult(definition, startErr), Process: orchestrateProcess(process), ObservedAt: observedAt}, nil
 			}
@@ -1609,7 +1625,7 @@ func (s *Server) up(ctx context.Context, resolution Resolution, input commonInpu
 			})
 		},
 		Get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
-			process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Scope: resolution.Scope, Name: name, Cwd: root})
+			process, err := client.Get(ctx, protocol.GetRequest{Op: protocol.OpGet, Scope: resolution.Scope, Name: name, Cwd: root, EnvFingerprint: fingerprints[name]})
 			return orchestrateProcess(process), err
 		},
 		IsNotFound:   func(err error) bool { return mapError(err).Code == string(protocol.ErrorNotFound) },
@@ -2172,8 +2188,9 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 	definition, declared := findDefinition(resolution, name)
 	var err error
 	var prepared map[string][]string
+	var fingerprints map[string]string
 	if declared {
-		prepared, err = s.prepareEnvironments(resolution, name)
+		prepared, fingerprints, err = s.prepareEnvironments(resolution, name)
 		if err != nil {
 			return nil, mapError(err)
 		}
@@ -2210,6 +2227,7 @@ func (s *Server) restart(ctx context.Context, resolution Resolution, input commo
 	if declared {
 		request.Root, request.Cwd, request.Update = resolution.Root, definition.Cwd, true
 		request.Argv, request.Env, request.Source, request.TTY = append([]string(nil), definition.Argv...), prepared[name], definition.Source, definition.TTY
+		request.EnvFingerprint = fingerprints[name]
 		if definition.Ready != nil {
 			ready := *definition.Ready
 			ready.Argv = append([]string(nil), definition.Ready.Argv...)

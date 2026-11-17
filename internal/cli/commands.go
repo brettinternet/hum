@@ -780,7 +780,7 @@ func runCommand(ctx context.Context, cmd *urfavecli.Command, version, buildTime 
 		case len(argv) != 0:
 			process, err = client.Start(requestCtx, daemon.StartRequest{Name: name, Scope: selection.scope, Source: "ad_hoc", Root: manifest.root, Argv: argv, Cwd: cwd, Env: os.Environ(), TTY: cmd.Bool("tty"), Attached: attached})
 		case declared:
-			process, err = client.Start(requestCtx, daemon.StartRequest{Name: name, Scope: selection.scope, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: manifestEnvironment(manifest, definition), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition), Attached: attached})
+			process, err = client.Start(requestCtx, daemon.StartRequest{Name: name, Scope: selection.scope, Source: definition.Source, Root: manifest.root, Argv: definition.Argv, Cwd: definition.Cwd, Env: manifestEnvironment(manifest, definition), Ready: readinessConfig(definition), TTY: definition.TTY, Restart: protocolRestartPolicy(definition), Attached: attached, EnvFingerprint: manifestEnvFingerprint(manifest, name)})
 		default:
 			process, err = client.Start(requestCtx, daemon.StartRequest{Name: name, Scope: selection.scope, Root: manifest.root, Cwd: current.Cwd, Attached: attached})
 		}
@@ -3006,6 +3006,7 @@ func restartCommand(ctx context.Context, cmd *urfavecli.Command, version, buildT
 			request.Cwd = definition.Cwd
 			request.Argv = append([]string(nil), definition.Argv...)
 			request.Env = manifestEnvironment(manifest, definition)
+			request.EnvFingerprint = manifestEnvFingerprint(manifest, name)
 			request.Source = definition.Source
 			request.Ready = readinessConfig(definition)
 			request.TTY = definition.TTY
@@ -3843,7 +3844,7 @@ func ensureNamedManifestStart(ctx context.Context, client *daemon.Client, cwd st
 		}
 		return definition, manifestLaunchResultFor(definition, process, "started"), process
 	}
-	result, process, _, ensureErr := ensureManifestStart(ctx, client, cwd, manifest.root, definition, manifestEnvironment(manifest, definition), preserveRecovery, onStart)
+	result, process, _, ensureErr := ensureManifestStart(ctx, client, cwd, manifest.root, definition, manifestEnvironment(manifest, definition), manifestEnvFingerprint(manifest, name), preserveRecovery, onStart)
 	if ensureErr != nil {
 		return definition, manifestLaunchError(definition, ensureErr), app.Process{}
 	}
@@ -3967,7 +3968,7 @@ func manifestUpSchedule(ctx context.Context, cmd *urfavecli.Command, client *dae
 			return manifestLaunchSkipped(ctx, client, manifest.root, definition, blocked)
 		},
 		get: func(ctx context.Context, name, root string) (orchestrate.Process, error) {
-			process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: root})
+			process, err := client.Get(ctx, daemon.GetRequest{Name: name, Cwd: root, EnvFingerprint: manifestEnvFingerprint(manifest, name)})
 			return cliOrchestrateProcess(process), err
 		},
 		isNotFound: isNotFound,

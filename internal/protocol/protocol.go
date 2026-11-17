@@ -277,6 +277,9 @@ type StartRequest struct {
 	StopGrace *time.Duration   `json:"stop_grace,omitempty"`
 	Attached  bool             `json:"attached,omitempty"`
 	Origin    string           `json:"origin,omitempty"`
+	// EnvFingerprint identifies the manifest environment contribution. It is
+	// request-only and memory-only: no response, event, or state carries it.
+	EnvFingerprint string `json:"env_fingerprint,omitempty"`
 }
 
 // TTYSize is a terminal size in character cells.
@@ -293,43 +296,45 @@ func NewStartRequest(name string, argv []string, cwd string, env []string) Start
 // MarshalJSON writes the stable start request fields in protocol order.
 func (r StartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op        Operation        `json:"op"`
-		Scope     string           `json:"scope,omitempty"`
-		Name      string           `json:"name"`
-		Argv      []string         `json:"argv"`
-		Cwd       string           `json:"cwd"`
-		Root      string           `json:"root,omitempty"`
-		Env       []string         `json:"env"`
-		Source    string           `json:"source,omitempty"`
-		Ready     *ReadinessConfig `json:"ready,omitempty"`
-		TTY       bool             `json:"tty"`
-		TTYSize   *TTYSize         `json:"tty_size,omitempty"`
-		Restart   string           `json:"restart"`
-		StopGrace *time.Duration   `json:"stop_grace,omitempty"`
-		Attached  bool             `json:"attached,omitempty"`
-		Origin    string           `json:"origin,omitempty"`
-	}{Op: OpStart, Scope: r.Scope, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart), StopGrace: r.StopGrace, Attached: r.Attached, Origin: r.Origin})
+		Op             Operation        `json:"op"`
+		Scope          string           `json:"scope,omitempty"`
+		Name           string           `json:"name"`
+		Argv           []string         `json:"argv"`
+		Cwd            string           `json:"cwd"`
+		Root           string           `json:"root,omitempty"`
+		Env            []string         `json:"env"`
+		Source         string           `json:"source,omitempty"`
+		Ready          *ReadinessConfig `json:"ready,omitempty"`
+		TTY            bool             `json:"tty"`
+		TTYSize        *TTYSize         `json:"tty_size,omitempty"`
+		Restart        string           `json:"restart"`
+		StopGrace      *time.Duration   `json:"stop_grace,omitempty"`
+		Attached       bool             `json:"attached,omitempty"`
+		Origin         string           `json:"origin,omitempty"`
+		EnvFingerprint string           `json:"env_fingerprint,omitempty"`
+	}{Op: OpStart, Scope: r.Scope, Name: r.Name, Argv: r.Argv, Cwd: r.Cwd, Root: r.Root, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: effectiveRestart(r.Restart), StopGrace: r.StopGrace, Attached: r.Attached, Origin: r.Origin, EnvFingerprint: r.EnvFingerprint})
 }
 
 // UnmarshalJSON decodes a start request and validates its operation when
 // present.
 func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op        Operation        `json:"op"`
-		Scope     string           `json:"scope"`
-		Name      string           `json:"name"`
-		Argv      []string         `json:"argv"`
-		Cwd       string           `json:"cwd"`
-		Root      string           `json:"root"`
-		Env       []string         `json:"env"`
-		Source    string           `json:"source"`
-		Ready     *ReadinessConfig `json:"ready"`
-		TTY       bool             `json:"tty"`
-		TTYSize   *TTYSize         `json:"tty_size"`
-		Restart   string           `json:"restart"`
-		StopGrace *time.Duration   `json:"stop_grace"`
-		Attached  bool             `json:"attached"`
-		Origin    string           `json:"origin"`
+		Op             Operation        `json:"op"`
+		Scope          string           `json:"scope"`
+		Name           string           `json:"name"`
+		Argv           []string         `json:"argv"`
+		Cwd            string           `json:"cwd"`
+		Root           string           `json:"root"`
+		Env            []string         `json:"env"`
+		Source         string           `json:"source"`
+		Ready          *ReadinessConfig `json:"ready"`
+		TTY            bool             `json:"tty"`
+		TTYSize        *TTYSize         `json:"tty_size"`
+		Restart        string           `json:"restart"`
+		StopGrace      *time.Duration   `json:"stop_grace"`
+		Attached       bool             `json:"attached"`
+		Origin         string           `json:"origin"`
+		EnvFingerprint string           `json:"env_fingerprint"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -341,6 +346,7 @@ func (r *StartRequest) UnmarshalJSON(data []byte) error {
 	r.Name, r.Argv, r.Cwd, r.Root, r.Env, r.Scope = wire.Name, wire.Argv, wire.Cwd, wire.Root, wire.Env, wire.Scope
 	r.Source, r.Ready = wire.Source, wire.Ready
 	r.TTY, r.TTYSize, r.Restart, r.StopGrace, r.Attached, r.Origin = wire.TTY, wire.TTYSize, effectiveRestart(wire.Restart), wire.StopGrace, wire.Attached, wire.Origin
+	r.EnvFingerprint = wire.EnvFingerprint
 	return nil
 }
 
@@ -418,13 +424,15 @@ func (r *PortLookupRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// GetRequest asks for one process snapshot.
+// GetRequest asks for one process snapshot. When EnvFingerprint is set, the
+// snapshot reports environment_changed if the record holds a different one.
 type GetRequest struct {
-	Op    Operation `json:"op"`
-	Scope string    `json:"scope,omitempty"`
-	Name  string    `json:"name"`
-	Cwd   string    `json:"cwd"`
-	Ports bool      `json:"ports,omitempty"`
+	Op             Operation `json:"op"`
+	Scope          string    `json:"scope,omitempty"`
+	Name           string    `json:"name"`
+	Cwd            string    `json:"cwd"`
+	Ports          bool      `json:"ports,omitempty"`
+	EnvFingerprint string    `json:"env_fingerprint,omitempty"`
 }
 
 // NewGetRequest builds a process lookup request.
@@ -435,22 +443,24 @@ func NewGetRequest(name, cwd string) GetRequest {
 // MarshalJSON writes a get request with its stable operation.
 func (r GetRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op    Operation `json:"op"`
-		Scope string    `json:"scope,omitempty"`
-		Name  string    `json:"name"`
-		Cwd   string    `json:"cwd"`
-		Ports bool      `json:"ports,omitempty"`
-	}{Op: OpGet, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Ports: r.Ports})
+		Op             Operation `json:"op"`
+		Scope          string    `json:"scope,omitempty"`
+		Name           string    `json:"name"`
+		Cwd            string    `json:"cwd"`
+		Ports          bool      `json:"ports,omitempty"`
+		EnvFingerprint string    `json:"env_fingerprint,omitempty"`
+	}{Op: OpGet, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Ports: r.Ports, EnvFingerprint: r.EnvFingerprint})
 }
 
 // UnmarshalJSON decodes a get request.
 func (r *GetRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op    Operation `json:"op"`
-		Scope string    `json:"scope"`
-		Name  string    `json:"name"`
-		Cwd   string    `json:"cwd"`
-		Ports bool      `json:"ports"`
+		Op             Operation `json:"op"`
+		Scope          string    `json:"scope"`
+		Name           string    `json:"name"`
+		Cwd            string    `json:"cwd"`
+		Ports          bool      `json:"ports"`
+		EnvFingerprint string    `json:"env_fingerprint"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -458,7 +468,7 @@ func (r *GetRequest) UnmarshalJSON(data []byte) error {
 	if wire.Op != "" && wire.Op != OpGet {
 		return &UnknownOperationError{Operation: wire.Op}
 	}
-	r.Op, r.Scope, r.Name, r.Cwd, r.Ports = OpGet, wire.Scope, wire.Name, wire.Cwd, wire.Ports
+	r.Op, r.Scope, r.Name, r.Cwd, r.Ports, r.EnvFingerprint = OpGet, wire.Scope, wire.Name, wire.Cwd, wire.Ports, wire.EnvFingerprint
 	return nil
 }
 
@@ -936,6 +946,8 @@ type RestartRequest struct {
 	Restart   string           `json:"restart,omitempty"`
 	StopGrace *time.Duration   `json:"stop_grace,omitempty"`
 	Origin    string           `json:"origin,omitempty"`
+	// EnvFingerprint replaces the retained fingerprint on an update restart.
+	EnvFingerprint string `json:"env_fingerprint,omitempty"`
 }
 
 // NewRestartRequest builds a restart request that preserves the retained
@@ -947,42 +959,44 @@ func NewRestartRequest(name, cwd string) RestartRequest {
 // MarshalJSON writes the stable restart request fields in protocol order.
 func (r RestartRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Op        Operation        `json:"op"`
-		Scope     string           `json:"scope,omitempty"`
-		Name      string           `json:"name"`
-		Cwd       string           `json:"cwd"`
-		Root      string           `json:"root,omitempty"`
-		Update    bool             `json:"update,omitempty"`
-		Argv      []string         `json:"argv,omitempty"`
-		Env       []string         `json:"env,omitempty"`
-		Source    string           `json:"source,omitempty"`
-		Ready     *ReadinessConfig `json:"ready,omitempty"`
-		TTY       bool             `json:"tty"`
-		TTYSize   *TTYSize         `json:"tty_size,omitempty"`
-		Restart   string           `json:"restart,omitempty"`
-		StopGrace *time.Duration   `json:"stop_grace,omitempty"`
-		Origin    string           `json:"origin,omitempty"`
-	}{Op: OpRestart, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: r.Restart, StopGrace: r.StopGrace, Origin: r.Origin})
+		Op             Operation        `json:"op"`
+		Scope          string           `json:"scope,omitempty"`
+		Name           string           `json:"name"`
+		Cwd            string           `json:"cwd"`
+		Root           string           `json:"root,omitempty"`
+		Update         bool             `json:"update,omitempty"`
+		Argv           []string         `json:"argv,omitempty"`
+		Env            []string         `json:"env,omitempty"`
+		Source         string           `json:"source,omitempty"`
+		Ready          *ReadinessConfig `json:"ready,omitempty"`
+		TTY            bool             `json:"tty"`
+		TTYSize        *TTYSize         `json:"tty_size,omitempty"`
+		Restart        string           `json:"restart,omitempty"`
+		StopGrace      *time.Duration   `json:"stop_grace,omitempty"`
+		Origin         string           `json:"origin,omitempty"`
+		EnvFingerprint string           `json:"env_fingerprint,omitempty"`
+	}{Op: OpRestart, Scope: r.Scope, Name: r.Name, Cwd: r.Cwd, Root: r.Root, Update: r.Update, Argv: r.Argv, Env: r.Env, Source: r.Source, Ready: r.Ready, TTY: r.TTY, TTYSize: r.TTYSize, Restart: r.Restart, StopGrace: r.StopGrace, Origin: r.Origin, EnvFingerprint: r.EnvFingerprint})
 }
 
 // UnmarshalJSON decodes a restart request.
 func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Op        Operation        `json:"op"`
-		Scope     string           `json:"scope"`
-		Name      string           `json:"name"`
-		Cwd       string           `json:"cwd"`
-		Root      string           `json:"root"`
-		Update    bool             `json:"update"`
-		Argv      []string         `json:"argv"`
-		Env       []string         `json:"env"`
-		Source    string           `json:"source"`
-		Ready     *ReadinessConfig `json:"ready"`
-		TTY       bool             `json:"tty"`
-		TTYSize   *TTYSize         `json:"tty_size"`
-		Restart   string           `json:"restart"`
-		StopGrace *time.Duration   `json:"stop_grace"`
-		Origin    string           `json:"origin"`
+		Op             Operation        `json:"op"`
+		Scope          string           `json:"scope"`
+		Name           string           `json:"name"`
+		Cwd            string           `json:"cwd"`
+		Root           string           `json:"root"`
+		Update         bool             `json:"update"`
+		Argv           []string         `json:"argv"`
+		Env            []string         `json:"env"`
+		Source         string           `json:"source"`
+		Ready          *ReadinessConfig `json:"ready"`
+		TTY            bool             `json:"tty"`
+		TTYSize        *TTYSize         `json:"tty_size"`
+		Restart        string           `json:"restart"`
+		StopGrace      *time.Duration   `json:"stop_grace"`
+		Origin         string           `json:"origin"`
+		EnvFingerprint string           `json:"env_fingerprint"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -993,6 +1007,7 @@ func (r *RestartRequest) UnmarshalJSON(data []byte) error {
 	r.Op, r.Scope, r.Name, r.Cwd, r.Root = OpRestart, wire.Scope, wire.Name, wire.Cwd, wire.Root
 	r.Update, r.Argv, r.Env, r.Source, r.Ready = wire.Update, wire.Argv, wire.Env, wire.Source, wire.Ready
 	r.TTY, r.TTYSize, r.Restart, r.StopGrace, r.Origin = wire.TTY, wire.TTYSize, wire.Restart, wire.StopGrace, wire.Origin
+	r.EnvFingerprint = wire.EnvFingerprint
 	return nil
 }
 
@@ -1220,6 +1235,9 @@ type Process struct {
 	NextLaunchAt       *time.Time      `json:"next_launch_at,omitempty"`
 	Readiness          *Readiness      `json:"readiness,omitempty"`
 	Ports              *PortInspection `json:"ports,omitempty"`
+	// EnvironmentChanged is set only on a get response whose request carried
+	// an env_fingerprint different from the one the record launched with.
+	EnvironmentChanged bool `json:"environment_changed,omitempty"`
 }
 
 // MarshalJSON normalizes the default policy while retaining the stable flat

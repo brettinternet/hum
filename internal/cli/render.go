@@ -1176,6 +1176,10 @@ func manifestProgressInitialLine(definition project.Definition, result manifestL
 }
 
 func manifestProgressInitialLineWithPolicy(definition project.Definition, result manifestLaunchResult, colors colorPolicy) string {
+	return manifestProgressInitialOutcomeLine(definition, result, colors) + manifestProgressEnvironmentHint(result)
+}
+
+func manifestProgressInitialOutcomeLine(definition project.Definition, result manifestLaunchResult, colors colorPolicy) string {
 	prefix := "hum up: " + manifestProgressText(result.Name) + ": "
 	switch result.Outcome {
 	case "skipped":
@@ -1221,6 +1225,19 @@ func manifestProgressTerminalLine(result manifestLaunchResult) string {
 }
 
 func manifestProgressTerminalLineWithPolicy(result manifestLaunchResult, colors colorPolicy) string {
+	return manifestProgressTerminalOutcomeLine(result, colors) + manifestProgressEnvironmentHint(result)
+}
+
+// manifestProgressEnvironmentHint tells the user that a kept process still
+// runs with its previous manifest environment.
+func manifestProgressEnvironmentHint(result manifestLaunchResult) string {
+	if !result.EnvironmentChanged {
+		return ""
+	}
+	return "; environment changed; run " + manifestProgressText(result.Guidance)
+}
+
+func manifestProgressTerminalOutcomeLine(result manifestLaunchResult, colors colorPolicy) string {
 	prefix := "hum up: " + manifestProgressText(result.Name) + ": "
 	switch result.Outcome {
 	case "skipped":
@@ -1515,6 +1532,9 @@ func renderManifestLaunchHumanWithPolicy(w io.Writer, result manifestLaunchResul
 	}
 	if len(result.ChangedFields) != 0 {
 		line += " changed_fields=" + strings.Join(result.ChangedFields, ",")
+	}
+	if result.EnvironmentChanged {
+		line += " environment_changed=true"
 	}
 	if result.Guidance != "" {
 		line += " guidance=" + result.Guidance

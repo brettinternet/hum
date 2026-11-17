@@ -1313,3 +1313,41 @@ func TestScopeProtocol(t *testing.T) {
 		t.Fatalf("decoded snapshot = %#v", decoded)
 	}
 }
+
+func TestEnvironmentChangedWireShape(t *testing.T) {
+	// An empty fingerprint is omitted so requests stay byte-identical for
+	// callers that never send one.
+	for _, request := range []any{GetRequest{Op: OpGet, Name: "api"}, StartRequest{Op: OpStart, Name: "api", Argv: []string{"api"}}, RestartRequest{Op: OpRestart, Name: "api"}} {
+		line, err := MarshalLine(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(line), "env_fingerprint") {
+			t.Fatalf("empty fingerprint encoded: %s", line)
+		}
+	}
+	line, err := MarshalLine(GetRequest{Op: OpGet, Name: "api", EnvFingerprint: "fp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := NewDecoder(bytes.NewReader(line)).DecodeRequest()
+	if err != nil || decoded.Get == nil || decoded.Get.EnvFingerprint != "fp" {
+		t.Fatalf("decoded=%#v err=%v", decoded.Get, err)
+	}
+
+	// Responses carry only the boolean, never the fingerprint.
+	encoded, err := json.Marshal(NewGetResponse(Process{Name: "api", EnvironmentChanged: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"environment_changed":true`) || strings.Contains(string(encoded), "fingerprint") {
+		t.Fatalf("get response=%s", encoded)
+	}
+	for _, typ := range []reflect.Type{reflect.TypeOf(Process{}), reflect.TypeOf(Event{})} {
+		for index := 0; index < typ.NumField(); index++ {
+			if strings.Contains(strings.ToLower(typ.Field(index).Name), "fingerprint") {
+				t.Fatalf("%s exposes %s", typ.Name(), typ.Field(index).Name)
+			}
+		}
+	}
+}

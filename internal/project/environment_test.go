@@ -375,3 +375,43 @@ func mustWriteEnvironmentFile(t *testing.T, path, contents string) {
 }
 
 func envString(value string) *string { return &value }
+
+func TestManifestEnvironmentChangedFingerprint(t *testing.T) {
+	root := t.TempDir()
+	envFile := filepath.Join(root, "app.env")
+	unset := (*string)(nil)
+	value := "inline-value"
+	spec := func(values map[string]*string, inherit bool) *EnvironmentSpec {
+		return &EnvironmentSpec{Inherit: inherit, Files: []EnvironmentFileSpec{{Path: "app.env", Required: true}}, Values: values, BaseDir: root, Root: root}
+	}
+	fingerprint := func(t *testing.T, environment *EnvironmentSpec, baseline []string) string {
+		t.Helper()
+		got, err := PrepareManifestEnvironments([]Definition{{Name: "api", Environment: environment}}, baseline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.Fingerprints["api"]
+	}
+
+	mustWriteEnvironmentFile(t, envFile, "TOKEN=first-secret\n")
+	base := fingerprint(t, spec(map[string]*string{"INLINE": &value}, true), []string{"SHELL_ONLY=one"})
+	if len(base) != 64 || strings.Contains(base, "first-secret") {
+		t.Fatalf("fingerprint=%q, want an opaque SHA-256 hex digest", base)
+	}
+	if got := fingerprint(t, spec(map[string]*string{"INLINE": &value}, true), []string{"SHELL_ONLY=two", "OTHER=x"}); got != base {
+		t.Fatal("caller-inherited variables changed the fingerprint")
+	}
+	for name, environment := range map[string]*EnvironmentSpec{
+		"null removal": spec(map[string]*string{"INLINE": &value, "PATH": unset}, true),
+		"inherit":      spec(map[string]*string{"INLINE": &value}, false),
+		"inline value": spec(map[string]*string{}, true),
+	} {
+		if fingerprint(t, environment, nil) == base {
+			t.Fatalf("%s did not change the fingerprint", name)
+		}
+	}
+	mustWriteEnvironmentFile(t, envFile, "TOKEN=second-secret\n")
+	if fingerprint(t, spec(map[string]*string{"INLINE": &value}, true), nil) == base {
+		t.Fatal("env-file value change did not change the fingerprint")
+	}
+}

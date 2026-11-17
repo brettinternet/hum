@@ -190,7 +190,7 @@ processes:
 your shell env  →  .env  →  .env.local  →  processes.api.env     (later wins)
 ```
 
-Files are required by default; a mapping with `required: false` skips only a missing file. Set `environment.inherit: false` to skip your shell env. Hum never expands `$VAR`, `$(...)`, or backticks. Changes apply on `hum restart`. Limits and file syntax: [design](docs/design.md#environment).
+Files are required by default; a mapping with `required: false` skips only a missing file. Set `environment.inherit: false` to skip your shell env. Hum never expands `$VAR`, `$(...)`, or backticks. Changes apply on `hum restart`; until then `up` and `start` warn `environment changed`. Limits and file syntax: [design](docs/design.md#environment).
 
 ## Run without a manifest
 
