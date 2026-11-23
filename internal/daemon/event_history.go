@@ -259,13 +259,6 @@ func (h *EventHistory) trimLocked() {
 	}
 }
 
-func (h *EventHistory) ensureDir() error {
-	if err := os.MkdirAll(h.dir, 0700); err != nil {
-		return err
-	}
-	return nil
-}
-
 func historyWriteAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
@@ -345,7 +338,7 @@ func (h *EventHistory) Append(event protocol.HistoryEvent) (protocol.HistoryEven
 	if err := h.loadLocked(); err != nil {
 		return event, err
 	}
-	if err := h.ensureDir(); err != nil {
+	if err := os.MkdirAll(h.dir, 0700); err != nil {
 		return event, err
 	}
 	if h.writerClosed {
